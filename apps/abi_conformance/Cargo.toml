@@ -6,6 +6,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
@@ -21,6 +22,9 @@ bs58.workspace = true
 calimero-wasm-abi-v1.workspace = true
 syn.workspace = true
 serde_json.workspace = true
+
+[package.metadata.workspaces]
+independent = true
 
 [lints]
 workspace = true

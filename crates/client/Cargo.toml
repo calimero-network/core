@@ -1,11 +1,12 @@
 [package]
 name = "calimero-client"
-version = "0.1.5"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
 description.workspace = true
+publish = true
 
 [dependencies]
 eyre.workspace = true

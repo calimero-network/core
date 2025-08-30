@@ -5,7 +5,11 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 [build-dependencies]
 eyre.workspace = true
 rustc_version.workspace = true
+
+[package.metadata.workspaces]
+independent = true

@@ -1,14 +1,9 @@
 name: Calimero Crates Publish
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      branch:
-        type: string
-        required: true
-        description: Branch name or tag to publish crates from
+  push:
+    branches:
+      - master
 
 jobs:
   publish-cargo-crates:
@@ -20,30 +15,40 @@ jobs:
     timeout-minutes: 30 
     
     steps:
-      - name: Checkout core's ${{ github.event.inputs.branch }} branch
-        if: ${{ github.event_name == 'workflow_dispatch'}}
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.branch }}
-
       - name: Checkout core repository
-        if: ${{ github.event_name != 'workflow_dispatch'}}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up git user
-        uses: fregante/setup-git-user@v2
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
 
       - name: Check if version is already published
         run: |
           PACKAGE_NAME="calimero-primitives"
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.metadata.workspaces.version')
-          PUBLISHED=$(curl -s https://crates.io/api/v1/crates/$PACKAGE_NAME/versions | jq -r '.versions[] | select(.num=="'"$VERSION"'") | .num')
-          if [ "$PUBLISHED" == "$VERSION" ]; then
-            echo "Version $VERSION of $PACKAGE_NAME is already published."
+          
+          # Extract version from workspace metadata
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.metadata.workspaces.version // empty' 2>/dev/null || echo "")
+          
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Failed to extract version. Exiting."
             exit 1
+          fi
+          
+          echo "Publishing version: $VERSION"
+          
+          # Check if version is already published
+          CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME/versions")
+          PUBLISHED=$(echo "$CRATES_RESPONSE" | jq -r --arg ver "$VERSION" '.versions[] | select(.num == $ver) | .num // empty' 2>/dev/null || echo "")
+          
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "Version $VERSION is already published. Exiting."
+            exit 1
+          else
+            echo "Version $VERSION is not yet published. Proceeding with publish."
           fi
 
       - name: Publish calimero-workspaces on crates.io
@@ -51,13 +56,10 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -x
+          # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/miraclx/cargo-workspaces --tag v0.3.0 cargo-workspaces
-          cargo ws publish --yes --allow-dirty --force '*' \
+          # Publish all publishable crates from the workspace, skipping excluded packages
+          # Using --no-git flags to avoid git operations during publishing
+           cargo ws publish --yes --allow-dirty --force '*' \
               --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
               --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
-
-      - name: Create tag on https://github.com/calimero-network/core
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git push --no-follow-tags https://github.com/calimero-network/core.git tag 'crates-*'

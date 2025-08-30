@@ -6,6 +6,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 [[bin]]
 name = "calimero-abi"
@@ -16,6 +17,9 @@ clap = { workspace = true, features = ["derive"] }
 wasmparser = "0.118"
 serde_json.workspace = true
 eyre.workspace = true
+
+[package.metadata.workspaces]
+independent = true
 
 [lints]
 workspace = true 
