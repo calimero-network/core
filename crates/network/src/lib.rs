@@ -30,6 +30,7 @@ use crate::handlers::stream::incoming::FromIncoming;
 mod behaviour;
 mod discovery;
 mod handlers;
+mod store;
 
 use behaviour::Behaviour;
 use discovery::Discovery;
