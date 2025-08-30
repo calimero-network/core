@@ -1,6 +1,6 @@
 [package]
 name = "calimero-client"
-version = "0.1.2"
+version = "0.1.5"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true

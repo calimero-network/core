@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "calimero-client-py-bindings"
-version = "0.1.2"
+version = "0.1.5"
 description = "Python client library for Calimero Network - a comprehensive blockchain API client"
 readme = "README.md"
 license = {text = "MIT"}

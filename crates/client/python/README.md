@@ -27,18 +27,18 @@ This directory contains the Python bindings for the Calimero Rust client, provid
    ```
 
 2. **Build the Python wheel**:
-   ```bash
+```bash
    # Set compatibility for Python 3.13+
    export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
-   
+
    # Build the wheel
-   maturin build --features python
+maturin build --features python
    ```
 
 3. **Install the wheel**:
    ```bash
-   pip install target/wheels/calimero_client_py_bindings-*.whl
-   ```
+pip install target/wheels/calimero_client_py_bindings-*.whl
+```
 
 ## 🔧 Usage
 
@@ -51,8 +51,8 @@ from calimero_client_py_bindings import create_connection, create_client
 connection = create_connection("http://localhost:2528", "my-node")
 
 # Create a client from the connection
-client = create_client(connection)
-
+    client = create_client(connection)
+    
 # Use the client methods
 apps = client.list_applications()
 print(f"Installed applications: {apps}")
