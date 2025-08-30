@@ -30,55 +30,25 @@ jobs:
         run: |
           PACKAGE_NAME="calimero-primitives"
           
-          echo "=== Debug: Current directory and environment ==="
-          pwd
-          ls -la
-          echo "Rust version: $(rustc --version)"
-          echo "Cargo version: $(cargo --version)"
-          
-          echo "=== Debug: Cargo.toml contents ==="
-          cat Cargo.toml | head -30
-          
-          echo "=== Debug: Workspace metadata section ==="
-          grep -A5 '\[workspace.metadata.workspaces\]' Cargo.toml || echo "No workspace.metadata.workspaces section found"
-          
-          echo "=== Debug: Raw cargo metadata output ==="
-          cargo metadata --no-deps --format-version 1 || echo "cargo metadata command failed with exit code $?"
-          
-          echo "=== Debug: Cargo metadata with jq ==="
-          cargo metadata --no-deps --format-version 1 | jq '.' || echo "jq parsing failed"
-          
-          echo "=== Debug: Attempting version extraction ==="
-          # Try to get version from cargo metadata
+          # Extract version from workspace metadata
           VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.metadata.workspaces.version // empty' 2>/dev/null || echo "")
-          echo "Version from cargo metadata: '$VERSION'"
-          
-          # If that fails, try direct extraction from Cargo.toml
-          if [ -z "$VERSION" ]; then
-            echo "Cargo metadata failed, trying direct Cargo.toml extraction..."
-            VERSION=$(grep -A1 '\[workspace.metadata.workspaces\]' Cargo.toml | grep 'version =' | sed 's/.*version = "\([^"]*\)".*/\1/' 2>/dev/null || echo "")
-            echo "Version from Cargo.toml: '$VERSION'"
-          fi
           
           if [ -z "$VERSION" ]; then
             echo "ERROR: Failed to extract version. Exiting."
             exit 1
           fi
           
-          echo "=== Debug: Checking if version $VERSION is already published ==="
-          # Get the versions from crates.io
-          CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME/versions")
-          echo "Crates.io response received (length: ${#CRATES_RESPONSE})"
+          echo "Publishing version: $VERSION"
           
-          # Check if the version is already published
+          # Check if version is already published
+          CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME/versions")
           PUBLISHED=$(echo "$CRATES_RESPONSE" | jq -r --arg ver "$VERSION" '.versions[] | select(.num == $ver) | .num // empty' 2>/dev/null || echo "")
-          echo "Published version check result: '$PUBLISHED'"
           
           if [ "$PUBLISHED" = "$VERSION" ]; then
-            echo "Version $VERSION of $PACKAGE_NAME is already published. Exiting."
+            echo "Version $VERSION is already published. Exiting."
             exit 1
           else
-            echo "Version $VERSION of $PACKAGE_NAME is not yet published. Proceeding with publish."
+            echo "Version $VERSION is not yet published. Proceeding with publish."
           fi
 
       - name: Publish calimero-workspaces on crates.io
