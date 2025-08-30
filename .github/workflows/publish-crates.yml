@@ -1,14 +1,9 @@
 name: Calimero Crates Publish
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      branch:
-        type: string
-        required: true
-        description: Branch name or tag to publish crates from
+  push:
+    branches:
+      - master
 
 jobs:
   publish-cargo-crates:
