@@ -41,6 +41,9 @@ jobs:
           
           echo "Publishing version: $VERSION"
           
+          # Set package name for version checking
+          PACKAGE_NAME="calimero-primitives"
+          
           # Check if version is already published
           CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME/versions")
           PUBLISHED=$(echo "$CRATES_RESPONSE" | jq -r --arg ver "$VERSION" '.versions[] | select(.num == $ver) | .num // empty' 2>/dev/null || echo "")
