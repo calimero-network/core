@@ -11,19 +11,18 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use eyre::{OptionExt, WrapErr};
+use futures_util::Stream;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use tokio::sync::{broadcast, mpsc};
-use futures_util::Stream;
 use tracing::{debug, info};
 
-use crate::messages::NodeMessage;
 use crate::broadcasting::BroadcastingService;
+use crate::messages::NodeMessage;
 
 mod alias;
 mod application;
 mod blob;
-
 
 #[derive(Clone, Debug)]
 pub struct NodeClient {
@@ -33,7 +32,6 @@ pub struct NodeClient {
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
-
 }
 
 impl NodeClient {
@@ -52,7 +50,6 @@ impl NodeClient {
             node_manager,
             event_sender,
             ctx_sync_tx,
-
         }
     }
 
@@ -96,7 +93,9 @@ impl NodeClient {
         height: NonZeroUsize,
     ) -> eyre::Result<()> {
         let broadcasting = BroadcastingService::new(self.network_client.clone());
-        broadcasting.broadcast_single(context, sender, sender_key, artifact, height).await
+        broadcasting
+            .broadcast_single(context, sender, sender_key, artifact, height)
+            .await
     }
 
     /// Broadcast multiple state deltas in a batch
@@ -108,7 +107,9 @@ impl NodeClient {
         deltas: Vec<(Vec<u8>, NonZeroUsize)>,
     ) -> eyre::Result<()> {
         let broadcasting = BroadcastingService::new(self.network_client.clone());
-        broadcasting.broadcast_batch(context, sender, sender_key, deltas).await
+        broadcasting
+            .broadcast_batch(context, sender, sender_key, deltas)
+            .await
     }
 
     pub fn send_event(&self, event: NodeEvent) -> eyre::Result<()> {

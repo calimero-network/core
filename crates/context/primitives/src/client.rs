@@ -150,11 +150,15 @@ impl ContextClient {
         // Verify context state is properly initialized
         let default_hash = calimero_primitives::hash::Hash::default();
         if context.root_hash == default_hash {
-            warn!("⚠️  CONTEXT HAS DEFAULT ROOT HASH: context_id={}, root_hash={:?}", 
-                  context_id, context.root_hash);
+            warn!(
+                "⚠️  CONTEXT HAS DEFAULT ROOT HASH: context_id={}, root_hash={:?}",
+                context_id, context.root_hash
+            );
         } else {
-            debug!("✅ Context state verified: context_id={}, root_hash={:?}", 
-                   context_id, context.root_hash);
+            debug!(
+                "✅ Context state verified: context_id={}, root_hash={:?}",
+                context_id, context.root_hash
+            );
         }
 
         Ok(Some(context))
@@ -308,8 +312,6 @@ impl ContextClient {
 
         Ok(())
     }
-
-
 
     pub fn get_delta_height(
         &self,

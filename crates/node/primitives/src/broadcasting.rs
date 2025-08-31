@@ -10,7 +10,7 @@ use libp2p::PeerId;
 use rand::Rng;
 use tracing::debug;
 
-use crate::sync::{BroadcastMessage, BatchDelta};
+use crate::sync::{BatchDelta, BroadcastMessage};
 
 /// Handles all broadcasting operations for state deltas
 pub struct BroadcastingService {
@@ -98,7 +98,7 @@ impl BroadcastingService {
             let encrypted = shared_key
                 .encrypt(artifact, nonce)
                 .ok_or_eyre("failed to encrypt artifact")?;
-            
+
             batch_deltas.push(BatchDelta {
                 artifact: encrypted.into(),
                 height,

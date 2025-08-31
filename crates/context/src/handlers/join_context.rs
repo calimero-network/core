@@ -45,9 +45,11 @@ async fn join_context(
     invitation_payload: ContextInvitationPayload,
 ) -> eyre::Result<(ContextId, PublicKey)> {
     let (context_id, invitee_id, protocol, network_id, contract_id) = invitation_payload.parts()?;
-    
-    debug!("🔍 Join context: context_id={}, invitee_id={}, protocol={}, network_id={}, contract_id={}", 
-           context_id, invitee_id, protocol, network_id, contract_id);
+
+    debug!(
+        "🔍 Join context: context_id={}, invitee_id={}, protocol={}, network_id={}, contract_id={}",
+        context_id, invitee_id, protocol, network_id, contract_id
+    );
 
     // Check if already joined
     if context_client
@@ -55,11 +57,17 @@ async fn join_context(
         .and_then(|i| i.private_key)
         .is_some()
     {
-        debug!("ℹ️  Already joined context: context_id={}, invitee_id={}", context_id, invitee_id);
+        debug!(
+            "ℹ️  Already joined context: context_id={}, invitee_id={}",
+            context_id, invitee_id
+        );
         return Ok((context_id, invitee_id));
     }
 
-    debug!("🔑 Looking up stored identity for invitee_id={}", invitee_id);
+    debug!(
+        "🔑 Looking up stored identity for invitee_id={}",
+        invitee_id
+    );
     let stored_identity = context_client
         .get_identity(&ContextId::from([0u8; 32]), &invitee_id)?
         .ok_or_else(|| eyre!("missing identity for public key: {}", invitee_id))?;
@@ -72,15 +80,24 @@ async fn join_context(
         eyre::bail!("identity mismatch")
     }
 
-    debug!("✅ Identity validation passed for invitee_id={}", invitee_id);
+    debug!(
+        "✅ Identity validation passed for invitee_id={}",
+        invitee_id
+    );
 
     let mut config = None;
 
     let has_context = context_client.has_context(&context_id)?;
-    debug!("🏗️  Context exists check: context_id={}, has_context={}", context_id, has_context);
+    debug!(
+        "🏗️  Context exists check: context_id={}, has_context={}",
+        context_id, has_context
+    );
 
     if !has_context {
-        debug!("🆕 Creating new context config for context_id={}", context_id);
+        debug!(
+            "🆕 Creating new context config for context_id={}",
+            context_id
+        );
         let mut external_config = ContextConfigParams {
             protocol: protocol.into(),
             network_id: network_id.into(),
@@ -98,20 +115,35 @@ async fn join_context(
                external_config.protocol, external_config.network_id, external_config.contract_id, external_config.proxy_contract);
         config = Some(external_config);
     } else {
-        debug!("📋 Using existing context config for context_id={}", context_id);
+        debug!(
+            "📋 Using existing context config for context_id={}",
+            context_id
+        );
     }
 
-    debug!("🔄 Starting context config sync for context_id={}", context_id);
+    debug!(
+        "🔄 Starting context config sync for context_id={}",
+        context_id
+    );
     let _ignored = context_client
         .sync_context_config(context_id, config)
         .await?;
-    debug!("✅ Context config sync completed for context_id={}", context_id);
+    debug!(
+        "✅ Context config sync completed for context_id={}",
+        context_id
+    );
 
     let is_member = context_client.has_member(&context_id, &invitee_id)?;
-    debug!("👥 Member check: context_id={}, invitee_id={}, is_member={}", context_id, invitee_id, is_member);
-    
+    debug!(
+        "👥 Member check: context_id={}, invitee_id={}, is_member={}",
+        context_id, invitee_id, is_member
+    );
+
     if !is_member {
-        warn!("❌ Failed to join context: invitee_id={} is not a member of context_id={}", invitee_id, context_id);
+        warn!(
+            "❌ Failed to join context: invitee_id={} is not a member of context_id={}",
+            invitee_id, context_id
+        );
         eyre::bail!("unable to join context: not a member, invalid invitation?")
     }
 
@@ -119,7 +151,10 @@ async fn join_context(
     let mut rng = rand::thread_rng();
     let sender_key = PrivateKey::random(&mut rng);
 
-    debug!("💾 Updating identity for context_id={}, invitee_id={}", context_id, invitee_id);
+    debug!(
+        "💾 Updating identity for context_id={}, invitee_id={}",
+        context_id, invitee_id
+    );
     context_client.update_identity(
         &context_id,
         &ContextIdentity {
@@ -129,7 +164,10 @@ async fn join_context(
         },
     )?;
 
-    debug!("🗑️  Deleting temporary identity for invitee_id={}", invitee_id);
+    debug!(
+        "🗑️  Deleting temporary identity for invitee_id={}",
+        invitee_id
+    );
     context_client.delete_identity(&ContextId::from([0u8; 32]), &invitee_id)?;
 
     debug!("📡 Subscribing to context_id={}", context_id);
@@ -139,6 +177,9 @@ async fn join_context(
     node_client.sync(Some(&context_id), None).await?;
     debug!("✅ Node sync completed for context_id={}", context_id);
 
-    info!("🎉 Successfully joined context: context_id={}, invitee_id={}", context_id, invitee_id);
+    info!(
+        "🎉 Successfully joined context: context_id={}, invitee_id={}",
+        context_id, invitee_id
+    );
     Ok((context_id, invitee_id))
 }

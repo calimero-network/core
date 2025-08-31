@@ -2,8 +2,8 @@ use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use tokio::sync::oneshot;
-use url::Url;
 use tracing::{debug, info, warn};
+use url::Url;
 
 use super::ContextClient;
 use crate::messages::sync::SyncRequest;
@@ -16,11 +16,15 @@ impl ContextClient {
         config: Option<ContextConfigParams<'_>>,
     ) -> eyre::Result<Context> {
         debug!("🔄 Starting context config sync: context_id={}", context_id);
-        
+
         let mut handle = self.datastore.handle();
         let context = handle.get(&key::ContextMeta::new(context_id))?;
-        
-        debug!("📋 Context meta lookup: context_id={}, exists={}", context_id, context.is_some());
+
+        debug!(
+            "📋 Context meta lookup: context_id={}, exists={}",
+            context_id,
+            context.is_some()
+        );
 
         let (mut config, mut should_save_config) = config.map_or_else(
             || {
@@ -56,8 +60,10 @@ impl ContextClient {
             let config_client = external_client.config();
             config_client.members_revision().await?
         };
-        debug!("📊 Members revision: context_id={}, current={}, stored={}", 
-               context_id, members_revision, config.members_revision);
+        debug!(
+            "📊 Members revision: context_id={}, current={}, stored={}",
+            context_id, members_revision, config.members_revision
+        );
 
         if context.is_none() || members_revision != config.members_revision {
             debug!("🔄 Members revision mismatch, syncing members: context_id={}, current={}, stored={}", 
@@ -80,7 +86,10 @@ impl ContextClient {
                     let key = key::ContextIdentity::new(context_id, member);
 
                     if !handle.has(&key)? {
-                        debug!("👤 Adding new member: context_id={}, member={}", context_id, member);
+                        debug!(
+                            "👤 Adding new member: context_id={}, member={}",
+                            context_id, member
+                        );
                         handle.put(
                             &key,
                             &types::ContextIdentity {
@@ -92,19 +101,30 @@ impl ContextClient {
                     member_count += 1;
                 }
             }
-            debug!("✅ Synced {} members for context_id={}", member_count, context_id);
+            debug!(
+                "✅ Synced {} members for context_id={}",
+                member_count, context_id
+            );
         } else {
-            debug!("✅ Members revision up to date: context_id={}, revision={}", context_id, members_revision);
+            debug!(
+                "✅ Members revision up to date: context_id={}, revision={}",
+                context_id, members_revision
+            );
         }
 
-        debug!("🔄 Fetching application revision for context_id={}", context_id);
+        debug!(
+            "🔄 Fetching application revision for context_id={}",
+            context_id
+        );
         let application_revision = {
             let external_client = self.external_client(&context_id, &config)?;
             let config_client = external_client.config();
             config_client.application_revision().await?
         };
-        debug!("📊 Application revision: context_id={}, current={}, stored={}", 
-               context_id, application_revision, config.application_revision);
+        debug!(
+            "📊 Application revision: context_id={}, current={}, stored={}",
+            context_id, application_revision, config.application_revision
+        );
 
         let mut application_id = None;
 
@@ -118,12 +138,17 @@ impl ContextClient {
             let config_client = external_client.config();
             let application = config_client.application().await?;
             application_id = Some(application.id);
-            
-            debug!("📦 Application info: context_id={}, app_id={}, source={}", 
-                   context_id, application.id, application.source);
+
+            debug!(
+                "📦 Application info: context_id={}, app_id={}, source={}",
+                context_id, application.id, application.source
+            );
 
             if !self.node_client.has_application(&application.id)? {
-                debug!("📥 Installing application: context_id={}, app_id={}", context_id, application.id);
+                debug!(
+                    "📥 Installing application: context_id={}, app_id={}",
+                    context_id, application.id
+                );
                 let source: Url = application.source.into();
                 let metadata = application.metadata;
 
@@ -149,16 +174,27 @@ impl ContextClient {
                 };
 
                 if application.id != derived_application_id {
-                    warn!("❌ Application ID mismatch: context_id={}, expected={}, got={}", 
-                          context_id, application.id, derived_application_id);
+                    warn!(
+                        "❌ Application ID mismatch: context_id={}, expected={}, got={}",
+                        context_id, application.id, derived_application_id
+                    );
                     eyre::bail!("application mismatch")
                 }
-                debug!("✅ Application installed: context_id={}, app_id={}", context_id, application.id);
+                debug!(
+                    "✅ Application installed: context_id={}, app_id={}",
+                    context_id, application.id
+                );
             } else {
-                debug!("✅ Application already installed: context_id={}, app_id={}", context_id, application.id);
+                debug!(
+                    "✅ Application already installed: context_id={}, app_id={}",
+                    context_id, application.id
+                );
             }
         } else {
-            debug!("✅ Application revision up to date: context_id={}, revision={}", context_id, application_revision);
+            debug!(
+                "✅ Application revision up to date: context_id={}, revision={}",
+                context_id, application_revision
+            );
         }
 
         if should_save_config {
@@ -189,8 +225,12 @@ impl ContextClient {
                 )
             },
             |meta| {
-                debug!("📋 Using existing context meta: context_id={}, app_id={}, root_hash={:?}", 
-                       context_id, meta.application.application_id(), meta.root_hash);
+                debug!(
+                    "📋 Using existing context meta: context_id={}, app_id={}, root_hash={:?}",
+                    context_id,
+                    meta.application.application_id(),
+                    meta.root_hash
+                );
                 (
                     application_id.is_some(),
                     application_id.unwrap_or_else(|| meta.application.application_id()),
@@ -200,14 +240,19 @@ impl ContextClient {
         );
 
         if should_save {
-            debug!("💾 Saving context meta: context_id={}, app_id={}, root_hash={}", 
-                   context_id, application_id, root_hash);
+            debug!(
+                "💾 Saving context meta: context_id={}, app_id={}, root_hash={}",
+                context_id, application_id, root_hash
+            );
             handle.put(
                 &key::ContextMeta::new(context_id),
                 &types::ContextMeta::new(key::ApplicationMeta::new(application_id), *root_hash),
             )?;
 
-            debug!("🔄 Initiating context sync: context_id={}, app_id={}", context_id, application_id);
+            debug!(
+                "🔄 Initiating context sync: context_id={}, app_id={}",
+                context_id, application_id
+            );
             let (sender, receiver) = oneshot::channel();
 
             self.context_manager
@@ -226,8 +271,10 @@ impl ContextClient {
         }
 
         let context = Context::new(context_id, application_id, root_hash);
-        info!("🎉 Context config sync completed: context_id={}, app_id={}, root_hash={}", 
-              context_id, application_id, root_hash);
+        info!(
+            "🎉 Context config sync completed: context_id={}, app_id={}, root_hash={}",
+            context_id, application_id, root_hash
+        );
 
         Ok(context)
     }

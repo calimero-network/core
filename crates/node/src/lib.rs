@@ -22,7 +22,6 @@ mod run;
 pub mod sync;
 mod utils;
 
-
 pub use run::{start, NodeConfig};
 use sync::SyncManager;
 

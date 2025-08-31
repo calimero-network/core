@@ -18,13 +18,9 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::metrics::Metrics;
 
-pub mod api;
-pub mod auth;
 pub mod config;
 pub mod handlers;
 pub mod performance;
-pub mod providers;
-pub mod storage;
 
 #[derive(Debug)]
 struct ContextMeta {

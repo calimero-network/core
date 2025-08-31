@@ -236,21 +236,24 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                     // Use performance service for lightweight processing
                     let performance_service = crate::performance::PerformanceService::default();
-                    let should_skip_wasm = performance_service.should_use_lightweight_processing(
-                        outcome.artifact.len(),
-                        is_state_op,
-                    );
-                    
+                    let should_skip_wasm = performance_service
+                        .should_use_lightweight_processing(outcome.artifact.len(), is_state_op);
+
                     if should_skip_wasm {
                         performance_service.apply_lightweight_delta(
                             &context_id,
                             &executor,
                             outcome.artifact.len(),
                         );
-                        
+
                         // Apply delta directly without WASM execution
                         if let Some(height) = delta_height {
-                            context_client.put_state_delta(&context_id, &executor, &height, &outcome.artifact)?;
+                            context_client.put_state_delta(
+                                &context_id,
+                                &executor,
+                                &height,
+                                &outcome.artifact,
+                            )?;
                             context_client.set_delta_height(&context_id, &executor, height)?;
                         }
                     }
