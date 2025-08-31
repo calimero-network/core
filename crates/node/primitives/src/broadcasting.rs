@@ -4,12 +4,13 @@ use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use eyre::OptionExt;
+use eyre::{OptionExt, WrapErr};
 use libp2p::gossipsub::TopicHash;
 use rand::Rng;
 use tracing::debug;
 
 use crate::sync::{BatchDelta, BroadcastMessage};
+use crate::clock::Hlc;
 
 /// Handles all broadcasting operations for state deltas
 #[derive(Debug)]
@@ -90,6 +91,11 @@ impl BroadcastingService {
             .encrypt(artifact, nonce)
             .ok_or_eyre("failed to encrypt artifact")?;
 
+        // Generate HLC timestamp for causal ordering
+        let node_id = *sender.as_ref();
+        let mut hlc = Hlc::new(node_id);
+        let timestamp = hlc.now();
+
         let payload = BroadcastMessage::StateDelta {
             context_id: context.id,
             author_id: *sender,
@@ -97,17 +103,25 @@ impl BroadcastingService {
             artifact: encrypted.into(),
             height,
             nonce,
+            timestamp,
         };
 
-        let payload = borsh::to_vec(&payload)?;
         let topic = TopicHash::from_raw(context.id);
+        let payload = borsh::to_vec(&payload).wrap_err("failed to serialize payload")?;
 
-        let _ignored = self.network_client.publish(topic, payload).await?;
+        self.network_client.publish(topic, payload).await?;
+
+        debug!(
+            context_id=%context.id,
+            %sender,
+            root_hash=%context.root_hash,
+            "Successfully broadcasted single state delta"
+        );
 
         Ok(())
     }
 
-    /// Broadcast multiple state deltas in a single message
+    /// Broadcast multiple state deltas as a batch
     pub async fn broadcast_batch(
         &self,
         context: &Context,
@@ -115,16 +129,12 @@ impl BroadcastingService {
         sender_key: &PrivateKey,
         deltas: Vec<(Vec<u8>, NonZeroUsize)>,
     ) -> eyre::Result<()> {
-        if deltas.is_empty() {
-            return Ok(());
-        }
-
         debug!(
             context_id=%context.id,
             %sender,
             root_hash=%context.root_hash,
             delta_count=deltas.len(),
-            "Broadcasting batch state deltas"
+            "Broadcasting batch state delta"
         );
 
         if self.get_peers_count(Some(&context.id)).await == 0 {
@@ -134,7 +144,12 @@ impl BroadcastingService {
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
-        let mut batch_deltas = Vec::with_capacity(deltas.len());
+        // Generate HLC timestamp for causal ordering
+        let node_id = *sender.as_ref();
+        let mut hlc = Hlc::new(node_id);
+        let timestamp = hlc.now();
+
+        let mut batch_deltas = Vec::new();
         for (artifact, height) in deltas {
             let encrypted = shared_key
                 .encrypt(artifact, nonce)
@@ -143,6 +158,7 @@ impl BroadcastingService {
             batch_deltas.push(BatchDelta {
                 artifact: encrypted.into(),
                 height,
+                timestamp,
             });
         }
 
@@ -152,6 +168,7 @@ impl BroadcastingService {
             root_hash: context.root_hash,
             deltas: batch_deltas,
             nonce,
+            timestamp,
         };
 
         let payload = borsh::to_vec(&payload)?;

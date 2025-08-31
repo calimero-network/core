@@ -21,6 +21,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::utils::choose_stream;
 use crate::NodeManager;
+use calimero_node_primitives::clock::Hlc;
 
 // Timeout and flow control settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
@@ -297,6 +298,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         artifact,
                         height,
                         nonce,
+                        timestamp,
                     } => {
                         let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
@@ -313,6 +315,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     artifact.into_owned(),
                                     height,
                                     nonce,
+                                    timestamp,
                                 )
                                 .await
                                 {
@@ -328,6 +331,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         root_hash,
                         deltas,
                         nonce,
+                        timestamp,
                     } => {
                         let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
@@ -343,6 +347,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     root_hash,
                                     deltas,
                                     nonce,
+                                    timestamp,
                                 )
                                 .await
                                 {
@@ -487,9 +492,10 @@ async fn handle_state_delta(
     artifact: Vec<u8>,
     height: NonZeroUsize,
     nonce: Nonce,
+    timestamp: Hlc,
 ) -> eyre::Result<()> {
-    info!("📥 STATE DELTA RECEIVED: context_id={}, source={}, author_id={}, root_hash={:?}, height={}", 
-          context_id, source, author_id, root_hash, height);
+    info!("📥 STATE DELTA RECEIVED: context_id={}, source={}, author_id={}, root_hash={:?}, height={}, timestamp={:?}", 
+          context_id, source, author_id, root_hash, height, timestamp);
 
     let Some(context) = context_client.get_context(&context_id)? else {
         error!("❌ CONTEXT NOT FOUND: context_id={}", context_id);
@@ -626,9 +632,10 @@ async fn handle_batch_state_delta(
     root_hash: Hash,
     deltas: Vec<BatchDelta<'static>>,
     nonce: Nonce,
+    timestamp: Hlc,
 ) -> eyre::Result<()> {
-    info!("📥 BATCH STATE DELTA RECEIVED: context_id={}, source={}, author_id={}, root_hash={:?}, deltas_count={}", 
-          context_id, source, author_id, root_hash, deltas.len());
+    info!("📥 BATCH STATE DELTA RECEIVED: context_id={}, source={}, author_id={}, root_hash={:?}, deltas_count={}, timestamp={:?}", 
+          context_id, source, author_id, root_hash, deltas.len(), timestamp);
 
     let Some(context) = context_client.get_context(&context_id)? else {
         error!("❌ CONTEXT NOT FOUND: context_id={}", context_id);

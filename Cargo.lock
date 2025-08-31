@@ -2055,6 +2055,7 @@ dependencies = [
  "libp2p",
  "rand 0.8.5",
  "reqwest 0.12.9",
+ "serde",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2197,6 +2198,7 @@ name = "calimero-storage"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-node-primitives",
  "calimero-sdk",
  "calimero-storage-macros",
  "claims",

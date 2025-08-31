@@ -220,6 +220,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::{Id, Path};
 use crate::env::time_now;
+use calimero_node_primitives::clock::Hlc;
 
 /// Represents an atomic unit in the storage system.
 ///
@@ -733,13 +734,47 @@ impl Element {
     ///
     pub fn update(&mut self) {
         self.is_dirty = true;
-        *self.metadata.updated_at = time_now();
+        // Use backward compatibility with u64 timestamp
+        *self.metadata.updated_at = time_now().into();
+    }
+
+    /// Updates the metadata for the [`Element`] with a specific node ID for HLC.
+    ///
+    /// This is the preferred method for updating timestamps as it provides
+    /// better causal ordering through Hybrid Logical Clocks.
+    ///
+    /// # Parameters
+    ///
+    /// * `node_id` - The unique identifier for the node making the update
+    pub fn update_with_node_id(&mut self, node_id: [u8; 32]) {
+        self.is_dirty = true;
+        let mut hlc = Hlc::new(node_id);
+        *self.metadata.updated_at = hlc.now().into();
+    }
+
+    /// Updates the metadata for the [`Element`] with an existing HLC.
+    ///
+    /// This method allows updating with a pre-computed HLC timestamp,
+    /// useful when coordinating updates across multiple operations.
+    ///
+    /// # Parameters
+    ///
+    /// * `hlc` - The Hybrid Logical Clock timestamp to use
+    pub fn update_with_hlc(&mut self, hlc: Hlc) {
+        self.is_dirty = true;
+        *self.metadata.updated_at = hlc.into();
     }
 
     /// The timestamp when the [`Element`] was last updated.
     #[must_use]
-    pub fn updated_at(&self) -> u64 {
+    pub fn updated_at(&self) -> Hlc {
         *self.metadata.updated_at
+    }
+
+    /// The timestamp when the [`Element`] was last updated (backward compatibility).
+    #[must_use]
+    pub fn updated_at_u64(&self) -> u64 {
+        self.metadata.updated_at.to_u64()
     }
 }
 
@@ -793,17 +828,17 @@ pub struct Metadata {
 
 /// The timestamp when the [`Element`] was last updated.
 #[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialOrd)]
-pub struct UpdatedAt(u64);
+pub struct UpdatedAt(Hlc);
 
 impl PartialEq for UpdatedAt {
-    fn eq(&self, _other: &Self) -> bool {
-        // we don't care
-        true
+    fn eq(&self, other: &Self) -> bool {
+        // Use HLC comparison for equality
+        self.0.is_newer_than_or_equal(&other.0) && other.0.is_newer_than_or_equal(&self.0)
     }
 }
 
 impl Deref for UpdatedAt {
-    type Target = u64;
+    type Target = Hlc;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -816,8 +851,15 @@ impl DerefMut for UpdatedAt {
     }
 }
 
+impl From<Hlc> for UpdatedAt {
+    fn from(value: Hlc) -> Self {
+        Self(value)
+    }
+}
+
 impl From<u64> for UpdatedAt {
     fn from(value: u64) -> Self {
-        Self(value)
+        // Convert u64 to HLC for backward compatibility
+        Self(Hlc::from_u64(value, [0; 32]))
     }
 }

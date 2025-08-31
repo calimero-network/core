@@ -10,6 +10,8 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::blobs::BlobId;
 
+use crate::clock::Hlc;
+
 /// Core broadcast message types for state synchronization
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
@@ -23,6 +25,8 @@ pub enum BroadcastMessage<'a> {
         artifact: Cow<'a, [u8]>,
         height: NonZeroUsize,
         nonce: Nonce,
+        /// Hybrid Logical Clock timestamp for causal ordering
+        timestamp: Hlc,
     },
     /// Batch of multiple state deltas for efficiency
     BatchStateDelta {
@@ -31,6 +35,8 @@ pub enum BroadcastMessage<'a> {
         root_hash: Hash,
         deltas: Vec<BatchDelta<'a>>,
         nonce: Nonce,
+        /// Hybrid Logical Clock timestamp for causal ordering
+        timestamp: Hlc,
     },
 }
 
@@ -39,6 +45,8 @@ pub enum BroadcastMessage<'a> {
 pub struct BatchDelta<'a> {
     pub artifact: Cow<'a, [u8]>,
     pub height: NonZeroUsize,
+    /// Hybrid Logical Clock timestamp for causal ordering
+    pub timestamp: Hlc,
 }
 
 /// Stream message types for P2P communication

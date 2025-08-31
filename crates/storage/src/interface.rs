@@ -638,7 +638,7 @@ impl<S: StorageAdaptor> Interface<S> {
         if local_own_hash != foreign_index_data.own_hash {
             match foreign_entity_data {
                 Some(foreign_entity_data)
-                    if local_metadata.updated_at <= foreign_index_data.metadata.updated_at =>
+                    if !local_metadata.updated_at.is_newer_than(&foreign_index_data.metadata.updated_at) =>
                 {
                     actions.0.push(Action::Update {
                         id,
@@ -1160,7 +1160,8 @@ impl<S: StorageAdaptor> Interface<S> {
         let last_metadata = <Index<S>>::get_metadata(id)?;
 
         if let Some(last_metadata) = &last_metadata {
-            if last_metadata.updated_at > metadata.updated_at {
+            // Use HLC comparison for Last-Write-Wins conflict resolution
+            if last_metadata.updated_at.is_newer_than(&metadata.updated_at) {
                 return Ok(None);
             }
         } else if id.is_root() {
@@ -1173,7 +1174,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         _ = S::storage_write(Key::Entry(id), data);
 
-        let is_new = metadata.created_at == *metadata.updated_at;
+        let is_new = metadata.created_at == metadata.updated_at.to_u64();
 
         Ok(Some((is_new, full_hash)))
     }
