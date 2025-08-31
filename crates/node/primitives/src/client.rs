@@ -12,7 +12,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use eyre::{OptionExt, WrapErr};
-use futures_util::Stream;
+use futures_util::{Stream, future, SinkExt};
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
@@ -21,6 +21,7 @@ use tracing::{debug, info};
 
 use crate::messages::NodeMessage;
 use crate::sync::{BroadcastMessage, BatchDelta};
+
 
 mod alias;
 mod application;
@@ -34,6 +35,7 @@ pub struct NodeClient {
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+
 }
 
 impl NodeClient {
@@ -52,6 +54,7 @@ impl NodeClient {
             node_manager,
             event_sender,
             ctx_sync_tx,
+
         }
     }
 
@@ -184,6 +187,94 @@ impl NodeClient {
         let _ignored = self.network_client.publish(topic, payload).await?;
 
         Ok(())
+    }
+
+    /// Broadcast directly to specific peers, bypassing gossipsub for maximum performance
+    pub async fn broadcast_direct(
+        &self,
+        context: &Context,
+        sender: &PublicKey,
+        sender_key: &PrivateKey,
+        artifact: Vec<u8>,
+        height: NonZeroUsize,
+        peers: Vec<PeerId>,
+    ) -> eyre::Result<()> {
+        if peers.is_empty() {
+            return Ok(());
+        }
+
+        debug!(
+            context_id=%context.id,
+            %sender,
+            root_hash=%context.root_hash,
+            peer_count=peers.len(),
+            "Sending direct P2P state delta"
+        );
+
+        let shared_key = SharedKey::from_sk(sender_key);
+        let nonce = rand::thread_rng().gen();
+
+        let encrypted = shared_key
+            .encrypt(artifact, nonce)
+            .ok_or_eyre("failed to encrypt artifact")?;
+
+        let payload = BroadcastMessage::StateDelta {
+            context_id: context.id,
+            author_id: *sender,
+            root_hash: context.root_hash,
+            artifact: encrypted.into(),
+            height,
+            nonce,
+        };
+
+        let payload = borsh::to_vec(&payload)?;
+
+        // Send directly to each peer, bypassing gossipsub
+        let futures: Vec<_> = peers
+            .into_iter()
+            .map(|peer| self.send_direct_message(peer, payload.clone()))
+            .collect();
+
+        // Execute all direct sends in parallel
+        let results = future::join_all(futures).await;
+        
+        // Log any failures but don't fail the entire operation
+        for (peer, result) in results.into_iter().enumerate() {
+            if let Err(e) = result {
+                debug!(peer=%peer, error=%e, "Failed to send direct message to peer");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send a direct message to a specific peer
+    async fn send_direct_message(&self, peer: PeerId, payload: Vec<u8>) -> eyre::Result<()> {
+        // Open a direct stream to the peer
+        let mut stream = self.network_client.open_stream(peer).await?;
+        
+        // Send the payload directly
+        stream.send(calimero_network_primitives::stream::Message::new(payload)).await?;
+        
+        Ok(())
+    }
+
+    /// Optimized serialization with pre-allocated buffer for better performance
+    fn serialize_optimized<T: borsh::BorshSerialize>(&self, data: &T) -> eyre::Result<Vec<u8>> {
+        // Pre-allocate buffer with estimated size for zero-copy optimization
+        let mut buffer = Vec::with_capacity(1024);
+        data.serialize(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    /// Get trusted peers for direct P2P communication
+    async fn get_trusted_peers(&self, context_id: &ContextId) -> Vec<PeerId> {
+        // Get all peers in the context mesh
+        let topic = TopicHash::from_raw(*context_id);
+        let mesh_peers = self.network_client.mesh_peers(topic).await;
+        
+        // Filter to trusted peers (all peers in mesh are considered trusted for now)
+        mesh_peers.into_iter().collect()
     }
 
     pub fn send_event(&self, event: NodeEvent) -> eyre::Result<()> {

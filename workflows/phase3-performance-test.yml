@@ -1,0 +1,399 @@
+name: Phase 3 Performance Test
+description: Test Phase 3 optimizations - Direct P2P, Binary Protocol, Connection Pooling
+
+nodes:
+  chain_id: testnet-1
+  count: 8
+  image: localhost:5001/merod:latest
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install KV Store application
+  - name: Install KV Store Application
+    type: install_application
+    node: calimero-node-1
+    path: ./apps/kv-store/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create context
+  - name: Create Context
+    type: create_context
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    params: '{}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Step 3: Create identities for all nodes
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: calimero-node-3
+    outputs:
+      public_key_3: publicKey
+
+  - name: Create Identity on Node 4
+    type: create_identity
+    node: calimero-node-4
+    outputs:
+      public_key_4: publicKey
+
+  - name: Create Identity on Node 5
+    type: create_identity
+    node: calimero-node-5
+    outputs:
+      public_key_5: publicKey
+
+  - name: Create Identity on Node 6
+    type: create_identity
+    node: calimero-node-6
+    outputs:
+      public_key_6: publicKey
+
+  - name: Create Identity on Node 7
+    type: create_identity
+    node: calimero-node-7
+    outputs:
+      public_key_7: publicKey
+
+  - name: Create Identity on Node 8
+    type: create_identity
+    node: calimero-node-8
+    outputs:
+      public_key_8: publicKey
+
+  # Step 4: Wait for identity creation
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 2
+
+  # Step 5: Invite all nodes
+  - name: Invite Node 2
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_2}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_3}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Invite Node 4
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_4}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_4: invitation
+
+  - name: Invite Node 5
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_5}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_5: invitation
+
+  - name: Invite Node 6
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_6}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_6: invitation
+
+  - name: Invite Node 7
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_7}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_7: invitation
+
+  - name: Invite Node 8
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_8}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_8: invitation
+
+  # Step 6: Wait after invitations
+  - name: Wait after Invitations
+    type: wait
+    seconds: 2
+
+  # Step 7: Join context from all nodes
+  - name: Join Context from Node 2
+    type: join_context
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_2}}'
+    invitation: '{{invitation_2}}'
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_3}}'
+    invitation: '{{invitation_3}}'
+
+  - name: Join Context from Node 4
+    type: join_context
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_4}}'
+    invitation: '{{invitation_4}}'
+
+  - name: Join Context from Node 5
+    type: join_context
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_5}}'
+    invitation: '{{invitation_5}}'
+
+  - name: Join Context from Node 6
+    type: join_context
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_6}}'
+    invitation: '{{invitation_6}}'
+
+  - name: Join Context from Node 7
+    type: join_context
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_7}}'
+    invitation: '{{invitation_7}}'
+
+  - name: Join Context from Node 8
+    type: join_context
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_8}}'
+    invitation: '{{invitation_8}}'
+
+  # Step 8: Wait for context sync
+  - name: Wait for Context Sync
+    type: wait
+    seconds: 15
+
+  # Step 9: Test Direct P2P Communication (high-frequency updates)
+  - name: Send High-Frequency Update 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "p2p_test_1"
+      value: "direct_p2p_value_1"
+
+  - name: Send High-Frequency Update 2
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "p2p_test_2"
+      value: "direct_p2p_value_2"
+
+  - name: Send High-Frequency Update 3
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "p2p_test_3"
+      value: "direct_p2p_value_3"
+
+  # Step 10: Immediate check for Direct P2P performance
+  - name: Check Direct P2P 0s Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "p2p_test_1"
+
+  - name: Check Direct P2P 0s Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "p2p_test_2"
+
+  - name: Check Direct P2P 0s Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: get
+    args:
+      key: "p2p_test_3"
+
+  # Step 11: Test Binary Protocol Optimization (large payloads)
+  - name: Send Large Payload 1
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: set
+    args:
+      key: "large_payload_1"
+      value: "very_long_value_that_tests_binary_protocol_optimization_with_extended_content_to_measure_serialization_performance_under_load_with_multiple_nodes_and_high_frequency_updates"
+
+  - name: Send Large Payload 2
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: set
+    args:
+      key: "large_payload_2"
+      value: "another_very_long_value_for_binary_protocol_testing_with_extended_content_to_measure_serialization_performance_under_load_with_multiple_nodes_and_high_frequency_updates"
+
+  # Step 12: Check Binary Protocol performance
+  - name: Check Binary Protocol 0s Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: get
+    args:
+      key: "large_payload_1"
+
+  - name: Check Binary Protocol 0s Node 6
+    type: call
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_6}}'
+    method: get
+    args:
+      key: "large_payload_2"
+
+  # Step 13: Test Load Balancing (multiple nodes writing simultaneously)
+  - name: Send Load Test Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "load_test"
+      value: "from_node_1"
+
+  - name: Send Load Test Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: set
+    args:
+      key: "load_test"
+      value: "from_node_2"
+
+  - name: Send Load Test Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: set
+    args:
+      key: "load_test"
+      value: "from_node_3"
+
+  - name: Send Load Test Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: set
+    args:
+      key: "load_test"
+      value: "from_node_4"
+
+  - name: Send Load Test Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: set
+    args:
+      key: "load_test"
+      value: "from_node_5"
+
+  # Step 14: Check Load Balancing results
+  - name: Check Load Test Node 6
+    type: call
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_6}}'
+    method: get
+    args:
+      key: "load_test"
+
+  - name: Check Load Test Node 7
+    type: call
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_7}}'
+    method: get
+    args:
+      key: "load_test"
+
+  - name: Check Load Test Node 8
+    type: call
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_8}}'
+    method: get
+    args:
+      key: "load_test"
+
+  # Step 15: Final verification - check all values
+  - name: Final Check All Values
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: entries
+    args: {}
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

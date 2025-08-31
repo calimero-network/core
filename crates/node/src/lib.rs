@@ -17,10 +17,11 @@ use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tracing::error;
 
-pub mod handlers;
+mod handlers;
 mod run;
 pub mod sync;
 mod utils;
+
 
 pub use run::{start, NodeConfig};
 use sync::SyncManager;

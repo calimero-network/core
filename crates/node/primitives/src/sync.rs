@@ -39,6 +39,94 @@ pub struct BatchDelta<'a> {
     pub height: NonZeroUsize,
 }
 
+/// Optimized delta structure for efficient binary serialization
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct OptimizedDelta<'a> {
+    /// Fixed-size header for fast parsing
+    pub header: DeltaHeader,
+    /// Raw payload data
+    pub payload: Cow<'a, [u8]>,
+}
+
+/// Fixed-size header for optimized delta processing
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct DeltaHeader {
+    /// Context ID (32 bytes)
+    pub context_id: [u8; 32],
+    /// Author ID (32 bytes)
+    pub author_id: [u8; 32],
+    /// Root hash (32 bytes)
+    pub root_hash: [u8; 32],
+    /// Height (4 bytes)
+    pub height: u32,
+    /// Timestamp (8 bytes)
+    pub timestamp: u64,
+    /// Flags for optimization hints
+    pub flags: u8,
+}
+
+impl DeltaHeader {
+    /// Create a new optimized delta header
+    pub fn new(
+        context_id: [u8; 32],
+        author_id: [u8; 32],
+        root_hash: [u8; 32],
+        height: u32,
+        timestamp: u64,
+        flags: u8,
+    ) -> Self {
+        Self {
+            context_id,
+            author_id,
+            root_hash,
+            height,
+            timestamp,
+            flags,
+        }
+    }
+
+    /// Check if this delta should use lightweight processing
+    pub fn is_lightweight(&self) -> bool {
+        self.flags & 0x01 != 0
+    }
+
+    /// Check if this delta should use direct P2P transmission
+    pub fn use_direct_p2p(&self) -> bool {
+        self.flags & 0x02 != 0
+    }
+
+    /// Check if this delta should be cached
+    pub fn should_cache(&self) -> bool {
+        self.flags & 0x04 != 0
+    }
+}
+
+/// Optimized batch message for multiple deltas
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct OptimizedBatchDelta<'a> {
+    /// Batch header
+    pub header: BatchHeader,
+    /// Multiple deltas in a single message
+    pub deltas: Vec<OptimizedDelta<'a>>,
+}
+
+/// Header for batch delta messages
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct BatchHeader {
+    /// Context ID (32 bytes)
+    pub context_id: [u8; 32],
+    /// Author ID (32 bytes)
+    pub author_id: [u8; 32],
+    /// Root hash (32 bytes)
+    pub root_hash: [u8; 32],
+    /// Number of deltas in batch
+    pub delta_count: u16,
+    /// Batch timestamp
+    pub timestamp: u64,
+    /// Batch flags
+    pub flags: u8,
+}
+
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum StreamMessage<'a> {
     Init {
