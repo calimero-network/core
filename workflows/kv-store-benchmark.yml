@@ -1,0 +1,658 @@
+name: KV Store CRDT Benchmark
+description: Benchmark CRDT propagation and state synchronization between multiple nodes
+
+nodes:
+  chain_id: testnet-1
+  count: 8
+  image: localhost:5001/merod:latest
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install kv_store application on Node 1
+  - name: Install KV Store Application
+    type: install_application
+    node: calimero-node-1
+    path: ./apps/kv-store/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create context on Node 1
+  - name: Create Context
+    type: create_context
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    params: '{}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Step 3: Create identities for all nodes
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: calimero-node-3
+    outputs:
+      public_key_3: publicKey
+
+  - name: Create Identity on Node 4
+    type: create_identity
+    node: calimero-node-4
+    outputs:
+      public_key_4: publicKey
+
+  - name: Create Identity on Node 5
+    type: create_identity
+    node: calimero-node-5
+    outputs:
+      public_key_5: publicKey
+
+  - name: Create Identity on Node 6
+    type: create_identity
+    node: calimero-node-6
+    outputs:
+      public_key_6: publicKey
+
+  - name: Create Identity on Node 7
+    type: create_identity
+    node: calimero-node-7
+    outputs:
+      public_key_7: publicKey
+
+  - name: Create Identity on Node 8
+    type: create_identity
+    node: calimero-node-8
+    outputs:
+      public_key_8: publicKey
+
+  # Step 4: Wait for identity creation
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 10
+
+  # Step 5: Invite all nodes from Node 1
+  - name: Invite Node 2
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_2}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_3}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Invite Node 4
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_4}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_4: invitation
+
+  - name: Invite Node 5
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_5}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_5: invitation
+
+  - name: Invite Node 6
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_6}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_6: invitation
+
+  - name: Invite Node 7
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_7}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_7: invitation
+
+  - name: Invite Node 8
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_8}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_8: invitation
+
+  # Step 6: Wait after invitations
+  - name: Wait after Invitations
+    type: wait
+    seconds: 10
+
+  # Step 7: Join context from all nodes
+  - name: Join Context from Node 2
+    type: join_context
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_2}}'
+    invitation: '{{invitation_2}}'
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_3}}'
+    invitation: '{{invitation_3}}'
+
+  - name: Join Context from Node 4
+    type: join_context
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_4}}'
+    invitation: '{{invitation_4}}'
+
+  - name: Join Context from Node 5
+    type: join_context
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_5}}'
+    invitation: '{{invitation_5}}'
+
+  - name: Join Context from Node 6
+    type: join_context
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_6}}'
+    invitation: '{{invitation_6}}'
+
+  - name: Join Context from Node 7
+    type: join_context
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_7}}'
+    invitation: '{{invitation_7}}'
+
+  - name: Join Context from Node 8
+    type: join_context
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_8}}'
+    invitation: '{{invitation_8}}'
+
+  # Step 8: Wait for context sync
+  - name: Wait for Context Sync
+    type: wait
+    seconds: 30
+
+  # Step 9: Initial state setup by Node 1
+  - name: Set Initial Data from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "initial_key"
+      value: "initial_value"
+
+  - name: Set Test Data 1 from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "test_key_1"
+      value: "value_from_node_1"
+
+  - name: Set Test Data 2 from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "test_key_2"
+      value: "value_from_node_1_updated"
+
+  # Step 10: Wait for initial propagation
+  - name: Wait for Initial Propagation
+    type: wait
+    seconds: 15
+
+  # Step 11: Verify initial state on all nodes
+  - name: Get Initial Data from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Initial Data from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Initial Data from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Initial Data from Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Initial Data from Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Initial Data from Node 6
+    type: call
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_6}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Initial Data from Node 7
+    type: call
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_7}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Initial Data from Node 8
+    type: call
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_8}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  # Step 12: Concurrent writes from multiple nodes
+  - name: Set Data from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: set
+    args:
+      key: "node2_key"
+      value: "value_from_node_2"
+
+  - name: Set Data from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: set
+    args:
+      key: "node3_key"
+      value: "value_from_node_3"
+
+  - name: Set Data from Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: set
+    args:
+      key: "node4_key"
+      value: "value_from_node_4"
+
+  - name: Set Data from Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: set
+    args:
+      key: "node5_key"
+      value: "value_from_node_5"
+
+  # Step 13: Wait for concurrent writes to propagate
+  - name: Wait for Concurrent Propagation
+    type: wait
+    seconds: 20
+
+  # Step 14: Verify all data on all nodes
+  - name: Get All Entries from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: entries
+    args: {}
+
+  - name: Get All Entries from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: entries
+    args: {}
+
+  - name: Get All Entries from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: entries
+    args: {}
+
+  - name: Get All Entries from Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: entries
+    args: {}
+
+  - name: Get All Entries from Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: entries
+    args: {}
+
+  - name: Get All Entries from Node 6
+    type: call
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_6}}'
+    method: entries
+    args: {}
+
+  - name: Get All Entries from Node 7
+    type: call
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_7}}'
+    method: entries
+    args: {}
+
+  - name: Get All Entries from Node 8
+    type: call
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_8}}'
+    method: entries
+    args: {}
+
+  # Step 15: Test updates and conflicts
+  - name: Update Key from Node 6
+    type: call
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_6}}'
+    method: set
+    args:
+      key: "initial_key"
+      value: "updated_by_node_6"
+
+  - name: Update Same Key from Node 7
+    type: call
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_7}}'
+    method: set
+    args:
+      key: "initial_key"
+      value: "updated_by_node_7"
+
+  - name: Update Same Key from Node 8
+    type: call
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_8}}'
+    method: set
+    args:
+      key: "initial_key"
+      value: "updated_by_node_8"
+
+  # Step 16: Wait for conflict resolution
+  - name: Wait for Conflict Resolution
+    type: wait
+    seconds: 25
+
+  # Step 17: Verify final state consistency
+  - name: Get Final State from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Final State from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Final State from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Final State from Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Final State from Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Final State from Node 6
+    type: call
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_6}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Final State from Node 7
+    type: call
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_7}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  - name: Get Final State from Node 8
+    type: call
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_8}}'
+    method: get
+    args:
+      key: "initial_key"
+
+  # Step 18: Test data removal
+  - name: Remove Key from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: remove
+    args:
+      key: "test_key_1"
+
+  # Step 19: Wait for removal propagation
+  - name: Wait for Removal Propagation
+    type: wait
+    seconds: 15
+
+  # Step 20: Verify removal on all nodes
+  - name: Verify Removal from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "test_key_1"
+
+  - name: Verify Removal from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "test_key_1"
+
+  - name: Verify Removal from Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: get
+    args:
+      key: "test_key_1"
+
+  - name: Verify Removal from Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: get
+    args:
+      key: "test_key_1"
+
+  # Step 21: Final state verification
+  - name: Get Final Length from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: len
+    args: {}
+
+  - name: Get Final Length from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: len
+    args: {}
+
+  - name: Get Final Length from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: len
+    args: {}
+
+  - name: Get Final Length from Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: len
+    args: {}
+
+  - name: Get Final Length from Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: len
+    args: {}
+
+  - name: Get Final Length from Node 6
+    type: call
+    node: calimero-node-6
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_6}}'
+    method: len
+    args: {}
+
+  - name: Get Final Length from Node 7
+    type: call
+    node: calimero-node-7
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_7}}'
+    method: len
+    args: {}
+
+  - name: Get Final Length from Node 8
+    type: call
+    node: calimero-node-8
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_8}}'
+    method: len
+    args: {}
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 300

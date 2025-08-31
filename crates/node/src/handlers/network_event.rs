@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, error};
 
 use crate::utils::choose_stream;
 use crate::NodeManager;
@@ -458,9 +458,16 @@ async fn handle_state_delta(
     height: NonZeroUsize,
     nonce: Nonce,
 ) -> eyre::Result<()> {
+    info!("📥 STATE DELTA RECEIVED: context_id={}, source={}, author_id={}, root_hash={:?}, height={}", 
+          context_id, source, author_id, root_hash, height);
+    
     let Some(context) = context_client.get_context(&context_id)? else {
+        error!("❌ CONTEXT NOT FOUND: context_id={}", context_id);
         bail!("context '{}' not found", context_id);
     };
+
+    info!("📋 CONTEXT STATE: context_id={}, current_root_hash={:?}, expected_root_hash={:?}", 
+          context_id, context.root_hash, root_hash);
 
     debug!(
         %context_id, %author_id,
@@ -470,12 +477,15 @@ async fn handle_state_delta(
     );
 
     if root_hash == context.root_hash {
+        info!("✅ ROOT HASHES MATCH - IGNORING: context_id={}, root_hash={:?}", context_id, root_hash);
         debug!(%context_id, "Received state delta with same root hash, ignoring..");
         return Ok(());
     }
 
     if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
         if known_height >= height || height.get() - known_height.get() > 1 {
+            info!("🔄 HEIGHT GAP DETECTED - SYNCING: context_id={}, known_height={}, received_height={}", 
+                  context_id, known_height, height);
             debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
 
             node_client.sync(Some(&context_id), Some(&source)).await?;
@@ -487,6 +497,7 @@ async fn handle_state_delta(
         .get_identity(&context_id, &author_id)?
         .and_then(|i| i.sender_key)
     else {
+        info!("🔑 MISSING SENDER KEY - SYNCING: context_id={}, author_id={}", context_id, author_id);
         debug!(%author_id, %context_id, "Missing sender key, initiating sync");
 
         node_client.sync(Some(&context_id), Some(&source)).await?;
@@ -496,6 +507,7 @@ async fn handle_state_delta(
     let shared_key = SharedKey::from_sk(&sender_key);
 
     let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
+        info!("🔓 DECRYPTION FAILED - SYNCING: context_id={}, author_id={}", context_id, author_id);
         debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
 
         node_client.sync(Some(&context_id), Some(&source)).await?;
@@ -508,8 +520,12 @@ async fn handle_state_delta(
         .await
         .transpose()?
     else {
+        error!("❌ NO OWNED IDENTITIES: context_id={}", context_id);
         bail!("no owned identities found for context: {}", context_id);
     };
+
+    info!("🔧 APPLYING STATE DELTA: context_id={}, our_identity={}, author_id={}, height={}", 
+          context_id, our_identity, author_id, height);
 
     context_client.put_state_delta(&context_id, &author_id, &height, &artifact)?;
 
@@ -524,9 +540,14 @@ async fn handle_state_delta(
         )
         .await?;
 
+    info!("✅ STATE DELTA APPLIED: context_id={}, old_root_hash={:?}, new_root_hash={:?}", 
+          context_id, context.root_hash, outcome.root_hash);
+
     context_client.set_delta_height(&context_id, &author_id, height)?;
 
     if outcome.root_hash != root_hash {
+        error!("❌ ROOT HASH MISMATCH: context_id={}, expected={:?}, got={:?}", 
+               context_id, root_hash, outcome.root_hash);
         debug!(
             %context_id,
             %author_id,

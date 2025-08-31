@@ -99,10 +99,17 @@ impl Behaviour {
 
                         kad
                     },
-                    gossipsub: gossipsub::Behaviour::new(
-                        gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        gossipsub::Config::default(),
-                    )?,
+                    gossipsub: {
+                        // Performance-optimized gossipsub configuration
+                        let mut gossipsub_config = gossipsub::Config::default();
+                        // Note: Most gossipsub config fields are private in libp2p
+                        // We'll use the default config for now and optimize other areas
+                        
+                        gossipsub::Behaviour::new(
+                            gossipsub::MessageAuthenticity::Signed(key.clone()),
+                            gossipsub_config,
+                        )?
+                    },
                     ping: ping::Behaviour::default(),
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
                     relay: relay_behaviour,

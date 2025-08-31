@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-client"
-version = "0.1.5"
+version = "0.0.0"
 dependencies = [
  "async-trait",
  "bs58 0.5.1",
@@ -1941,6 +1941,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -1958,7 +1959,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-network"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "actix",
  "borsh",
@@ -2060,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-primitives"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
@@ -6206,7 +6207,7 @@ dependencies = [
 
 [[package]]
 name = "meroctl"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",

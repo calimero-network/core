@@ -13,6 +13,8 @@ use eyre::{bail, OptionExt};
 use futures_util::TryStreamExt;
 use rand::{thread_rng, Rng};
 use tracing::debug;
+use tracing::info;
+use tracing::error;
 
 use super::{Sequencer, SyncManager};
 
@@ -177,6 +179,9 @@ impl SyncManager {
         stream: &mut Stream,
         their_nonce: Nonce,
     ) -> eyre::Result<()> {
+        info!("🔄 DELTA SYNC REQUEST: context_id={}, our_identity={}, their_identity={}, our_root_hash={:?}, their_root_hash={:?}", 
+              context.id, our_identity, their_identity, context.root_hash, their_root_hash);
+        
         debug!(
             context_id=%context.id,
             our_identity=%our_identity,
@@ -189,6 +194,8 @@ impl SyncManager {
         );
 
         if their_application_id != context.application_id {
+            error!("❌ APPLICATION MISMATCH: context_id={}, expected={}, got={}", 
+                   context.id, context.application_id, their_application_id);
             bail!(
                 "application mismatch: expected {}, got {}",
                 context.application_id,
@@ -222,6 +229,9 @@ impl SyncManager {
 
         let our_nonce = thread_rng().gen::<Nonce>();
 
+        info!("📤 SENDING DELTA SYNC RESPONSE: context_id={}, our_root_hash={:?}, their_root_hash={:?}", 
+              context.id, context.root_hash, their_root_hash);
+
         self.send(
             stream,
             &StreamMessage::Init {
@@ -238,6 +248,7 @@ impl SyncManager {
         .await?;
 
         if their_root_hash == context.root_hash {
+            info!("✅ ROOT HASHES MATCH: context_id={}, root_hash={:?}", context.id, context.root_hash);
             debug!(
                 context_id=%context.id,
                 our_identity=%our_identity,
@@ -247,6 +258,9 @@ impl SyncManager {
 
             return Ok(());
         }
+
+        info!("🔄 ROOT HASHES DIFFER: context_id={}, our_root_hash={:?}, their_root_hash={:?}", 
+              context.id, context.root_hash, their_root_hash);
 
         let private_key = self
             .context_client

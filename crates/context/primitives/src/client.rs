@@ -14,6 +14,7 @@ use calimero_utils_actix::LazyRecipient;
 use eyre::{bail, eyre};
 use futures_util::Stream;
 use tokio::sync::oneshot;
+use tracing::{debug, warn};
 
 use crate::messages::create_context::{CreateContextRequest, CreateContextResponse};
 use crate::messages::delete_context::{DeleteContextRequest, DeleteContextResponse};
@@ -136,6 +137,7 @@ impl ContextClient {
         let key = key::ContextMeta::new(*context_id);
 
         let Some(context) = handle.get(&key)? else {
+            debug!("📋 Context not found: context_id={}", context_id);
             return Ok(None);
         };
 
@@ -144,6 +146,16 @@ impl ContextClient {
             context.application.application_id(),
             context.root_hash.into(),
         );
+
+        // Verify context state is properly initialized
+        let default_hash = calimero_primitives::hash::Hash::default();
+        if context.root_hash == default_hash {
+            warn!("⚠️  CONTEXT HAS DEFAULT ROOT HASH: context_id={}, root_hash={:?}", 
+                  context_id, context.root_hash);
+        } else {
+            debug!("✅ Context state verified: context_id={}, root_hash={:?}", 
+                   context_id, context.root_hash);
+        }
 
         Ok(Some(context))
     }
