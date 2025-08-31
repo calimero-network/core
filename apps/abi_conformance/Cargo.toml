@@ -14,12 +14,12 @@ crate-type = ["cdylib"]
 [dependencies]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
-calimero-wasm-abi-v1.workspace = true
+calimero-wasm-abi.workspace = true
 thiserror.workspace = true
 bs58.workspace = true
 
 [build-dependencies]
-calimero-wasm-abi-v1.workspace = true
+calimero-wasm-abi.workspace = true
 syn.workspace = true
 serde_json.workspace = true
 

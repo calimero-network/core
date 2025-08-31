@@ -9,7 +9,7 @@ publish = false
 
 [build-dependencies]
 eyre.workspace = true
-rustc_version.workspace = true
+rustc_version = "0.2.0"
 
 [package.metadata.workspaces]
 independent = true

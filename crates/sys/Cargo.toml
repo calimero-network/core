@@ -1,10 +1,11 @@
 [package]
 name = "calimero-sys"
-version.workspace = true
+version = "0.2.1"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
 publish = true
 
 [dependencies]

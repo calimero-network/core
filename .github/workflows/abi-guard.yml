@@ -60,4 +60,4 @@ jobs:
           
       - name: Run unit tests
         run: |
-          cargo test -p calimero-wasm-abi-v1 --test invariants 
+          cargo test -p calimero-wasm-abi --test invariants 

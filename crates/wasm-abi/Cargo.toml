@@ -1,12 +1,12 @@
 [package]
-name = "calimero-wasm-abi-v1"
-version.workspace = true
+name = "calimero-wasm-abi"
+version = "0.2.1"
 description = "WASM-level ABI v1 for Calimero applications"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish = false
+publish = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
@@ -25,4 +25,4 @@ independent = true
 workspace = true
 
 [lib]
-name = "calimero_wasm_abi_v1" 
+name = "calimero_wasm_abi" 

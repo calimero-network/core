@@ -1,15 +1,10 @@
 [workspace.package]
-version = "0.0.0"
+version = "0.2.1"
 authors = ["Calimero Limited <info@calimero.network>"]
 edition = "2021"
 repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
 description = "Core Calimero infrastructure and tools"
-
-[workspace.metadata.workspaces]
-# Shared version of all public crates in the workspace.
-version = "0.1.1"
-exclude = ["./crates/merod", "./crates/meroctl", "./tools/calimero-abi", "./apps/kv-store", "./apps/abi_conformance", "./e2e-tests", "./crates/version", "./crates/wasm-abi-v1", "./crates/cargo-mero"]
 
 [workspace]
 resolver = "2"
@@ -36,14 +31,15 @@ members = [
     "./crates/server",
     "./crates/server/primitives",
     "./crates/storage",
-    "./crates/storage/macros",
+    "./crates/storage-macros",
+
     "./crates/store",
     "./crates/store/blobs",
     "./crates/store/impl/rocksdb",
     "./crates/sys",
     "./crates/utils/actix",
     "./crates/version",
-    "./crates/wasm-abi-v1",
+    "./crates/wasm-abi",
 
     "./apps/kv-store",
     "./apps/abi_conformance",
@@ -129,9 +125,11 @@ serde_with = "3.9.0"
 sha2 = "0.10.8"
 soroban-client = "0.3.7"
 soroban-sdk = "22.0.5"
-starknet = "0.12.0"
-starknet-crypto = "0.7.1"
-starknet-types-core = "0.1.7"
+starknet = "0.17.0"
+starknet-core = "0.16.0"
+starknet-core-derive = "0.1.0"
+starknet-crypto = "0.8.1"
+starknet-types-core = "0.2.0"
 strum = "0.26.2"
 syn = { version = "2.0", features = ["full"] }
 tempdir = "0.3.7"
@@ -159,36 +157,36 @@ web3 = "0.19.0"
 webbrowser = "1.0.4"
 pyo3 = "0.20"
 
-calimero-blobstore.path = "./crates/store/blobs"
-calimero-client.path = "./crates/client"
-calimero-config.path = "./crates/config"
-calimero-context.path = "./crates/context"
-calimero-context-config.path = "./crates/context/config"
-calimero-context-primitives.path = "./crates/context/primitives"
-calimero-crypto.path = "./crates/crypto"
-calimero-network.path = "./crates/network"
-calimero-network-primitives.path = "./crates/network/primitives"
-calimero-node.path = "./crates/node"
-calimero-node-primitives.path = "./crates/node/primitives"
-calimero-primitives.path = "./crates/primitives"
-calimero-runtime.path = "./crates/runtime"
-calimero-sdk.path = "./crates/sdk"
-calimero-sdk-macros.path = "./crates/sdk/macros"
-calimero-sdk-near.path = "./crates/sdk/libs/near"
-calimero-server.path = "./crates/server"
-calimero-server-primitives.path = "./crates/server/primitives"
-calimero-storage.path = "./crates/storage"
-calimero-storage-macros.path = "./crates/storage/macros"
-calimero-store.path = "./crates/store"
-calimero-store-rocksdb.path = "./crates/store/impl/rocksdb"
-calimero-sys.path = "./crates/sys"
-calimero-utils-actix.path = "./crates/utils/actix"
-calimero-version.path = "./crates/version"
-calimero-wasm-abi-v1.path = "./crates/wasm-abi-v1"
-e2e-tests.path = "./e2e-tests"
-kv-store.path = "./apps/kv-store"
-meroctl.path = "./crates/meroctl"
-merod.path = "./crates/merod"
+calimero-blobstore = { path = "./crates/store/blobs", version = "0.2.0" }
+calimero-client = { path = "./crates/client", version = "0.2.0" }
+calimero-config = { path = "./crates/config", version = "0.2.0" }
+calimero-context = { path = "./crates/context", version = "0.2.0" }
+calimero-context-config = { path = "./crates/context/config", version = "0.2.0" }
+calimero-context-primitives = { path = "./crates/context/primitives", version = "0.2.0" }
+calimero-crypto = { path = "./crates/crypto", version = "0.2.0" }
+calimero-network = { path = "./crates/network", version = "0.2.0" }
+calimero-network-primitives = { path = "./crates/network/primitives", version = "0.2.0" }
+calimero-node = { path = "./crates/node", version = "0.2.0" }
+calimero-node-primitives = { path = "./crates/node/primitives", version = "0.2.0" }
+calimero-primitives = { path = "./crates/primitives", version = "0.2.0" }
+calimero-runtime = { path = "./crates/runtime", version = "0.2.0" }
+calimero-sdk = { path = "./crates/sdk", version = "0.2.0" }
+calimero-sdk-macros = { path = "./crates/sdk/macros", version = "0.2.0" }
+calimero-sdk-near = { path = "./crates/sdk/libs/near", version = "0.2.0" }
+calimero-server = { path = "./crates/server", version = "0.2.0" }
+calimero-server-primitives = { path = "./crates/server/primitives", version = "0.2.0" }
+calimero-storage = { path = "./crates/storage", version = "0.2.0" }
+calimero-storage-macros = { path = "./crates/storage-macros", version = "0.2.0" }
+calimero-store = { path = "./crates/store", version = "0.2.0" }
+calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb", version = "0.2.0" }
+calimero-sys = { path = "./crates/sys", version = "0.2.0" }
+calimero-utils-actix = { path = "./crates/utils/actix", version = "0.2.0" }
+calimero-version = { path = "./crates/version", version = "0.8.0-rc.9" }
+calimero-wasm-abi = { path = "./crates/wasm-abi", version = "0.2.1" }
+e2e-tests = { path = "./e2e-tests", version = "0.2.0" }
+kv-store = { path = "./apps/kv-store", version = "0.2.0" }
+meroctl = { path = "./crates/meroctl", version = "0.2.0" }
+merod = { path = "./crates/merod", version = "0.1.0" }
 
 [profile.release]
 strip = "symbols"
@@ -354,6 +352,3 @@ multiple_crate_versions = "allow" # Cannot resolve all these
 missing_errors_doc = "allow"      # TODO: Remove later once documentation has been added
 missing_panics_doc = "allow"      # TODO: Remove later once documentation has been added
 future_not_send = "allow"         # TODO: Remove later once Send is implemented
-
-[patch.crates-io]
-starknet = { git = "https://github.com/xJonathanLEI/starknet-rs", rev = "5c676a6" }
