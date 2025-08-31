@@ -1,5 +1,3 @@
-use std::num::NonZeroUsize;
-
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::debug;
@@ -24,6 +22,12 @@ impl Default for PerformanceConfig {
 /// Performance optimization service
 pub struct PerformanceService {
     config: PerformanceConfig,
+}
+
+impl Default for PerformanceService {
+    fn default() -> Self {
+        Self::new(PerformanceConfig::default())
+    }
 }
 
 impl PerformanceService {

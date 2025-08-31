@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["fs"] }
 
 calimero-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-store-rocksdb = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-util.workspace = true
@@ -35,6 +36,7 @@ examples = [
   "tokio/rt-multi-thread",
   "tokio-util/io",
   "tokio-util/compat",
+  "calimero-store-rocksdb",
 ]
 
 [lints]

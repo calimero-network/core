@@ -16,7 +16,7 @@ use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use crate::metrics::Metrics;
+
 
 pub mod config;
 pub mod handlers;
@@ -50,7 +50,7 @@ pub struct ContextManager {
     // todo! execution, we can introduce a cached::TimedSizedCache
     // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
     //
-    metrics: Metrics,
+
 }
 
 impl ContextManager {
@@ -59,7 +59,7 @@ impl ContextManager {
         node_client: NodeClient,
         context_client: ContextClient,
         external_config: ExternalClientConfig,
-        prom_registry: &mut Registry,
+        _prom_registry: &mut Registry,
     ) -> Self {
         Self {
             datastore,
@@ -70,7 +70,7 @@ impl ContextManager {
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
 
-            metrics: Metrics::new(prom_registry),
+
         }
     }
 }

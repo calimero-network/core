@@ -33,7 +33,7 @@ use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error};
 
-use crate::metrics::ExecutionLabels;
+
 use crate::ContextManager;
 
 pub mod storage;
@@ -155,8 +155,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .map_ok(move |module, _act, _ctx| (guard, context, module))
         });
 
-        let execution_count = self.metrics.execution_count.clone();
-        let execution_duration = self.metrics.execution_duration.clone();
+
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
@@ -181,27 +180,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                 )
                 .await?;
 
-                let duration = start.elapsed().as_secs_f64();
+                let _duration = start.elapsed().as_secs_f64();
                 let status = outcome
                     .returns
                     .is_ok()
                     .then_some("success")
                     .unwrap_or("failure");
 
-                let _ignored = execution_count
-                    .get_or_create(&ExecutionLabels {
-                        context_id: context_id.to_string(),
-                        method: method.clone(),
-                        status: status.to_owned(),
-                    })
-                    .inc();
-                let _ignored = execution_duration
-                    .get_or_create(&ExecutionLabels {
-                        context_id: context_id.to_string(),
-                        method: method,
-                        status: status.to_owned(),
-                    })
-                    .observe(duration);
+
 
                 debug!(
                     %context_id,

@@ -101,7 +101,7 @@ impl Behaviour {
                     },
                     gossipsub: {
                         // Performance-optimized gossipsub configuration
-                        let mut gossipsub_config = gossipsub::Config::default();
+                        let gossipsub_config = gossipsub::Config::default();
                         // Note: Most gossipsub config fields are private in libp2p
                         // We'll use the default config for now and optimize other areas
 

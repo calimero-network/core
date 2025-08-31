@@ -4,13 +4,22 @@ use syn::{Path, Type};
 ///
 /// Also returns T in `&T`, `&mut T`, `(&T)`, `(&mut T)`, `(&T,)`, `(&mut T,)` and groups if `deref`
 pub fn typed_path(ty: &Type, deref: bool) -> Option<&Path> {
-    #[cfg_attr(all(test, feature = "nightly"), deny(non_exhaustive_omitted_patterns))]
-    #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
     match ty {
         Type::Path(path) => Some(&path.path),
         Type::Reference(reference) if deref => typed_path(&reference.elem, deref),
         Type::Group(group) => typed_path(&group.elem, deref),
         Type::Paren(paren) => typed_path(&paren.elem, deref),
+        Type::Array(_) => None,
+        Type::BareFn(_) => None,
+        Type::ImplTrait(_) => None,
+        Type::Infer(_) => None,
+        Type::Macro(_) => None,
+        Type::Never(_) => None,
+        Type::Ptr(_) => None,
+        Type::Slice(_) => None,
+        Type::TraitObject(_) => None,
+        Type::Tuple(_) => None,
+        Type::Verbatim(_) => None,
         _ => None,
     }
 }

@@ -12,6 +12,7 @@ use tracing::debug;
 use crate::sync::{BatchDelta, BroadcastMessage};
 
 /// Handles all broadcasting operations for state deltas
+#[derive(Debug)]
 pub struct BroadcastingService {
     network_client: NetworkClient,
 }
