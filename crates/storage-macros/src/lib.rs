@@ -227,12 +227,10 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 ///     implementations.
 ///
 /// # Examples
-///
-/// ```no_run
+/// ```ignore
 /// // This example shows how to use the Collection derive macro
 /// // Note: In a real implementation, you would need the proper dependencies
 ///
-/// /*
 /// use calimero_storage::entities::Collection;
 ///
 /// #[derive(Collection)]

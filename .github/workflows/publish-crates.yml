@@ -41,12 +41,23 @@ jobs:
           
           echo "Publishing version: $VERSION"
           
-          # Set package name for version checking
-          PACKAGE_NAME="calimero-primitives"
+          # Extract package name from workspace metadata
           
           # Check if version is already published
-          CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME/versions")
-          PUBLISHED=$(echo "$CRATES_RESPONSE" | jq -r --arg ver "$VERSION" '.versions[] | select(.num == $ver) | .num // empty' 2>/dev/null || echo "")
+          CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/calimero-primitives/versions")
+          echo "API Response preview: $(echo "$CRATES_RESPONSE" | head -c 200)..."
+          
+          # Check if API response contains errors
+          if echo "$CRATES_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "ERROR: crates.io API returned errors, cannot verify version status"
+            echo "API Response: $CRATES_RESPONSE"
+            exit 1
+          else
+            PUBLISHED=$(echo "$CRATES_RESPONSE" | jq -r ".versions[] | select(.num == \"$VERSION\") | .num // empty" 2>/dev/null || echo "")
+            echo "Debug: VERSION=$VERSION, PUBLISHED=$PUBLISHED"
+          fi
+          
+          echo "Published version: $PUBLISHED" 
           
           if [ "$PUBLISHED" = "$VERSION" ]; then
             echo "Version $VERSION is already published. Exiting."
