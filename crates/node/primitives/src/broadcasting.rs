@@ -22,6 +22,47 @@ impl BroadcastingService {
         Self { network_client }
     }
 
+    /// Check if batch processing is available and beneficial
+    pub async fn should_use_batch_processing(
+        &self,
+        context_id: &ContextId,
+        pending_deltas: &[(Vec<u8>, NonZeroUsize)],
+    ) -> bool {
+        // Use batch processing if we have multiple deltas and peers are available
+        let peer_count = self.get_peers_count(Some(context_id)).await;
+        let has_multiple_deltas = pending_deltas.len() > 1;
+        let has_peers = peer_count > 0;
+        
+        debug!(
+            context_id=%context_id,
+            peer_count,
+            delta_count=pending_deltas.len(),
+            should_batch=has_multiple_deltas && has_peers,
+            "Batch processing decision"
+        );
+        
+        has_multiple_deltas && has_peers
+    }
+
+    /// Check if direct P2P communication is available
+    pub async fn should_use_direct_p2p(
+        &self,
+        context_id: &ContextId,
+        target_peer: Option<&libp2p::PeerId>,
+    ) -> bool {
+        // For now, always use gossipsub as fallback
+        // Direct P2P would require maintaining a list of trusted peers
+        // and checking if the target peer is available for direct communication
+        
+        debug!(
+            context_id=%context_id,
+            target_peer=?target_peer,
+            "Direct P2P decision: using gossipsub fallback"
+        );
+        
+        false // Always use gossipsub for now
+    }
+
     /// Broadcast a single state delta via gossipsub
     pub async fn broadcast_single(
         &self,

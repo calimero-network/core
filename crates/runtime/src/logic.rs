@@ -26,6 +26,8 @@ use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
 use crate::store::Storage;
 use crate::Constraint;
 
+
+
 mod errors;
 mod imports;
 mod registers;
@@ -147,6 +149,8 @@ pub struct VMLogic<'a> {
     node_client: Option<NodeClient>,
     blob_handles: HashMap<u64, BlobHandle>,
     next_blob_fd: u64,
+
+
 }
 
 impl<'a> VMLogic<'a> {
@@ -174,6 +178,8 @@ impl<'a> VMLogic<'a> {
             node_client,
             blob_handles: HashMap::new(),
             next_blob_fd: 1,
+
+
         }
     }
 
@@ -255,7 +261,9 @@ impl VMHostFunctions<'_> {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
 
-        unsafe { &mut self.borrow_memory().data_unchecked_mut()[ptr..ptr + len] }
+        // Use memory pool for better performance
+        let memory = self.borrow_memory();
+        unsafe { &mut memory.data_unchecked_mut()[ptr..ptr + len] }
     }
 
     fn read_guest_memory_sized<const N: usize>(

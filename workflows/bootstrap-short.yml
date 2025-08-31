@@ -96,111 +96,107 @@ steps:
     type: wait
     seconds: 5
 
-  # Step 10: Join chat from Node 2 and Node 3 only
-  - name: Join Chat from Node 2
+  # Step 10: Set data from Node 2 and Node 3
+  - name: Set Data from Node 2
     type: call
     node: calimero-node-2
     context_id: '{{context_id}}'
     executor_public_key: '{{public_key_2}}'
-    method: join_chat
+    method: set
     args:
-      username: Alice
+      key: "node2_key"
+      value: "hello from node2"
 
-  - name: Join Chat from Node 3
+  - name: Set Data from Node 3
     type: call
     node: calimero-node-3
     context_id: '{{context_id}}'
     executor_public_key: '{{public_key_3}}'
-    method: join_chat
+    method: set
     args:
-      username: Charlie
+      key: "node3_key"
+      value: "hello from node3"
 
-  # Wait after chat joins
-  - name: Wait after Chat Joins
+  # Wait after data sets
+  - name: Wait after Data Sets
     type: wait
     seconds: 5
 
-  # Step 11: Check available channels after joining
-  - name: Get Channels from Node 2
+  # Step 11: Check data from all nodes
+  - name: Get Data from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: entries
+    args: {}
+
+  - name: Get Data from Node 2
     type: call
     node: calimero-node-2
     context_id: '{{context_id}}'
     executor_public_key: '{{public_key_2}}'
-    method: get_channels
+    method: entries
     args: {}
 
-  - name: Get Channels from Node 3
+  - name: Get Data from Node 3
     type: call
     node: calimero-node-3
     context_id: '{{context_id}}'
     executor_public_key: '{{public_key_3}}'
-    method: get_channels
+    method: entries
     args: {}
 
-  # Step 12: Send messages from Node 2 and Node 3
-  - name: Send Message from Node 2
+  # Step 12: Set more data to test propagation
+  - name: Set More Data from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "node1_key"
+      value: "hello from node1"
+
+  - name: Set More Data from Node 2
     type: call
     node: calimero-node-2
     context_id: '{{context_id}}'
     executor_public_key: '{{public_key_2}}'
-    method: send_message
+    method: set
     args:
-      group:
-        name: general
-      message: hello from node2
-      parent_message: null
-      timestamp: 1751653000
-      sender_username: Alice
-      mentions: []
-      mentions_usernames: []
+      key: "shared_key"
+      value: "shared value from node2"
 
-  - name: Send Message from Node 3
-    type: call
-    node: calimero-node-3
-    context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_3}}'
-    method: send_message
-    args:
-      group:
-        name: general
-      message: hello from node3
-      parent_message: null
-      timestamp: 1751653003
-      sender_username: Charlie
-      mentions: []
-      mentions_usernames: []
-
-  # Step 13: Wait for messages to propagate
-  - name: Wait for Messages
+  # Step 13: Wait for data to propagate
+  - name: Wait for Data Propagation
     type: wait
     seconds: 10
 
-  # Step 14: Read messages from Node 2 and Node 3 to verify synchronization
-  - name: Get Messages from Node 2
+  # Step 14: Read data from all nodes to verify synchronization
+  - name: Get Final Data from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: entries
+    args: {}
+
+  - name: Get Final Data from Node 2
     type: call
     node: calimero-node-2
     context_id: '{{context_id}}'
     executor_public_key: '{{public_key_2}}'
-    method: get_messages
-    args:
-      group:
-        name: general
-      parent_message: null
-      limit: 20
-      offset: 0
+    method: entries
+    args: {}
 
-  - name: Get Messages from Node 3
+  - name: Get Final Data from Node 3
     type: call
     node: calimero-node-3
     context_id: '{{context_id}}'
     executor_public_key: '{{public_key_3}}'
-    method: get_messages
-    args:
-      group:
-        name: general
-      parent_message: null
-      limit: 20
-      offset: 0
+    method: entries
+    args: {}
 
 # Configuration options
 stop_all_nodes: true

@@ -254,6 +254,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                         if let Some(height) = delta_height {
                             // For now, use single delta broadcasting
                             // TODO: Implement batch broadcasting when multiple deltas are available
+                            // The decision logic is implemented in BroadcastingService but requires
+                            // access to pending deltas which we don't have in this context
                             node_client
                                 .broadcast(
                                     &context,
