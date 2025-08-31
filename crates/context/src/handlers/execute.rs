@@ -234,8 +234,34 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
+                    // Use performance service for lightweight processing
+                    let performance_service = crate::performance::PerformanceService::default();
+                    let should_skip_wasm = performance_service
+                        .should_use_lightweight_processing(outcome.artifact.len(), is_state_op);
+
+                    if should_skip_wasm {
+                        performance_service.apply_lightweight_delta(
+                            &context_id,
+                            &executor,
+                            outcome.artifact.len(),
+                        );
+
+                        // Apply delta directly without WASM execution
+                        if let Some(height) = delta_height {
+                            context_client.put_state_delta(
+                                &context_id,
+                                &executor,
+                                &height,
+                                &outcome.artifact,
+                            )?;
+                            context_client.set_delta_height(&context_id, &executor, height)?;
+                        }
+                    }
+
                     if !(is_state_op || outcome.artifact.is_empty()) {
                         if let Some(height) = delta_height {
+                            // For now, use single delta broadcasting
+                            // TODO: Implement batch broadcasting when multiple deltas are available
                             node_client
                                 .broadcast(
                                     &context,

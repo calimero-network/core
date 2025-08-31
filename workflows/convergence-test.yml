@@ -1,0 +1,262 @@
+name: CRDT Convergence Test
+description: Test for convergence issues when multiple nodes write to the same key simultaneously
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: localhost:5001/merod:latest
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install kv_store application
+  - name: Install KV Store Application
+    type: install_application
+    node: calimero-node-1
+    path: ./apps/kv-store/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create context
+  - name: Create Context
+    type: create_context
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    params: '{}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Step 3: Create identities for all nodes
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: calimero-node-3
+    outputs:
+      public_key_3: publicKey
+
+  # Step 4: Wait for identity creation
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  # Step 5: Invite all nodes
+  - name: Invite Node 2
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_2}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_3}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  # Step 6: Wait after invitations
+  - name: Wait after Invitations
+    type: wait
+    seconds: 3
+
+  # Step 7: Join context from all nodes
+  - name: Join Context from Node 2
+    type: join_context
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_2}}'
+    invitation: '{{invitation_2}}'
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_3}}'
+    invitation: '{{invitation_3}}'
+
+  # Step 8: Wait for context sync
+  - name: Wait for Context Sync
+    type: wait
+    seconds: 15
+
+  # Step 9: Set initial value
+  - name: Set Initial Value
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "convergence_test_key"
+      value: "initial_value"
+
+  # Step 10: Wait for initial propagation
+  - name: Wait for Initial Propagation
+    type: wait
+    seconds: 5
+
+  # Step 11: Verify initial state on all nodes
+  - name: Verify Initial State Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  - name: Verify Initial State Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  - name: Verify Initial State Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  # Step 12: Simultaneous writes to the same key (potential conflict)
+  - name: Set Value from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "convergence_test_key"
+      value: "value_from_node_1"
+
+  - name: Set Value from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: set
+    args:
+      key: "convergence_test_key"
+      value: "value_from_node_2"
+
+  - name: Set Value from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: set
+    args:
+      key: "convergence_test_key"
+      value: "value_from_node_3"
+
+  # Step 13: Wait for conflict resolution
+  - name: Wait for Conflict Resolution
+    type: wait
+    seconds: 10
+
+  # Step 14: Check convergence on all nodes
+  - name: Check Convergence Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  - name: Check Convergence Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  - name: Check Convergence Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  # Step 15: Wait longer and check again
+  - name: Wait Longer
+    type: wait
+    seconds: 15
+
+  - name: Final Convergence Check Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  - name: Final Convergence Check Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  - name: Final Convergence Check Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "convergence_test_key"
+
+  # Step 16: Check all entries to see if there are any inconsistencies
+  - name: All Entries Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: entries
+    args: {}
+
+  - name: All Entries Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: entries
+    args: {}
+
+  - name: All Entries Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: entries
+    args: {}
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 300

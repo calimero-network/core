@@ -1,0 +1,311 @@
+name: Phase 2 Performance Test
+description: Test Phase 2 optimizations - batch processing, parallel deltas, lightweight processing
+
+nodes:
+  chain_id: testnet-1
+  count: 5
+  image: localhost:5001/merod:latest
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install KV Store application
+  - name: Install KV Store Application
+    type: install_application
+    node: calimero-node-1
+    path: ./apps/kv-store/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create context
+  - name: Create Context
+    type: create_context
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    params: '{}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Step 3: Create identities for all nodes
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: calimero-node-3
+    outputs:
+      public_key_3: publicKey
+
+  - name: Create Identity on Node 4
+    type: create_identity
+    node: calimero-node-4
+    outputs:
+      public_key_4: publicKey
+
+  - name: Create Identity on Node 5
+    type: create_identity
+    node: calimero-node-5
+    outputs:
+      public_key_5: publicKey
+
+  # Step 4: Wait for identity creation
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 2
+
+  # Step 5: Invite all nodes
+  - name: Invite Node 2
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_2}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_3}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Invite Node 4
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_4}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_4: invitation
+
+  - name: Invite Node 5
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_5}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_5: invitation
+
+  # Step 6: Wait after invitations
+  - name: Wait after Invitations
+    type: wait
+    seconds: 2
+
+  # Step 7: Join context from all nodes
+  - name: Join Context from Node 2
+    type: join_context
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_2}}'
+    invitation: '{{invitation_2}}'
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_3}}'
+    invitation: '{{invitation_3}}'
+
+  - name: Join Context from Node 4
+    type: join_context
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_4}}'
+    invitation: '{{invitation_4}}'
+
+  - name: Join Context from Node 5
+    type: join_context
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_5}}'
+    invitation: '{{invitation_5}}'
+
+  # Step 8: Wait for context sync
+  - name: Wait for Context Sync
+    type: wait
+    seconds: 10
+
+  # Step 9: Test lightweight delta processing (small updates)
+  - name: Send Lightweight Update 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "lightweight_1"
+      value: "small_value"
+
+  - name: Send Lightweight Update 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: set
+    args:
+      key: "lightweight_2"
+      value: "another_small"
+
+  - name: Send Lightweight Update 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: set
+    args:
+      key: "lightweight_3"
+      value: "third_small"
+
+  # Step 10: Immediate check for lightweight updates
+  - name: Check Lightweight Updates 0s
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: get
+    args:
+      key: "lightweight_1"
+
+  - name: Check Lightweight Updates 0s Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: get
+    args:
+      key: "lightweight_2"
+
+  # Step 11: Test batch processing simulation (multiple rapid updates)
+  - name: Send Batch Update 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "batch_1"
+      value: "batch_value_1"
+
+  - name: Send Batch Update 2
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "batch_2"
+      value: "batch_value_2"
+
+  - name: Send Batch Update 3
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "batch_3"
+      value: "batch_value_3"
+
+  # Step 12: Check batch updates propagation
+  - name: Check Batch Updates 0s
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get
+    args:
+      key: "batch_1"
+
+  - name: Check Batch Updates 0s Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get
+    args:
+      key: "batch_2"
+
+  - name: Check Batch Updates 0s Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: get
+    args:
+      key: "batch_3"
+
+  # Step 13: Test parallel processing (multiple nodes writing simultaneously)
+  - name: Send Parallel Update Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: "parallel_test"
+      value: "from_node_1"
+
+  - name: Send Parallel Update Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: set
+    args:
+      key: "parallel_test"
+      value: "from_node_2"
+
+  - name: Send Parallel Update Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: set
+    args:
+      key: "parallel_test"
+      value: "from_node_3"
+
+  # Step 14: Check parallel processing results
+  - name: Check Parallel Result Node 4
+    type: call
+    node: calimero-node-4
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_4}}'
+    method: get
+    args:
+      key: "parallel_test"
+
+  - name: Check Parallel Result Node 5
+    type: call
+    node: calimero-node-5
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_5}}'
+    method: get
+    args:
+      key: "parallel_test"
+
+  # Step 15: Final verification - check all values
+  - name: Final Check All Values
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: entries
+    args: {}
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

@@ -1,0 +1,208 @@
+name: KV Store Bootstrap Workflow (Short)
+description: Quick test with 3 nodes
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: localhost:5001/merod:latest
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install application on Node 1
+  - name: Install Application on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: ./apps/kv-store/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create context on Node 1
+  - name: Create Context on Node 1
+    type: create_context
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    params: '{}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Step 3: Create identities for all nodes
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: calimero-node-3
+    outputs:
+      public_key_3: publicKey
+
+  # Step 4: Wait briefly
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 5
+
+  # Step 5: Invite all nodes from Node 1
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_2}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3 from Node 1
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key_3}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  # Step 6: Wait briefly
+  - name: Wait after Invitations
+    type: wait
+    seconds: 5
+
+  # Step 7: Join context from all nodes
+  - name: Join Context from Node 2
+    type: join_context
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_2}}'
+    invitation: '{{invitation_2}}'
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key_3}}'
+    invitation: '{{invitation_3}}'
+
+  # Step 8: Wait for context sync
+  - name: Wait for Context Sync
+    type: wait
+    seconds: 10
+
+  # Step 9: Wait briefly
+  - name: Wait after Context Join
+    type: wait
+    seconds: 5
+
+  # Step 10: Join chat from Node 2 and Node 3 only
+  - name: Join Chat from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: join_chat
+    args:
+      username: Alice
+
+  - name: Join Chat from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: join_chat
+    args:
+      username: Charlie
+
+  # Wait after chat joins
+  - name: Wait after Chat Joins
+    type: wait
+    seconds: 5
+
+  # Step 11: Check available channels after joining
+  - name: Get Channels from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get_channels
+    args: {}
+
+  - name: Get Channels from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get_channels
+    args: {}
+
+  # Step 12: Send messages from Node 2 and Node 3
+  - name: Send Message from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: send_message
+    args:
+      group:
+        name: general
+      message: hello from node2
+      parent_message: null
+      timestamp: 1751653000
+      sender_username: Alice
+      mentions: []
+      mentions_usernames: []
+
+  - name: Send Message from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: send_message
+    args:
+      group:
+        name: general
+      message: hello from node3
+      parent_message: null
+      timestamp: 1751653003
+      sender_username: Charlie
+      mentions: []
+      mentions_usernames: []
+
+  # Step 13: Wait for messages to propagate
+  - name: Wait for Messages
+    type: wait
+    seconds: 10
+
+  # Step 14: Read messages from Node 2 and Node 3 to verify synchronization
+  - name: Get Messages from Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_2}}'
+    method: get_messages
+    args:
+      group:
+        name: general
+      parent_message: null
+      limit: 20
+      offset: 0
+
+  - name: Get Messages from Node 3
+    type: call
+    node: calimero-node-3
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_3}}'
+    method: get_messages
+    args:
+      group:
+        name: general
+      parent_message: null
+      limit: 20
+      offset: 0
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

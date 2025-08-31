@@ -1,0 +1,53 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+echo "🔧 Running pre-commit hooks..."
+
+# Check for changes in Rust files
+if git diff --cached --name-only | grep -qE '\.rs$'; then
+  echo "📦 Rust files detected, running formatting and checks..."
+  
+  # Format Rust code
+  echo "🎨 Formatting Rust code..."
+  cargo fmt --all -- --check || {
+    echo "❌ Rust formatting failed. Run 'cargo fmt --all' to fix."
+    exit 1
+  }
+  
+  # Run clippy for linting
+  echo "🔍 Running clippy checks..."
+  cargo clippy --all-targets --all-features -- -D warnings || {
+    echo "❌ Clippy found issues. Fix them before committing."
+    exit 1
+  }
+  
+  # Check for common issues
+  echo "✅ Rust checks passed!"
+fi
+
+# Check for changes in TOML files (Cargo.toml, etc.)
+if git diff --cached --name-only | grep -qE '\.toml$'; then
+  echo "📋 TOML files detected, checking syntax..."
+  # Validate TOML syntax
+  for file in $(git diff --cached --name-only | grep '\.toml$'); do
+    if ! cargo verify-project --manifest-path "$file" 2>/dev/null; then
+      echo "❌ TOML syntax error in $file"
+      exit 1
+    fi
+  done
+  echo "✅ TOML files are valid!"
+fi
+
+# Check for changes in YAML files (workflows)
+if git diff --cached --name-only | grep -qE '\.ya?ml$'; then
+  echo "📄 YAML files detected, checking syntax..."
+  for file in $(git diff --cached --name-only | grep '\.ya?ml$'); do
+    if ! python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
+      echo "❌ YAML syntax error in $file"
+      exit 1
+    fi
+  done
+  echo "✅ YAML files are valid!"
+fi
+
+echo "🎉 All pre-commit checks passed!"

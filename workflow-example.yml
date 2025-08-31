@@ -1,0 +1,56 @@
+description: A sample workflow that demonstrates the bootstrap functionality with
+  dynamic value capture
+force_pull_image: false
+name: Sample Calimero Workflow
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:6a47604
+  prefix: calimero-node
+steps:
+- dev: true
+  name: Install Application on Node 1
+  node: calimero-node-1
+  outputs:
+    app_id: id
+  path: ./workflow-examples/res/kv_store.wasm
+  type: install_application
+- application_id: '{{app_id}}'
+  name: Create Context on Node 1
+  node: calimero-node-1
+  outputs:
+    context_id: id
+    member_public_key: memberPublicKey
+  type: create_context
+- name: Create Identity on Node 2
+  node: calimero-node-2
+  outputs:
+    public_key: publicKey
+  type: create_identity
+- capability: member
+  context_id: '{{context_id}}'
+  grantee_id: '{{public_key}}'
+  granter_id: '{{member_public_key}}'
+  name: Invite Identity
+  node: calimero-node-1
+  outputs:
+    invitation: invitation
+  type: invite_identity
+- context_id: '{{context_id}}'
+  invitation: '{{invitation}}'
+  invitee_id: '{{public_key}}'
+  name: Join Context from Node 2
+  node: calimero-node-2
+  type: join_context
+- args:
+    key: hello
+    value: world
+  context_id: '{{context_id}}'
+  method: set
+  name: Execute Contract Call Example
+  node: calimero-node-1
+  outputs:
+    call_result: result
+  type: call
+stop_all_nodes: true
+wait_timeout: 60

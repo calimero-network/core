@@ -20,7 +20,7 @@ use crate::metrics::Metrics;
 
 pub mod config;
 pub mod handlers;
-mod metrics;
+pub mod performance;
 
 #[derive(Debug)]
 struct ContextMeta {
