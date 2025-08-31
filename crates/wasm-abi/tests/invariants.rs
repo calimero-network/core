@@ -173,10 +173,7 @@ fn test_invariant_detects_dangling_refs() {
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
     match result.unwrap_err() {
-        calimero_wasm_abi::validate::ValidationError::InvalidTypeReference {
-            ref_name,
-            path,
-        } => {
+        calimero_wasm_abi::validate::ValidationError::InvalidTypeReference { ref_name, path } => {
             assert_eq!(ref_name, "NonExistentType");
             assert_eq!(path, "method test_method.returns");
         }

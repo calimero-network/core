@@ -67,8 +67,6 @@ pub mod interface;
 pub mod store;
 pub mod sync;
 
-
-
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
     pub use sha2::{Digest, Sha256};

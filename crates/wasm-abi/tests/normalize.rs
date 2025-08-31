@@ -1,6 +1,4 @@
-use calimero_wasm_abi::normalize::{
-    normalize_type, NormalizeError, ResolvedLocal, TypeResolver,
-};
+use calimero_wasm_abi::normalize::{normalize_type, NormalizeError, ResolvedLocal, TypeResolver};
 use calimero_wasm_abi::schema::TypeRef;
 use syn::parse_str;
 
