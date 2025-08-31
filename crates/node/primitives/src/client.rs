@@ -4,7 +4,6 @@ use std::num::NonZeroUsize;
 
 use async_stream::stream;
 use calimero_blobstore::BlobManager;
-use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::NodeEvent;
@@ -12,20 +11,19 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use eyre::{OptionExt, WrapErr};
-use futures_util::{Stream, future, SinkExt};
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
-use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
+use futures_util::Stream;
 use tracing::{debug, info};
 
 use crate::messages::NodeMessage;
-use crate::sync::{BroadcastMessage, BatchDelta};
-
+use crate::broadcasting::BroadcastingService;
 
 mod alias;
 mod application;
 mod blob;
+
 
 #[derive(Clone, Debug)]
 pub struct NodeClient {
@@ -88,6 +86,7 @@ impl NodeClient {
         self.network_client.mesh_peer_count(topic).await
     }
 
+    /// Broadcast a single state delta
     pub async fn broadcast(
         &self,
         context: &Context,
@@ -96,43 +95,11 @@ impl NodeClient {
         artifact: Vec<u8>,
         height: NonZeroUsize,
     ) -> eyre::Result<()> {
-        debug!(
-            context_id=%context.id,
-            %sender,
-            root_hash=%context.root_hash,
-            "Sending state delta"
-        );
-
-        if self.get_peers_count(Some(&context.id)).await == 0 {
-            return Ok(());
-        }
-
-        let shared_key = SharedKey::from_sk(sender_key);
-        let nonce = rand::thread_rng().gen();
-
-        let encrypted = shared_key
-            .encrypt(artifact, nonce)
-            .ok_or_eyre("failed to encrypt artifact")?;
-
-        let payload = BroadcastMessage::StateDelta {
-            context_id: context.id,
-            author_id: *sender,
-            root_hash: context.root_hash,
-            artifact: encrypted.into(),
-            height,
-            nonce,
-        };
-
-        let payload = borsh::to_vec(&payload)?;
-
-        let topic = TopicHash::from_raw(context.id);
-
-        let _ignored = self.network_client.publish(topic, payload).await?;
-
-        Ok(())
+        let broadcasting = BroadcastingService::new(self.network_client.clone());
+        broadcasting.broadcast_single(context, sender, sender_key, artifact, height).await
     }
 
-    /// Broadcast multiple state deltas in a single message for improved performance
+    /// Broadcast multiple state deltas in a batch
     pub async fn broadcast_batch(
         &self,
         context: &Context,
@@ -140,141 +107,8 @@ impl NodeClient {
         sender_key: &PrivateKey,
         deltas: Vec<(Vec<u8>, NonZeroUsize)>,
     ) -> eyre::Result<()> {
-        if deltas.is_empty() {
-            return Ok(());
-        }
-
-        debug!(
-            context_id=%context.id,
-            %sender,
-            root_hash=%context.root_hash,
-            delta_count=deltas.len(),
-            "Sending batch state deltas"
-        );
-
-        if self.get_peers_count(Some(&context.id)).await == 0 {
-            return Ok(());
-        }
-
-        let shared_key = SharedKey::from_sk(sender_key);
-        let nonce = rand::thread_rng().gen();
-
-        // Encrypt all deltas with the same key
-        let mut batch_deltas = Vec::with_capacity(deltas.len());
-        for (artifact, height) in deltas {
-            let encrypted = shared_key
-                .encrypt(artifact, nonce)
-                .ok_or_eyre("failed to encrypt artifact")?;
-            
-            batch_deltas.push(BatchDelta {
-                artifact: encrypted.into(),
-                height,
-            });
-        }
-
-        let payload = BroadcastMessage::BatchStateDelta {
-            context_id: context.id,
-            author_id: *sender,
-            root_hash: context.root_hash,
-            deltas: batch_deltas,
-            nonce,
-        };
-
-        let payload = borsh::to_vec(&payload)?;
-
-        let topic = TopicHash::from_raw(context.id);
-
-        let _ignored = self.network_client.publish(topic, payload).await?;
-
-        Ok(())
-    }
-
-    /// Broadcast directly to specific peers, bypassing gossipsub for maximum performance
-    pub async fn broadcast_direct(
-        &self,
-        context: &Context,
-        sender: &PublicKey,
-        sender_key: &PrivateKey,
-        artifact: Vec<u8>,
-        height: NonZeroUsize,
-        peers: Vec<PeerId>,
-    ) -> eyre::Result<()> {
-        if peers.is_empty() {
-            return Ok(());
-        }
-
-        debug!(
-            context_id=%context.id,
-            %sender,
-            root_hash=%context.root_hash,
-            peer_count=peers.len(),
-            "Sending direct P2P state delta"
-        );
-
-        let shared_key = SharedKey::from_sk(sender_key);
-        let nonce = rand::thread_rng().gen();
-
-        let encrypted = shared_key
-            .encrypt(artifact, nonce)
-            .ok_or_eyre("failed to encrypt artifact")?;
-
-        let payload = BroadcastMessage::StateDelta {
-            context_id: context.id,
-            author_id: *sender,
-            root_hash: context.root_hash,
-            artifact: encrypted.into(),
-            height,
-            nonce,
-        };
-
-        let payload = borsh::to_vec(&payload)?;
-
-        // Send directly to each peer, bypassing gossipsub
-        let futures: Vec<_> = peers
-            .into_iter()
-            .map(|peer| self.send_direct_message(peer, payload.clone()))
-            .collect();
-
-        // Execute all direct sends in parallel
-        let results = future::join_all(futures).await;
-        
-        // Log any failures but don't fail the entire operation
-        for (peer, result) in results.into_iter().enumerate() {
-            if let Err(e) = result {
-                debug!(peer=%peer, error=%e, "Failed to send direct message to peer");
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Send a direct message to a specific peer
-    async fn send_direct_message(&self, peer: PeerId, payload: Vec<u8>) -> eyre::Result<()> {
-        // Open a direct stream to the peer
-        let mut stream = self.network_client.open_stream(peer).await?;
-        
-        // Send the payload directly
-        stream.send(calimero_network_primitives::stream::Message::new(payload)).await?;
-        
-        Ok(())
-    }
-
-    /// Optimized serialization with pre-allocated buffer for better performance
-    fn serialize_optimized<T: borsh::BorshSerialize>(&self, data: &T) -> eyre::Result<Vec<u8>> {
-        // Pre-allocate buffer with estimated size for zero-copy optimization
-        let mut buffer = Vec::with_capacity(1024);
-        data.serialize(&mut buffer)?;
-        Ok(buffer)
-    }
-
-    /// Get trusted peers for direct P2P communication
-    async fn get_trusted_peers(&self, context_id: &ContextId) -> Vec<PeerId> {
-        // Get all peers in the context mesh
-        let topic = TopicHash::from_raw(*context_id);
-        let mesh_peers = self.network_client.mesh_peers(topic).await;
-        
-        // Filter to trusted peers (all peers in mesh are considered trusted for now)
-        mesh_peers.into_iter().collect()
+        let broadcasting = BroadcastingService::new(self.network_client.clone());
+        broadcasting.broadcast_batch(context, sender, sender_key, deltas).await
     }
 
     pub fn send_event(&self, event: NodeEvent) -> eyre::Result<()> {

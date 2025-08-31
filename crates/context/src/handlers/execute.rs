@@ -234,15 +234,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
-                    // Lightweight delta processing: Skip WASM execution for simple updates
-                    let should_skip_wasm = outcome.artifact.len() < 1024 && !is_state_op;
+                    // Use performance service for lightweight processing
+                    let performance_service = crate::performance::PerformanceService::default();
+                    let should_skip_wasm = performance_service.should_use_lightweight_processing(
+                        outcome.artifact.len(),
+                        is_state_op,
+                    );
                     
                     if should_skip_wasm {
-                        debug!(
-                            context_id=%context_id,
-                            executor=%executor,
-                            artifact_size=outcome.artifact.len(),
-                            "Skipping WASM execution for lightweight delta"
+                        performance_service.apply_lightweight_delta(
+                            &context_id,
+                            &executor,
+                            outcome.artifact.len(),
                         );
                         
                         // Apply delta directly without WASM execution
