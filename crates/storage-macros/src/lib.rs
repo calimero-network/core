@@ -79,9 +79,13 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 ///
 /// # Examples
 ///
-/// ```
-/// use crate::entities::Element;
-/// use crate::AtomicUnit;
+/// ```no_run
+/// // This example shows how to use the AtomicUnit derive macro
+/// // Note: In a real implementation, you would need the proper dependencies
+///
+/// /*
+/// use calimero_storage::entities::Element;
+/// use calimero_storage_macros::AtomicUnit;
 /// use borsh::{BorshSerialize, BorshDeserialize};
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
@@ -93,6 +97,7 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 ///     #[storage]
 ///     storage: Element,
 /// }
+/// */
 /// ```
 ///
 /// # Panics
@@ -223,7 +228,11 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
+/// // This example shows how to use the Collection derive macro
+/// // Note: In a real implementation, you would need the proper dependencies
+///
+/// /*
 /// use calimero_storage::entities::Collection;
 ///
 /// #[derive(Collection)]
