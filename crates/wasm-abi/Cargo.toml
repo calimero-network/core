@@ -18,8 +18,7 @@ syn = { workspace = true, features = ["full", "visit"] }
 [dev-dependencies]
 jsonschema.workspace = true
 
-[package.metadata.workspaces]
-independent = true
+# This crate inherits the workspace version
 
 [lints]
 workspace = true
