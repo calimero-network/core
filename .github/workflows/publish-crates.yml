@@ -28,10 +28,8 @@ jobs:
 
       - name: Check if version is already published
         run: |
-          PACKAGE_NAME="calimero-primitives"
-          
-          # Extract version from workspace metadata
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.metadata.workspaces.version // empty' 2>/dev/null || echo "")
+          # Extract package name and version from workspace metadata
+          VERSION=$(cargo metadata --format-version 1 | jq -r '.metadata.workspaces.version // empty' 2>/dev/null || echo "")
           
           if [ -z "$VERSION" ]; then
             echo "ERROR: Failed to extract version. Exiting."
@@ -62,4 +60,5 @@ jobs:
           # Using --no-git flags to avoid git operations during publishing
            cargo ws publish --yes --allow-dirty --force '*' \
               --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
-              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
+              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}' \
+              --from-git
