@@ -3,6 +3,7 @@ use calimero_primitives::identity::PublicKey;
 use tracing::debug;
 
 /// Performance optimization settings
+#[derive(Debug)]
 pub struct PerformanceConfig {
     /// Maximum artifact size for lightweight processing (bytes)
     pub lightweight_threshold: usize,
@@ -20,6 +21,7 @@ impl Default for PerformanceConfig {
 }
 
 /// Performance optimization service
+#[derive(Debug)]
 pub struct PerformanceService {
     config: PerformanceConfig,
 }
