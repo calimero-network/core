@@ -1,6 +1,6 @@
 [package]
 name = "calimero-sdk"
-version = "0.2.1"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true

@@ -26,7 +26,7 @@ rustc --version
 # Check if version is already published
 echo "📋 Checking if version is already published..."
 PACKAGE_NAME="calimero-primitives"
-VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.metadata.workspaces.version // empty' 2>/dev/null || echo "")
+VERSION=$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "calimero-primitives") | .version // empty' 2>/dev/null || echo "")
 
 if [ -z "$VERSION" ]; then
     echo "❌ ERROR: Failed to extract version. Exiting."

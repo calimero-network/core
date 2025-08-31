@@ -1,6 +1,6 @@
 [package]
 name = "calimero-wasm-abi"
-version = "0.2.1"
+version.workspace = true
 description = "WASM-level ABI v1 for Calimero applications"
 authors.workspace = true
 edition.workspace = true
