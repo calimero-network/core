@@ -58,6 +58,8 @@ jobs:
 
       - name: Cargo deny
         if: ${{ !cancelled() }}
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check licenses sources
+        run: |
+          cargo install cargo-deny
+          cargo deny check licenses sources
+
+

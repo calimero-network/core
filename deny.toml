@@ -31,7 +31,6 @@ allow = [
     "AGPL-3.0",
     "GPL-3.0",
     "LGPL-3.0-or-later",
-    "LGPL-3.0+",
     "0BSD",
     "Unlicense",
     "Apache-2.0 WITH LLVM-exception",
