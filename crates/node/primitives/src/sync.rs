@@ -23,6 +23,20 @@ pub enum BroadcastMessage<'a> {
         height: NonZeroUsize, // todo! shouldn't be cleartext
         nonce: Nonce,
     },
+    // New batch message for multiple state deltas
+    BatchStateDelta {
+        context_id: ContextId,
+        author_id: PublicKey,
+        root_hash: Hash,
+        deltas: Vec<BatchDelta<'a>>,
+        nonce: Nonce,
+    },
+}
+
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct BatchDelta<'a> {
+    pub artifact: Cow<'a, [u8]>,
+    pub height: NonZeroUsize,
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]

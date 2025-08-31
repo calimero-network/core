@@ -7,7 +7,7 @@ use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::stream::{Message as StreamMessage, Stream};
 use calimero_node_primitives::client::NodeClient;
-use calimero_node_primitives::sync::BroadcastMessage;
+use calimero_node_primitives::sync::{BroadcastMessage, BatchDelta};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -322,6 +322,36 @@ impl Handler<NetworkEvent> for NodeManager {
                             .into_actor(self),
                         );
                     }
+                    BroadcastMessage::BatchStateDelta {
+                        context_id,
+                        author_id,
+                        root_hash,
+                        deltas,
+                        nonce,
+                    } => {
+                        let node_client = self.node_client.clone();
+                        let context_client = self.context_client.clone();
+
+                        let _ignored = ctx.spawn(
+                            async move {
+                                if let Err(err) = handle_batch_state_delta(
+                                    node_client,
+                                    context_client,
+                                    source,
+                                    context_id,
+                                    author_id,
+                                    root_hash,
+                                    deltas,
+                                    nonce,
+                                )
+                                .await
+                                {
+                                    warn!(?err, "Failed to handle batch state delta");
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
                     _ => {
                         debug!(?message, "Received unexpected message");
                     }
@@ -565,6 +595,127 @@ async fn handle_state_delta(
         //     );
 
         //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
+    }
+
+    Ok(())
+}
+
+async fn handle_batch_state_delta(
+    node_client: NodeClient,
+    context_client: ContextClient,
+    source: PeerId,
+    context_id: ContextId,
+    author_id: PublicKey,
+    root_hash: Hash,
+    deltas: Vec<BatchDelta<'static>>,
+    nonce: Nonce,
+) -> eyre::Result<()> {
+    info!("📥 BATCH STATE DELTA RECEIVED: context_id={}, source={}, author_id={}, root_hash={:?}, deltas_count={}", 
+          context_id, source, author_id, root_hash, deltas.len());
+    
+    let Some(context) = context_client.get_context(&context_id)? else {
+        error!("❌ CONTEXT NOT FOUND: context_id={}", context_id);
+        bail!("context '{}' not found", context_id);
+    };
+
+    info!("📋 CONTEXT STATE: context_id={}, current_root_hash={:?}, expected_root_hash={:?}", 
+          context_id, context.root_hash, root_hash);
+
+    debug!(
+        %context_id, %author_id,
+        expected_root_hash = %root_hash,
+        current_root_hash = %context.root_hash,
+        "Received batch state delta"
+    );
+
+    if root_hash == context.root_hash {
+        info!("✅ ROOT HASHES MATCH - IGNORING: context_id={}, root_hash={:?}", context_id, root_hash);
+        debug!(%context_id, "Received batch state delta with same root hash, ignoring..");
+        return Ok(());
+    }
+
+         let mut all_deltas_applied = true;
+     for delta in deltas {
+         let artifact = delta.artifact.into_owned();
+         let height = delta.height;
+
+        if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
+            if known_height >= height || height.get() - known_height.get() > 1 {
+                info!("🔄 HEIGHT GAP DETECTED - SYNCING: context_id={}, known_height={}, received_height={}", 
+                      context_id, known_height, height);
+                debug!(%author_id, %context_id, "Received batch state delta much further ahead than known height, syncing..");
+                all_deltas_applied = false;
+                break;
+            }
+        }
+
+        let Some(sender_key) = context_client
+            .get_identity(&context_id, &author_id)?
+            .and_then(|i| i.sender_key)
+        else {
+            info!("🔑 MISSING SENDER KEY - SYNCING: context_id={}, author_id={}", context_id, author_id);
+            debug!(%author_id, %context_id, "Missing sender key, initiating sync");
+            all_deltas_applied = false;
+            break;
+        };
+
+        let shared_key = SharedKey::from_sk(&sender_key);
+
+                 let Some(decrypted_artifact) = shared_key.decrypt(artifact, nonce) else {
+             info!("🔓 DECRYPTION FAILED - SYNCING: context_id={}, author_id={}", context_id, author_id);
+             debug!(%author_id, %context_id, "Batch state delta decryption failed, initiating sync");
+             all_deltas_applied = false;
+             break;
+         };
+
+        let identities = context_client.context_members(&context_id, Some(true));
+
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        else {
+            error!("❌ NO OWNED IDENTITIES: context_id={}", context_id);
+            bail!("no owned identities found for context: {}", context_id);
+        };
+
+        info!("🔧 APPLYING BATCH STATE DELTA: context_id={}, our_identity={}, author_id={}, height={}", 
+              context_id, our_identity, author_id, height);
+
+        context_client.put_state_delta(&context_id, &author_id, &height, &decrypted_artifact)?;
+
+        let outcome = context_client
+            .execute(
+                &context_id,
+                &our_identity,
+                "__calimero_sync_next".to_owned(),
+                decrypted_artifact,
+                vec![],
+                None,
+            )
+            .await?;
+
+        info!("✅ BATCH STATE DELTA APPLIED: context_id={}, old_root_hash={:?}, new_root_hash={:?}", 
+              context_id, context.root_hash, outcome.root_hash);
+
+        context_client.set_delta_height(&context_id, &author_id, height)?;
+
+        if outcome.root_hash != root_hash {
+            error!("❌ ROOT HASH MISMATCH: context_id={}, expected={:?}, got={:?}", 
+                   context_id, root_hash, outcome.root_hash);
+            debug!(
+                %context_id,
+                %author_id,
+                expected_root_hash = %root_hash,
+                current_root_hash = %outcome.root_hash,
+                "Batch state delta application led to root hash mismatch, initiating sync"
+            );
+            all_deltas_applied = false;
+            break;
+        }
+    }
+
+    if !all_deltas_applied {
+        node_client.sync(Some(&context_id), Some(&source)).await?;
     }
 
     Ok(())

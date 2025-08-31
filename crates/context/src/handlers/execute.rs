@@ -234,8 +234,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
+                    // Lightweight delta processing: Skip WASM execution for simple updates
+                    let should_skip_wasm = outcome.artifact.len() < 1024 && !is_state_op;
+                    
+                    if should_skip_wasm {
+                        debug!(
+                            context_id=%context_id,
+                            executor=%executor,
+                            artifact_size=outcome.artifact.len(),
+                            "Skipping WASM execution for lightweight delta"
+                        );
+                        
+                        // Apply delta directly without WASM execution
+                        if let Some(height) = delta_height {
+                            context_client.put_state_delta(&context_id, &executor, &height, &outcome.artifact)?;
+                            context_client.set_delta_height(&context_id, &executor, height)?;
+                        }
+                    }
+
                     if !(is_state_op || outcome.artifact.is_empty()) {
                         if let Some(height) = delta_height {
+                            // For now, use single delta broadcasting
+                            // TODO: Implement batch broadcasting when multiple deltas are available
                             node_client
                                 .broadcast(
                                     &context,

@@ -309,6 +309,8 @@ impl ContextClient {
         Ok(())
     }
 
+
+
     pub fn get_delta_height(
         &self,
         context_id: &ContextId,

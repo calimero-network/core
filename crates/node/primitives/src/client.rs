@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info};
 
 use crate::messages::NodeMessage;
-use crate::sync::BroadcastMessage;
+use crate::sync::{BroadcastMessage, BatchDelta};
 
 mod alias;
 mod application;
@@ -117,6 +117,63 @@ impl NodeClient {
             root_hash: context.root_hash,
             artifact: encrypted.into(),
             height,
+            nonce,
+        };
+
+        let payload = borsh::to_vec(&payload)?;
+
+        let topic = TopicHash::from_raw(context.id);
+
+        let _ignored = self.network_client.publish(topic, payload).await?;
+
+        Ok(())
+    }
+
+    /// Broadcast multiple state deltas in a single message for improved performance
+    pub async fn broadcast_batch(
+        &self,
+        context: &Context,
+        sender: &PublicKey,
+        sender_key: &PrivateKey,
+        deltas: Vec<(Vec<u8>, NonZeroUsize)>,
+    ) -> eyre::Result<()> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+
+        debug!(
+            context_id=%context.id,
+            %sender,
+            root_hash=%context.root_hash,
+            delta_count=deltas.len(),
+            "Sending batch state deltas"
+        );
+
+        if self.get_peers_count(Some(&context.id)).await == 0 {
+            return Ok(());
+        }
+
+        let shared_key = SharedKey::from_sk(sender_key);
+        let nonce = rand::thread_rng().gen();
+
+        // Encrypt all deltas with the same key
+        let mut batch_deltas = Vec::with_capacity(deltas.len());
+        for (artifact, height) in deltas {
+            let encrypted = shared_key
+                .encrypt(artifact, nonce)
+                .ok_or_eyre("failed to encrypt artifact")?;
+            
+            batch_deltas.push(BatchDelta {
+                artifact: encrypted.into(),
+                height,
+            });
+        }
+
+        let payload = BroadcastMessage::BatchStateDelta {
+            context_id: context.id,
+            author_id: *sender,
+            root_hash: context.root_hash,
+            deltas: batch_deltas,
             nonce,
         };
 
