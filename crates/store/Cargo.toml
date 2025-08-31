@@ -1,10 +1,12 @@
 [package]
 name = "calimero-store"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
+publish = true
 
 [dependencies]
 borsh = { workspace = true, optional = true }

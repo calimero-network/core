@@ -1,10 +1,12 @@
 [package]
 name = "calimero-context-config"
-version = "0.1.0"
+version.workspace = true
+description.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = true
 
 [dependencies]
 alloy = { workspace = true, optional = true }
@@ -30,6 +32,8 @@ serde_json.workspace = true
 soroban-client.workspace = true
 soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
+starknet-core = { workspace = true, optional = true }
+starknet-core-derive = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
@@ -58,7 +62,7 @@ icp = ["candid"]
 
 icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
-starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starknet-types-core"]
+starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-core", "dep:starknet-core-derive", "dep:starknet-crypto", "dep:starknet-types-core"]
 
 stellar = ["dep:soroban-sdk"]
 
