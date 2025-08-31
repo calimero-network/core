@@ -4,9 +4,8 @@ use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use futures_util::future;
+use eyre::OptionExt;
 use libp2p::gossipsub::TopicHash;
-use libp2p::PeerId;
 use rand::Rng;
 use tracing::debug;
 

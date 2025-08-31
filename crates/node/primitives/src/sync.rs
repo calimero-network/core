@@ -5,11 +5,9 @@ use std::num::NonZeroUsize;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::Nonce;
-use calimero_primitives::application::ApplicationId;
-use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 
 /// Core broadcast message types for state synchronization
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
