@@ -1,0 +1,49 @@
+name: Curb Chat Test Workflow
+description: Simplified bootstrap workflow for Curb Chat application with 2 nodes
+
+nodes:
+  chain_id: testnet-1
+  count: 1
+  image: merod-sdk-test-fixed:latest
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install the application on the first node
+  - name: Install Application on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: ./workflows/curb-b6175e3b.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create a context using the installed application
+  - name: Create Context on Node 1
+    type: create_context
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    params: '{"name": "CurbTest","is_dm": false, "default_channels": [{"name": "general"}],"created_at": 1751952997, "owner_username": "Bob"}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+    
+  # Step 4: Wait for identity creation to complete
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 10
+
+  # Step 3: Get channels from Node 1
+  - name: Get Channels from Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_channels
+    args: {}
+    outputs:
+      channels: channels
+
+# Configuration options
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

@@ -458,26 +458,34 @@ impl VMHostFunctions<'_> {
     }
 
     pub fn storage_read(&mut self, key_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
+        eprintln!("🔍 storage_read called with key_ptr={}, register_id={}", key_ptr, register_id);
+        
         let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
+        eprintln!("🔍 Read Buffer from key_ptr: ptr={}, len={}", key.ptr().value().as_usize(), key.len());
+        
         let key_len = key.len();
 
         let key = self
             .read_slice(&key)
             .try_into()
             .map_err(|_| HostError::InvalidMemoryAccess)?;
+        
+        eprintln!("🔍 Key data: {:?}", key);
 
         let logic = self.borrow_logic();
 
         if key_len > logic.limits.max_storage_key_size.get() {
+            eprintln!("❌ Key length overflow: {} > {}", key_len, logic.limits.max_storage_key_size.get());
             return Err(HostError::KeyLengthOverflow.into());
         }
 
         if let Some(value) = logic.storage.get(&key) {
+            eprintln!("✅ Found value in storage, setting register {}", register_id);
             self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
-
             return Ok(1);
         }
 
+        eprintln!("❌ No value found in storage for key {:?}", key);
         Ok(0)
     }
 
@@ -514,11 +522,15 @@ impl VMHostFunctions<'_> {
         value_ptr: u64,
         register_id: u64,
     ) -> VMLogicResult<u32> {
+        eprintln!("🔍 storage_write called with key_ptr={}, value_ptr={}, register_id={}", key_ptr, value_ptr, register_id);
+        
         let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
         let key_len = key.len();
+        eprintln!("🔍 Read key Buffer: ptr={}, len={}", key.ptr().value().as_usize(), key_len);
 
         let value = unsafe { self.read_typed::<sys::Buffer<'_>>(value_ptr)? };
         let value_len = value.len();
+        eprintln!("🔍 Read value Buffer: ptr={}, len={}", value.ptr().value().as_usize(), value_len);
 
         let logic = self.borrow_logic();
 
@@ -534,11 +546,15 @@ impl VMHostFunctions<'_> {
             .read_slice(&key)
             .try_into()
             .map_err(|_| HostError::InvalidMemoryAccess)?;
+        eprintln!("🔍 Key data: {:?}", key);
+        
         let value = self
             .read_slice(&value)
             .try_into()
             .map_err(|_| HostError::InvalidMemoryAccess)?;
+        eprintln!("🔍 Value data: {:?}", value);
 
+        eprintln!("🔍 Setting storage key={:?}, value={:?}", key, value);
         let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 
         if let Some(evicted) = evicted {

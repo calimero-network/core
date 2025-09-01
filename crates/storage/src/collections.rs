@@ -39,6 +39,20 @@ fn compute_id(parent: Id, key: &[u8]) -> Id {
     Id::new(hasher.finalize().into())
 }
 
+/// Construct a proper path for a collection based on its ID and context.
+fn construct_collection_path(id: Id) -> Path {
+    let path_str = if id.is_root() {
+        "::root".to_string()
+    } else {
+        format!("::collection::{}", id)
+    };
+    
+    Path::new(&path_str).unwrap_or_else(|_| {
+        // Fallback to a valid path if construction fails
+        Path::new("::collection").expect("valid fallback path")
+    })
+}
+
 mod compat {
     use std::collections::BTreeMap;
 
