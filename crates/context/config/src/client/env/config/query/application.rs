@@ -2,7 +2,7 @@
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Bytes, BytesN, Env, IntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
@@ -20,6 +20,7 @@ use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICApplication;
 use crate::repr::{Repr, ReprTransmute};
+#[cfg(feature = "stellar")]
 use crate::stellar::stellar_types::StellarApplication;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
@@ -120,6 +121,7 @@ impl Method<Icp> for ApplicationRequest {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for ApplicationRequest {
     type Returns = Application<'static>;
 

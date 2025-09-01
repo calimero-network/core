@@ -17,6 +17,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::ICProposal;
+#[cfg(feature = "stellar")]
 use crate::stellar::StellarProposal;
 use crate::Proposal;
 
@@ -113,6 +114,7 @@ impl Method<Icp> for ProposalsRequest {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for ProposalsRequest {
     type Returns = Vec<Proposal>;
 

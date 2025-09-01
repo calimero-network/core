@@ -130,6 +130,7 @@ impl Method<Icp> for ProposalApproversRequest {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for ProposalApproversRequest {
     type Returns = Vec<ContextIdentity>;
 

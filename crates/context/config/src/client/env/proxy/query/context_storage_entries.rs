@@ -112,6 +112,7 @@ impl Method<Icp> for ContextStorageEntriesRequest {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for ContextStorageEntriesRequest {
     const METHOD: &'static str = "context_storage_entries";
 

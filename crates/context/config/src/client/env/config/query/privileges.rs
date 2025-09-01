@@ -25,6 +25,7 @@ use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
 use crate::repr::{Repr, ReprTransmute};
+#[cfg(feature = "stellar")]
 use crate::stellar::stellar_types::StellarCapability;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
@@ -173,6 +174,7 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
     type Returns = BTreeMap<SignerId, Vec<Capability>>;
 

@@ -23,6 +23,7 @@ use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::ICProposalWithApprovals;
 use crate::repr::ReprTransmute;
+#[cfg(feature = "stellar")]
 use crate::stellar::StellarProposalWithApprovals;
 use crate::types::ProposalId;
 use crate::{ProposalWithApprovals, Repr};
@@ -112,6 +113,7 @@ impl Method<Icp> for ProposalApprovalsRequest {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for ProposalApprovalsRequest {
     type Returns = ProposalWithApprovals;
 

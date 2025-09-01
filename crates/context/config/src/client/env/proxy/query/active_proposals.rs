@@ -76,6 +76,7 @@ impl Method<Icp> for ActiveProposalRequest {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for ActiveProposalRequest {
     type Returns = u16;
 

@@ -108,6 +108,7 @@ impl Method<Icp> for ContextVariableRequest {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for ContextVariableRequest {
     type Returns = Vec<u8>;
 

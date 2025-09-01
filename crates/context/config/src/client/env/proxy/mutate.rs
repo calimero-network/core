@@ -5,7 +5,7 @@ use alloy_sol_types::SolValue;
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::WrapErr;
-use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
@@ -26,9 +26,11 @@ use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::ICSigned;
 use crate::icp::{ICProposalWithApprovals, ICProxyMutateRequest};
 use crate::repr::ReprTransmute;
+#[cfg(feature = "stellar")]
 use crate::stellar::stellar_types::{
     FromWithEnv, StellarSignedRequest, StellarSignedRequestPayload,
 };
+#[cfg(feature = "stellar")]
 use crate::stellar::{StellarProposalWithApprovals, StellarProxyMutateRequest};
 use crate::types::Signed;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
@@ -160,6 +162,7 @@ impl Method<Icp> for Mutate {
     }
 }
 
+#[cfg(feature = "stellar")]
 impl Method<Stellar> for Mutate {
     type Returns = Option<ProposalWithApprovals>;
 

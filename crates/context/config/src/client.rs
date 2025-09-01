@@ -18,13 +18,18 @@ pub mod utils;
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use env::Method;
 use macros::transport;
-use protocol::{ethereum, icp, near, starknet, stellar, Protocol};
+use protocol::{ethereum, icp, near, starknet, Protocol};
+#[cfg(feature = "stellar")]
+use protocol::stellar;
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 type MaybeNear = Option<near::NearTransport<'static>>;
 type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
+#[cfg(feature = "stellar")]
 type MaybeStellar = Option<stellar::StellarTransport<'static>>;
+#[cfg(not(feature = "stellar"))]
+type MaybeStellar = Option<()>;
 type MaybeEthereum = Option<ethereum::EthereumTransport<'static>>;
 
 transport! {
@@ -178,8 +183,10 @@ impl Client<AnyTransport> {
             }
         }
 
+        #[cfg(feature = "stellar")]
         let mut stellar_transport = None;
 
+        #[cfg(feature = "stellar")]
         'skipped: {
             if let Some(stellar_config) = config.signer.local.protocols.get("stellar") {
                 let Some(e) = config.params.get("stellar") else {
@@ -216,6 +223,9 @@ impl Client<AnyTransport> {
                 stellar_transport = Some(stellar::StellarTransport::new(&config));
             }
         }
+
+        #[cfg(not(feature = "stellar"))]
+        let stellar_transport = None;
 
         let mut ethereum_transport = None;
 
