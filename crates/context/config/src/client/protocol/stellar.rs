@@ -234,53 +234,32 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
-        // Build transaction
-        let source_account = Rc::new(RefCell::new(account.clone()));
+        // Build a minimal transaction
+        let source_account = Rc::new(RefCell::new(account));
         let transaction = TransactionBuilder::new(source_account, self.network, None)
             .fee(10000u32)
-            .add_operation(contract.call(method, Some(args.clone())))
+            .add_operation(contract.call(method, Some(args)))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
 
-        // Simulate first to catch errors early
-        let simulation_result = self
+        // Prepare transaction (runs simulation and assembles fees/footprint/auth)
+        let mut prepared_tx = self
             .client
-            .simulate_transaction(&transaction, None)
+            .prepare_transaction(&transaction)
             .await
             .map_err(|e| StellarError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: format!("Simulation failed: {}", e),
+                reason: format!("Failed to prepare transaction: {}", e),
             })?;
 
-        // Check if simulation was successful
-        if simulation_result.error.is_some() {
-            return Err(StellarError::Custom {
-                operation: ErrorOperation::Mutate,
-                reason: "Simulation failed".to_string(),
-            });
-        }
-
-        // Build the final transaction
-        let final_transaction = TransactionBuilder::new(
-            Rc::new(RefCell::new(account.clone())),
-            self.network,
-            None,
-        )
-        .fee(10000u32)
-        .add_operation(contract.call(method, Some(args)))
-        .set_timeout(15)
-        .expect("Transaction timeout")
-        .build();
-
         // Sign the transaction
-        let mut signed_tx = final_transaction;
-        signed_tx.sign(&[self.keypair.clone()]);
+        prepared_tx.sign(&[self.keypair.clone()]);
 
         // Send transaction
         let response = self
             .client
-            .send_transaction(signed_tx)
+            .send_transaction(prepared_tx)
             .await
             .map_err(|e| StellarError::Custom {
                 operation: ErrorOperation::Mutate,

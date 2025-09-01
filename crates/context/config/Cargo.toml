@@ -11,7 +11,6 @@ publish = true
 [dependencies]
 alloy = { workspace = true, optional = true }
 alloy-sol-types = { workspace = true, optional = true }
-base64.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 candid = { workspace = true, optional = true }
@@ -29,7 +28,7 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-soroban-client.workspace = true
+soroban-client = { workspace = true, optional = true }
 soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
 starknet-core = { workspace = true, optional = true }
@@ -37,7 +36,7 @@ starknet-core-derive = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros"] }
+tokio = { workspace = true, optional = true, features = ["sync", "macros"] }
 url = { workspace = true, optional = true }
 
 [lints]
@@ -52,6 +51,8 @@ client = [
   "ethereum_client",
   "dep:either",
   "dep:eyre",
+  "dep:soroban-client",
+  "dep:tokio",
   "reqwest/json",
   "url/serde",
 ]
