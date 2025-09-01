@@ -154,9 +154,9 @@ impl Method<Stellar> for ProposalRequest {
 
         let env = Env::default();
         let proposal_val = Val::try_from_val(&env, &sc_val)
-            .map_err(|e| eyre::eyre!("Failed to convert to proposal: {}", e))?;
+            .map_err(|e| eyre::eyre!("Failed to convert to proposal: {:?}", e))?;
         let proposal = StellarProposal::try_from_val(&env, &proposal_val)
-            .map_err(|e| eyre::eyre!("Failed to convert to proposal: {}", e))?;
+            .map_err(|e| eyre::eyre!("Failed to convert to proposal: {:?}", e))?;
 
         // Convert StellarProposal to Proposal using our From impl
         Ok(Some(Proposal::from(proposal)))

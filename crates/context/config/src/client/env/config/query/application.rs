@@ -2,7 +2,7 @@
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{Bytes, BytesN, Env, IntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;

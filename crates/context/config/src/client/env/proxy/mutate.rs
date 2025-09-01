@@ -5,7 +5,7 @@ use alloy_sol_types::SolValue;
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::WrapErr;
-use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
