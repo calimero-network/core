@@ -331,9 +331,9 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
         match S::storage_read(Key::Index(id)) {
-            Some(data) => {
-                Ok(Some(EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?))
-            }
+            Some(data) => Ok(Some(
+                EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
+            )),
             None => Ok(None),
         }
     }

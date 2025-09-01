@@ -35,7 +35,9 @@ pub struct Message {
     pub timestamp: u64,
 }
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize, calimero_sdk::serde::Deserialize)]
+#[derive(
+    Debug, Clone, BorshSerialize, BorshDeserialize, Serialize, calimero_sdk::serde::Deserialize,
+)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum ChannelType {
@@ -124,7 +126,7 @@ impl ChannelDebug {
         app::log!("Adding channel: {:?}", name);
 
         let channel = Channel { name: name.clone() };
-        
+
         // Create proper ChannelInfo
         let channel_info = ChannelInfo {
             messages: Vector::new(),
@@ -141,15 +143,15 @@ impl ChannelDebug {
 
         // Insert channel
         self.channels.insert(channel.clone(), channel_info)?;
-        
+
         // Add member to channel
         let mut members = Vector::new();
         members.push(created_by.clone())?;
         self.channel_members.insert(channel.clone(), members)?;
-        
+
         // Add username mapping
         self.member_usernames.insert(created_by, name.clone())?;
-        
+
         app::log!("Channel inserted successfully");
         app::emit!(Event::ChannelAdded { channel: &channel });
 
@@ -164,18 +166,25 @@ impl ChannelDebug {
         description: String,
         created_by: UserId,
     ) -> app::Result<String> {
-        app::log!("Adding channel with string type: {:?}, type: {:?}", name, channel_type_str);
-        
+        app::log!(
+            "Adding channel with string type: {:?}, type: {:?}",
+            name,
+            channel_type_str
+        );
+
         let channel_type = match channel_type_str.as_str() {
             "Public" => ChannelType::Public,
             "Private" => ChannelType::Private,
             "Default" => ChannelType::Default,
             _ => {
-                app::log!("Invalid channel type: {}, defaulting to Public", channel_type_str);
+                app::log!(
+                    "Invalid channel type: {}, defaulting to Public",
+                    channel_type_str
+                );
                 ChannelType::Public
             }
         };
-        
+
         let name_clone = name.clone();
         self.add_channel(name, channel_type, description, created_by)?;
         Ok(format!("Channel {} added successfully", name_clone))
@@ -199,8 +208,10 @@ impl ChannelDebug {
         description: String,
         created_by: UserId,
     ) -> app::Result<String> {
-        Ok(format!("Received: name={}, type={}, desc={}, by={}", 
-                   name, channel_type_str, description, created_by))
+        Ok(format!(
+            "Received: name={}, type={}, desc={}, by={}",
+            name, channel_type_str, description, created_by
+        ))
     }
 
     /// Test method that does exactly what add_channel does but step by step
@@ -212,12 +223,18 @@ impl ChannelDebug {
         created_by: UserId,
     ) -> app::Result<String> {
         app::log!("🔍 Testing add_channel step by step");
-        app::log!("🔍 Parameters: name={:?}, type={:?}, desc={:?}, by={:?}", name, channel_type, description, created_by);
-        
+        app::log!(
+            "🔍 Parameters: name={:?}, type={:?}, desc={:?}, by={:?}",
+            name,
+            channel_type,
+            description,
+            created_by
+        );
+
         // Step 1: Create channel
         let channel = Channel { name: name.clone() };
         app::log!("🔍 Step 1: Channel created: {:?}", channel);
-        
+
         // Step 2: Create channel_info
         let channel_info = ChannelInfo {
             messages: Vector::new(),
@@ -232,12 +249,12 @@ impl ChannelDebug {
             last_read: UnorderedMap::new(),
         };
         app::log!("🔍 Step 2: ChannelInfo created: {:?}", channel_info);
-        
+
         // Step 3: Insert channel
         app::log!("🔍 Step 3: About to insert channel into self.channels");
         self.channels.insert(channel.clone(), channel_info)?;
         app::log!("🔍 Step 3: Channel inserted successfully");
-        
+
         // Step 4: Add member to channel
         let mut members = Vector::new();
         app::log!("🔍 Step 4a: Vector created");
@@ -247,12 +264,16 @@ impl ChannelDebug {
         app::log!("🔍 Step 4c: About to insert members into channel_members");
         self.channel_members.insert(channel.clone(), members)?;
         app::log!("🔍 Step 4c: Members inserted successfully");
-        
+
         // Step 5: Add username mapping
-        app::log!("🔍 Step 5: About to insert username mapping: {:?} -> {:?}", created_by, name);
+        app::log!(
+            "🔍 Step 5: About to insert username mapping: {:?} -> {:?}",
+            created_by,
+            name
+        );
         self.member_usernames.insert(created_by, name.clone())?;
         app::log!("🔍 Step 5: Username mapping inserted successfully");
-        
+
         app::log!("✅ All steps completed successfully");
         Ok(format!("Channel {} added step by step successfully", name))
     }
@@ -266,23 +287,32 @@ impl ChannelDebug {
         created_by: UserId,
     ) -> app::Result<String> {
         app::log!("🔍 Testing add_channel step by step (string-based)");
-        app::log!("🔍 Parameters: name={:?}, type_str={:?}, desc={:?}, by={:?}", name, channel_type_str, description, created_by);
-        
+        app::log!(
+            "🔍 Parameters: name={:?}, type_str={:?}, desc={:?}, by={:?}",
+            name,
+            channel_type_str,
+            description,
+            created_by
+        );
+
         // Convert string to enum
         let channel_type = match channel_type_str.as_str() {
             "Public" => ChannelType::Public,
             "Private" => ChannelType::Private,
             "Default" => ChannelType::Default,
             _ => {
-                app::log!("❌ Invalid channel type: {}, defaulting to Public", channel_type_str);
+                app::log!(
+                    "❌ Invalid channel type: {}, defaulting to Public",
+                    channel_type_str
+                );
                 ChannelType::Public
             }
         };
-        
+
         // Step 1: Create channel
         let channel = Channel { name: name.clone() };
         app::log!("🔍 Step 1: Channel created: {:?}", channel);
-        
+
         // Step 2: Create channel_info
         let channel_info = ChannelInfo {
             messages: Vector::new(),
@@ -297,12 +327,12 @@ impl ChannelDebug {
             last_read: UnorderedMap::new(),
         };
         app::log!("🔍 Step 2: ChannelInfo created: {:?}", channel_info);
-        
+
         // Step 3: Insert channel
         app::log!("🔍 Step 3: About to insert channel into self.channels");
         self.channels.insert(channel.clone(), channel_info)?;
         app::log!("🔍 Step 3: Channel inserted successfully");
-        
+
         // Step 4: Add member to channel
         let mut members = Vector::new();
         app::log!("🔍 Step 4a: Vector created");
@@ -312,12 +342,16 @@ impl ChannelDebug {
         app::log!("🔍 Step 4c: About to insert members into channel_members");
         self.channel_members.insert(channel.clone(), members)?;
         app::log!("🔍 Step 4c: Members inserted successfully");
-        
+
         // Step 5: Add username mapping
-        app::log!("🔍 Step 5: About to insert username mapping: {:?} -> {:?}", created_by, name);
+        app::log!(
+            "🔍 Step 5: About to insert username mapping: {:?} -> {:?}",
+            created_by,
+            name
+        );
         self.member_usernames.insert(created_by, name.clone())?;
         app::log!("🔍 Step 5: Username mapping inserted successfully");
-        
+
         app::log!("✅ All steps completed successfully");
         Ok(format!("Channel {} added step by step successfully", name))
     }
@@ -332,7 +366,7 @@ impl ChannelDebug {
     /// Simple test method to check if basic operations work
     pub fn test_simple(&mut self, name: String) -> app::Result<()> {
         app::log!("Testing simple operation with name: {:?}", name);
-        
+
         let channel = Channel { name: name.clone() };
         let simple_info = ChannelInfo {
             messages: Vector::new(),
@@ -346,34 +380,34 @@ impl ChannelDebug {
             },
             last_read: UnorderedMap::new(),
         };
-        
+
         self.channels.insert(channel, simple_info)?;
         app::log!("Simple test completed successfully");
-        
+
         Ok(())
     }
 
     /// Test raw storage operations to see if runtime is working
     pub fn test_raw_storage(&mut self) -> app::Result<String> {
         app::log!("🔍 Testing raw storage operations");
-        
+
         // Test 1: Try to read a non-existent key
         app::log!("🔍 Test 1: Reading non-existent key");
         let test_key = b"test_key_123";
         let result = calimero_sdk::env::storage_read(test_key);
         app::log!("🔍 Storage read result: {:?}", result);
-        
+
         // Test 2: Try to write a simple value
         app::log!("🔍 Test 2: Writing simple value");
         let test_value = b"test_value_456";
         let write_result = calimero_sdk::env::storage_write(test_key, test_value);
         app::log!("🔍 Storage write result: {}", write_result);
-        
+
         // Test 3: Try to read it back
         app::log!("🔍 Test 3: Reading back the value");
         let read_back = calimero_sdk::env::storage_read(test_key);
         app::log!("🔍 Storage read back result: {:?}", read_back);
-        
+
         app::log!("✅ Raw storage test completed");
         Ok("Raw storage test completed successfully".to_string())
     }
@@ -423,7 +457,11 @@ impl ChannelDebug {
     }
 
     /// Get unread information for a user and channel (simplified for testing)
-    fn get_user_channel_unread_info(&self, _executor_id: &UserId, _channel: &Channel) -> (u32, u64) {
+    fn get_user_channel_unread_info(
+        &self,
+        _executor_id: &UserId,
+        _channel: &Channel,
+    ) -> (u32, u64) {
         (0, 0) // Simplified for testing
     }
 

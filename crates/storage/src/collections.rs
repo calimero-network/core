@@ -46,7 +46,7 @@ fn construct_collection_path(id: Id) -> Path {
     } else {
         format!("::collection::{}", id)
     };
-    
+
     Path::new(&path_str).unwrap_or_else(|_| {
         // Fallback to a valid path if construction fails
         Path::new("::collection").expect("valid fallback path")
@@ -146,9 +146,21 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     fn new(id: Option<Id>) -> Self {
         let id = id.unwrap_or_else(|| Id::random());
 
+        // Construct a proper path for the collection based on its ID
+        let path_str = if id.is_root() {
+            "::root".to_string()
+        } else {
+            format!("::collection::{}", id)
+        };
+        
+        let path = Path::new(&path_str).unwrap_or_else(|_| {
+            // Fallback to a valid path if construction fails
+            Path::new("::collection").expect("valid fallback path")
+        });
+
         let mut this = Self {
             children_ids: RefCell::new(None),
-            storage: Element::new(&Path::new("::unused").expect("valid path"), Some(id)),
+            storage: Element::new(&path, Some(id)),
             _priv: PhantomData,
         };
 
@@ -164,13 +176,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     /// Inserts an item into the collection.
     fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
-        let path = self.path();
+        let collection_path = self.path();
+        
+        // Construct a proper path for the entry
+        let entry_id = id.unwrap_or_else(|| Id::random());
+        let entry_path_str = format!("{}::entry::{}", collection_path, entry_id);
+        
+        let entry_path = Path::new(&entry_path_str).unwrap_or_else(|_| {
+            // Fallback to a valid path if construction fails
+            Path::new("::entry").expect("valid fallback path")
+        });
 
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
             item,
-            storage: Element::new(&path, id),
+            storage: Element::new(&entry_path, id),
         };
 
         collection.insert(&mut entry)?;
