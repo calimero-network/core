@@ -44,7 +44,7 @@ jobs:
           # Extract package name from workspace metadata
           
           # Check if version is already published
-          CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/calimero-primitives/versions")
+          CRATES_RESPONSE=$(curl -s  --user-agent "calimero-publish-workflow" "https://crates.io/api/v1/crates/calimero-primitives/versions")
           echo "API Response preview: $(echo "$CRATES_RESPONSE" | head -c 200)..."
           
           # Check if API response contains errors
