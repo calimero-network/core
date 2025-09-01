@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use calimero_context_config::repr::Repr;
-use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
-use calimero_context_config::{Proposal, ProposalWithApprovals};
+use calimero_context_config_core::repr::Repr;
+use calimero_context_config_core::types::{Capability, ContextIdentity, ContextStorageEntry};
+use calimero_context_config_core::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};

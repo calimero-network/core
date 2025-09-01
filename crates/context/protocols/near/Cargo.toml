@@ -1,0 +1,22 @@
+[package]
+name = "calimero-context-near"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "NEAR integration for Calimero context configuration"
+repository.workspace = true
+
+[dependencies]
+calimero-context-config-core = { workspace = true }
+eyre = { workspace = true }
+near-crypto = { workspace = true }
+near-jsonrpc-client = { workspace = true }
+near-jsonrpc-primitives = { workspace = true }
+near-primitives = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []

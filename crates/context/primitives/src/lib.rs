@@ -1,6 +1,7 @@
 use calimero_primitives::context::ContextId;
 use tokio::sync::OwnedMutexGuard;
 
+#[cfg(feature = "external_client")]
 pub mod client;
 pub mod messages;
 

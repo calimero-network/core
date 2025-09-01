@@ -29,6 +29,12 @@ members = [
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
+    "./crates/context/config-core",
+    "./crates/context/protocols/ethereum",
+    "./crates/context/protocols/starknet",
+    "./crates/context/protocols/stellar",
+    "./crates/context/protocols/near",
+    "./crates/context/protocols/icp",
     "./crates/context/primitives",
     "./crates/crypto",
     "./crates/meroctl",
@@ -176,7 +182,13 @@ calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
-calimero-context-config = { path = "./crates/context/config" }
+calimero-context-config = { path = "./crates/context/config", default-features = false }
+calimero-context-config-core = { path = "./crates/context/config-core" }
+calimero-context-ethereum = { path = "./crates/context/protocols/ethereum" }
+calimero-context-starknet = { path = "./crates/context/protocols/starknet" }
+calimero-context-stellar = { path = "./crates/context/protocols/stellar" }
+calimero-context-near = { path = "./crates/context/protocols/near" }
+calimero-context-icp = { path = "./crates/context/protocols/icp" }
 calimero-context-primitives = { path = "./crates/context/primitives" }
 calimero-crypto = { path = "./crates/crypto" }
 calimero-network = { path = "./crates/network" }

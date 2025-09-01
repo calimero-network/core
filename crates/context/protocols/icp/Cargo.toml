@@ -1,0 +1,20 @@
+[package]
+name = "calimero-context-icp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ICP integration for Calimero context configuration"
+repository.workspace = true
+
+[dependencies]
+calimero-context-config-core = { workspace = true }
+candid = { workspace = true }
+eyre = { workspace = true }
+ic-agent = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []

@@ -1,12 +1,17 @@
+#![cfg(feature = "client")]
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+#[cfg(feature = "ethereum_client")]
 use crate::client::protocol::ethereum::Credentials as EthereumCredentials;
+#[cfg(feature = "icp_client")]
 use crate::client::protocol::icp::Credentials as IcpCredentials;
+#[cfg(feature = "near_client")]
 use crate::client::protocol::near::Credentials as NearCredentials;
+#[cfg(feature = "starknet_client")]
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -67,9 +72,13 @@ pub struct ClientLocalSigner {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Credentials {
+    #[cfg(feature = "near_client")]
     Near(NearCredentials),
+    #[cfg(feature = "starknet_client")]
     Starknet(StarknetCredentials),
+    #[cfg(feature = "icp_client")]
     Icp(IcpCredentials),
+    #[cfg(feature = "ethereum_client")]
     Ethereum(EthereumCredentials),
     Raw(RawCredentials),
 }

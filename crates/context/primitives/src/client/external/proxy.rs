@@ -1,11 +1,12 @@
-use calimero_context_config::client::env::proxy::ContextProxy;
-use calimero_context_config::repr::{ReprBytes, ReprTransmute};
-use calimero_context_config::types::{ContextStorageEntry, ProposalId};
-use calimero_context_config::{Proposal, ProposalAction};
+#[cfg(feature = "external_client")]
+use calimero_context_config_core::client::env::proxy::ContextProxy;
+use calimero_context_config_core::repr::{ReprBytes, ReprTransmute};
+use calimero_context_config_core::types::{ContextStorageEntry, ProposalId};
+use calimero_context_config_core::{Proposal, ProposalAction};
 use calimero_primitives::identity::PublicKey;
 use eyre::OptionExt;
 
-use super::ExternalClient;
+use crate::client::ExternalClient;
 
 #[derive(Debug)]
 pub struct ExternalProxyClient<'a> {

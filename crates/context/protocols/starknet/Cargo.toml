@@ -1,0 +1,21 @@
+[package]
+name = "calimero-context-starknet"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Starknet integration for Calimero context configuration"
+repository.workspace = true
+
+[dependencies]
+calimero-context-config-core = { workspace = true }
+eyre = { workspace = true }
+hex = { workspace = true }
+num-traits = "0.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+starknet = { workspace = true }
+thiserror.workspace = true
+
+[features]
+default = []

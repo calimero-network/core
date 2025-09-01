@@ -1896,12 +1896,15 @@ version = "0.0.0"
 dependencies = [
  "alloy",
  "alloy-sol-types",
- "base64 0.22.1",
  "borsh",
- "bs58 0.5.1",
+ "calimero-context-config-core",
+ "calimero-context-ethereum",
+ "calimero-context-icp",
+ "calimero-context-near",
+ "calimero-context-starknet",
+ "calimero-context-stellar",
  "candid",
  "ed25519-consensus",
- "ed25519-dalek",
  "either",
  "ethabi",
  "eyre",
@@ -1913,17 +1916,66 @@ dependencies = [
  "near-primitives",
  "reqwest 0.12.23",
  "serde",
- "serde_json",
  "soroban-client",
  "soroban-sdk",
  "starknet",
- "starknet-core",
- "starknet-core-derive",
  "starknet-crypto",
  "starknet-types-core",
- "thiserror 1.0.69",
- "tokio",
  "url",
+]
+
+[[package]]
+name = "calimero-context-config-core"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "bs58 0.5.1",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "calimero-context-ethereum"
+version = "0.0.0"
+dependencies = [
+ "alloy",
+ "alloy-sol-types",
+ "calimero-context-config-core",
+ "eyre",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "calimero-context-icp"
+version = "0.0.0"
+dependencies = [
+ "calimero-context-config-core",
+ "candid",
+ "eyre",
+ "ic-agent",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "calimero-context-near"
+version = "0.0.0"
+dependencies = [
+ "calimero-context-config-core",
+ "eyre",
+ "near-crypto",
+ "near-jsonrpc-client",
+ "near-jsonrpc-primitives",
+ "near-primitives",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1933,6 +1985,7 @@ dependencies = [
  "actix",
  "async-stream",
  "calimero-context-config",
+ "calimero-context-config-core",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-store",
@@ -1944,6 +1997,34 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "calimero-context-starknet"
+version = "0.0.0"
+dependencies = [
+ "calimero-context-config-core",
+ "eyre",
+ "hex",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "starknet",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "calimero-context-stellar"
+version = "0.0.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-context-config-core",
+ "eyre",
+ "serde",
+ "serde_json",
+ "soroban-client",
+ "soroban-sdk",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2150,6 +2231,7 @@ dependencies = [
  "bytes",
  "cached-path",
  "calimero-context-config",
+ "calimero-context-config-core",
  "calimero-context-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -2181,6 +2263,7 @@ name = "calimero-server-primitives"
 version = "0.0.0"
 dependencies = [
  "calimero-context-config",
+ "calimero-context-config-core",
  "calimero-context-primitives",
  "calimero-primitives",
  "camino",

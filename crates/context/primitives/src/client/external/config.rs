@@ -1,5 +1,6 @@
 use std::future::Future;
 
+#[cfg(feature = "external_client")]
 use calimero_context_config::client::env::config::ContextConfig;
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{self as types, Capability};
@@ -8,7 +9,7 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::{bail, OptionExt};
 
-use super::ExternalClient;
+use crate::client::ExternalClient;
 
 const MAX_RETRIES: u8 = 3;
 

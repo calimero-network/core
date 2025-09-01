@@ -27,8 +27,9 @@ tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
 
-calimero-context-config.workspace = true
-calimero-context-primitives.workspace = true
+calimero-context-config-core.workspace = true
+calimero-context-config = { workspace = true, features = ["client"] }
+calimero-context-primitives = { workspace = true, features = ["external_client"] }
 calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true

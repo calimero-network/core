@@ -5,19 +5,11 @@ use std::borrow::Cow;
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-// Re-export core types
-pub use calimero_context_config_core::*;
+pub mod repr;
+pub mod types;
 
-// Re-export blockchain-specific types when features are enabled
-// Note: We don't re-export everything to avoid name conflicts
-// Individual blockchain crates can be used directly when needed
-
-// Import types for use in this file
-use calimero_context_config_core::repr::Repr;
-use calimero_context_config_core::types::{Application, Capability, ContextId, ContextIdentity, ProposalId, SignerId};
-
-#[cfg(feature = "client")]
-pub mod client;
+use repr::Repr;
+use types::{Application, Capability, ContextId, ContextIdentity, ProposalId, SignerId};
 
 pub type Timestamp = u64;
 
@@ -109,7 +101,7 @@ pub enum SystemRequest {
 }
 
 /// Proxy contract
-/// TODO: move these to a separate cratexs
+/// TODO: move these to a separate crate
 pub type Gas = u64;
 pub type NativeToken = u128;
 

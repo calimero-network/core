@@ -19,11 +19,17 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 url.workspace = true
 
-calimero-context-config = { workspace = true, features = ["client"] }
+calimero-context-config-core.workspace = true
+
+calimero-context-config = { workspace = true, optional = true, features = ["client"] }
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
+
+[features]
+default = []
+external_client = ["calimero-context-config"]
 
 [lints]
 workspace = true

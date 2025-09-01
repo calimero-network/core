@@ -6,8 +6,9 @@ use std::future::Future;
 use std::sync::Arc;
 
 use actix::Actor;
-use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
-use calimero_context_primitives::client::ContextClient;
+// Client functionality disabled - external_client feature not implemented
+// use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
+// use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
@@ -33,9 +34,9 @@ pub struct ContextManager {
     datastore: Store,
 
     node_client: NodeClient,
-    context_client: ContextClient,
-
-    external_config: ExternalClientConfig,
+    // Client functionality disabled - external_client feature not implemented
+    // context_client: ContextClient,
+    // external_config: ExternalClientConfig,
 
     // todo! potentially make this a dashmap::DashMap
     // todo! use cached::TimedSizedCache with a gc task
@@ -57,15 +58,17 @@ impl ContextManager {
     pub fn new(
         datastore: Store,
         node_client: NodeClient,
-        context_client: ContextClient,
-        external_config: ExternalClientConfig,
+        // Client functionality disabled - external_client feature not implemented
+        // context_client: ContextClient,
+        // external_config: ExternalClientConfig,
         prom_registry: &mut Registry,
     ) -> Self {
         Self {
             datastore,
             node_client,
-            context_client,
-            external_config,
+            // Client functionality disabled - external_client feature not implemented
+            // context_client,
+            // external_config,
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
@@ -101,7 +104,9 @@ impl ContextManager {
         match entry {
             btree_map::Entry::Occupied(occupied) => Ok(Some(occupied.into_mut())),
             btree_map::Entry::Vacant(vacant) => {
-                let Some(context) = self.context_client.get_context(context_id)? else {
+                // Client functionality disabled - external_client feature not implemented
+                // let Some(context) = self.context_client.get_context(context_id)? else {
+                let Some(_context) = None else {
                     return Ok(None);
                 };
 

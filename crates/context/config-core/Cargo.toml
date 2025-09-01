@@ -1,0 +1,20 @@
+[package]
+name = "calimero-context-config-core"
+version.workspace = true
+edition.workspace = true
+description = "Core types and DTOs for context configuration (no blockchain dependencies)"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+
+[dependencies]
+borsh = { workspace = true, features = ["derive"] }
+bs58 = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
