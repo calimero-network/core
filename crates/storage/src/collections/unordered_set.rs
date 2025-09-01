@@ -3,7 +3,7 @@
 use core::borrow::Borrow;
 use core::fmt;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, io};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
@@ -13,11 +13,44 @@ use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
 
 /// A set collection that stores unqiue values once.
-#[derive(BorshSerialize, BorshDeserialize)]
 pub struct UnorderedSet<V, S: StorageAdaptor = MainStorage> {
-    #[borsh(bound(serialize = "", deserialize = ""))]
     inner: Collection<V, S>,
 }
+
+
+impl<V, S> BorshSerialize for UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord + Clone,
+    S: StorageAdaptor,
+{
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        // Collect and sort to ensure deterministic order
+        let mut items: Vec<V> = self
+            .iter()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+            .collect();
+        items.sort(); // requires V: Ord
+        items.serialize(writer)
+    }
+}
+
+impl<V, S> BorshDeserialize for UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord + Clone,
+    S: StorageAdaptor,
+{
+    fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let items: Vec<V> = Vec::<V>::deserialize_reader(reader)?;
+        let mut set = UnorderedSet::<V, S>::new_internal();
+        // Use set.insert to rebuild (dedup naturally via IDs)
+        for v in items {
+            // Swallow dupes if any; map store errors to io::Error
+            let _ = set.insert(v).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        }
+        Ok(set)
+    }
+}
+
 
 impl<V> UnorderedSet<V, MainStorage>
 where
