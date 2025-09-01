@@ -17,6 +17,7 @@ use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tracing::error;
 
+mod fast_path;
 mod handlers;
 mod run;
 pub mod sync;

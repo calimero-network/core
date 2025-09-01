@@ -624,6 +624,7 @@ impl SyncManager {
                 .await?
             }
             InitPayload::StateSync {
+                context_id: _,
                 root_hash: their_root_hash,
                 application_id: their_application_id,
             } => {
@@ -660,6 +661,7 @@ impl SyncManager {
                 .await?
             }
             InitPayload::DeltaSync {
+                context_id: _,
                 root_hash: their_root_hash,
                 application_id: their_application_id,
             } => {

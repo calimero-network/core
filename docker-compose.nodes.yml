@@ -1,10 +1,5 @@
 x-node-defaults: &node-defaults
-  build:
-    context: .
-    dockerfile: Dockerfile
-    target: runtime
-    secrets:
-      - gh-token
+  image: localhost:5002/calimero-node:latest
   user: root
   volumes:
     - calimero_auth_node:/calimero

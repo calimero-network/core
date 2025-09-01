@@ -379,16 +379,16 @@ impl Handler<NetworkEvent> for NodeManager {
                         }
                         .into_actor(self),
                     );
-                } else {
-                    debug!(%peer_id, "Handling sync protocol stream");
-                    let sync_manager = self.sync_manager.clone();
-                    let _ignored = ctx.spawn(
-                        async move {
-                            sync_manager.handle_opened_stream(stream).await;
+                                        } else {
+                            debug!(%peer_id, "Handling sync protocol stream");
+                            let sync_manager = self.sync_manager.clone();
+                            let _ignored = ctx.spawn(
+                                async move {
+                                    sync_manager.handle_opened_stream(stream).await;
+                                }
+                                .into_actor(self),
+                            );
                         }
-                        .into_actor(self),
-                    );
-                }
             }
             NetworkEvent::BlobRequested {
                 blob_id,

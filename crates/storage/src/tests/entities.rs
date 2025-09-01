@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use claims::{assert_ge, assert_le};
 use sha2::{Digest, Sha256};
 use velcro::btree_map;
+use calimero_node_primitives::clock::Hlc;
 
 use super::*;
 use crate::interface::MainInterface;
@@ -181,8 +182,8 @@ mod element__constructor {
         assert_eq!(element.path, path);
         assert_ge!(element.metadata.created_at, timestamp1);
         assert_le!(element.metadata.created_at, timestamp2);
-        assert_ge!(*element.metadata.updated_at, timestamp1);
-        assert_le!(*element.metadata.updated_at, timestamp2);
+        assert_ge!(*element.metadata.updated_at, Hlc::from_u64(timestamp1, [0; 32]));
+        assert_le!(*element.metadata.updated_at, Hlc::from_u64(timestamp2, [0; 32]));
         assert!(element.is_dirty);
     }
 }
@@ -276,16 +277,16 @@ mod element__public_methods {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        assert_ge!(person.element().updated_at(), timestamp1);
-        assert_le!(person.element().updated_at(), timestamp2);
+        assert_ge!(person.element().updated_at(), Hlc::from_u64(timestamp1, [0; 32]));
+        assert_le!(person.element().updated_at(), Hlc::from_u64(timestamp2, [0; 32]));
 
         person.element_mut().update();
         let timestamp3 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        assert_ge!(person.element().updated_at(), timestamp2);
-        assert_le!(person.element().updated_at(), timestamp3);
+        assert_ge!(person.element().updated_at(), Hlc::from_u64(timestamp2, [0; 32]));
+        assert_le!(person.element().updated_at(), Hlc::from_u64(timestamp3, [0; 32]));
     }
 }
 

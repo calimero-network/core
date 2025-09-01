@@ -138,8 +138,8 @@ impl SyncManager {
         self.send(
             stream,
             &StreamMessage::Message {
-                sequence_id: sqx_out.next(),
-                payload: MessagePayload::KeyShare { sender_key },
+                sequence_id: sqx_out.next() as u64,
+                payload: MessagePayload::KeyShare { sender_key: sender_key.as_ref().into() },
                 next_nonce: our_nonce,
             },
             Some((shared_key, our_nonce)),
@@ -165,9 +165,13 @@ impl SyncManager {
 
         let mut sqx_in = Sequencer::default();
 
-        sqx_in.test(sequence_id)?;
+        sqx_in.test(sequence_id.try_into().unwrap())?;
 
-        their_identity.sender_key = Some(sender_key);
+        let sender_key_bytes: [u8; 32] = sender_key
+            .as_ref()
+            .try_into()
+            .map_err(|_| eyre::eyre!("invalid sender_key length"))?;
+        their_identity.sender_key = Some(sender_key_bytes.into());
 
         self.context_client
             .update_identity(&context.id, &their_identity)?;

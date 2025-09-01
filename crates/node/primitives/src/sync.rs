@@ -52,16 +52,33 @@ pub struct BatchDelta<'a> {
 /// Stream message types for P2P communication
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum StreamMessage<'a> {
-    Init { payload: InitPayload },
-    Message { payload: MessagePayload<'a> },
+    Init {
+        context_id: ContextId,
+        party_id: PublicKey,
+        payload: InitPayload,
+        next_nonce: [u8; 12],
+    },
+    Message {
+        sequence_id: u64,
+        payload: MessagePayload<'a>,
+        next_nonce: [u8; 12],
+    },
     OpaqueError,
 }
 
 /// Initialization payload for stream setup
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum InitPayload {
-    DeltaSync { context_id: ContextId },
-    StateSync { context_id: ContextId },
+    DeltaSync { 
+        context_id: ContextId,
+        root_hash: Hash,
+        application_id: calimero_primitives::application::ApplicationId,
+    },
+    StateSync { 
+        context_id: ContextId,
+        root_hash: Hash,
+        application_id: calimero_primitives::application::ApplicationId,
+    },
     BlobShare { blob_id: BlobId },
     KeyShare,
 }
@@ -69,7 +86,12 @@ pub enum InitPayload {
 /// Message payload for ongoing communication
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum MessagePayload<'a> {
-    DeltaSync { artifact: Cow<'a, [u8]> },
+    DeltaSync { 
+        member: PublicKey,
+        height: NonZeroUsize,
+        delta: Option<Cow<'a, [u8]>>,
+        artifact: Cow<'a, [u8]>,
+    },
     StateSync { artifact: Cow<'a, [u8]> },
     BlobShare { chunk: Cow<'a, [u8]> },
     KeyShare { sender_key: Cow<'a, [u8]> },

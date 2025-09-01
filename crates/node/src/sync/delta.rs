@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::pin::pin;
+use std::borrow::Cow;
 
 use calimero_context_primitives::ContextAtomic;
 use calimero_crypto::{Nonce, SharedKey};
@@ -39,6 +40,7 @@ impl SyncManager {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::DeltaSync {
+                    context_id: context.id,
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
@@ -60,6 +62,7 @@ impl SyncManager {
                     party_id,
                     payload:
                         InitPayload::DeltaSync {
+                            context_id: _,
                             root_hash,
                             application_id,
                         },
@@ -142,11 +145,12 @@ impl SyncManager {
         self.send(
             stream,
             &StreamMessage::Message {
-                sequence_id: sqx_out.next(),
+                sequence_id: sqx_out.next() as u64,
                 payload: MessagePayload::DeltaSync {
                     member: [0; 32].into(),
                     height: NonZeroUsize::MIN,
                     delta: None,
+                    artifact: Cow::Borrowed(b""),
                 },
                 next_nonce: our_new_nonce,
             },
@@ -238,6 +242,7 @@ impl SyncManager {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::DeltaSync {
+                    context_id: context.id,
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
@@ -331,6 +336,7 @@ impl SyncManager {
                             member,
                             height,
                             delta,
+                            artifact: _,
                         },
                     next_nonce,
                 } => (sequence_id, member, height, delta, next_nonce),
@@ -341,7 +347,7 @@ impl SyncManager {
 
             their_nonce = their_new_nonce;
 
-            sqx_in.test(sequence_id)?;
+            sqx_in.test(sequence_id.try_into().unwrap())?;
 
             'handler: {
                 if let Some(delta) = delta {
@@ -505,11 +511,12 @@ impl SyncManager {
                     self.send(
                         stream,
                         &StreamMessage::Message {
-                            sequence_id: sqx_out.next(),
+                            sequence_id: sqx_out.next() as u64,
                             payload: MessagePayload::DeltaSync {
                                 member,
                                 height,
                                 delta: Some(data.as_ref().into()),
+                                artifact: Cow::Borrowed(b""),
                             },
                             next_nonce: our_new_nonce,
                         },
@@ -545,11 +552,12 @@ impl SyncManager {
                 self.send(
                     stream,
                     &StreamMessage::Message {
-                        sequence_id: sqx_out.next(),
+                        sequence_id: sqx_out.next() as u64,
                         payload: MessagePayload::DeltaSync {
                             member: [0; 32].into(),
                             height: NonZeroUsize::MIN,
                             delta: Some(b"".into()),
+                            artifact: Cow::Borrowed(b""),
                         },
                         next_nonce: [0; 12],
                     },
@@ -578,11 +586,12 @@ impl SyncManager {
             self.send(
                 stream,
                 &StreamMessage::Message {
-                    sequence_id: sqx_out.next(),
+                    sequence_id: sqx_out.next() as u64,
                     payload: MessagePayload::DeltaSync {
                         member,
                         height,
                         delta: None,
+                        artifact: Cow::Borrowed(b""),
                     },
                     next_nonce: our_new_nonce,
                 },

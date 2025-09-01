@@ -450,8 +450,14 @@ impl ChildInfo {
 
     /// The timestamp when the child was last updated.
     #[must_use]
-    pub fn updated_at(&self) -> u64 {
+    pub fn updated_at(&self) -> Hlc {
         *self.metadata.updated_at
+    }
+
+    /// The timestamp when the child was last updated (backward compatibility).
+    #[must_use]
+    pub fn updated_at_u64(&self) -> u64 {
+        self.metadata.updated_at.to_u64()
     }
 }
 
@@ -735,7 +741,7 @@ impl Element {
     pub fn update(&mut self) {
         self.is_dirty = true;
         // Use backward compatibility with u64 timestamp
-        *self.metadata.updated_at = time_now().into();
+        *self.metadata.updated_at = Hlc::from_u64(time_now(), [0; 32]);
     }
 
     /// Updates the metadata for the [`Element`] with a specific node ID for HLC.

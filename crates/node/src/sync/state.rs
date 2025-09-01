@@ -38,6 +38,7 @@ impl SyncManager {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::StateSync {
+                    context_id: context.id,
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
@@ -59,6 +60,7 @@ impl SyncManager {
                     party_id,
                     payload:
                         InitPayload::StateSync {
+                            context_id: _,
                             root_hash,
                             application_id,
                         },
@@ -141,7 +143,7 @@ impl SyncManager {
         self.send(
             stream,
             &StreamMessage::Message {
-                sequence_id: sqx_out.next(),
+                sequence_id: sqx_out.next() as u64,
                 payload: MessagePayload::StateSync {
                     artifact: b"".into(),
                 },
@@ -225,6 +227,7 @@ impl SyncManager {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::StateSync {
+                    context_id: context.id,
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
@@ -305,7 +308,7 @@ impl SyncManager {
 
             their_nonce = their_new_nonce;
 
-            sqx_in.test(sequence_id)?;
+            sqx_in.test(sequence_id.try_into().unwrap())?;
 
             if artifact.is_empty() && sqx_out.current() != 0 {
                 break;
@@ -344,7 +347,7 @@ impl SyncManager {
             self.send(
                 stream,
                 &StreamMessage::Message {
-                    sequence_id: sqx_out.next(),
+                    sequence_id: sqx_out.next() as u64,
                     payload: MessagePayload::StateSync {
                         artifact: Cow::from(&outcome.artifact),
                     },

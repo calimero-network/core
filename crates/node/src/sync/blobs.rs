@@ -106,7 +106,7 @@ impl SyncManager {
                     }
                 };
 
-                sequencer.test(sequence_id)?;
+                sequencer.test(sequence_id.try_into().unwrap())?;
 
                 if chunk.is_empty() {
                     break;
@@ -193,7 +193,7 @@ impl SyncManager {
             self.send(
                 stream,
                 &StreamMessage::Message {
-                    sequence_id: sequencer.next(),
+                    sequence_id: sequencer.next() as u64,
                     payload: MessagePayload::BlobShare {
                         chunk: chunk.into_vec().into(),
                     },
@@ -209,7 +209,7 @@ impl SyncManager {
         self.send(
             stream,
             &StreamMessage::Message {
-                sequence_id: sequencer.next(),
+                sequence_id: sequencer.next() as u64,
                 payload: MessagePayload::BlobShare { chunk: b"".into() },
                 next_nonce: [0; NONCE_LEN],
             },

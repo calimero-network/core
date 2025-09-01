@@ -127,16 +127,11 @@ impl Hlc {
     /// This is a lossy conversion that prioritizes physical time
     /// and uses logical time as a tiebreaker in the lower bits.
     /// 
-    /// Encoding: 48 bits for physical time (milliseconds since epoch),
-    /// 16 bits for logical time (max 65535 events per millisecond)
+    /// Convert to u64 for backward compatibility
+    /// 
+    /// Returns the physical time in nanoseconds directly
     pub fn to_u64(&self) -> u64 {
-        // Convert nanoseconds to milliseconds to fit in 48 bits
-        let pt_ms = self.pt / 1_000_000;
-        // Ensure logical time fits in 16 bits
-        let lt_16 = (self.lt & 0xFFFF) as u64;
-        
-        // Combine: 48 bits for physical time, 16 bits for logical time
-        (pt_ms << 16) | lt_16
+        self.pt
     }
 
     /// Create from u64 (for backward compatibility)
@@ -144,10 +139,10 @@ impl Hlc {
     /// This is a lossy conversion that reconstructs an approximation
     /// of the original HLC.
     pub fn from_u64(value: u64, node_id: [u8; 32]) -> Self {
-        let pt_ms = value >> 16;
-        let lt = (value & 0xFFFF) as u64;
-        // Convert back to nanoseconds
-        let pt = pt_ms * 1_000_000;
+        // For backward compatibility, treat the u64 as a simple timestamp
+        // Use the value directly as physical time in nanoseconds
+        let pt = value;
+        let lt = 0;
         Self { pt, lt, node_id }
     }
 }
@@ -233,30 +228,24 @@ mod tests {
         let u64_value = original.to_u64();
         let reconstructed = Hlc::from_u64(u64_value, node_id);
         
-        // The conversion is lossy (converts to milliseconds and back), so we can't guarantee exact equality
-        // But we can check that the node_id is preserved and basic properties are maintained
+        // For backward compatibility, the conversion should preserve the node_id
         assert_eq!(reconstructed.node_id, original.node_id);
         
-        // The reconstructed physical time should be within 1ms of original (due to millisecond conversion)
-        let pt_diff = if reconstructed.pt > original.pt {
-            reconstructed.pt - original.pt
-        } else {
-            original.pt - reconstructed.pt
-        };
-        assert!(pt_diff <= 1_000_000); // Within 1ms (1,000,000 nanoseconds)
+        // The reconstructed physical time should be exactly the same as original
+        // since we're using the u64 value directly as physical time
+        assert_eq!(reconstructed.pt, original.pt);
         
-        // The reconstructed logical time should be <= original (due to 16-bit truncation)
-        assert!(reconstructed.lt <= original.lt);
+        // The reconstructed logical time should be 0 (reset for backward compatibility)
+        assert_eq!(reconstructed.lt, 0);
         
         // The conversion should preserve the basic ordering relationship
-        // If original has higher or equal physical time, it should be newer or equal
-        if original.pt >= reconstructed.pt {
-            assert!(original.is_newer_than_or_equal(&reconstructed));
-        }
-        
-        // If reconstructed has higher or equal physical time, it should be newer or equal
-        if reconstructed.pt >= original.pt {
+        // Since physical time is preserved, but logical time is reset to 0,
+        // the reconstructed should be newer or equal only if original has logical time 0
+        if original.lt == 0 {
             assert!(reconstructed.is_newer_than_or_equal(&original));
+        } else {
+            // If original has logical time > 0, reconstructed will be older due to logical time reset
+            assert!(!reconstructed.is_newer_than(&original));
         }
     }
 
