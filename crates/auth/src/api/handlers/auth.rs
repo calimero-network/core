@@ -46,9 +46,7 @@ pub fn error_response(
 /// Login request handler
 ///
 /// This endpoint serves the login page.
-pub async fn login_handler(
-    state: Extension<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn login_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     let enabled_providers = state.0.auth_service.providers();
 
     if !enabled_providers.is_empty() {
