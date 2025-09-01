@@ -3,25 +3,19 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
-use base64::Engine;
 use serde::{Deserialize, Serialize};
-use soroban_client::contract::{ContractBehavior, Contracts};
-use soroban_client::error::Error;
-use soroban_client::keypair::{Keypair, KeypairBehavior};
-use soroban_client::network::{NetworkPassphrase, Networks};
-use soroban_client::server::{Options, Server};
-use soroban_client::soroban_rpc::{
-    GetTransactionResponse, RawSimulateHostFunctionResult, RawSimulateTransactionResponse,
-    SendTransactionStatus,
+use soroban_client::{
+    contract::{ContractBehavior, Contracts},
+    keypair::{Keypair, KeypairBehavior},
+    network::{NetworkPassphrase, Networks},
+    soroban_rpc::TransactionStatus,
+    transaction::{TransactionBuilder, TransactionBuilderBehavior, TransactionBehavior, ReadXdr},
+    xdr::{ScVal, Limits, WriteXdr},
+    Options, Server,
 };
-use soroban_client::transaction::{TransactionBehavior, TransactionBuilder};
-use soroban_client::transaction_builder::TransactionBuilderBehavior;
-use soroban_client::xdr::ScVal;
-use soroban_sdk::xdr::{FromXdr, ToXdr};
-use soroban_sdk::{Bytes, Env};
 use thiserror::Error;
+use tokio::time;
 use url::Url;
 
 use super::Protocol;
@@ -62,7 +56,7 @@ pub struct StellarConfig<'a> {
 #[derive(Clone, Debug)]
 struct Network {
     client: Arc<Server>,
-    network: String,
+    network: &'static str,
     keypair: Keypair,
 }
 
@@ -79,12 +73,14 @@ impl<'a> StellarTransport<'a> {
         for (network_id, network_config) in &config.networks {
             let keypair: Keypair = Keypair::from_secret(&network_config.secret_key).unwrap();
 
-            let options: Options = Options {
-                allow_http: Some(true),
-                timeout: Some(1000),
-                headers: None,
+            let options = Options {
+                allow_http: true,
+                timeout: 10,
+                headers: Default::default(),
+                friendbot_url: None,
             };
-            let server = Server::new(network_config.rpc_url.as_str(), options)
+            
+            let server = Server::new(&network_config.rpc_url.to_string(), options)
                 .expect("Failed to create server");
 
             let network = match network_config.network.as_str() {
@@ -98,8 +94,8 @@ impl<'a> StellarTransport<'a> {
                 network_id.clone(),
                 Network {
                     client: Arc::new(server),
+                    network,
                     keypair,
-                    network: network.to_owned(),
                 },
             );
         }
@@ -125,7 +121,7 @@ pub enum StellarError {
 #[derive(Copy, Clone, Debug, Error)]
 #[non_exhaustive]
 pub enum ErrorOperation {
-    #[error("quering contract")]
+    #[error("querying contract")]
     Query,
     #[error("updating contract")]
     Mutate,
@@ -140,7 +136,7 @@ impl ProtocolTransport for StellarTransport<'_> {
         &self,
         request: TransportRequest<'_>,
         payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Self::Error> {
+    ) -> Result<Vec<u8>, StellarError> {
         let Some(network) = self.networks.get(&request.network_id) else {
             return Err(StellarError::UnknownNetwork(
                 request.network_id.into_owned(),
@@ -164,6 +160,14 @@ impl Network {
         method: &str,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, StellarError> {
+        // Parse arguments from payload if provided
+        let args = if !args.is_empty() {
+            self.parse_args_from_payload(&args)?
+        } else {
+            vec![]
+        };
+
+        // Get account for transaction building
         let account = self
             .client
             .get_account(self.keypair.public_key().as_str())
@@ -173,50 +177,38 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
+        // Build and simulate transaction
         let source_account = Rc::new(RefCell::new(account));
-        let mut encoded_args = None;
-
-        // First convert the XDR bytes back to a Vec<Val>
-        if !args.is_empty() {
-            let env = Env::default();
-            // Convert raw bytes to Soroban Bytes
-            let env_bytes = Bytes::from_slice(&env, &args);
-            // Convert to array of Vals
-            let vals: soroban_sdk::Vec<ScVal> = soroban_sdk::Vec::from_xdr(&env, &env_bytes)
-                .map_err(|_| StellarError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: "Failed to decode XDR".to_owned(),
-                })?;
-
-            encoded_args = Some(vals.iter().collect::<Vec<_>>());
-        }
-
-        let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
+        let transaction = TransactionBuilder::new(source_account, self.network, None)
             .fee(10000u32)
-            .add_operation(contract.call(method, encoded_args))
+            .add_operation(contract.call(method, Some(args)))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
 
-        let result: Result<RawSimulateTransactionResponse, Error> = self
+        let simulation_result = self
             .client
-            .simulate_transaction(transaction.clone(), None)
-            .await;
-
-        let xdr_results: Vec<RawSimulateHostFunctionResult> = result.unwrap().results.unwrap();
-
-        match xdr_results.first().and_then(|xdr| xdr.xdr.as_ref()) {
-            Some(xdr_bytes) => base64::engine::general_purpose::STANDARD
-                .decode(xdr_bytes)
-                .map_err(|_| StellarError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: "Failed to decode XDR response".to_owned(),
-                }),
-            None => Err(StellarError::Custom {
+            .simulate_transaction(&transaction, None)
+            .await
+            .map_err(|e| StellarError::Custom {
                 operation: ErrorOperation::Query,
-                reason: "No XDR results found".to_owned(),
-            }),
-        }
+                reason: format!("Simulation failed: {}", e),
+            })?;
+
+        // Extract result from simulation
+        let result = simulation_result
+            .to_result()
+            .map(|(sc_val, _)| sc_val)
+            .ok_or_else(|| StellarError::Custom {
+                operation: ErrorOperation::Query,
+                reason: "No result from simulation".to_string(),
+            })?;
+
+        // Convert ScVal to bytes
+        Ok(result.to_xdr(Limits::none()).map_err(|_| StellarError::Custom {
+            operation: ErrorOperation::Query,
+            reason: "Failed to convert result to XDR".to_string(),
+        })?)
     }
 
     async fn mutate(
@@ -225,6 +217,14 @@ impl Network {
         method: &str,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, StellarError> {
+        // Parse arguments from payload if provided
+        let args = if !args.is_empty() {
+            self.parse_args_from_payload(&args)?
+        } else {
+            vec![]
+        };
+
+        // Get account for transaction building
         let account = self
             .client
             .get_account(self.keypair.public_key().as_str())
@@ -234,134 +234,129 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
-        let source_account = Rc::new(RefCell::new(account));
-
-        let mut encoded_args = None;
-
-        if !args.is_empty() {
-            let env = Env::default();
-            let env_bytes = Bytes::from_slice(&env, &args);
-            let sc_val: ScVal =
-                ScVal::from_xdr(&env, &env_bytes).map_err(|_| StellarError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: "Failed to convert to ScVal".to_owned(),
-                })?;
-            encoded_args = Some(vec![sc_val]);
-        }
-
-        let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
+        // Build transaction
+        let source_account = Rc::new(RefCell::new(account.clone()));
+        let transaction = TransactionBuilder::new(source_account, self.network, None)
             .fee(10000u32)
-            .add_operation(contract.call(method, encoded_args))
+            .add_operation(contract.call(method, Some(args.clone())))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
 
+        // Simulate first to catch errors early
         let simulation_result = self
             .client
-            .simulate_transaction(transaction.clone(), None)
-            .await;
+            .simulate_transaction(&transaction, None)
+            .await
+            .map_err(|e| StellarError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Simulation failed: {}", e),
+            })?;
 
-        if let Err(err) = simulation_result {
+        // Check if simulation was successful
+        if simulation_result.error.is_some() {
             return Err(StellarError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: format!("Simulation failed: {:?}", err),
+                reason: "Simulation failed".to_string(),
             });
         }
 
-        let signed_tx = {
-            let prepared_tx = self
-                .client
-                .prepare_transaction(transaction, self.network.as_str())
-                .await;
-            if let Ok(mut tx) = prepared_tx {
-                tx.sign(&[self.keypair.clone()]);
-                Some(tx.clone())
-            } else {
-                return Err(StellarError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: format!("Failed to create transaction: {:?}", prepared_tx),
-                });
-            }
-        };
+        // Build the final transaction
+        let final_transaction = TransactionBuilder::new(
+            Rc::new(RefCell::new(account.clone())),
+            self.network,
+            None,
+        )
+        .fee(10000u32)
+        .add_operation(contract.call(method, Some(args)))
+        .set_timeout(15)
+        .expect("Transaction timeout")
+        .build();
 
-        let result = match signed_tx {
-            Some(tx) => match self.client.send_transaction(tx).await {
+        // Sign the transaction
+        let mut signed_tx = final_transaction;
+        signed_tx.sign(&[self.keypair.clone()]);
+
+        // Send transaction
+        let response = self
+            .client
+            .send_transaction(signed_tx)
+            .await
+            .map_err(|e| StellarError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to send transaction: {}", e),
+            })?;
+
+        // Wait for transaction to be confirmed
+        let hash = response.hash;
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 35;
+
+        while attempts < MAX_ATTEMPTS {
+            match self.client.get_transaction(hash.as_str()).await {
                 Ok(response) => {
-                    let hash = response.base.hash;
-                    let status = response.base.status;
-                    let start = Instant::now();
-
-                    if matches!(
-                        status,
-                        SendTransactionStatus::Pending | SendTransactionStatus::Success
-                    ) {
-                        loop {
-                            match self.client.get_transaction(hash.as_str()).await {
-                                Ok(GetTransactionResponse::Successful(info)) => {
-                                    break Some(info.returnValue)
-                                }
-                                Ok(GetTransactionResponse::Failed(f)) => {
-                                    return Err(StellarError::Custom {
+                    match response.status {
+                        TransactionStatus::Success => {
+                            // Get the return value from the transaction result
+                            if let Some((_, return_value)) = response.to_result_meta() {
+                                if let Some(sc_val) = return_value {
+                                    return Ok(sc_val.to_xdr(Limits::none()).map_err(|_| StellarError::Custom {
                                         operation: ErrorOperation::Mutate,
-                                        reason: format!("Transaction failed: {:?}", f),
-                                    });
+                                        reason: "Failed to convert return value to XDR".to_string(),
+                                    })?);
+                                } else {
+                                    return Ok(vec![]); // No return value
                                 }
-                                _ if Instant::now().duration_since(start).as_secs() > 35 => {
-                                    break None
-                                }
-                                _ => continue,
+                            } else {
+                                return Ok(vec![]); // No result meta
                             }
                         }
-                    } else {
-                        Some(None)
+                        TransactionStatus::Failed => {
+                            return Err(StellarError::Custom {
+                                operation: ErrorOperation::Mutate,
+                                reason: "Transaction failed".to_string(),
+                            });
+                        }
+                        TransactionStatus::NotFound => {
+                            // Transaction still pending, wait and retry
+                            attempts += 1;
+                            time::sleep(time::Duration::from_secs(1)).await;
+                            continue;
+                        }
                     }
                 }
-                Err(err) => {
-                    return Err(StellarError::Custom {
-                        operation: ErrorOperation::Mutate,
-                        reason: format!("Transaction failed: {:?}", err),
-                    })
+                Err(e) => {
+                    attempts += 1;
+                    if attempts >= MAX_ATTEMPTS {
+                        return Err(StellarError::Custom {
+                            operation: ErrorOperation::Mutate,
+                            reason: format!("Failed to get transaction status after {} attempts: {}", attempts, e),
+                        });
+                    }
+                    time::sleep(time::Duration::from_secs(1)).await;
                 }
-            },
-            None => {
-                return Err(StellarError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: "Transaction failed".to_owned(),
-                })
             }
-        };
-        match result.flatten() {
-            Some(sc_val) => match sc_val {
-                ScVal::Void => Ok(vec![]),
-                val @ (ScVal::Bool(_)
-                | ScVal::Error(_)
-                | ScVal::U32(_)
-                | ScVal::I32(_)
-                | ScVal::U64(_)
-                | ScVal::I64(_)
-                | ScVal::Timepoint(_)
-                | ScVal::Duration(_)
-                | ScVal::U128(_)
-                | ScVal::I128(_)
-                | ScVal::U256(_)
-                | ScVal::I256(_)
-                | ScVal::Bytes(_)
-                | ScVal::String(_)
-                | ScVal::Symbol(_)
-                | ScVal::Vec(_)
-                | ScVal::Map(_)
-                | ScVal::Address(_)
-                | ScVal::LedgerKeyContractInstance
-                | ScVal::LedgerKeyNonce(_)
-                | ScVal::ContractInstance(_)) => {
-                    let env = Env::default();
-                    Ok(val.to_xdr(&env).to_alloc_vec())
-                }
-            },
-            None => Err(StellarError::Custom {
-                operation: ErrorOperation::Mutate,
-                reason: "No value returned".to_owned(),
-            }),
         }
+
+        Err(StellarError::Custom {
+            operation: ErrorOperation::Mutate,
+            reason: "Transaction confirmation timeout".to_string(),
+        })
+    }
+
+    /// Parse arguments from the payload bytes
+    fn parse_args_from_payload(&self, payload: &[u8]) -> Result<Vec<ScVal>, StellarError> {
+        // Try to parse as a single ScVal first (for backward compatibility)
+        if let Ok(sc_val) = ScVal::from_xdr(payload, Limits::none()) {
+            return Ok(vec![sc_val]);
+        }
+
+        // Try to parse as a vector of ScVals
+        if let Ok(mut sc_vals) = soroban_client::xdr::VecM::<ScVal>::from_xdr(payload, Limits::none()) {
+            return Ok(sc_vals.into_iter().map(|v| v.clone()).collect());
+        }
+
+        // If all parsing fails, return empty args
+        Ok(vec![])
     }
 }
