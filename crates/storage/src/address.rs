@@ -183,29 +183,42 @@ impl Path {
     ///
     pub fn new<S: AsRef<str>>(path: S) -> Result<Self, PathError> {
         let string = path.as_ref();
+        
+        eprintln!("🔍 Path::new called with: '{}'", string);
+        eprintln!("🔍 Path::new - string length: {}", string.len());
+        eprintln!("🔍 Path::new - string starts with '::': {}", string.starts_with("::"));
 
         if string.is_empty() {
+            eprintln!("❌ Path::new - Empty string error");
             return Err(PathError::Empty);
         }
         if !string.starts_with("::") {
+            eprintln!("❌ Path::new - Not absolute error");
             return Err(PathError::NotAbsolute);
         }
 
         #[expect(clippy::string_slice, reason = "We know the string starts with `::`")]
         let segments = string[2..].split("::").collect::<Vec<&str>>();
+        
+        eprintln!("🔍 Path::new - segments: {:?}", segments);
+        eprintln!("🔍 Path::new - segments count: {}", segments.len());
 
         if segments.is_empty() {
+            eprintln!("❌ Path::new - Empty segments error");
             return Err(PathError::Empty);
         }
 
         let mut str: Flexstr<256> = Flexstr::new();
         let mut offsets = Vec::with_capacity(segments.len());
 
-        for segment in segments {
+        for (i, segment) in segments.iter().enumerate() {
+            eprintln!("🔍 Path::new - processing segment {}: '{}'", i, segment);
             if segment.is_empty() {
+                eprintln!("❌ Path::new - Empty segment error at index {}", i);
                 return Err(PathError::EmptySegment);
             }
             if str.len().saturating_add(segment.len()) > 255 {
+                eprintln!("❌ Path::new - Overflow error");
                 return Err(PathError::Overflow);
             }
             if str.len() > 0 {
@@ -213,7 +226,12 @@ impl Path {
                 offsets.push(str.len() as u8);
             }
             let _: bool = str.push_str(segment);
+            eprintln!("🔍 Path::new - after push, str length: {}", str.len());
         }
+
+        eprintln!("🔍 Path::new - final str: '{}'", str);
+        eprintln!("🔍 Path::new - final offsets: {:?}", offsets);
+        eprintln!("🔍 Path::new - success!");
 
         Ok(Self { offsets, path: str })
     }

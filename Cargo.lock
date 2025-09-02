@@ -2457,15 +2457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "channel-debug"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2550,6 +2541,16 @@ name = "clap_lex"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afb84c814227b90d6895e01398aee0d8033c00e7466aca416fb6a8e0eb19d8a7"
+
+[[package]]
+name = "collection-storage-test"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "serde",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "color-eyre"

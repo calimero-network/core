@@ -58,7 +58,7 @@ members = [
 
     "./apps/kv-store",
     "./apps/abi_conformance",
-    "./apps/channel-debug",
+    "./apps/collection-storage-test",
 
     "./e2e-tests",
     "./tools/calimero-abi",

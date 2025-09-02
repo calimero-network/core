@@ -449,7 +449,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
                     <Index<S>>::add_child_to(
                         parent.id(),
-                        "no collection, remove this nonsense",
+                        "root",
                         *this,
                     )?;
                 }
@@ -459,7 +459,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
                     <Index<S>>::add_child_to(
                         parent.id(),
-                        "no collection, remove this nonsense",
+                        "root",
                         ChildInfo::new(id, own_hash, metadata),
                     )?;
                 }

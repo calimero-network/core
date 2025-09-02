@@ -85,7 +85,7 @@ mod compat {
         type Child = RootChildDud;
 
         fn name(&self) -> &str {
-            "no collection, remove this nonsense"
+            "root"
         }
     }
 }
@@ -145,6 +145,9 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new(id: Option<Id>) -> Self {
         let id = id.unwrap_or_else(|| Id::random());
+        
+        eprintln!("🔍 Collection::new called with id: {:?}", id);
+        eprintln!("🔍 Collection::new - id.is_root(): {}", id.is_root());
 
         // Construct a proper path for the collection based on its ID
         let path_str = if id.is_root() {
@@ -153,39 +156,59 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             format!("::collection::{}", id)
         };
         
+        eprintln!("🔍 Collection::new - path_str: '{}'", path_str);
+
         let path = Path::new(&path_str).unwrap_or_else(|_| {
+            eprintln!("❌ Collection::new - Failed to create path from '{}', using fallback", path_str);
             // Fallback to a valid path if construction fails
             Path::new("::collection").expect("valid fallback path")
         });
+        
+        eprintln!("🔍 Collection::new - path created: {:?}", path);
 
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage: Element::new(&path, Some(id)),
             _priv: PhantomData,
         };
+        
+        eprintln!("🔍 Collection::new - Element created with path: {:?}", this.storage.path());
 
         if id.is_root() {
+            eprintln!("🔍 Collection::new - Saving root collection");
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
         } else {
+            eprintln!("🔍 Collection::new - Adding child to root");
             let _ =
                 <Interface<S>>::add_child_to(*ROOT_ID, &RootHandle, &mut this).expect("add child");
         }
+        
+        eprintln!("🔍 Collection::new - Collection created successfully with path: {:?}", this.path());
 
         this
     }
 
-    /// Inserts an item into the collection.
+        /// Inserts an item into the collection.
     fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
         let collection_path = self.path();
+        
+        // Debug: Log the collection path
+        eprintln!("🔍 Collection::insert - collection_path: {:?}", collection_path);
+        eprintln!("🔍 Collection::insert - collection_path as string: '{}'", collection_path);
         
         // Construct a proper path for the entry
         let entry_id = id.unwrap_or_else(|| Id::random());
         let entry_path_str = format!("{}::entry::{}", collection_path, entry_id);
         
+        eprintln!("🔍 Collection::insert - entry_path_str: '{}'", entry_path_str);
+        
         let entry_path = Path::new(&entry_path_str).unwrap_or_else(|_| {
+            eprintln!("❌ Collection::insert - Failed to create path from '{}', using fallback", entry_path_str);
             // Fallback to a valid path if construction fails
             Path::new("::entry").expect("valid fallback path")
         });
+        
+        eprintln!("🔍 Collection::insert - entry_path: {:?}", entry_path);
 
         let mut collection = CollectionMut::new(self);
 
@@ -194,7 +217,9 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             storage: Element::new(&entry_path, id),
         };
 
+        eprintln!("🔍 Collection::insert - About to call collection.insert");
         collection.insert(&mut entry)?;
+        eprintln!("🔍 Collection::insert - collection.insert succeeded");
 
         Ok(entry.item)
     }
