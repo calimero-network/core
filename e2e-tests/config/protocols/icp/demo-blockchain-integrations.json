@@ -78,7 +78,9 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": ["wait exactly 5s for the broadcast to propagate"]
+        "description": [
+          "wait exactly 5s for the broadcast to propagate"
+        ]
       }
     },
     {
