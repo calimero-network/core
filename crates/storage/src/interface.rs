@@ -447,11 +447,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         continue;
                     };
 
-                    <Index<S>>::add_child_to(
-                        parent.id(),
-                        "root",
-                        *this,
-                    )?;
+                    <Index<S>>::add_child_to(parent.id(), "root", *this)?;
                 }
 
                 if let Some(parent) = parent {

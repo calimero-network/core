@@ -47,22 +47,31 @@ pub struct CollectionStorageTest {
     // Basic collections
     vectors: UnorderedMap<TestKey, Vector<TestData>>,
     maps: UnorderedMap<TestKey, UnorderedMap<String, TestData>>,
-    
+
     // Nested collections to test storage hierarchy
     nested: UnorderedMap<TestKey, NestedCollection>,
-    
+
     // Deep nested collections (collections inside collections inside collections)
     deep_nested: UnorderedMap<TestKey, Vector<Vector<Vector<TestData>>>>,
-    
+
     // Test counters
     test_counter: u32,
 }
 
 #[app::event]
 pub enum Event<'a> {
-    CollectionCreated { key: &'a TestKey, collection_type: &'a str },
-    DataInserted { key: &'a TestKey, count: u32 },
-    TestCompleted { test_name: &'a str, success: bool },
+    CollectionCreated {
+        key: &'a TestKey,
+        collection_type: &'a str,
+    },
+    DataInserted {
+        key: &'a TestKey,
+        count: u32,
+    },
+    TestCompleted {
+        test_name: &'a str,
+        success: bool,
+    },
 }
 
 #[derive(Debug, Error, Serialize)]
@@ -98,13 +107,15 @@ impl CollectionStorageTest {
     /// Test basic Vector operations: create, insert, retrieve
     pub fn test_vector_basic(&mut self, key_name: String) -> app::Result<String> {
         app::log!("🔍 Testing basic Vector operations for key: {}", key_name);
-        
-        let key = TestKey { key: key_name.clone() };
-        
+
+        let key = TestKey {
+            key: key_name.clone(),
+        };
+
         // Create a new vector
         let mut vector = Vector::new();
         app::log!("🔍 Created empty vector");
-        
+
         // Insert test data
         for i in 0..5 {
             let data = TestData {
@@ -115,28 +126,36 @@ impl CollectionStorageTest {
             vector.push(data)?;
             app::log!("🔍 Inserted item {} into vector", i);
         }
-        
+
         // Store the vector in the main collection
         self.vectors.insert(key.clone(), vector)?;
         app::log!("🔍 Successfully stored vector in main collection");
-        
+
         // Retrieve and verify
         let retrieved_vector = self.vectors.get(&key).unwrap().unwrap();
         let count = retrieved_vector.len().unwrap_or(0);
         app::log!("🔍 Retrieved vector with {} items", count);
-        
+
         self.test_counter += 1;
-        app::emit!(Event::TestCompleted { test_name: "vector_basic", success: true });
-        
-        Ok(format!("Vector basic test completed successfully. Items: {}", count))
+        app::emit!(Event::TestCompleted {
+            test_name: "vector_basic",
+            success: true
+        });
+
+        Ok(format!(
+            "Vector basic test completed successfully. Items: {}",
+            count
+        ))
     }
 
     /// Test Vector persistence across operations
     pub fn test_vector_persistence(&mut self, key_name: String) -> app::Result<String> {
         app::log!("🔍 Testing Vector persistence for key: {}", key_name);
-        
-        let key = TestKey { key: key_name.clone() };
-        
+
+        let key = TestKey {
+            key: key_name.clone(),
+        };
+
         // Create and populate vector
         let mut vector = Vector::new();
         for i in 0..3 {
@@ -147,10 +166,10 @@ impl CollectionStorageTest {
             };
             vector.push(data)?;
         }
-        
+
         // Store vector
         self.vectors.insert(key.clone(), vector)?;
-        
+
         // Create a new vector with additional data to test persistence
         let mut new_vector = Vector::new();
         for i in 0..3 {
@@ -161,7 +180,7 @@ impl CollectionStorageTest {
             };
             new_vector.push(data)?;
         }
-        
+
         // Add the new item
         let new_data = TestData {
             id: 999,
@@ -169,19 +188,25 @@ impl CollectionStorageTest {
             value: 999,
         };
         new_vector.push(new_data)?;
-        
+
         // Re-insert the modified vector
         self.vectors.insert(key.clone(), new_vector)?;
         app::log!("🔍 Modified stored vector by re-inserting");
-        
+
         // Verify persistence
         let final_vector = self.vectors.get(&key).unwrap().unwrap();
         let count = final_vector.len().unwrap_or(0);
-        
+
         self.test_counter += 1;
-        app::emit!(Event::TestCompleted { test_name: "vector_persistence", success: count == 4 });
-        
-        Ok(format!("Vector persistence test completed. Final count: {}", count))
+        app::emit!(Event::TestCompleted {
+            test_name: "vector_persistence",
+            success: count == 4
+        });
+
+        Ok(format!(
+            "Vector persistence test completed. Final count: {}",
+            count
+        ))
     }
 
     // ============================================================================
@@ -190,14 +215,19 @@ impl CollectionStorageTest {
 
     /// Test basic UnorderedMap operations
     pub fn test_map_basic(&mut self, key_name: String) -> app::Result<String> {
-        app::log!("🔍 Testing basic UnorderedMap operations for key: {}", key_name);
-        
-        let key = TestKey { key: key_name.clone() };
-        
+        app::log!(
+            "🔍 Testing basic UnorderedMap operations for key: {}",
+            key_name
+        );
+
+        let key = TestKey {
+            key: key_name.clone(),
+        };
+
         // Create a new map
         let mut map = UnorderedMap::new();
         app::log!("🔍 Created empty UnorderedMap");
-        
+
         // Insert test data
         for i in 0..3 {
             let data = TestData {
@@ -208,19 +238,25 @@ impl CollectionStorageTest {
             map.insert(format!("key_{}", i), data)?;
             app::log!("🔍 Inserted item {} into map", i);
         }
-        
+
         // Store the map
         self.maps.insert(key.clone(), map)?;
         app::log!("🔍 Successfully stored map in main collection");
-        
+
         // Retrieve and verify
         let retrieved_map = self.maps.get(&key).unwrap().unwrap();
         let count = retrieved_map.len().unwrap_or(0);
-        
+
         self.test_counter += 1;
-        app::emit!(Event::TestCompleted { test_name: "map_basic", success: count == 3 });
-        
-        Ok(format!("Map basic test completed successfully. Items: {}", count))
+        app::emit!(Event::TestCompleted {
+            test_name: "map_basic",
+            success: count == 3
+        });
+
+        Ok(format!(
+            "Map basic test completed successfully. Items: {}",
+            count
+        ))
     }
 
     // ============================================================================
@@ -230,16 +266,18 @@ impl CollectionStorageTest {
     /// Test nested collections to validate storage hierarchy
     pub fn test_nested_collections(&mut self, key_name: String) -> app::Result<String> {
         app::log!("🔍 Testing nested collections for key: {}", key_name);
-        
-        let key = TestKey { key: key_name.clone() };
-        
+
+        let key = TestKey {
+            key: key_name.clone(),
+        };
+
         // Create nested collection structure
         let mut nested = NestedCollection {
             items: Vector::new(),
             metadata: UnorderedMap::new(),
             sub_collections: Vector::new(),
         };
-        
+
         // Populate items vector
         for i in 0..3 {
             let data = TestData {
@@ -249,11 +287,16 @@ impl CollectionStorageTest {
             };
             nested.items.push(data)?;
         }
-        
+
         // Populate metadata map
-        nested.metadata.insert("version".to_string(), "1.0".to_string())?;
-        nested.metadata.insert("description".to_string(), "Test nested collection".to_string())?;
-        
+        nested
+            .metadata
+            .insert("version".to_string(), "1.0".to_string())?;
+        nested.metadata.insert(
+            "description".to_string(),
+            "Test nested collection".to_string(),
+        )?;
+
         // Create sub-collections
         for i in 0..2 {
             let mut sub_vector = Vector::new();
@@ -267,21 +310,24 @@ impl CollectionStorageTest {
             }
             nested.sub_collections.push(sub_vector)?;
         }
-        
+
         // Store the nested collection
         self.nested.insert(key.clone(), nested)?;
         app::log!("🔍 Successfully stored nested collection");
-        
+
         // Retrieve and verify
         let retrieved_nested = self.nested.get(&key).unwrap().unwrap();
         let items_count = retrieved_nested.items.len().unwrap_or(0);
         let metadata_count = retrieved_nested.metadata.len().unwrap_or(0);
         let sub_collections_count = retrieved_nested.sub_collections.len().unwrap_or(0);
-        
+
         self.test_counter += 1;
         let success = items_count == 3 && metadata_count == 2 && sub_collections_count == 2;
-        app::emit!(Event::TestCompleted { test_name: "nested_collections", success });
-        
+        app::emit!(Event::TestCompleted {
+            test_name: "nested_collections",
+            success
+        });
+
         Ok(format!(
             "Nested collections test completed. Items: {}, Metadata: {}, Sub-collections: {}",
             items_count, metadata_count, sub_collections_count
@@ -291,12 +337,14 @@ impl CollectionStorageTest {
     /// Test deep nested collections (collections inside collections inside collections)
     pub fn test_deep_nested_collections(&mut self, key_name: String) -> app::Result<String> {
         app::log!("🔍 Testing deep nested collections for key: {}", key_name);
-        
-        let key = TestKey { key: key_name.clone() };
-        
+
+        let key = TestKey {
+            key: key_name.clone(),
+        };
+
         // Create deep nested structure: Vector<Vector<Vector<TestData>>>
         let mut root_vector = Vector::new();
-        
+
         for i in 0..2 {
             let mut level1_vector = Vector::new();
             for j in 0..2 {
@@ -313,15 +361,15 @@ impl CollectionStorageTest {
             }
             root_vector.push(level1_vector)?;
         }
-        
+
         // Store the deep nested collection
         self.deep_nested.insert(key.clone(), root_vector)?;
         app::log!("🔍 Successfully stored deep nested collection");
-        
+
         // Retrieve and verify the deep structure
         let retrieved = self.deep_nested.get(&key).unwrap().unwrap();
         let root_count = retrieved.len().unwrap_or(0);
-        
+
         // Test deeper access
         let mut total_deep_items = 0;
         for i in 0..root_count {
@@ -335,11 +383,14 @@ impl CollectionStorageTest {
                 }
             }
         }
-        
+
         self.test_counter += 1;
         let success = root_count == 2 && total_deep_items == 8; // 2 * 2 * 2 = 8
-        app::emit!(Event::TestCompleted { test_name: "deep_nested_collections", success });
-        
+        app::emit!(Event::TestCompleted {
+            test_name: "deep_nested_collections",
+            success
+        });
+
         Ok(format!(
             "Deep nested collections test completed. Root level: {}, Deep items: {}",
             root_count, total_deep_items
@@ -353,45 +404,45 @@ impl CollectionStorageTest {
     /// Run all tests in sequence
     pub fn run_all_tests(&mut self) -> app::Result<String> {
         app::log!("🚀 Starting comprehensive collection storage test suite");
-        
+
         let mut results = Vec::new();
-        
+
         // Test 1: Basic Vector operations
         match self.test_vector_basic("test_vector_1".to_string()) {
             Ok(result) => results.push(format!("✅ Vector Basic: {}", result)),
             Err(e) => results.push(format!("❌ Vector Basic: {:?}", e)),
         }
-        
+
         // Test 2: Vector persistence
         match self.test_vector_persistence("test_vector_2".to_string()) {
             Ok(result) => results.push(format!("✅ Vector Persistence: {}", result)),
             Err(e) => results.push(format!("❌ Vector Persistence: {:?}", e)),
         }
-        
+
         // Test 3: Basic Map operations
         match self.test_map_basic("test_map_1".to_string()) {
             Ok(result) => results.push(format!("✅ Map Basic: {}", result)),
             Err(e) => results.push(format!("❌ Map Basic: {:?}", e)),
         }
-        
+
         // Test 4: Nested collections
         match self.test_nested_collections("test_nested_1".to_string()) {
             Ok(result) => results.push(format!("✅ Nested Collections: {}", result)),
             Err(e) => results.push(format!("❌ Nested Collections: {:?}", e)),
         }
-        
+
         // Test 5: Deep nested collections
         match self.test_deep_nested_collections("test_deep_nested_1".to_string()) {
             Ok(result) => results.push(format!("✅ Deep Nested Collections: {}", result)),
             Err(e) => results.push(format!("❌ Deep Nested Collections: {:?}", e)),
         }
-        
+
         let summary = format!(
             "🎯 Test Suite Complete! {} tests executed.\n\n{}",
             self.test_counter,
             results.join("\n")
         );
-        
+
         Ok(summary)
     }
 
@@ -405,7 +456,7 @@ impl CollectionStorageTest {
         let map_count = self.maps.len().unwrap_or(0);
         let nested_count = self.nested.len().unwrap_or(0);
         let deep_nested_count = self.deep_nested.len().unwrap_or(0);
-        
+
         Ok(format!(
             "📊 Test Statistics:\n\
              - Vectors: {}\n\
@@ -420,50 +471,60 @@ impl CollectionStorageTest {
     /// Clear all test data and verify it's actually cleared
     pub fn clear_test_data(&mut self) -> app::Result<String> {
         app::log!("🧹 Clearing all test data");
-        
+
         // Clear all collections with error handling
         match self.vectors.clear() {
             Ok(_) => app::log!("🔍 Vectors cleared successfully"),
             Err(e) => app::log!("⚠️  Warning: Could not clear vectors: {:?}", e),
         }
-        
+
         match self.maps.clear() {
             Ok(_) => app::log!("🔍 Maps cleared successfully"),
             Err(e) => app::log!("⚠️  Warning: Could not clear maps: {:?}", e),
         }
-        
+
         // Clear nested collections
         match self.nested.clear() {
             Ok(_) => app::log!("🔍 Nested collections cleared successfully"),
             Err(e) => app::log!("⚠️  Warning: Could not clear nested collections: {:?}", e),
         }
-        
+
         // Clear deep nested collections
         match self.deep_nested.clear() {
             Ok(_) => app::log!("🔍 Deep nested collections cleared successfully"),
-            Err(e) => app::log!("⚠️  Warning: Could not clear deep nested collections: {:?}", e),
+            Err(e) => app::log!(
+                "⚠️  Warning: Could not clear deep nested collections: {:?}",
+                e
+            ),
         }
-        
+
         // Reset counter regardless of clear success
         self.test_counter = 0;
-        
+
         // 🔍 VERIFY that collections are actually empty
         app::log!("🔍 Verifying collections are actually empty...");
-        
+
         let vectors_count = self.vectors.len().unwrap_or(0);
         let maps_count = self.maps.len().unwrap_or(0);
         let nested_count = self.nested.len().unwrap_or(0);
         let deep_nested_count = self.deep_nested.len().unwrap_or(0);
-        
-        app::log!("🔍 Post-clear counts: Vectors={}, Maps={}, Nested={}, Deep Nested={}", 
-                 vectors_count, maps_count, nested_count, deep_nested_count);
-        
+
+        app::log!(
+            "🔍 Post-clear counts: Vectors={}, Maps={}, Nested={}, Deep Nested={}",
+            vectors_count,
+            maps_count,
+            nested_count,
+            deep_nested_count
+        );
+
         // Assert that all collections are empty
         if vectors_count == 0 && maps_count == 0 && nested_count == 0 && deep_nested_count == 0 {
             app::log!("✅ All collections verified as empty - storage cleanup successful!");
             Ok("Test data cleanup completed and verified - all collections are empty".to_string())
         } else {
-            app::log!("❌ Storage cleanup verification failed - some collections still contain data!");
+            app::log!(
+                "❌ Storage cleanup verification failed - some collections still contain data!"
+            );
             Ok(format!("⚠️  Warning: Some collections may not be fully cleared. Counts: Vectors={}, Maps={}, Nested={}, Deep Nested={}", 
                       vectors_count, maps_count, nested_count, deep_nested_count))
         }
@@ -475,13 +536,15 @@ impl CollectionStorageTest {
         let maps_count = self.maps.len().unwrap_or(0);
         let nested_count = self.nested.len().unwrap_or(0);
         let deep_nested_count = self.deep_nested.len().unwrap_or(0);
-        
-        let status = if vectors_count == 0 && maps_count == 0 && nested_count == 0 && deep_nested_count == 0 {
-            "EMPTY"
-        } else {
-            "CONTAINS_DATA"
-        };
-        
+
+        let status =
+            if vectors_count == 0 && maps_count == 0 && nested_count == 0 && deep_nested_count == 0
+            {
+                "EMPTY"
+            } else {
+                "CONTAINS_DATA"
+            };
+
         Ok(format!(
             "🔍 Storage State Verification:\n\
              Status: {}\n\

@@ -183,10 +183,13 @@ impl Path {
     ///
     pub fn new<S: AsRef<str>>(path: S) -> Result<Self, PathError> {
         let string = path.as_ref();
-        
+
         eprintln!("🔍 Path::new called with: '{}'", string);
         eprintln!("🔍 Path::new - string length: {}", string.len());
-        eprintln!("🔍 Path::new - string starts with '::': {}", string.starts_with("::"));
+        eprintln!(
+            "🔍 Path::new - string starts with '::': {}",
+            string.starts_with("::")
+        );
 
         if string.is_empty() {
             eprintln!("❌ Path::new - Empty string error");
@@ -199,7 +202,7 @@ impl Path {
 
         #[expect(clippy::string_slice, reason = "We know the string starts with `::`")]
         let segments = string[2..].split("::").collect::<Vec<&str>>();
-        
+
         eprintln!("🔍 Path::new - segments: {:?}", segments);
         eprintln!("🔍 Path::new - segments count: {}", segments.len());
 
