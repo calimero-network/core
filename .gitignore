@@ -21,3 +21,13 @@ dist/
 lib/
 node_modules/
 output/*
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/

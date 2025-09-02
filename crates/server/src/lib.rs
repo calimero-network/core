@@ -9,6 +9,7 @@ use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
 use multiaddr::Protocol;
+use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
@@ -21,6 +22,7 @@ pub mod admin;
 pub mod config;
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
+mod metrics;
 #[cfg(feature = "admin")]
 mod middleware;
 #[cfg(feature = "websocket")]
@@ -53,6 +55,7 @@ pub async fn start(
     ctx_client: ContextClient,
     node_client: NodeClient,
     datastore: Store,
+    prom_registry: Registry,
 ) -> EyreResult<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
@@ -103,7 +106,7 @@ pub async fn start(
     #[cfg(feature = "jsonrpc")]
     {
         if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
-            app = app.nest(path, router);
+            app = app.nest(&path, router);
             serviced = true;
         }
     }
@@ -111,7 +114,7 @@ pub async fn start(
     #[cfg(feature = "websocket")]
     {
         if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
-            app = app.route(path, handler);
+            app = app.route(&path, handler);
 
             serviced = true;
         }
@@ -121,10 +124,18 @@ pub async fn start(
     {
         if let Some((api_path, router)) = setup(&config, shared_state) {
             if let Some((site_path, serve_dir)) = site(&config) {
-                app = app.nest_service(site_path, serve_dir);
+                app = app.nest_service(site_path.as_str(), serve_dir);
             }
 
-            app = app.nest(api_path, router);
+            app = app.nest(&api_path, router);
+            serviced = true;
+        }
+    }
+
+    #[cfg(feature = "metrics")]
+    {
+        if let Some((path, router)) = metrics::service(&config, prom_registry) {
+            app = app.nest(path, router);
             serviced = true;
         }
     }

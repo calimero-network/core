@@ -2,18 +2,14 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    ExecutionRequest, ExecutionResponse, Request, RequestId, RequestPayload, Response,
-    ResponseBody, ResponseBodyResult, Version,
+    ExecutionRequest, Request, RequestId, RequestPayload, Version,
 };
 use clap::Parser;
-use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{OptionExt, Result};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
-use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
   # Execute a RPC method call
@@ -64,42 +60,18 @@ fn serde_value(s: &str) -> serde_json::Result<Value> {
     serde_json::from_str(s)
 }
 
-impl Report for Response {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("RPC Response").fg(Color::Blue)]);
-
-        match &self.body {
-            ResponseBody::Result(ResponseBodyResult(result)) => {
-                if let Ok(result) = serde_json::from_value::<ExecutionResponse>(result.clone()) {
-                    if let Some(output) = &result.output {
-                        let _ = table.add_row(vec![format!("Output: {:#}", output)]);
-                    } else {
-                        let _ = table.add_row(vec!["<no output>".to_owned()]);
-                    }
-                } else {
-                    let _ = table.add_row(vec![format!("Result: {:#}", result)]);
-                }
-            }
-            ResponseBody::Error(error) => {
-                let _ = table.add_row(vec![format!("Error: {}", error)]);
-            }
-        }
-        println!("{table}");
-    }
-}
-
 impl CallCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?;
 
-        let resolve_response = resolve_alias(connection, self.context, None).await?;
+        let resolve_response = client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let executor = resolve_alias(connection, self.executor, Some(context_id))
+        let executor = client
+            .resolve_alias(self.executor, Some(context_id))
             .await?
             .value()
             .cloned()
@@ -119,7 +91,14 @@ impl CallCommand {
             payload,
         );
 
-        let response: Response = connection.post("jsonrpc", request).await?;
+        let response = client.execute_jsonrpc(request).await?;
+
+        // Debug: Print what we're about to output
+        eprintln!(
+            "🔍 meroctl call output: {}",
+            serde_json::to_string_pretty(&response)?
+        );
+
         environment.output.write(&response);
 
         Ok(())

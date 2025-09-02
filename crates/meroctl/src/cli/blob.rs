@@ -41,7 +41,7 @@ pub enum BlobSubCommands {
 }
 
 impl BlobCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {
             BlobSubCommands::Delete(delete) => delete.run(environment).await,
             BlobSubCommands::Info(info) => info.run(environment).await,

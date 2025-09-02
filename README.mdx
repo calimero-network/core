@@ -159,6 +159,39 @@ flowchart TD
     node --> Network & runtime["Runtime"] & net & ctx & Blobstore
 ```
 
+## Version Management
+
+Calimero Core uses centralized version management (same as NEAR Protocol) where all crates share a single version number. This ensures consistent versioning across the entire workspace.
+
+### Quick Commands
+
+```bash
+# Install cargo-workspaces (same version as NEAR)
+cargo install --git https://github.com/miraclx/cargo-workspaces --tag v0.3.0 cargo-workspaces
+
+# Show all crate versions
+cargo ws list
+
+# Update all versions to 0.1.1
+cargo ws version custom 0.1.1 --yes
+
+# Publish all crates to crates.io
+cargo ws publish --yes --allow-dirty --force '*'
+```
+
+### How It Works
+
+- **Workspace version**: Set in `Cargo.toml` under `[workspace.metadata.workspaces].version`
+- **Crate versions**: Use `version.workspace = true` to inherit the workspace version
+- **Excluded crates**: Internal tools and examples are excluded from publishing
+- **Automated publishing**: GitHub Actions workflow handles crates.io publishing
+
+### Current Status
+
+- **Workspace version**: 0.1.1
+- **Using workspace versioning**: `calimero-primitives`, `calimero-client`, `calimero-network`
+- **Manual versions**: Most other crates (can be migrated)
+
 ## Contributing
 
 Calimero is Open Source under the [Apache License 2.0](LICENSE), and is the

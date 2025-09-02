@@ -2,13 +2,10 @@ use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
-use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
-use crate::connection::ConnectionInfo;
 use crate::output::ErrorLine;
 
 pub mod alias;
@@ -70,12 +67,10 @@ pub enum ContextIdentitySubcommand {
 }
 
 impl ContextIdentityCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
-
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {
-                list_identities(environment, connection, Some(context), owned).await
+                list_identities(environment, Some(context), owned).await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
@@ -85,7 +80,8 @@ impl ContextIdentityCommand {
                 context,
                 force,
             } => {
-                let resolve_response = resolve_alias(connection, context, None).await?;
+                let client = environment.client()?.clone();
+                let resolve_response = client.resolve_alias(context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -94,8 +90,7 @@ impl ContextIdentityCommand {
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
 
-                let lookup_result =
-                    lookup_alias(connection, default_alias, Some(context_id)).await?;
+                let lookup_result = client.lookup_alias(default_alias, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -117,13 +112,15 @@ impl ContextIdentityCommand {
                         "Overwriting existing default alias from '{}' to '{}'",
                         existing_identity, identity
                     )));
-                    let _ = delete_alias(connection, default_alias, Some(context_id))
+                    let _ = client
+                        .delete_alias(default_alias, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing default alias")?;
                 }
 
-                let res =
-                    create_alias(connection, default_alias, Some(context_id), identity).await?;
+                let res = client
+                    .create_alias_generic(default_alias, Some(context_id), identity)
+                    .await?;
 
                 environment.output.write(&res);
 
@@ -136,17 +133,17 @@ impl ContextIdentityCommand {
 }
 
 async fn list_identities(
-    environment: &Environment,
-    connection: &ConnectionInfo,
+    environment: &mut Environment,
     context: Option<Alias<ContextId>>,
     owned: bool,
 ) -> Result<()> {
-    let resolve_response = resolve_alias(
-        connection,
-        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-        None,
-    )
-    .await?;
+    let client = environment.client()?.clone();
+    let resolve_response = client
+        .resolve_alias(
+            context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+            None,
+        )
+        .await?;
 
     let context_id = match resolve_response.value().cloned() {
         Some(id) => id,
@@ -159,13 +156,8 @@ async fn list_identities(
         }
     };
 
-    let endpoint = if owned {
-        format!("admin-api/contexts/{}/identities-owned", context_id)
-    } else {
-        format!("admin-api/contexts/{}/identities", context_id)
-    };
-
-    let response: GetContextIdentitiesResponse = connection.get(&endpoint).await?;
+    let client = environment.client()?;
+    let response = client.get_context_identities(&context_id, owned).await?;
 
     environment.output.write(&response);
     Ok(())

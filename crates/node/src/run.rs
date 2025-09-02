@@ -20,6 +20,7 @@ use camino::Utf8PathBuf;
 use eyre::{OptionExt, WrapErr};
 use futures_util::{stream, StreamExt};
 use libp2p::identity::Keypair;
+use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
@@ -39,6 +40,8 @@ pub struct NodeConfig {
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
+    let mut registry = <Registry>::default();
+
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);
@@ -93,8 +96,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         }
     };
 
-    let network_manager =
-        NetworkManager::new(&config.network, network_event_recipient.clone()).await?;
+    let network_manager = NetworkManager::new(
+        &config.network,
+        network_event_recipient.clone(),
+        &mut registry,
+    )
+    .await?;
 
     let network_client = NetworkClient::new(network_recipient.clone());
 
@@ -130,6 +137,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         config.context.client.clone(),
+        &mut registry,
     );
 
     let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
@@ -163,6 +171,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_client.clone(),
         node_client.clone(),
         datastore.clone(),
+        registry,
     );
 
     let mut sync = pin!(sync_manager.start());

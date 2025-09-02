@@ -1,33 +1,11 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
-use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
-use crate::connection::ConnectionInfo;
 use crate::output::ErrorLine;
-
-// Helper function needed by the Add subcommand implementation
-async fn identity_exists_in_context(
-    connection: &ConnectionInfo,
-    context: &Alias<ContextId>,
-    target_identity: &PublicKey,
-) -> Result<bool> {
-    let context_id = resolve_alias(connection, *context, None)
-        .await?
-        .value()
-        .cloned()
-        .ok_or_eyre("unable to resolve alias")?;
-
-    let response: GetContextIdentitiesResponse = connection
-        .get(&format!("admin-api/contexts/{}/identities", context_id))
-        .await?;
-
-    Ok(response.data.identities.contains(target_identity))
-}
 
 #[derive(Copy, Clone, Debug, Parser)]
 pub struct ContextIdentityAliasCommand {
@@ -85,8 +63,21 @@ pub enum ContextIdentityAliasSubcommand {
 }
 
 impl ContextIdentityAliasCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?.clone();
+
+        // Extract context and resolve it to context_id
+        let context_id = match &self.command {
+            ContextIdentityAliasSubcommand::Add { context, .. }
+            | ContextIdentityAliasSubcommand::Remove { context, .. }
+            | ContextIdentityAliasSubcommand::Get { context, .. }
+            | ContextIdentityAliasSubcommand::List { context } => client
+                .resolve_alias(*context, None)
+                .await?
+                .value()
+                .cloned()
+                .ok_or_eyre("Failed to resolve context: no value found")?,
+        };
 
         match self.command {
             ContextIdentityAliasSubcommand::Add {
@@ -95,9 +86,11 @@ impl ContextIdentityAliasCommand {
                 context,
                 force,
             } => {
-                let resolve_response = resolve_alias(connection, context, None).await?;
+                // Check if identity exists in context using Client
+                let response = client.get_context_identities(&context_id, false).await?;
+                let identity_exists = response.data.identities.contains(&identity);
 
-                if !identity_exists_in_context(connection, &context, &identity).await? {
+                if !identity_exists {
                     environment.output.write(&ErrorLine(&format!(
                         "Identity '{}' does not exist in context '{}'",
                         identity, context
@@ -105,12 +98,7 @@ impl ContextIdentityAliasCommand {
                     return Ok(());
                 }
 
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-
-                let lookup_result = lookup_alias(connection, name, Some(context_id)).await?;
+                let lookup_result = client.lookup_alias(name, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -133,47 +121,37 @@ impl ContextIdentityAliasCommand {
                         "Overwriting existing alias '{}' from '{}' to '{}'",
                         name, existing_identity, identity
                     )));
-                    let _ignored = delete_alias(connection, name, Some(context_id))
+                    let _ignored = client
+                        .delete_alias(name, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing alias")?;
                 }
 
-                let res = create_alias(connection, name, Some(context_id), identity).await?;
+                let res = client
+                    .create_alias_generic(name, Some(context_id), identity)
+                    .await?;
 
                 environment.output.write(&res);
             }
-            ContextIdentityAliasSubcommand::Remove { identity, context } => {
-                let resolve_response = resolve_alias(connection, context, None).await?;
-
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-                let res = delete_alias(connection, identity, Some(context_id)).await?;
+            ContextIdentityAliasSubcommand::Remove {
+                identity,
+                context: _,
+            } => {
+                let res = client.delete_alias(identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
-            ContextIdentityAliasSubcommand::Get { identity, context } => {
-                let resolve_response = resolve_alias(connection, context, None).await?;
-
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-                let res = lookup_alias(connection, identity, Some(context_id)).await?;
+            ContextIdentityAliasSubcommand::Get {
+                identity,
+                context: _,
+            } => {
+                let res = client.lookup_alias(identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
 
-            ContextIdentityAliasSubcommand::List { context } => {
-                let resolve_response = resolve_alias(connection, context, None).await?;
-
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-
-                let res = list_aliases::<PublicKey>(connection, Some(context_id)).await?;
+            ContextIdentityAliasSubcommand::List { context: _ } => {
+                let res = client.list_aliases::<PublicKey>(Some(context_id)).await?;
 
                 environment.output.write(&res);
             }

@@ -1,11 +1,8 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::hash::Hash;
-use calimero_server_primitives::admin::{
-    InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
-};
+use calimero_server_primitives::admin::{InstallApplicationRequest, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
 use clap::Parser;
-use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -14,7 +11,7 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use crate::cli::Environment;
-use crate::output::{ErrorLine, InfoLine, Report};
+use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Install an application")]
@@ -35,20 +32,8 @@ pub struct InstallCommand {
     pub watch: bool,
 }
 
-impl Report for InstallApplicationResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Application Installed").fg(Color::Green)]);
-        let _ = table.add_row(vec![format!(
-            "Application ID: {}",
-            self.data.application_id
-        )]);
-        println!("{table}");
-    }
-}
-
 impl InstallCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let _ignored = self.install_app(environment).await?;
         if self.watch {
             self.watch_app(environment).await?;
@@ -56,27 +41,23 @@ impl InstallCommand {
         Ok(())
     }
 
-    pub async fn install_app(&self, environment: &Environment) -> Result<ApplicationId> {
-        let connection = environment.connection()?;
-
+    pub async fn install_app(&self, environment: &mut Environment) -> Result<ApplicationId> {
         let metadata = self
             .metadata
             .as_ref()
             .map(|s| s.as_bytes().to_vec())
             .unwrap_or_default();
 
+        let client = environment.client()?;
+
         let response = if let Some(app_path) = self.path.as_ref() {
             let request =
                 InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
-            connection
-                .post::<_, InstallApplicationResponse>("admin-api/install-dev-application", request)
-                .await?
+            client.install_dev_application(request).await?
         } else if let Some(app_url) = self.url.as_ref() {
             let request =
                 InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
-            connection
-                .post::<_, InstallApplicationResponse>("admin-api/install-application", request)
-                .await?
+            client.install_application(request).await?
         } else {
             bail!("Either path or url must be provided");
         };
@@ -85,7 +66,7 @@ impl InstallCommand {
         Ok(response.data.application_id)
     }
 
-    pub async fn watch_app(&self, environment: &Environment) -> Result<()> {
+    pub async fn watch_app(&self, environment: &mut Environment) -> Result<()> {
         let Some(path) = self.path.as_ref() else {
             bail!("The path must be provided");
         };

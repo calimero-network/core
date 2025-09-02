@@ -1,10 +1,12 @@
 [package]
 name = "calimero-server"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
+publish = true
 
 [dependencies]
 axum = { workspace = true, features = ["multipart"] }
@@ -13,6 +15,7 @@ futures-util.workspace = true
 hex.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
+prometheus-client.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
@@ -49,6 +52,7 @@ serde_json.workspace = true
 [features]
 admin = ["dep:tower-sessions"]
 jsonrpc = []
+metrics = []
 websocket = ["axum/ws"]
 host_layer = []
 

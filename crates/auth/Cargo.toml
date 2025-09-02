@@ -1,22 +1,23 @@
 [package]
 name = "mero-auth"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 description = "Forward Authentication Service for Calimero Network"
 repository.workspace = true
 license.workspace = true
+publish = true
 
 [dependencies]
 aes-gcm = "0.10.3"
-async-trait = "0.1.88"
+async-trait.workspace = true
 axum = { workspace = true, features = ["macros"] }
 axum-extra = { version = "0.10.1", features = ["cookie", "cookie-signed", "cookie-private"] }
 base64.workspace = true
 borsh.workspace = true
 bs58.workspace = true
-calimero-primitives = { path = "../primitives" }
-calimero-store = { path = "../store" }
+calimero-primitives.workspace = true
+calimero-store.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
 config = { version = "0.13", features = ["yaml"] }
@@ -27,7 +28,7 @@ eyre.workspace = true
 hex.workspace = true
 ic-agent = { workspace = true, optional = true }
 jsonwebtoken.workspace = true
-lazy_static = "1.4"
+lazy_static.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
 near-primitives.workspace = true

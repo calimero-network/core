@@ -1,5 +1,5 @@
-use calimero_wasm_abi_v1::emitter::emit_manifest;
-use calimero_wasm_abi_v1::schema::TypeRef;
+use calimero_wasm_abi::emitter::emit_manifest;
+use calimero_wasm_abi::schema::TypeRef;
 use syn::parse_file;
 
 #[test]
@@ -96,7 +96,7 @@ impl AbiState {
     // Check that ps parameter is a list of Person references
     match &ps_param.type_ {
         TypeRef::Collection(collection) => match collection {
-            calimero_wasm_abi_v1::schema::CollectionType::List { items } => match &**items {
+            calimero_wasm_abi::schema::CollectionType::List { items } => match &**items {
                 TypeRef::Reference { ref_ } => {
                     assert_eq!(ref_, "Person");
                 }
@@ -111,7 +111,7 @@ impl AbiState {
     let returns = list_records.returns.as_ref().expect("Expected return type");
     match returns {
         TypeRef::Collection(collection) => match collection {
-            calimero_wasm_abi_v1::schema::CollectionType::List { items } => match &**items {
+            calimero_wasm_abi::schema::CollectionType::List { items } => match &**items {
                 TypeRef::Reference { ref_ } => {
                     assert_eq!(ref_, "Person");
                 }
@@ -136,7 +136,7 @@ impl AbiState {
     // Check that xs parameter is a list of UserId32 references
     match &xs_param.type_ {
         TypeRef::Collection(collection) => match collection {
-            calimero_wasm_abi_v1::schema::CollectionType::List { items } => match &**items {
+            calimero_wasm_abi::schema::CollectionType::List { items } => match &**items {
                 TypeRef::Reference { ref_ } => {
                     assert_eq!(ref_, "UserId32");
                 }
@@ -162,11 +162,11 @@ impl AbiState {
     match &m_param.type_ {
         TypeRef::Collection(collection) => {
             match collection {
-                calimero_wasm_abi_v1::schema::CollectionType::Map { key, value } => {
+                calimero_wasm_abi::schema::CollectionType::Map { key, value } => {
                     // Check key is string
                     match &**key {
                         TypeRef::Scalar(scalar) => match scalar {
-                            calimero_wasm_abi_v1::schema::ScalarType::String => {}
+                            calimero_wasm_abi::schema::ScalarType::String => {}
                             _ => panic!("Expected string key type"),
                         },
                         _ => panic!("Expected scalar key type"),
@@ -232,7 +232,7 @@ impl AbiState {
         .expect("Named event not found");
     match &named.payload {
         Some(TypeRef::Scalar(scalar)) => match scalar {
-            calimero_wasm_abi_v1::schema::ScalarType::String => {}
+            calimero_wasm_abi::schema::ScalarType::String => {}
             _ => panic!("Expected string payload for Named event"),
         },
         _ => panic!("Expected scalar payload for Named event"),

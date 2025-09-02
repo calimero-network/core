@@ -1,5 +1,5 @@
-use calimero_wasm_abi_v1::schema::{Error, Event, Manifest, Method, TypeDef, TypeRef, Variant};
-use calimero_wasm_abi_v1::validate::validate_manifest;
+use calimero_wasm_abi::schema::{Error, Event, Manifest, Method, TypeDef, TypeRef, Variant};
+use calimero_wasm_abi::validate::validate_manifest;
 
 #[test]
 fn test_invariant_events_use_payload_not_type() {
@@ -81,7 +81,7 @@ fn test_invariant_variable_bytes_no_size() {
         name: "test_method".to_string(),
         params: vec![],
         returns: Some(TypeRef::Scalar(
-            calimero_wasm_abi_v1::schema::ScalarType::Bytes {
+            calimero_wasm_abi::schema::ScalarType::Bytes {
                 size: None,
                 encoding: None,
             },
@@ -107,9 +107,9 @@ fn test_invariant_map_string_key() {
         name: "test_method".to_string(),
         params: vec![],
         returns: Some(TypeRef::Collection(
-            calimero_wasm_abi_v1::schema::CollectionType::Map {
+            calimero_wasm_abi::schema::CollectionType::Map {
                 key: Box::new(TypeRef::Scalar(
-                    calimero_wasm_abi_v1::schema::ScalarType::String,
+                    calimero_wasm_abi::schema::ScalarType::String,
                 )),
                 value: Box::new(TypeRef::u32()),
             },
@@ -173,10 +173,7 @@ fn test_invariant_detects_dangling_refs() {
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
     match result.unwrap_err() {
-        calimero_wasm_abi_v1::validate::ValidationError::InvalidTypeReference {
-            ref_name,
-            path,
-        } => {
+        calimero_wasm_abi::validate::ValidationError::InvalidTypeReference { ref_name, path } => {
             assert_eq!(ref_name, "NonExistentType");
             assert_eq!(path, "method test_method.returns");
         }
@@ -212,7 +209,7 @@ fn test_invariant_deterministic_ordering() {
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
     match result.unwrap_err() {
-        calimero_wasm_abi_v1::validate::ValidationError::MethodsNotSorted { first, second } => {
+        calimero_wasm_abi::validate::ValidationError::MethodsNotSorted { first, second } => {
             assert_eq!(first, "z_method");
             assert_eq!(second, "a_method");
         }
