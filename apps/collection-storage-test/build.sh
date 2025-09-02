@@ -24,17 +24,11 @@ sleep 1
 # Create res directory if it doesn't exist
 mkdir -p res
 
-# Check if the WASM file was actually created
-WASM_PATH="target/wasm32-unknown-unknown/release/collection_storage_test.wasm"
+# Check if the WASM file was actually created in workspace root
+WASM_PATH="../../target/wasm32-unknown-unknown/release/collection_storage_test.wasm"
 if [ ! -f "$WASM_PATH" ]; then
     echo "❌ WASM file not found at $WASM_PATH"
     echo "📁 Current working directory: $(pwd)"
-    echo "📁 Contents of target directory:"
-    find target/wasm32-unknown-unknown -name "*.wasm" 2>/dev/null || echo "No WASM files found"
-    echo "📁 Contents of release directory:"
-    ls -la target/wasm32-unknown-unknown/release/ || echo "Release directory not found"
-    echo "🔍 Looking for any WASM files in the entire target tree:"
-    find target -name "*.wasm" 2>/dev/null || echo "No WASM files found anywhere in target"
     echo "🔍 Looking for WASM files from workspace root:"
     find ../../target -name "*.wasm" 2>/dev/null || echo "No WASM files found in workspace root"
     exit 1
