@@ -362,11 +362,11 @@ where
     pub async fn list_proposals(
         &self,
         context_id: &ContextId,
-        _args: serde_json::Value,
+        args: serde_json::Value,
     ) -> Result<GetProposalsResponse> {
         let response = self
             .connection
-            .get(&format!("admin-api/contexts/{context_id}/proposals"))
+            .post(&format!("admin-api/contexts/{context_id}/proposals"), args)
             .await?;
         Ok(response)
     }
