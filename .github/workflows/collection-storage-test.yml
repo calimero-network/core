@@ -75,12 +75,12 @@ jobs:
           ls -la apps/collection-storage-test/res/
           
           # Verify the WASM file exists and has content
-          if [ ! -f "apps/collection-storage-test/res/collection-storage-test.wasm" ]; then
+          if [ ! -f "apps/collection-storage-test/res/collection_storage_test.wasm" ]; then
             echo "❌ WASM file not found!"
             exit 1
           fi
           
-          WASM_SIZE=$(stat -c%s "apps/collection-storage-test/res/collection-storage-test.wasm")
+          WASM_SIZE=$(stat -c%s "apps/collection-storage-test/res/collection_storage_test.wasm")
           echo "📦 WASM file size: $WASM_SIZE bytes"
           
           if [ $WASM_SIZE -lt 1000 ]; then
@@ -89,7 +89,7 @@ jobs:
           fi
           
           # Copy the WASM file to workflows directory for the workflow to use
-          cp apps/collection-storage-test/res/collection-storage-test.wasm workflows/
+          cp apps/collection-storage-test/res/collection_storage_test.wasm workflows/
           echo "📋 WASM file copied to workflows directory"
 
       - name: Build Docker Image
