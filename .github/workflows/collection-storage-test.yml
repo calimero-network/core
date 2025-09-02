@@ -107,13 +107,26 @@ jobs:
           
           # Verify the image has the expected binaries
           echo "🔍 Verifying Docker image contents..."
-          docker run --rm $IMAGE_TAG merod --version || echo "❌ merod not found in image"
-          docker run --rm $IMAGE_TAG meroctl --version || echo "❌ meroctl not found in image"
+          docker run --rm $IMAGE_TAG merod --help || echo "❌ merod not found in image"
+          docker run --rm $IMAGE_TAG meroctl --help || echo "❌ meroctl not found in image"
 
       - name: Install Merobox
         run: |
           echo "📦 Installing Merobox..."
-          curl -L https://github.com/calimero-network/merobox/releases/latest/download/merobox-linux-x86_64 -o merobox
+          
+          # Try to get the latest release info
+          echo "🔍 Checking latest Merobox release..."
+          curl -s https://api.github.com/repos/calimero-network/merobox/releases/latest | grep -o '"tag_name": "[^"]*"' | head -1
+          
+          # Download with verbose output and follow redirects
+          echo "📥 Downloading Merobox..."
+          curl -L -v https://github.com/calimero-network/merobox/releases/latest/download/merobox-linux-x86_64 -o merobox
+          
+          # Check file size and content
+          echo "📊 Downloaded file size: $(stat -c%s merobox 2>/dev/null || echo 'unknown') bytes"
+          echo "🔍 First few lines of downloaded file:"
+          head -5 merobox 2>/dev/null || echo "File is empty or unreadable"
+          
           chmod +x merobox
           sudo mv merobox /usr/local/bin/
           
