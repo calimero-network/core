@@ -92,18 +92,18 @@ jobs:
           cp apps/collection-storage-test/res/collection_storage_test.wasm workflows/
           echo "📋 WASM file copied to workflows directory"
 
-      - name: Build Docker Image
+      - name: Use Remote Docker Image
         run: |
-          echo "🐳 Building Docker image with current commit..."
+          echo "🐳 Using remote Docker image..."
           
-          # Create a unique image tag based on commit SHA
-          IMAGE_TAG="merod-sdk-test-collection-fix:$(git rev-parse --short HEAD)"
+          # Use the remote image we just pushed
+          IMAGE_TAG="ghcr.io/calimero-network/merod-sdk-test:latest"
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           
-          docker build -t $IMAGE_TAG .
+          echo "✅ Using remote Docker image: $IMAGE_TAG"
           
-          echo "✅ Docker image built successfully"
-          docker images | grep merod-sdk-test-collection-fix
+          # Pull the image to verify it's accessible
+          docker pull $IMAGE_TAG
 
       - name: Install Merobox
         run: |
