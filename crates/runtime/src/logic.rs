@@ -258,6 +258,12 @@ impl VMHostFunctions<'_> {
         unsafe { &mut self.borrow_memory().data_unchecked_mut()[ptr..ptr + len] }
     }
 
+    fn read_str(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&mut str> {
+        let buf = self.read_slice(slice);
+
+        std::str::from_utf8_mut(buf).map_err(|_| HostError::BadUTF8.into())
+    }
+
     fn read_guest_memory_sized<const N: usize>(
         &self,
         ptr: u64,
@@ -292,8 +298,7 @@ impl VMHostFunctions<'_> {
     pub fn panic(&mut self, location_ptr: u64) -> VMLogicResult<()> {
         let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
 
-        let file = String::from_utf8(self.read_slice(&location.file()).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
+        let file = self.read_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
@@ -309,10 +314,8 @@ impl VMHostFunctions<'_> {
         let message_buf = unsafe { self.read_typed::<sys::Buffer<'_>>(msg_ptr)? };
         let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
 
-        let message = String::from_utf8(self.read_slice(&message_buf).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
-        let file = String::from_utf8(self.read_slice(&location.file()).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
+        let message = self.read_str(&message_buf)?.to_owned();
+        let file = self.read_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
@@ -386,9 +389,6 @@ impl VMHostFunctions<'_> {
     pub fn log_utf8(&mut self, log_ptr: u64) -> VMLogicResult<()> {
         let buf = unsafe { self.read_typed::<sys::Buffer<'_>>(log_ptr)? };
 
-        let message =
-            String::from_utf8(self.read_slice(&buf).to_vec()).map_err(|_| HostError::BadUTF8)?;
-
         let logic = self.borrow_logic();
 
         if logic.logs.len()
@@ -396,6 +396,8 @@ impl VMHostFunctions<'_> {
         {
             return Err(HostError::LogsOverflow.into());
         }
+
+        let message = self.read_str(&buf)?.to_owned();
 
         self.with_logic_mut(|logic| logic.logs.push(message));
 
@@ -424,8 +426,7 @@ impl VMHostFunctions<'_> {
             return Err(HostError::EventsOverflow.into());
         }
 
-        let kind = String::from_utf8(self.read_slice(event.kind()).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
+        let kind = self.read_str(event.kind())?.to_owned();
         let data = self.read_slice(event.data()).to_vec();
 
         self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
@@ -564,10 +565,8 @@ impl VMHostFunctions<'_> {
         let headers = unsafe { self.read_typed::<sys::Buffer<'_>>(headers_ptr)? };
         let body = unsafe { self.read_typed::<sys::Buffer<'_>>(body_ptr)? };
 
-        let url =
-            String::from_utf8(self.read_slice(&url).to_vec()).map_err(|_| HostError::BadUTF8)?;
-        let method =
-            String::from_utf8(self.read_slice(&method).to_vec()).map_err(|_| HostError::BadUTF8)?;
+        let url = self.read_str(&url)?;
+        let method = self.read_str(&method)?;
 
         let headers = self.read_slice(&headers).to_vec();
 
