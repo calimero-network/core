@@ -695,7 +695,7 @@ impl Element {
     ///
     #[must_use]
     pub fn path(&self) -> Path {
-        eprintln!("🔍 Element::path called, returning: {:?}", self.path);
+
         self.path.clone()
     }
 

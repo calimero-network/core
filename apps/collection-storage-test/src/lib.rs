@@ -557,6 +557,8 @@ impl CollectionStorageTest {
         ))
     }
 
+
+
     /// Simple hello method for basic testing
     pub fn hello(&self) -> app::Result<String> {
         Ok("Hello from Collection Storage Test! 🧪".to_string())
