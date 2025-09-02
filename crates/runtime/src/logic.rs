@@ -252,6 +252,10 @@ pub struct VMHostFunctions<'a> {
 }
 
 impl VMHostFunctions<'_> {
+    #[allow(
+        clippy::mut_from_ref,
+        reason = "We need to be able to modify self while referencing self"
+    )]
     fn read_slice(&self, slice: &sys::Buffer<'_>) -> &mut [u8] {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
