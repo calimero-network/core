@@ -91,13 +91,13 @@ jobs:
           cp apps/collection-storage-test/res/collection_storage_test.wasm workflows/
           echo "📋 WASM file copied to workflows directory"
 
-      - name: Use Public Base Image
+      - name: Build Docker Image
         run: |
-          echo "🐳 Using public base image (multi-arch) just to pass pull step..."
-          IMAGE_TAG="alpine:3.19"
+          echo "🐳 Building Docker image with current commit..."
+          IMAGE_TAG="merod-sdk-test-collection-fix:$(git rev-parse --short HEAD)"
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "✅ Using public image: $IMAGE_TAG"
-          docker pull $IMAGE_TAG
+          docker build -t $IMAGE_TAG .
+          echo "✅ Docker image built successfully: $IMAGE_TAG"
 
       - name: Setup Python
         uses: actions/setup-python@v5
