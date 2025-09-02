@@ -92,18 +92,18 @@ jobs:
           cp apps/collection-storage-test/res/collection_storage_test.wasm workflows/
           echo "📋 WASM file copied to workflows directory"
 
-      - name: Use Remote Docker Image
+      - name: Use Local Fixed Merod Image
         run: |
-          echo "🐳 Using remote Docker image..."
+          echo "🐳 Using local fixed merod image..."
           
-          # Use the remote image we just pushed
-          IMAGE_TAG="ghcr.io/calimero-network/merod-sdk-test:latest"
+          # Use the local image that has the collection storage fixes
+          IMAGE_TAG="merod-sdk-test-collection-fix:latest"
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           
-          echo "✅ Using remote Docker image: $IMAGE_TAG"
+          echo "✅ Using local fixed merod image: $IMAGE_TAG"
           
-          # Pull the image to verify it's accessible
-          docker pull $IMAGE_TAG
+          # This image should already exist from previous builds
+          docker images | grep merod-sdk-test-collection-fix
 
       - name: Install Merobox
         run: |
