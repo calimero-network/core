@@ -26,6 +26,10 @@ if [ ! -f "$WASM_PATH" ]; then
     echo "❌ WASM file not found at $WASM_PATH"
     echo "📁 Contents of target directory:"
     find target/wasm32-unknown-unknown -name "*.wasm" 2>/dev/null || echo "No WASM files found"
+    echo "📁 Contents of release directory:"
+    ls -la target/wasm32-unknown-unknown/release/ || echo "Release directory not found"
+    echo "🔍 Looking for any WASM files in the entire target tree:"
+    find target -name "*.wasm" 2>/dev/null || echo "No WASM files found anywhere in target"
     exit 1
 fi
 
