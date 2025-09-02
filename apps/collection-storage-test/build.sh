@@ -17,10 +17,6 @@ if ! cargo build --target wasm32-unknown-unknown --release; then
     exit 1
 fi
 
-# Small delay to ensure file is fully written
-echo "⏳ Waiting for file system sync..."
-sleep 1
-
 # Create res directory if it doesn't exist
 mkdir -p res
 

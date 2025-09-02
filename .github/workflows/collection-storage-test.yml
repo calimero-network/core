@@ -22,6 +22,7 @@ env:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   build-and-test:
@@ -49,8 +50,6 @@ jobs:
         with:
           key: collection-storage-test
 
-      - name: Install Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Build Collection Storage Test App
         run: |
@@ -92,18 +91,18 @@ jobs:
           cp apps/collection-storage-test/res/collection_storage_test.wasm workflows/
           echo "📋 WASM file copied to workflows directory"
 
-      - name: Use Local Fixed Merod Image
+      - name: Use Fixed Merod Image
         run: |
-          echo "🐳 Using local fixed merod image..."
+          echo "🐳 Using fixed merod image with collection storage fixes..."
           
-          # Use the local image that has the collection storage fixes
-          IMAGE_TAG="merod-sdk-test-collection-fix:latest"
+          # Use the GHCR image that has the collection storage fixes
+          IMAGE_TAG="ghcr.io/calimero-network/merod-sdk-test:latest"
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           
-          echo "✅ Using local fixed merod image: $IMAGE_TAG"
+          echo "✅ Using fixed merod image: $IMAGE_TAG"
           
-          # This image should already exist from previous builds
-          docker images | grep merod-sdk-test-collection-fix
+          # Pull to ensure availability in runner
+          docker pull $IMAGE_TAG
 
       - name: Install Merobox
         run: |
