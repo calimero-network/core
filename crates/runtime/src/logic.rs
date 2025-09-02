@@ -460,7 +460,8 @@ impl VMHostFunctions<'_> {
     pub fn storage_read(&mut self, key_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
         tracing::debug!(
             "Storage_read called with key_ptr={}, register_id={}",
-            key_ptr, register_id
+            key_ptr,
+            register_id
         );
 
         let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
@@ -491,10 +492,7 @@ impl VMHostFunctions<'_> {
         }
 
         if let Some(value) = logic.storage.get(&key) {
-            tracing::debug!(
-                "Found value in storage, setting register {}",
-                register_id
-            );
+            tracing::debug!("Found value in storage, setting register {}", register_id);
             self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
             return Ok(1);
         }
@@ -538,7 +536,9 @@ impl VMHostFunctions<'_> {
     ) -> VMLogicResult<u32> {
         tracing::debug!(
             "Storage_write called with key_ptr={}, value_ptr={}, register_id={}",
-            key_ptr, value_ptr, register_id
+            key_ptr,
+            value_ptr,
+            register_id
         );
 
         let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
