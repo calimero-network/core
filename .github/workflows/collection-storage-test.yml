@@ -104,11 +104,6 @@ jobs:
           
           echo "✅ Docker image built successfully"
           docker images | grep merod-sdk-test-collection-fix
-          
-          # Verify the image has the expected binaries
-          echo "🔍 Verifying Docker image contents..."
-          docker run --rm $IMAGE_TAG merod --help || echo "❌ merod not found in image"
-          docker run --rm $IMAGE_TAG meroctl --help || echo "❌ meroctl not found in image"
 
       - name: Install Merobox
         run: |
