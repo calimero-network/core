@@ -185,11 +185,11 @@ impl Path {
         let string = path.as_ref();
 
         if string.is_empty() {
-            eprintln!("❌ Path::new - Empty string error");
+            tracing::error!("Path::new - Empty string error");
             return Err(PathError::Empty);
         }
         if !string.starts_with("::") {
-            eprintln!("❌ Path::new - Not absolute error");
+            tracing::error!("Path::new - Not absolute error");
             return Err(PathError::NotAbsolute);
         }
 
@@ -197,7 +197,7 @@ impl Path {
         let segments = string[2..].split("::").collect::<Vec<&str>>();
 
         if segments.is_empty() {
-            eprintln!("❌ Path::new - Empty segments error");
+            tracing::error!("Path::new - Empty segments error");
             return Err(PathError::Empty);
         }
 
@@ -206,11 +206,11 @@ impl Path {
 
         for (i, segment) in segments.iter().enumerate() {
             if segment.is_empty() {
-                eprintln!("❌ Path::new - Empty segment error at index {}", i);
+                tracing::error!("Path::new - Empty segment error at index {}", i);
                 return Err(PathError::EmptySegment);
             }
             if str.len().saturating_add(segment.len()) > 255 {
-                eprintln!("❌ Path::new - Overflow error");
+                tracing::error!("Path::new - Overflow error");
                 return Err(PathError::Overflow);
             }
             if str.len() > 0 {

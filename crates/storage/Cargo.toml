@@ -20,6 +20,7 @@ thiserror.workspace = true
 
 calimero-sdk.workspace = true
 calimero-storage-macros.workspace = true
+tracing.workspace = true
 
 
 
