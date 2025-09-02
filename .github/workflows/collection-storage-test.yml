@@ -1,0 +1,158 @@
+name: Collection Storage Test
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "apps/collection-storage-test/**"
+      - "crates/storage/**"
+      - "workflows/collection-storage-test.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - "apps/collection-storage-test/**"
+      - "crates/storage/**"
+      - "workflows/collection-storage-test.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+env:
+  CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and Test Collection Storage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: collection-storage-test
+
+      - name: Install Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Collection Storage Test App
+        run: |
+          echo "🔨 Building collection-storage-test application..."
+          cd apps/collection-storage-test
+          ./build.sh
+          cd ../..
+          
+          echo "✅ Application built successfully"
+          ls -la apps/collection-storage-test/res/
+          
+          # Verify the WASM file exists and has content
+          if [ ! -f "apps/collection-storage-test/res/collection-storage-test.wasm" ]; then
+            echo "❌ WASM file not found!"
+            exit 1
+          fi
+          
+          WASM_SIZE=$(stat -c%s "apps/collection-storage-test/res/collection-storage-test.wasm")
+          echo "📦 WASM file size: $WASM_SIZE bytes"
+          
+          if [ $WASM_SIZE -lt 1000 ]; then
+            echo "❌ WASM file seems too small, might be corrupted!"
+            exit 1
+          fi
+          
+          # Copy the WASM file to workflows directory for the workflow to use
+          cp apps/collection-storage-test/res/collection-storage-test.wasm workflows/
+          echo "📋 WASM file copied to workflows directory"
+
+      - name: Build Docker Image
+        run: |
+          echo "🐳 Building Docker image with current commit..."
+          
+          # Create a unique image tag based on commit SHA
+          IMAGE_TAG="merod-sdk-test-collection-fix:$(git rev-parse --short HEAD)"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          
+          docker build -t $IMAGE_TAG .
+          
+          echo "✅ Docker image built successfully"
+          docker images | grep merod-sdk-test-collection-fix
+          
+          # Verify the image has the expected binaries
+          echo "🔍 Verifying Docker image contents..."
+          docker run --rm $IMAGE_TAG merod --version || echo "❌ merod not found in image"
+          docker run --rm $IMAGE_TAG meroctl --version || echo "❌ meroctl not found in image"
+
+      - name: Install Merobox
+        run: |
+          echo "📦 Installing Merobox..."
+          curl -L https://github.com/calimero-network/merobox/releases/latest/download/merobox-linux-x86_64 -o merobox
+          chmod +x merobox
+          sudo mv merobox /usr/local/bin/
+          
+          echo "✅ Merobox installed successfully"
+          merobox --version
+
+      - name: Generate Dynamic Workflow
+        run: |
+          echo "🔧 Generating dynamic workflow with current image tag..."
+          
+          # Create a dynamic workflow file with the current image tag
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE_TAG|g" workflows/collection-storage-test-ci.yml > workflows/collection-storage-test-dynamic.yml
+          
+          echo "✅ Dynamic workflow generated"
+          echo "📋 Generated workflow file (first 15 lines):"
+          cat workflows/collection-storage-test-dynamic.yml | head -15
+          
+          echo ""
+          echo "🔍 Image tag that will be used: $IMAGE_TAG"
+
+      - name: Run Collection Storage Test Workflow
+        run: |
+          echo "🧪 Running collection storage test workflow..."
+          
+          # Set up test environment
+          export RUST_LOG=calimero_storage=debug
+          
+          # Run the dynamically generated workflow
+          if ! merobox bootstrap run workflows/collection-storage-test-dynamic.yml; then
+            echo "❌ Workflow failed!"
+            
+            # Show logs for debugging
+            echo "📋 Checking for log files..."
+            find . -name "*.log" -type f | head -5 | xargs -I {} echo "Log file: {}" || true
+            
+            # Show container status
+            echo "🐳 Container status:"
+            docker ps -a || true
+            
+            exit 1
+          fi
+          
+          echo "✅ Workflow completed successfully"
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collection-storage-test-results
+          path: |
+            data/
+            *.log
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up test environment..."
+          docker stop $(docker ps -q) 2>/dev/null || true
+          docker rm $(docker ps -aq) 2>/dev/null || true
+          rm -rf data/ || true

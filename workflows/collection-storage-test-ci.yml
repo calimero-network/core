@@ -1,10 +1,10 @@
-name: Collection Storage Test Workflow
-description: Comprehensive test workflow for generic collection storage functionality
+name: Collection Storage Test Workflow (CI)
+description: CI-adapted test workflow for generic collection storage functionality
 
 nodes:
   chain_id: testnet-1
   count: 1
-  image: merod-sdk-test-collection-fix:latest
+  image: IMAGE_PLACEHOLDER
   prefix: calimero-node
 
 steps:
@@ -12,151 +12,139 @@ steps:
   - name: Install Collection Storage Test Application
     type: install_application
     node: calimero-node-1
-    path: ./workflows/collection-storage-test.wasm
+    path: ./collection-storage-test.wasm
     dev: true
     outputs:
       app_id: applicationId
 
-  # Step 2: Create a context using the installed application
-  - name: Create Context on Node 1
-    type: create_context
-    node: calimero-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      context_id: contextId
-      member_public_key: memberPublicKey
-    
-  # Step 3: Wait for identity creation to complete
-  - name: Wait for Identity Creation
-    type: wait
-    seconds: 10
 
-  # Step 4: Test basic hello method
+
+  # Step 2: Test basic hello method
   - name: Test Hello Method
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: hello
     args: {}
     outputs:
       hello_result: result
 
-  # Step 5: Test basic Vector operations
+  # Step 3: Test basic Vector operations
   - name: Test Vector Basic Operations
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: test_vector_basic
     args:
       key_name: "test_vector_1"
     outputs:
       vector_basic_result: result
 
-  # Step 6: Test Vector persistence
+  # Step 4: Test Vector persistence
   - name: Test Vector Persistence
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: test_vector_persistence
     args:
       key_name: "test_vector_2"
     outputs:
       vector_persistence_result: result
 
-  # Step 7: Test basic Map operations
+  # Step 5: Test basic Map operations
   - name: Test Map Basic Operations
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: test_map_basic
     args:
       key_name: "test_map_1"
     outputs:
       map_basic_result: result
 
-  # Step 8: Test nested collections
+  # Step 6: Test nested collections
   - name: Test Nested Collections
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: test_nested_collections
     args:
       key_name: "test_nested_1"
     outputs:
       nested_collections_result: result
 
-  # Step 9: Test deep nested collections
+  # Step 7: Test deep nested collections
   - name: Test Deep Nested Collections
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: test_deep_nested_collections
     args:
       key_name: "test_deep_nested_1"
     outputs:
       deep_nested_collections_result: result
 
-  # Step 10: Wait for operations to complete
+  # Step 8: Wait for operations to complete
   - name: Wait for Operations
     type: wait
     seconds: 5
 
-  # Step 12: Get test statistics
+  # Step 9: Get test statistics
   - name: Get Test Statistics
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: get_test_stats
     args: {}
     outputs:
       test_stats: result
 
-  # Step 13: Verify storage state before clearing
+  # Step 10: Verify storage state before clearing
   - name: Verify Storage State Before Clearing
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: verify_storage_state
     args: {}
     outputs:
       storage_state_before: result
 
-  # Step 13: Run comprehensive test suite
+  # Step 11: Run comprehensive test suite
   - name: Run Comprehensive Test Suite
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: run_all_tests
     args: {}
     outputs:
       comprehensive_test_result: result
 
-  # Step 14: Clear test data
+  # Step 12: Clear test data
   - name: Clear Test Data
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: clear_test_data
     args: {}
     outputs:
       clear_data_result: result
 
-  # Step 15: Verify storage state after clearing
+  # Step 13: Verify storage state after clearing
   - name: Verify Storage State After Clearing
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: contextId
+    executor_public_key: memberPublicKey
     method: verify_storage_state
     args: {}
     outputs:
