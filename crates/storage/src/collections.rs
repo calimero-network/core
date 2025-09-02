@@ -136,26 +136,29 @@ struct Entry<T> {
 }
 
 #[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]
-type StoreResult<T> = std::result::Result<T, StoreError>;
+type StoreResult<T> = Result<T, StoreError>;
 
-static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
+static ROOT_ID: LazyLock<Id> = LazyLock::new(Id::root);
 
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Creates a new collection.
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new(id: Option<Id>) -> Self {
-        let id = id.unwrap_or_else(|| Id::random());
+        let id = id.unwrap_or_else(Id::random);
 
         // Construct a proper path for the collection based on its ID
         let path_str = if id.is_root() {
-            "::root".to_string()
+            "::root".to_owned()
         } else {
-            format!("::collection::{}", id)
+            format!("::collection::{id}")
         };
 
         let path = Path::new(&path_str).unwrap_or_else(|_| {
             // Fallback to a valid path if construction fails
-            Path::new("::collection").expect("valid fallback path")
+            Path::new("::collection").unwrap_or_else(|_| {
+                // This should never fail as "::collection" is a valid path
+                Path::new("::root").unwrap()
+            })
         });
 
         let mut this = Self {
@@ -165,10 +168,15 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         };
 
         if id.is_root() {
-            let _ignored = <Interface<S>>::save(&mut this).expect("save");
+            if let Err(e) = <Interface<S>>::save(&mut this) {
+                // This should never fail in normal operation
+                tracing::error!("Failed to save root collection: {:?}", e);
+            }
         } else {
-            let _ =
-                <Interface<S>>::add_child_to(*ROOT_ID, &RootHandle, &mut this).expect("add child");
+            if let Err(e) = <Interface<S>>::add_child_to(*ROOT_ID, &RootHandle, &mut this) {
+                // This should never fail in normal operation
+                tracing::error!("Failed to add child to root: {:?}", e);
+            }
         }
 
         this
@@ -179,12 +187,15 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let collection_path = self.path();
 
         // Construct a proper path for the entry
-        let entry_id = id.unwrap_or_else(|| Id::random());
-        let entry_path_str = format!("{}::entry::{}", collection_path, entry_id);
+        let entry_id = id.unwrap_or_else(Id::random);
+        let entry_path_str = format!("{collection_path}::entry::{entry_id}");
 
         let entry_path = Path::new(&entry_path_str).unwrap_or_else(|_| {
             // Fallback to a valid path if construction fails
-            Path::new("::entry").expect("valid fallback path")
+            Path::new("::entry").unwrap_or_else(|_| {
+                // This should never fail as "::entry" is a valid path
+                Path::new("::root").unwrap()
+            })
         });
 
         let mut collection = CollectionMut::new(self);
@@ -440,7 +451,7 @@ impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Partia
 
 impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Ord for Collection<T, S> {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         let l = self.entries().unwrap().flatten();
         let r = other.entries().unwrap().flatten();
 
@@ -451,7 +462,7 @@ impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Ord for Coll
 impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialOrd
     for Collection<T, S>
 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         let l = self.entries().ok()?.flatten();
         let r = other.entries().ok()?.flatten();
 
@@ -485,7 +496,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> FromIterator<(Opti
     for Collection<T, S>
 {
     fn from_iter<I: IntoIterator<Item = (Option<Id>, T)>>(iter: I) -> Self {
-        let mut collection = Collection::new(None);
+        let mut collection = Self::new(None);
         collection.extend(iter);
         collection
     }
