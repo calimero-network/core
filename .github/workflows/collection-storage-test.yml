@@ -35,7 +35,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install WASM target
-        run: rustup target add wasm32-unknown-unknown
+        run: |
+          echo "🔧 Installing WASM target..."
+          rustup target add wasm32-unknown-unknown
+          echo "✅ WASM target installed"
+          rustup target list --installed | grep wasm32-unknown-unknown || echo "❌ WASM target not found in installed targets"
 
       - name: Verify Rust installation
         run: rustc --version
@@ -51,7 +55,19 @@ jobs:
       - name: Build Collection Storage Test App
         run: |
           echo "🔨 Building collection-storage-test application..."
+          
+          # Debug: Check current directory and Rust setup
+          echo "📁 Current directory: $(pwd)"
+          echo "🔧 Rust version: $(rustc --version)"
+          echo "🎯 Available targets:"
+          rustup target list --installed | head -10
+          
           cd apps/collection-storage-test
+          echo "📁 Changed to: $(pwd)"
+          
+          # Debug: Check if build script exists and is executable
+          ls -la build.sh
+          
           ./build.sh
           cd ../..
           
