@@ -34,6 +34,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install WASM target
+        run: rustup target add wasm32-unknown-unknown
+
       - name: Verify Rust installation
         run: rustc --version
 
