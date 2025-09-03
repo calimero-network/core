@@ -27,11 +27,6 @@ calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-context-config.workspace = true
 
-# Python bindings
-pyo3 = { workspace = true, features = ["auto-initialize"], optional = true }
-bs58 = { workspace = true, optional = true }
-camino = { workspace = true, optional = true }
-
 [dev-dependencies]
 tokio-test.workspace = true
 
@@ -40,7 +35,6 @@ default = []
 full = ["reqwest/rustls-tls", "reqwest/gzip", "reqwest/brotli"]
 native-tls = ["reqwest/native-tls"]
 rustls = ["reqwest/rustls-tls"]
-python = ["pyo3", "bs58", "camino"]
 
 [lints]
 workspace = true

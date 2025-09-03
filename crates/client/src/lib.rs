@@ -21,9 +21,6 @@ pub mod errors;
 pub mod storage;
 pub mod traits;
 
-#[cfg(feature = "python")]
-pub mod bindings;
-
 // Re-export main types for easy access
 pub use auth::{CliAuthenticator, MeroctlOutputHandler};
 pub use client::{Client, ResolveResponse, ResolveResponseValue};
