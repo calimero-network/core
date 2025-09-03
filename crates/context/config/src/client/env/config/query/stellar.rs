@@ -4,7 +4,7 @@ use std::io::Cursor;
 use soroban_sdk::xdr::{FromXdr, Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Address, Bytes, BytesN, Env, IntoVal, TryFromVal, TryIntoVal, Val};
 
-use crate::client::env::config::query::{
+use crate::client::env::config::requests::{
     ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };

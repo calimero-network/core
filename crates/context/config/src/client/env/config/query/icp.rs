@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use candid::{Decode, Encode, Principal};
 
-use crate::client::env::config::query::{
+use crate::client::env::config::requests::{
     ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };

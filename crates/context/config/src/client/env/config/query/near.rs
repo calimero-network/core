@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::client::env::config::query::{
+use crate::client::env::config::requests::{
     ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };

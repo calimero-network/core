@@ -1,10 +1,12 @@
-use core::ptr;
 use std::fmt::Debug;
 
+use super::requests::{
+    AddContextRequest, AddMembersRequest, GrantCapabilitiesRequest, RemoveMembersRequest,
+    RevokeCapabilitiesRequest, UpdateApplicationRequest, UpdateProxyContractRequest,
+};
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::repr::Repr;
 use crate::types::{Application, Capability, ContextId, ContextIdentity};
 use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
@@ -46,13 +48,14 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         author_id: ContextIdentity,
         application: Application<'a>,
     ) -> ContextConfigMutateRequest<'a, T> {
+        let add_request = AddContextRequest::new(context_id, author_id, application);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
+                context_id: add_request.context_id,
                 kind: ContextRequestKind::Add {
-                    author_id: Repr::new(author_id),
-                    application,
+                    author_id: add_request.author_id,
+                    application: add_request.application,
                 },
             }),
         }
@@ -63,11 +66,14 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         context_id: ContextId,
         application: Application<'a>,
     ) -> ContextConfigMutateRequest<'a, T> {
+        let update_request = UpdateApplicationRequest::new(context_id, application);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
-                kind: ContextRequestKind::UpdateApplication { application },
+                context_id: update_request.context_id,
+                kind: ContextRequestKind::UpdateApplication {
+                    application: update_request.application,
+                },
             }),
         }
     }
@@ -75,18 +81,15 @@ impl<'a, T> ContextConfigMutate<'a, T> {
     pub fn add_members(
         self,
         context_id: ContextId,
-        members: &[ContextIdentity],
+        members: &'a [ContextIdentity],
     ) -> ContextConfigMutateRequest<'a, T> {
-        let members = unsafe {
-            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
-        };
-
+        let add_request = AddMembersRequest::new(context_id, members);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
+                context_id: add_request.context_id,
                 kind: ContextRequestKind::AddMembers {
-                    members: members.into(),
+                    members: add_request.members.into(),
                 },
             }),
         }
@@ -95,18 +98,15 @@ impl<'a, T> ContextConfigMutate<'a, T> {
     pub fn remove_members(
         self,
         context_id: ContextId,
-        members: &[ContextIdentity],
+        members: &'a [ContextIdentity],
     ) -> ContextConfigMutateRequest<'a, T> {
-        let members = unsafe {
-            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
-        };
-
+        let remove_request = RemoveMembersRequest::new(context_id, members);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
+                context_id: remove_request.context_id,
                 kind: ContextRequestKind::RemoveMembers {
-                    members: members.into(),
+                    members: remove_request.members.into(),
                 },
             }),
         }
@@ -115,19 +115,15 @@ impl<'a, T> ContextConfigMutate<'a, T> {
     pub fn grant(
         self,
         context_id: ContextId,
-        capabilities: &[(ContextIdentity, Capability)],
+        capabilities: &'a [(ContextIdentity, Capability)],
     ) -> ContextConfigMutateRequest<'a, T> {
-        let capabilities = unsafe {
-            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
-                as *const [(Repr<ContextIdentity>, Capability)])
-        };
-
+        let grant_request = GrantCapabilitiesRequest::new(context_id, capabilities);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
+                context_id: grant_request.context_id,
                 kind: ContextRequestKind::Grant {
-                    capabilities: capabilities.into(),
+                    capabilities: grant_request.capabilities.into(),
                 },
             }),
         }
@@ -136,29 +132,26 @@ impl<'a, T> ContextConfigMutate<'a, T> {
     pub fn revoke(
         self,
         context_id: ContextId,
-        capabilities: &[(ContextIdentity, Capability)],
+        capabilities: &'a [(ContextIdentity, Capability)],
     ) -> ContextConfigMutateRequest<'a, T> {
-        let capabilities = unsafe {
-            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
-                as *const [(Repr<ContextIdentity>, Capability)])
-        };
-
+        let revoke_request = RevokeCapabilitiesRequest::new(context_id, capabilities);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
+                context_id: revoke_request.context_id,
                 kind: ContextRequestKind::Revoke {
-                    capabilities: capabilities.into(),
+                    capabilities: revoke_request.capabilities.into(),
                 },
             }),
         }
     }
 
     pub fn update_proxy_contract(self, context_id: ContextId) -> ContextConfigMutateRequest<'a, T> {
+        let update_request = UpdateProxyContractRequest::new(context_id);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
+                context_id: update_request.context_id,
                 kind: ContextRequestKind::UpdateProxyContract,
             }),
         }

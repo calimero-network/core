@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use alloy::primitives::Address as AlloyAddress;
 use alloy_sol_types::SolValue;
 
-use crate::client::env::config::query::{
+use crate::client::env::config::requests::{
     ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };

@@ -1,97 +1,15 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
-use core::{mem, ptr};
 use std::collections::BTreeMap;
 
-use serde::Serialize;
-
-use crate::client::env::{utils, Method};
-use crate::client::protocol::ethereum::Ethereum;
-use crate::client::protocol::icp::Icp;
-use crate::client::protocol::near::Near;
-use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::stellar::Stellar;
+use super::requests::{
+    ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
+    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
+};
+use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::repr::{Repr, ReprTransmute};
+use crate::repr::Repr;
 use crate::types::{Application, Capability, ContextId, ContextIdentity, Revision, SignerId};
-
-// Request types for context configuration queries
-
-/// Request to get application information for a context.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct ApplicationRequest {
-    pub context_id: Repr<ContextId>,
-}
-
-/// Request to get application revision for a context.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct ApplicationRevisionRequest {
-    pub context_id: Repr<ContextId>,
-}
-
-/// Request to get members of a context with pagination.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct MembersRequest {
-    pub context_id: Repr<ContextId>,
-    pub offset: usize,
-    pub length: usize,
-}
-
-/// Request to get members revision for a context.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct MembersRevisionRequest {
-    pub context_id: Repr<ContextId>,
-}
-
-/// Request to check if a member exists in a context.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct HasMemberRequest {
-    pub context_id: Repr<ContextId>,
-    pub identity: Repr<ContextIdentity>,
-}
-
-/// Request to get privileges for a context.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct PrivilegesRequest<'a> {
-    pub context_id: Repr<ContextId>,
-    pub identities: &'a [Repr<ContextIdentity>],
-}
-
-impl<'a> PrivilegesRequest<'a> {
-    pub const fn new(context_id: ContextId, identities: &'a [ContextIdentity]) -> Self {
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        let identities = unsafe {
-            &*(ptr::from_ref::<[ContextIdentity]>(identities) as *const [Repr<ContextIdentity>])
-        };
-
-        Self {
-            context_id: Repr::new(context_id),
-            identities,
-        }
-    }
-}
-
-/// Request to get proxy contract information for a context.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct ProxyContractRequest {
-    pub context_id: Repr<ContextId>,
-}
-
-/// Request to fetch nonce for a member in a context.
-#[derive(Copy, Clone, Debug, Serialize)]
-pub struct FetchNonceRequest {
-    pub context_id: Repr<ContextId>,
-    pub member_id: Repr<ContextIdentity>,
-}
-
-impl FetchNonceRequest {
-    pub const fn new(context_id: ContextId, member_id: ContextIdentity) -> Self {
-        Self {
-            context_id: Repr::new(context_id),
-            member_id: Repr::new(member_id),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct ContextConfigQuery<'a, T> {

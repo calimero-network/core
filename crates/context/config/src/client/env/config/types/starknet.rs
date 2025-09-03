@@ -435,8 +435,8 @@ pub struct StarknetMembersRequest {
     pub length: u32,
 }
 
-impl From<crate::client::env::config::query::MembersRequest> for StarknetMembersRequest {
-    fn from(value: crate::client::env::config::query::MembersRequest) -> Self {
+impl From<crate::client::env::config::requests::MembersRequest> for StarknetMembersRequest {
+    fn from(value: crate::client::env::config::requests::MembersRequest) -> Self {
         StarknetMembersRequest {
             context_id: (*value.context_id).into(),
             offset: value.offset as u32,
@@ -450,10 +450,10 @@ pub struct StarknetApplicationRevisionRequest {
     pub context_id: ContextId,
 }
 
-impl From<crate::client::env::config::query::ApplicationRevisionRequest>
+impl From<crate::client::env::config::requests::ApplicationRevisionRequest>
     for StarknetApplicationRevisionRequest
 {
-    fn from(value: crate::client::env::config::query::ApplicationRevisionRequest) -> Self {
+    fn from(value: crate::client::env::config::requests::ApplicationRevisionRequest) -> Self {
         StarknetApplicationRevisionRequest {
             context_id: (*value.context_id).into(),
         }
