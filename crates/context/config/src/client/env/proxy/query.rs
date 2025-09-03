@@ -1,50 +1,71 @@
+//! Context proxy query client for interacting with context management operations.
+//!
+//! This module provides a high-level interface for querying context-related data
+//! across different blockchain protocols. It abstracts away protocol-specific
+//! encoding/decoding details and provides a unified API for:
+//!
+//! - Proposal management (listing, retrieving, approvals)
+//! - Context storage operations (key-value storage)
+//! - Context variable access
+//!
+//! The client supports multiple protocols through protocol-specific implementations
+//! in separate modules: `ethereum`, `icp`, `near`, `starknet`, and `stellar`.
+
+use candid::CandidType;
+use serde::{Deserialize, Serialize};
+
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
 use crate::types::{ContextIdentity, ContextStorageEntry};
 use crate::{Proposal, ProposalId, ProposalWithApprovals};
-use std::io::Cursor;
-use alloy_sol_types::SolValue;
-use candid::{CandidType, Decode, Encode};
-use eyre::{eyre, WrapErr};
-use serde::{Deserialize, Serialize};
-use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
-use soroban_sdk::{Bytes, BytesN, Env, IntoVal, TryFromVal, TryIntoVal, Val};
-use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
-use starknet::core::types::Felt;
-use starknet_crypto::Felt as CryptoFelt;
 
-use crate::client::env::proxy::starknet::{
-    CallData,
-    ContextStorageEntriesResponse,
-    StarknetContextStorageEntriesRequest,
-    StarknetProposals,
-    StarknetProposalsRequest,
-};
-use crate::client::env::proxy::types::starknet::{
-    StarknetApprovers,
-    StarknetProposal,
-    StarknetProposalId,
-    StarknetProposalWithApprovals,
-};
-use crate::client::env::Method;
-use crate::client::protocol::ethereum::Ethereum;
-use crate::client::protocol::icp::Icp;
-use crate::client::protocol::near::Near;
-use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::stellar::Stellar;
-use crate::icp::repr::ICRepr;
-use crate::icp::{ICProposal, ICProposalWithApprovals};
-use crate::repr::{ReprTransmute, Repr as ReprType};
-use crate::stellar::{StellarProposal, StellarProposalWithApprovals};
-
+/// A client for querying context-related data across different blockchain protocols.
+///
+/// This client provides methods to interact with context management operations
+/// such as proposal queries, context storage access, and variable retrieval.
+/// It automatically handles protocol-specific encoding and decoding based on
+/// the configured transport.
+///
+/// # Example
+///
+/// ```rust
+/// use calimero_context_config::client::env::proxy::query::ContextProxyQuery;
+///
+/// // Assuming you have a configured CallClient
+/// let query_client = ContextProxyQuery { client: your_client };
+///
+/// // Get all proposals with pagination
+/// let proposals = query_client.proposals(0, 10).await?;
+///
+/// // Get a specific proposal
+/// let proposal = query_client.proposal(proposal_id).await?;
+/// ```
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {
+    /// The underlying call client for making requests
     pub client: CallClient<'a, T>,
 }
 
 impl<'a, T: Transport> ContextProxyQuery<'a, T> {
+    /// Retrieves a paginated list of proposals from the context.
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - The number of proposals to skip from the beginning
+    /// * `limit` - The maximum number of proposals to return
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of proposals, or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// // Get the first 10 proposals
+    /// let proposals = query_client.proposals(0, 10).await?;
+    /// ```
     pub async fn proposals(
         &self,
         offset: usize,
@@ -57,6 +78,26 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send(&self.client, Operation::Read(params)).await
     }
 
+    /// Retrieves a specific proposal by its ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `proposal_id` - The unique identifier of the proposal to retrieve
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Proposal)` if the proposal exists, `None` if it doesn't,
+    /// or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let proposal = query_client.proposal(proposal_id).await?;
+    /// match proposal {
+    ///     Some(p) => println!("Found proposal: {:?}", p),
+    ///     None => println!("Proposal not found"),
+    /// }
+    /// ```
     pub async fn proposal(
         &self,
         proposal_id: ProposalId,
@@ -68,12 +109,41 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send(&self.client, Operation::Read(params)).await
     }
 
+    /// Gets the total number of active proposals in the context.
+    ///
+    /// # Returns
+    ///
+    /// Returns the count of active proposals, or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let count = query_client.get_number_of_active_proposals().await?;
+    /// println!("There are {} active proposals", count);
+    /// ```
     pub async fn get_number_of_active_proposals(&self) -> Result<u16, ClientError<T>> {
         let params = ActiveProposalRequest;
 
         utils::send(&self.client, Operation::Read(params)).await
     }
 
+    /// Retrieves approval information for a specific proposal.
+    ///
+    /// # Arguments
+    ///
+    /// * `proposal_id` - The unique identifier of the proposal
+    ///
+    /// # Returns
+    ///
+    /// Returns a `ProposalWithApprovals` containing the proposal details
+    /// and its approval status, or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let approvals = query_client.get_number_of_proposal_approvals(proposal_id).await?;
+    /// println!("Proposal has {} approvals", approvals.approvals_count);
+    /// ```
     pub async fn get_number_of_proposal_approvals(
         &self,
         proposal_id: ProposalId,
@@ -85,6 +155,23 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send(&self.client, Operation::Read(params)).await
     }
 
+    /// Gets the list of identities that have approved a specific proposal.
+    ///
+    /// # Arguments
+    ///
+    /// * `proposal_id` - The unique identifier of the proposal
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of context identities that have approved the proposal,
+    /// or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let approvers = query_client.get_proposal_approvers(proposal_id).await?;
+    /// println!("Proposal approved by {} identities", approvers.len());
+    /// ```
     pub async fn get_proposal_approvers(
         &self,
         proposal_id: ProposalId,
@@ -96,12 +183,50 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send(&self.client, Operation::Read(params)).await
     }
 
+    /// Retrieves a context variable value by its key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The byte array key identifying the context variable
+    ///
+    /// # Returns
+    ///
+    /// Returns the value associated with the key as a byte array,
+    /// or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let key = b"my_context_variable".to_vec();
+    /// let value = query_client.get_context_value(key).await?;
+    /// println!("Context value: {:?}", value);
+    /// ```
     pub async fn get_context_value(&self, key: Vec<u8>) -> Result<Vec<u8>, ClientError<T>> {
         let params = ContextVariableRequest { key };
 
         utils::send(&self.client, Operation::Read(params)).await
     }
 
+    /// Retrieves a paginated list of context storage entries.
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - The number of entries to skip from the beginning
+    /// * `limit` - The maximum number of entries to return
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of context storage entries (key-value pairs),
+    /// or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let entries = query_client.get_context_storage_entries(0, 50).await?;
+    /// for entry in entries {
+    ///     println!("Key: {:?}, Value: {:?}", entry.key, entry.value);
+    /// }
+    /// ```
     pub async fn get_context_storage_entries(
         &self,
         offset: usize,
@@ -113,271 +238,90 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     }
 }
 
-// Inlined from active_proposals.rs
+// Request structs for context proxy queries
+
+/// Request to get the number of active proposals in the context.
+///
+/// This is a simple request that doesn't require any parameters.
 #[derive(Copy, Clone, Debug, Serialize, CandidType)]
 pub(super) struct ActiveProposalRequest;
 
-impl Method<Near> for ActiveProposalRequest {
-    const METHOD: &'static str = "get_active_proposals_limit";
-    type Returns = u16;
-    fn encode(self) -> eyre::Result<Vec<u8>> { serde_json::to_vec(&self).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { serde_json::from_slice(&response).map_err(Into::into) }
+/// Request to retrieve paginated context storage entries.
+///
+/// # Fields
+///
+/// * `offset` - The number of entries to skip from the beginning
+/// * `limit` - The maximum number of entries to return
+#[derive(Clone, Debug, Serialize, CandidType)]
+pub(super) struct ContextStorageEntriesRequest {
+    /// The number of entries to skip from the beginning
+    pub(super) offset: usize,
+    /// The maximum number of entries to return
+    pub(super) limit: usize,
 }
 
-impl Method<Starknet> for ActiveProposalRequest {
-    const METHOD: &'static str = "get_active_proposals_limit";
-    type Returns = u16;
-    fn encode(self) -> eyre::Result<Vec<u8>> { Ok(Vec::new()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.len() != 32 { return Err(eyre!("Invalid response length: expected 32 bytes, got {}", response.len())); }
-        if !response[..30].iter().all(|&b| b == 0) { return Err(eyre!("Invalid response format: non-zero bytes in prefix")); }
-        Ok(u16::from_be_bytes([response[30], response[31]]))
-    }
+/// Request to retrieve a context variable value by its key.
+///
+/// # Fields
+///
+/// * `key` - The byte array key identifying the context variable
+#[derive(Clone, Debug, Serialize, CandidType)]
+pub(super) struct ContextVariableRequest {
+    /// The byte array key identifying the context variable
+    pub(super) key: Vec<u8>,
 }
 
-impl Method<Icp> for ActiveProposalRequest {
-    const METHOD: &'static str = "get_active_proposals_limit";
-    type Returns = u16;
-    fn encode(self) -> eyre::Result<Vec<u8>> { Encode!(&self).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let value = Decode!(&response, u32)?; Ok(value as u16) }
-}
-
-impl Method<Stellar> for ActiveProposalRequest {
-    type Returns = u16;
-    const METHOD: &'static str = "get_active_proposals_limit";
-    fn encode(self) -> eyre::Result<Vec<u8>> { Ok(Vec::new()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let cursor = Cursor::new(response);
-        let mut limited = Limited::new(cursor, Limits::none());
-        let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?;
-        let active_proposals_limit: u32 = sc_val.try_into().map_err(|e| eyre!("Failed to convert to u64: {:?}", e))?;
-        Ok(active_proposals_limit as u16)
-    }
-}
-
-// Ethereum-specific impls moved to query/ethereum.rs
-
-// Inlined from context_storage_entries.rs
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct ContextStorageEntriesRequest { pub(super) offset: usize, pub(super) limit: usize }
-
-impl Method<Near> for ContextStorageEntriesRequest {
-    const METHOD: &'static str = "context_storage_entries";
-    type Returns = Vec<ContextStorageEntry>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { serde_json::to_vec(&self).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let entries: Vec<(Box<[u8]>, Box<[u8]>)> = serde_json::from_slice(&response).map_err(|e| eyre!("Failed to decode response: {}", e))?;
-        Ok(entries.into_iter().map(|(key, value)| ContextStorageEntry { key: key.into(), value: value.into() }).collect())
-    }
-}
-
-impl Method<Starknet> for ContextStorageEntriesRequest {
-    const METHOD: &'static str = "context_storage_entries";
-    type Returns = Vec<ContextStorageEntry>;
-    fn encode(self) -> eyre::Result<Vec<u8>> {
-        let req = StarknetContextStorageEntriesRequest { offset: CryptoFelt::from(self.offset as u64), length: CryptoFelt::from(self.limit as u64) };
-        let mut call_data = CallData::default();
-        req.encode(&mut call_data)?; Ok(call_data.0)
-    }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() { return Ok(vec![]); }
-        let chunks = response.chunks_exact(32);
-        let felts: Vec<CryptoFelt> = chunks.map(|chunk| { let chunk_array: [u8; 32] = chunk.try_into().map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?; Ok(CryptoFelt::from_bytes_be(&chunk_array)) }).collect::<eyre::Result<Vec<CryptoFelt>>>()?;
-        let response = ContextStorageEntriesResponse::decode_iter(&mut felts.iter())?;
-        Ok(response.entries.into_iter().map(Into::into).collect())
-    }
-}
-
-impl Method<Icp> for ContextStorageEntriesRequest {
-    const METHOD: &'static str = "context_storage_entries";
-    type Returns = Vec<ContextStorageEntry>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { Encode!(&self.offset, &self.limit).map_err(|e| eyre!("Failed to encode request: {}", e)) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let entries: Vec<(Vec<u8>, Vec<u8>)> = Decode!(&response, Vec<(Vec<u8>, Vec<u8>)>).map_err(|e| eyre!("Failed to decode response: {}", e))?;
-        Ok(entries.into_iter().map(|(key, value)| ContextStorageEntry { key, value }).collect())
-    }
-}
-
-impl Method<Stellar> for ContextStorageEntriesRequest {
-    const METHOD: &'static str = "context_storage_entries";
-    type Returns = Vec<ContextStorageEntry>;
-    fn encode(self) -> eyre::Result<Vec<u8>> {
-        let env = Env::default(); let offset_val: u32 = self.offset as u32; let limit_val: u32 = self.limit as u32; let args = (offset_val, limit_val); let xdr = args.to_xdr(&env); Ok(xdr.to_alloc_vec())
-    }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; let env = Env::default(); let entries: soroban_sdk::Vec<(Bytes, Bytes)> = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to entries: {:?}", e))?; Ok(entries.iter().map(|(key, value)| ContextStorageEntry { key: key.to_alloc_vec(), value: value.to_alloc_vec() }).collect())
-    }
-}
-
-// Ethereum-specific impls moved to query/ethereum.rs
-
-// Inlined from context_variable.rs
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct ContextVariableRequest { pub(super) key: Vec<u8> }
-
-impl Method<Near> for ContextVariableRequest {
-    const METHOD: &'static str = "get_context_value"; type Returns = Vec<u8>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { serde_json::to_vec(&self).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { serde_json::from_slice(&response).map_err(Into::into) }
-}
-
-impl Method<Starknet> for ContextVariableRequest {
-    const METHOD: &'static str = "get_context_value"; type Returns = Vec<u8>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let mut call_data = CallData::default(); let key: crate::client::env::proxy::starknet::ContextVariableKey = self.key.into(); key.encode(&mut call_data)?; Ok(call_data.0) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() { return Ok(vec![]); }
-        let chunks = response.chunks_exact(32); let felts: Vec<CryptoFelt> = chunks.map(|chunk| { let chunk_array: [u8; 32] = chunk.try_into().map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?; Ok(CryptoFelt::from_bytes_be(&chunk_array)) }).collect::<eyre::Result<Vec<CryptoFelt>>>()?; if felts.is_empty() { return Ok(vec![]); }
-        match felts[0] { f if f == CryptoFelt::ZERO => { Ok(response[64..].iter().filter(|&&b| b != 0).copied().collect()) } v => Err(eyre!("Invalid option discriminant: {}", v)), }
-    }
-}
-
-impl Method<Icp> for ContextVariableRequest {
-    const METHOD: &'static str = "get_context_value"; type Returns = Vec<u8>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let payload = ICRepr::new(self.key); Encode!(&payload).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let decoded = Decode!(&response, Vec<u8>)?; Ok(decoded) }
-}
-
-impl Method<Stellar> for ContextVariableRequest {
-    type Returns = Vec<u8>; const METHOD: &'static str = "get_context_value";
-    fn encode(self) -> eyre::Result<Vec<u8>> { let env = Env::default(); let key_val: Bytes = Bytes::from_slice(&env, &self.key); let args = (key_val,); let xdr = args.to_xdr(&env); Ok(xdr.to_alloc_vec()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Ok(Vec::new()); } let env = Env::default(); let value: Bytes = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to Bytes: {:?}", e))?; Ok(value.to_alloc_vec()) }
-}
-
-// Ethereum-specific impls moved to query/ethereum.rs
-
-// Inlined from proposal_approvals.rs
+/// Request to get approval information for a specific proposal.
+///
+/// # Fields
+///
+/// * `proposal_id` - The unique identifier of the proposal
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct ProposalApprovalsRequest { pub(super) proposal_id: Repr<ProposalId> }
-
-impl Method<Near> for ProposalApprovalsRequest {
-    const METHOD: &'static str = "get_confirmations_count"; type Returns = ProposalWithApprovals;
-    fn encode(self) -> eyre::Result<Vec<u8>> { serde_json::to_vec(&self).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { serde_json::from_slice(&response).map_err(Into::into) }
+pub(super) struct ProposalApprovalsRequest {
+    /// The unique identifier of the proposal
+    pub(super) proposal_id: Repr<ProposalId>,
 }
 
-impl Method<Starknet> for ProposalApprovalsRequest {
-    const METHOD: &'static str = "get_confirmations_count"; type Returns = ProposalWithApprovals;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let starknet_id: StarknetProposalId = self.proposal_id.into(); let mut call_data = CallData::default(); starknet_id.encode(&mut call_data)?; Ok(call_data.0) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() { return Err(eyre!("Empty response")); }
-        if response.len() % 32 != 0 { return Err(eyre!("Invalid response length: {} bytes is not a multiple of 32", response.len())); }
-        let mut felts = Vec::new(); let chunks = response.chunks_exact(32); if !chunks.remainder().is_empty() { return Err(eyre!("Response length is not a multiple of 32 bytes")); }
-        for chunk in chunks { let chunk_array: [u8; 32] = chunk.try_into().map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?; felts.push(Felt::from_bytes_be(&chunk_array)); }
-        let approvals = StarknetProposalWithApprovals::decode(&felts).map_err(|e| eyre!("Failed to decode approvals: {:?}", e))?; Ok(approvals.into())
-    }
-}
-
-impl Method<Icp> for ProposalApprovalsRequest {
-    const METHOD: &'static str = "get_confirmations_count"; type Returns = ProposalWithApprovals;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let payload = ICRepr::new(*self.proposal_id); Encode!(&payload).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let decoded = Decode!(&response, ICProposalWithApprovals)?; Ok(decoded.into()) }
-}
-
-impl Method<Stellar> for ProposalApprovalsRequest {
-    type Returns = ProposalWithApprovals; const METHOD: &'static str = "get_confirmations_count";
-    fn encode(self) -> eyre::Result<Vec<u8>> { let env = Env::default(); let proposal_id_raw: [u8; 32] = self.proposal_id.rt().map_err(|e| eyre!("cannot convert proposal id to raw bytes: {}", e))?; let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env); let args = (proposal_id_val,); let xdr = args.to_xdr(&env); Ok(xdr.to_alloc_vec()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Err(eyre!("Proposal not found")); } let env = Env::default(); let val: Val = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert ScVal to Val: {:?}", e))?; let stellar_proposal: StellarProposalWithApprovals = val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to StellarProposalWithApprovals: {:?}", e))?; Ok(ProposalWithApprovals::from(stellar_proposal)) }
-}
-
-// Ethereum-specific impls moved to query/ethereum.rs
-
-// Inlined from proposal_approvers.rs
+/// Request to get the list of identities that have approved a proposal.
+///
+/// # Fields
+///
+/// * `proposal_id` - The unique identifier of the proposal
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct ProposalApproversRequest { pub(super) proposal_id: Repr<ProposalId> }
-
-impl Method<Near> for ProposalApproversRequest {
-    const METHOD: &'static str = "get_proposal_approvers"; type Returns = Vec<ContextIdentity>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { serde_json::to_vec(&self).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let members: Vec<Repr<ContextIdentity>> = serde_json::from_slice(&response)?;
-        #[expect(clippy::transmute_undefined_repr, reason = "Repr<T> is a transparent wrapper around T")]
-        let members = unsafe { std::mem::transmute::<Vec<Repr<ContextIdentity>>, Vec<ContextIdentity>>(members) };
-        Ok(members)
-    }
+pub(super) struct ProposalApproversRequest {
+    /// The unique identifier of the proposal
+    pub(super) proposal_id: Repr<ProposalId>,
 }
 
-impl Method<Starknet> for ProposalApproversRequest {
-    const METHOD: &'static str = "proposal_approvers"; type Returns = Vec<ContextIdentity>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let starknet_id: StarknetProposalId = self.proposal_id.into(); let mut call_data = CallData::default(); starknet_id.encode(&mut call_data)?; Ok(call_data.0) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() { return Ok(Vec::new()); }
-        if response.len() % 32 != 0 { return Err(eyre!("Invalid response length: {} bytes is not a multiple of 32", response.len())); }
-        let mut felts = Vec::new(); let chunks = response.chunks_exact(32); if !chunks.remainder().is_empty() { return Err(eyre!("Response length is not a multiple of 32 bytes")); }
-        for chunk in chunks { let chunk_array: [u8; 32] = chunk.try_into().map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?; felts.push(Felt::from_bytes_be(&chunk_array)); }
-        let approvers = StarknetApprovers::decode(&felts).map_err(|e| eyre!("Failed to decode approvers: {:?}", e))?; Ok(approvers.into())
-    }
-}
-
-impl Method<Icp> for ProposalApproversRequest {
-    const METHOD: &'static str = "proposal_approvers"; type Returns = Vec<ContextIdentity>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let payload = ICRepr::new(*self.proposal_id); Encode!(&payload).map_err(Into::into) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let Some(identities) = Decode!(&response, Option<Vec<ICRepr<ContextIdentity>>>)? else { return Ok(Vec::new()); }; #[expect(clippy::transmute_undefined_repr, reason = "ICRepr<T> is a transparent wrapper around T")] unsafe { Ok(std::mem::transmute::<Vec<ICRepr<ContextIdentity>>, Vec<ContextIdentity>>(identities)) }
-}
-
-impl Method<Stellar> for ProposalApproversRequest {
-    type Returns = Vec<ContextIdentity>; const METHOD: &'static str = "proposal_approvers";
-    fn encode(self) -> eyre::Result<Vec<u8>> { let env = Env::default(); let proposal_id_raw: [u8; 32] = self.proposal_id.rt().expect("infallible conversion"); let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env); let args = (proposal_id_val,); let xdr = args.to_xdr(&env); Ok(xdr.to_alloc_vec()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Ok(Vec::new()); } let env = Env::default(); let approvers: soroban_sdk::Vec<BytesN<32>> = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to approvers: {:?}", e))?; approvers.iter().map(|bytes| bytes.to_array().rt().map_err(|e| eyre!("Failed to convert bytes to identity: {}", e))).collect() }
-}
-
-// Ethereum-specific impls moved to query/ethereum.rs
-
-// Inlined from proposal.rs
+/// Request to retrieve a specific proposal by its ID.
+///
+/// # Fields
+///
+/// * `proposal_id` - The unique identifier of the proposal to retrieve
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct ProposalRequest { pub(super) proposal_id: Repr<ProposalId> }
-
-impl Method<Near> for ProposalRequest { const METHOD: &'static str = "proposal"; type Returns = Option<Proposal>; fn encode(self) -> eyre::Result<Vec<u8>> { serde_json::to_vec(&self).map_err(Into::into) } fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { serde_json::from_slice(&response).map_err(Into::into) } }
-
-impl Method<Starknet> for ProposalRequest {
-    const METHOD: &'static str = "proposal"; type Returns = Option<Proposal>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let starknet_id: StarknetProposalId = self.proposal_id.into(); let mut call_data = CallData::default(); starknet_id.encode(&mut call_data)?; Ok(call_data.0) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() { return Ok(None); }
-        if response.len() % 32 != 0 { return Err(eyre!("Invalid response length: {} bytes is not a multiple of 32", response.len())); }
-        let mut felts = Vec::new(); let chunks = response.chunks_exact(32); if !chunks.remainder().is_empty() { return Err(eyre!("Response length is not a multiple of 32 bytes")); }
-        for chunk in chunks { let chunk_array: [u8; 32] = chunk.try_into().map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?; felts.push(Felt::from_bytes_be(&chunk_array)); }
-        if felts.is_empty() { return Ok(None); }
-        match felts[0].to_bytes_be()[31] { 0 => Ok(None), 1 => { let proposal = StarknetProposal::decode(&felts[1..]).map_err(|e| eyre!("Failed to decode proposal: {:?}", e))?; Ok(Some(proposal.into())) } v => Err(eyre!("Invalid option discriminant: {}", v)), }
-    }
+pub(super) struct ProposalRequest {
+    /// The unique identifier of the proposal to retrieve
+    pub(super) proposal_id: Repr<ProposalId>,
 }
 
-impl Method<Icp> for ProposalRequest { const METHOD: &'static str = "proposals"; type Returns = Option<Proposal>; fn encode(self) -> eyre::Result<Vec<u8>> { let payload = ICRepr::new(*self.proposal_id); Encode!(&payload).map_err(Into::into) } fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let decoded = Decode!(&response, Option<ICProposal>)?; Ok(decoded.map(Into::into)) } }
-
-impl Method<Stellar> for ProposalRequest {
-    type Returns = Option<Proposal>; const METHOD: &'static str = "proposal";
-    fn encode(self) -> eyre::Result<Vec<u8>> { let env = Env::default(); let proposal_id_raw: [u8; 32] = self.proposal_id.rt().map_err(|e| eyre!("cannot convert proposal id to raw bytes: {}", e))?; let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env); let args = (proposal_id_val,); let xdr = args.to_xdr(&env); Ok(xdr.to_alloc_vec()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Ok(None); } let env = Env::default(); let proposal_val = Val::try_from_val(&env, &sc_val).map_err(|e| eyre!("Failed to convert to proposal: {:?}", e))?; let proposal = StellarProposal::try_from_val(&env, &proposal_val).map_err(|e| eyre!("Failed to convert to proposal: {:?}", e))?; Ok(Some(Proposal::from(proposal))) }
+/// Request to retrieve a paginated list of proposals.
+///
+/// # Fields
+///
+/// * `offset` - The number of proposals to skip from the beginning
+/// * `length` - The maximum number of proposals to return
+#[derive(Copy, Clone, Debug, Serialize, CandidType)]
+pub(super) struct ProposalsRequest {
+    /// The number of proposals to skip from the beginning
+    pub(super) offset: usize,
+    /// The maximum number of proposals to return
+    pub(super) length: usize,
 }
 
-// Ethereum-specific impls moved to query/ethereum.rs
-
-// Inlined from proposals.rs
-#[derive(Copy, Clone, Debug, Serialize)]
-pub(super) struct ProposalsRequest { pub(super) offset: usize, pub(super) length: usize }
-
-impl Method<Near> for ProposalsRequest { const METHOD: &'static str = "proposals"; type Returns = Vec<Proposal>; fn encode(self) -> eyre::Result<Vec<u8>> { serde_json::to_vec(&self).map_err(Into::into) } fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { serde_json::from_slice(&response).map_err(Into::into) } }
-
-impl Method<Starknet> for ProposalsRequest {
-    const METHOD: &'static str = "proposals"; type Returns = Vec<Proposal>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let req = StarknetProposalsRequest { offset: Felt::from(self.offset as u64), length: Felt::from(self.length as u64) }; let mut call_data = CallData::default(); req.encode(&mut call_data)?; Ok(call_data.0) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() { return Ok(Vec::new()); }
-        if response.len() % 32 != 0 { return Err(eyre!("Invalid response length: {} bytes is not a multiple of 32", response.len())); }
-        let mut felts = Vec::new(); let chunks = response.chunks_exact(32); if !chunks.remainder().is_empty() { return Err(eyre!("Response length is not a multiple of 32 bytes")); }
-        for chunk in chunks { let chunk_array: [u8; 32] = chunk.try_into().map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?; felts.push(Felt::from_bytes_be(&chunk_array)); }
-        if felts.is_empty() { return Ok(Vec::new()); }
-        let proposals = StarknetProposals::decode(&felts).map_err(|e| eyre!("Failed to decode proposals: {:?}", e))?; Ok(proposals.into())
-    }
-}
-
-impl Method<Icp> for ProposalsRequest { const METHOD: &'static str = "proposals"; type Returns = Vec<Proposal>; fn encode(self) -> eyre::Result<Vec<u8>> { Encode!(&self.offset, &self.length).map_err(Into::into) } fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let proposals = Decode!(&response, Vec<ICProposal>)?; Ok(proposals.into_iter().map(|id| id.into()).collect()) } }
-
-impl Method<Stellar> for ProposalsRequest {
-    type Returns = Vec<Proposal>; const METHOD: &'static str = "proposals";
-    fn encode(self) -> eyre::Result<Vec<u8>> { let env = Env::default(); let offset_val: u32 = self.offset as u32; let length_val: u32 = self.length as u32; let args = (offset_val, length_val); let xdr = args.to_xdr(&env); Ok(xdr.to_alloc_vec()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; let env = Env::default(); let proposals: soroban_sdk::Vec<StellarProposal> = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to proposals: {:?}", e))?; Ok(proposals.iter().map(|p| Proposal::from(p.clone())).collect()) }
-}
-
-// Ethereum-specific impls moved to query/ethereum.rs
-
+// Protocol-specific implementations
+// These modules contain the actual Method trait implementations for each blockchain protocolt 
 mod ethereum;
+mod icp;
+mod near;
+mod starknet;
+mod stellar;
