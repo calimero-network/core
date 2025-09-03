@@ -138,8 +138,8 @@ serde = "1.0.196"
 serde_json = "1.0.113"
 serde_with = "3.9.0"
 sha2 = "0.10.8"
-soroban-client = "0.3.7"
-soroban-sdk = "22.0.5"
+soroban-client = "0.5.1"
+soroban-sdk = "22.0.8"
 starknet = "0.17.0"
 starknet-core = "0.16.0"
 starknet-core-derive = "0.1.0"
@@ -170,7 +170,6 @@ wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 web3 = "0.19.0"
 webbrowser = "1.0.4"
-pyo3 = "0.20"
 
 calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }

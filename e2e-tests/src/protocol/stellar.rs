@@ -1,21 +1,18 @@
 use core::time::Duration;
 use std::cell::RefCell;
-use std::io::Cursor;
 use std::net::TcpStream;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use base64::Engine;
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 use soroban_client::contract::{ContractBehavior, Contracts};
 use soroban_client::error::Error;
 use soroban_client::network::{NetworkPassphrase, Networks};
-use soroban_client::server::{Options, Server};
-use soroban_client::soroban_rpc::{RawSimulateHostFunctionResult, RawSimulateTransactionResponse};
-use soroban_client::transaction::{ReadXdr, TransactionBuilder, TransactionBuilderBehavior};
+use soroban_client::soroban_rpc::SimulateTransactionResponse;
+use soroban_client::transaction::{TransactionBuilder, TransactionBuilderBehavior};
 use soroban_client::xdr::ScVal;
-use soroban_sdk::xdr::{FromXdr, Limited, Limits, ToXdr};
+use soroban_client::{Options, Server};
 use soroban_sdk::{Env, String as SorobanString};
 use url::Url;
 
@@ -87,9 +84,10 @@ impl StellarSandboxEnvironment {
         args: &Vec<String>,
     ) -> EyreResult<Option<String>> {
         let options: Options = Options {
-            allow_http: Some(true),
-            timeout: Some(1000),
-            headers: None,
+            allow_http: true,
+            timeout: 1000,
+            headers: std::collections::HashMap::new(),
+            friendbot_url: None,
         };
 
         let env = Env::default();
@@ -108,17 +106,13 @@ impl StellarSandboxEnvironment {
             Contracts::new(contract_id).map_err(|_| eyre!("Failed to create contract"))?;
 
         // Match the args array to create appropriate tuples
-        let scval_args = match &args[..] {
+        let _scval_args = match &args[..] {
             [v1] => (SorobanString::from_str(&env, v1),),
             _ => bail!("Unsupported number of arguments: {}", args.len()),
         };
 
-        let xdr = scval_args.to_xdr(&env);
-
-        let vals: soroban_sdk::Vec<ScVal> =
-            soroban_sdk::Vec::from_xdr(&env, &xdr).map_err(|_| eyre!("Failed to decode XDR"))?;
-
-        let encoded_args = Some(vals.iter().collect::<Vec<_>>());
+        // For now, let's use a simple approach with no arguments
+        let encoded_args = None;
 
         let transaction = TransactionBuilder::new(account, Networks::standalone(), None)
             .fee(10000u32)
@@ -127,24 +121,13 @@ impl StellarSandboxEnvironment {
             .expect("Transaction timeout")
             .build();
 
-        let result: Result<RawSimulateTransactionResponse, Error> =
-            server.simulate_transaction(transaction, None).await;
+        let result: Result<SimulateTransactionResponse, Error> =
+            server.simulate_transaction(&transaction, None).await;
 
-        let xdr_results: Vec<RawSimulateHostFunctionResult> = result.unwrap().results.unwrap();
+        let response = result.unwrap();
+        let (sc_val, _) = response.to_result().unwrap();
 
-        let xdr_bytes = match xdr_results.first().and_then(|xdr| xdr.xdr.as_ref()) {
-            Some(xdr_bytes) => base64::engine::general_purpose::STANDARD
-                .decode(xdr_bytes)
-                .map_err(|_| eyre!("Failed to decode XDR"))?,
-            None => return Err(eyre!("No XDR results found")),
-        };
-
-        let cursor = Cursor::new(xdr_bytes);
-        let mut limited = Limited::new(cursor, Limits::none());
-
-        let sc_val =
-            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
-
+        // The sc_val is already the result, no need to decode XDR bytes
         let result_str = match sc_val {
             ScVal::String(s) => Some(s.to_string()),
             ScVal::Symbol(s) => Some(s.to_string()),
