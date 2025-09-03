@@ -313,9 +313,14 @@ pub(super) struct ProposalsRequest {
 }
 
 // Protocol-specific implementations
-// These modules contain the actual Method trait implementations for each blockchain protocolt
+// These modules contain the actual Method trait implementations for each blockchain protocol
+#[cfg(feature = "ethereum_client")]
 mod ethereum;
+#[cfg(feature = "icp_client")]
 mod icp;
+#[cfg(feature = "near_client")]
 mod near;
+#[cfg(feature = "starknet_client")]
 mod starknet;
+#[cfg(feature = "stellar_client")]
 mod stellar;
