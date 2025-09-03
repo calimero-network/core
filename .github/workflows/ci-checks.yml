@@ -38,9 +38,7 @@ jobs:
 
       - name: Cargo format
         run: |
-          rustup toolchain install nightly --component rustfmt
-
-          cargo +nightly fmt -- --check
+          cargo fmt --check
 
       - name: Cargo clippy
         if: ${{ !cancelled() }}
