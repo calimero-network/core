@@ -28,8 +28,6 @@ members = [
     "./crates/cargo-mero",
     "./crates/config",
     "./crates/context",
-    "./crates/context/config",
-    "./crates/context/primitives",
     "./crates/crypto",
     "./crates/meroctl",
     "./crates/client",
@@ -176,8 +174,7 @@ calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
-calimero-context-config = { path = "./crates/context/config" }
-calimero-context-primitives = { path = "./crates/context/primitives" }
+
 calimero-crypto = { path = "./crates/crypto" }
 calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }

@@ -16,3 +16,5 @@ pub struct JoinContextResponse {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
 }
+
+

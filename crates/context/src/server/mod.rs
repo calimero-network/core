@@ -1,10 +1,6 @@
-#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
-#![allow(clippy::multiple_inherent_impl, reason = "better readability")]
+//! Server-side functionality for Calimero contexts
 
-//! # Calimero Context
-//! 
-//! A unified crate for managing Calimero contexts, providing both client and server functionality
-//! for context lifecycle management, state synchronization, and protocol-specific operations.
+// TODO: inline handlers/manager modules here during consolidation
 
 use std::collections::{btree_map, BTreeMap};
 use std::future::Future;
@@ -19,25 +15,9 @@ use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-// Public API modules
-pub mod client;
-pub mod config;
-pub mod errors;
-pub mod messages;
-pub mod server;
-pub mod types;
-
-// Internal modules
-mod metrics;
-mod state;
-
-// Re-exports for backward compatibility
-pub use client::ContextClient;
-pub use client::config::ClientConfig;
-pub use errors::ContextError;
-pub use messages::ContextMessage;
-pub use server::ContextManager;
-pub use types::*;
+use crate::client::ContextClient;
+use crate::client::config::ClientConfig;
+use crate::metrics::Metrics;
 
 #[derive(Debug)]
 struct ContextMeta {
@@ -57,19 +37,18 @@ impl ContextMeta {
     }
 }
 
-// Legacy ContextManager implementation for backward compatibility
 #[derive(Debug)]
-pub struct LegacyContextManager {
+pub struct ContextManager {
     datastore: Store,
     node_client: NodeClient,
     context_client: ContextClient,
     external_config: ClientConfig,
     contexts: BTreeMap<ContextId, ContextMeta>,
     applications: BTreeMap<ApplicationId, Application>,
-    metrics: metrics::Metrics,
+    metrics: Metrics,
 }
 
-impl LegacyContextManager {
+impl ContextManager {
     pub fn new(
         datastore: Store,
         node_client: NodeClient,
@@ -84,7 +63,7 @@ impl LegacyContextManager {
             external_config,
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
-            metrics: metrics::Metrics::new(prom_registry),
+            metrics: Metrics::new(prom_registry),
         }
     }
 
@@ -114,6 +93,6 @@ impl LegacyContextManager {
     }
 }
 
-impl Actor for LegacyContextManager {
+impl Actor for ContextManager {
     type Context = actix::Context<Self>;
 }

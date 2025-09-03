@@ -1,6 +1,6 @@
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::messages::update_application::UpdateApplicationRequest;
+use crate::client::ContextClient;
+use crate::messages::update_application::UpdateApplicationRequest;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};

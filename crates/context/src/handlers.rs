@@ -1,5 +1,5 @@
 use actix::Handler;
-use calimero_context_primitives::messages::ContextMessage;
+use crate::messages::ContextMessage;
 use calimero_utils_actix::adapters::ActorExt;
 
 use crate::ContextManager;

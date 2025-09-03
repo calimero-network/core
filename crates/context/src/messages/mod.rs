@@ -1,5 +1,4 @@
-use actix::Message;
-use tokio::sync::oneshot;
+//! Message types for context operations
 
 pub mod create_context;
 pub mod delete_context;
@@ -8,12 +7,15 @@ pub mod join_context;
 pub mod sync;
 pub mod update_application;
 
-use create_context::CreateContextRequest;
-use delete_context::DeleteContextRequest;
-use execute::ExecuteRequest;
-use join_context::JoinContextRequest;
-use sync::SyncRequest;
-use update_application::UpdateApplicationRequest;
+use actix::Message;
+use tokio::sync::oneshot;
+
+pub use create_context::{CreateContextRequest, CreateContextResponse};
+pub use delete_context::{DeleteContextRequest, DeleteContextResponse};
+pub use execute::{ExecuteRequest, ExecuteResponse, ExecuteError};
+pub use join_context::{JoinContextRequest, JoinContextResponse};
+pub use sync::SyncRequest;
+pub use update_application::UpdateApplicationRequest;
 
 #[derive(Debug, Message)]
 #[rtype("()")]

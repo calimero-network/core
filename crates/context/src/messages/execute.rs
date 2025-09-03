@@ -7,7 +7,7 @@ use calimero_primitives::identity::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
-use crate::{ContextAtomic, ContextAtomicKey};
+use crate::types::{ContextAtomic, ContextAtomicKey};
 
 #[derive(Debug)]
 pub struct ExecuteRequest {
@@ -65,3 +65,5 @@ pub enum ExecuteError {
     #[error("error resolving identity alias '{alias}'")]
     AliasResolutionFailed { alias: Alias<PublicKey> },
 }
+
+

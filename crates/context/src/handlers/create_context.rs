@@ -4,10 +4,10 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
-use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
-use calimero_context_config::client::utils::humanize_iter;
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::messages::create_context::{
+use crate::client::config::ClientConfig as ExternalClientConfig;
+use crate::client::ContextClient;
+use crate::config::humanize_iter;
+use crate::messages::create_context::{
     CreateContextRequest, CreateContextResponse,
 };
 use calimero_node_primitives::client::NodeClient;

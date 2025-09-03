@@ -9,8 +9,12 @@ description.workspace = true
 publish = true
 
 [dependencies]
+# Core dependencies
 actix.workspace = true
-borsh.workspace = true
+async-stream.workspace = true
+base64.workspace = true
+borsh = { workspace = true, features = ["derive"] }
+bs58.workspace = true
 either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
@@ -18,13 +22,38 @@ memchr.workspace = true
 ouroboros.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true
+url.workspace = true
 
-calimero-context-config = { workspace = true, features = ["client"] }
-calimero-context-primitives.workspace = true
+# Protocol-specific dependencies (optional)
+alloy = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
+candid = { workspace = true, optional = true }
+ed25519-consensus = { workspace = true, optional = true }
+ed25519-dalek.workspace = true
+ethabi = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+ic-agent = { workspace = true, optional = true }
+near-crypto = { workspace = true, optional = true }
+near-jsonrpc-client = { workspace = true, optional = true }
+near-jsonrpc-primitives = { workspace = true, optional = true }
+near-primitives = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+soroban-client = { workspace = true, optional = true }
+soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
+starknet = { workspace = true, optional = true }
+starknet-core = { workspace = true, optional = true }
+starknet-core-derive = { workspace = true, optional = true }
+starknet-crypto = { workspace = true, optional = true }
+starknet-types-core = { workspace = true, optional = true }
+
+# Calimero dependencies
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
+
 calimero-runtime.workspace = true
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
@@ -32,3 +61,33 @@ calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = []
+
+# Client features
+client = [
+  "near_client",
+  "icp_client", 
+  "starknet_client",
+  "stellar_client",
+  "ethereum_client",
+  "dep:reqwest",
+]
+
+# Protocol-specific client features
+near_client = ["dep:near-crypto", "dep:near-jsonrpc-client", "dep:near-jsonrpc-primitives", "dep:near-primitives"]
+
+icp = ["candid"]
+icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
+
+starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-core", "dep:starknet-core-derive", "dep:starknet-crypto", "dep:starknet-types-core"]
+
+stellar = ["dep:soroban-sdk"]
+stellar_client = ["stellar", "dep:soroban-client"]
+
+ethereum = ["alloy", "alloy-sol-types", "ethabi"]
+ethereum_client = ["ethereum"]
+
+# Server features
+server = ["client"]

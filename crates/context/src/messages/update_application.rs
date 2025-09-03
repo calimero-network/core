@@ -13,3 +13,5 @@ pub struct UpdateApplicationRequest {
 impl Message for UpdateApplicationRequest {
     type Result = eyre::Result<()>;
 }
+
+

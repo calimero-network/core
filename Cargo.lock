@@ -1829,7 +1829,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "bs58 0.5.1",
- "calimero-context-config",
+ "calimero-context",
  "calimero-primitives",
  "calimero-server-primitives",
  "camino",
@@ -1870,47 +1870,34 @@ name = "calimero-context"
 version = "0.0.0"
 dependencies = [
  "actix",
+ "alloy",
+ "alloy-sol-types",
+ "async-stream",
+ "base64 0.22.1",
  "borsh",
- "calimero-context-config",
- "calimero-context-primitives",
+ "bs58 0.5.1",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-store",
  "calimero-utils-actix",
- "either",
- "eyre",
- "futures-util",
- "memchr",
- "ouroboros",
- "prometheus-client",
- "rand 0.8.5",
- "serde",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "calimero-context-config"
-version = "0.0.0"
-dependencies = [
- "alloy",
- "alloy-sol-types",
- "base64 0.22.1",
- "borsh",
- "bs58 0.5.1",
  "candid",
  "ed25519-consensus",
  "ed25519-dalek",
  "either",
  "ethabi",
  "eyre",
+ "futures-util",
  "hex",
  "ic-agent",
+ "memchr",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
+ "ouroboros",
+ "prometheus-client",
+ "rand 0.8.5",
  "reqwest 0.12.23",
  "serde",
  "serde_json",
@@ -1923,26 +1910,7 @@ dependencies = [
  "starknet-types-core",
  "thiserror 1.0.69",
  "tokio",
- "url",
-]
-
-[[package]]
-name = "calimero-context-primitives"
-version = "0.0.0"
-dependencies = [
- "actix",
- "async-stream",
- "calimero-context-config",
- "calimero-node-primitives",
- "calimero-primitives",
- "calimero-store",
- "calimero-utils-actix",
- "eyre",
- "futures-util",
- "rand 0.8.5",
- "serde",
- "thiserror 1.0.69",
- "tokio",
+ "tracing",
  "url",
 ]
 
@@ -2011,8 +1979,6 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context",
- "calimero-context-config",
- "calimero-context-primitives",
  "calimero-crypto",
  "calimero-network",
  "calimero-network-primitives",
@@ -2149,8 +2115,7 @@ dependencies = [
  "axum 0.7.9",
  "bytes",
  "cached-path",
- "calimero-context-config",
- "calimero-context-primitives",
+ "calimero-context",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server-primitives",
@@ -2180,8 +2145,7 @@ dependencies = [
 name = "calimero-server-primitives"
 version = "0.0.0"
 dependencies = [
- "calimero-context-config",
- "calimero-context-primitives",
+ "calimero-context",
  "calimero-primitives",
  "camino",
  "eyre",
@@ -6216,7 +6180,7 @@ dependencies = [
  "axum 0.7.9",
  "calimero-client",
  "calimero-config",
- "calimero-context-config",
+ "calimero-context",
  "calimero-primitives",
  "calimero-server-primitives",
  "calimero-version",
@@ -6253,7 +6217,6 @@ dependencies = [
  "calimero-blobstore",
  "calimero-config",
  "calimero-context",
- "calimero-context-config",
  "calimero-network-primitives",
  "calimero-node",
  "calimero-server",

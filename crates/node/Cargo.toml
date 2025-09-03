@@ -22,9 +22,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
 
-calimero-context.workspace = true
-calimero-context-config.workspace = true
-calimero-context-primitives.workspace = true
+calimero-context = { workspace = true, features = ["client"] }
 calimero-crypto.workspace = true
 calimero-blobstore.workspace = true
 calimero-network.workspace = true

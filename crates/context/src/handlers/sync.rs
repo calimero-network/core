@@ -1,5 +1,5 @@
 use actix::{Handler, Message};
-use calimero_context_primitives::messages::sync::SyncRequest;
+use crate::messages::sync::SyncRequest;
 
 use crate::ContextManager;
 

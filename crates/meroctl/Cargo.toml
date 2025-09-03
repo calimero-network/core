@@ -36,7 +36,7 @@ webbrowser.workspace = true
 
 calimero-client.workspace = true
 calimero-config.workspace = true
-calimero-context-config.workspace = true
+calimero-context = { workspace = true, features = ["client"] }
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-version.workspace = true

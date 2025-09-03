@@ -16,8 +16,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 url = { workspace = true, features = ["serde"] }
 
-calimero-context-config.workspace = true
-calimero-context-primitives.workspace = true
+calimero-context = { workspace = true, features = ["client"] }
+
 calimero-primitives.workspace = true
 
 [lints]

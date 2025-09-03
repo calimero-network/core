@@ -25,7 +25,7 @@ webbrowser.workspace = true
 # Calimero primitives
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
-calimero-context-config.workspace = true
+calimero-context = { workspace = true, features = ["client"] }
 
 # Python bindings
 pyo3 = { workspace = true, features = ["auto-initialize"], optional = true }

@@ -6,13 +6,13 @@ use std::time::Instant;
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
 };
-use calimero_context_config::repr::ReprTransmute;
-use calimero_context_primitives::client::crypto::ContextIdentity;
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::messages::execute::{
+use crate::repr::ReprTransmute;
+use crate::types::ContextIdentity;
+use crate::client::ContextClient;
+use crate::messages::execute::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
 };
-use calimero_context_primitives::{ContextAtomic, ContextAtomicKey};
+use crate::types::{ContextAtomic, ContextAtomicKey};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
