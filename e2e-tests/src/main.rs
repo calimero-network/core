@@ -30,8 +30,6 @@ pub const EXAMPLES: &str = r"
     --meroctl-binary ./target/debug/meroctl
 ";
 
-// Ghost comment to trigger the CI
-
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(after_help = concatcp!(
