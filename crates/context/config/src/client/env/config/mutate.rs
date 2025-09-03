@@ -1,6 +1,5 @@
-use std::fmt::Debug;
-
 use core::ptr;
+use std::fmt::Debug;
 
 use crate::client::env::utils;
 use crate::client::transport::Transport;

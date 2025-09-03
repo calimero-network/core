@@ -2,8 +2,8 @@
 
 //! ICP-specific implementations for context config mutations.
 //!
-//! This module provides ICP (Internet Computer Protocol) blockchain-specific implementations 
-//! of the `Method<Icp>` trait for context config mutation operations. It handles ICP's 
+//! This module provides ICP (Internet Computer Protocol) blockchain-specific implementations
+//! of the `Method<Icp>` trait for context config mutation operations. It handles ICP's
 //! Candid-based encoding and decoding.
 //!
 //! ## Key Features

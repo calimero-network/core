@@ -27,8 +27,7 @@ use alloy::signers::{Signature, SignerSync};
 use alloy_sol_types::SolValue;
 use ed25519_dalek::SigningKey;
 
-use super::super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
-use super::super::types::ethereum::ToSol;
+use super::super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest, ToSol};
 use super::Mutate;
 use crate::client::env::Method;
 use crate::client::protocol::ethereum::Ethereum;

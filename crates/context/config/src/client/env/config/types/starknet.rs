@@ -453,9 +453,7 @@ pub struct StarknetApplicationRevisionRequest {
 impl From<crate::client::env::config::query::ApplicationRevisionRequest>
     for StarknetApplicationRevisionRequest
 {
-    fn from(
-        value: crate::client::env::config::query::ApplicationRevisionRequest,
-    ) -> Self {
+    fn from(value: crate::client::env::config::query::ApplicationRevisionRequest) -> Self {
         StarknetApplicationRevisionRequest {
             context_id: (*value.context_id).into(),
         }

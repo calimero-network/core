@@ -119,7 +119,9 @@ impl Method<Ethereum> for ProposalApprovalsRequest {
         let (proposal_id, num_approvals): (B256, u32) = SolValue::abi_decode(&response, false)?;
 
         Ok(ProposalWithApprovals {
-            proposal_id: proposal_id.rt().expect("infallible conversion"),
+            proposal_id: proposal_id
+                .rt()
+                .map_err(|e| eyre::eyre!("Failed to convert proposal_id: {}", e))?,
             num_approvals: num_approvals as usize,
         })
     }
@@ -129,16 +131,23 @@ impl Method<Ethereum> for ProposalApproversRequest {
     type Returns = Vec<ContextIdentity>;
     const METHOD: &'static str = "proposalApprovers(bytes32)";
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+        let proposal_id: [u8; 32] = self
+            .proposal_id
+            .rt()
+            .map_err(|e| eyre::eyre!("Failed to convert proposal_id: {}", e))?;
         Ok(proposal_id.abi_encode())
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
-        let context_identities: Vec<ContextIdentity> = decoded
+        let context_identities: Result<Vec<ContextIdentity>, _> = decoded
             .into_iter()
-            .map(|bytes| bytes.rt().expect("infallible conversion"))
+            .map(|bytes| {
+                bytes
+                    .rt()
+                    .map_err(|e| eyre::eyre!("Failed to convert bytes: {}", e))
+            })
             .collect();
-        Ok(context_identities)
+        Ok(context_identities?)
     }
 }
 
