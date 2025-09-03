@@ -30,16 +30,10 @@ use crate::{Proposal, ProposalId, ProposalWithApprovals};
 ///
 /// # Example
 ///
-/// ```rust
-/// use calimero_context_config::client::env::proxy::query::ContextProxyQuery;
-///
-/// // Assuming you have a configured CallClient
+/// ```rust,ignore
+/// // Create a query client and use it to fetch proposals
 /// let query_client = ContextProxyQuery { client: your_client };
-///
-/// // Get all proposals with pagination
 /// let proposals = query_client.proposals(0, 10).await?;
-///
-/// // Get a specific proposal
 /// let proposal = query_client.proposal(proposal_id).await?;
 /// ```
 #[derive(Debug)]
@@ -62,7 +56,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// // Get the first 10 proposals
     /// let proposals = query_client.proposals(0, 10).await?;
     /// ```
@@ -91,7 +85,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let proposal = query_client.proposal(proposal_id).await?;
     /// match proposal {
     ///     Some(p) => println!("Found proposal: {:?}", p),
@@ -117,7 +111,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let count = query_client.get_number_of_active_proposals().await?;
     /// println!("There are {} active proposals", count);
     /// ```
@@ -140,7 +134,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let approvals = query_client.get_number_of_proposal_approvals(proposal_id).await?;
     /// println!("Proposal has {} approvals", approvals.approvals_count);
     /// ```
@@ -168,7 +162,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let approvers = query_client.get_proposal_approvers(proposal_id).await?;
     /// println!("Proposal approved by {} identities", approvers.len());
     /// ```
@@ -196,7 +190,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let key = b"my_context_variable".to_vec();
     /// let value = query_client.get_context_value(key).await?;
     /// println!("Context value: {:?}", value);
@@ -221,7 +215,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let entries = query_client.get_context_storage_entries(0, 50).await?;
     /// for entry in entries {
     ///     println!("Key: {:?}, Value: {:?}", entry.key, entry.value);
@@ -319,7 +313,7 @@ pub(super) struct ProposalsRequest {
 }
 
 // Protocol-specific implementations
-// These modules contain the actual Method trait implementations for each blockchain protocolt 
+// These modules contain the actual Method trait implementations for each blockchain protocolt
 mod ethereum;
 mod icp;
 mod near;
