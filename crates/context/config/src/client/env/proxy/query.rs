@@ -5,8 +5,6 @@ use crate::repr::Repr;
 use crate::types::{ContextIdentity, ContextStorageEntry};
 use crate::{Proposal, ProposalId, ProposalWithApprovals};
 use std::io::Cursor;
-use alloy::dyn_abi::{DynSolType, DynSolValue};
-use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{CandidType, Decode, Encode};
 use eyre::{eyre, WrapErr};
@@ -17,7 +15,6 @@ use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 use starknet_crypto::Felt as CryptoFelt;
 
-use crate::client::env::proxy::ethereum::SolProposal;
 use crate::client::env::proxy::starknet::{
     CallData,
     ContextStorageEntriesResponse,
@@ -158,12 +155,7 @@ impl Method<Stellar> for ActiveProposalRequest {
     }
 }
 
-impl Method<Ethereum> for ActiveProposalRequest {
-    type Returns = u16;
-    const METHOD: &'static str = "getActiveProposalsLimit()";
-    fn encode(self) -> eyre::Result<Vec<u8>> { Ok(().abi_encode()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { Ok(SolValue::abi_decode(&response, false)?) }
-}
+// Ethereum-specific impls moved to query/ethereum.rs
 
 // Inlined from context_storage_entries.rs
 #[derive(Clone, Debug, Serialize)]
@@ -217,15 +209,7 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
     }
 }
 
-impl Method<Ethereum> for ContextStorageEntriesRequest {
-    const METHOD: &'static str = "contextStorageEntries(uint32,uint32)";
-    type Returns = Vec<ContextStorageEntry>;
-    fn encode(self) -> eyre::Result<Vec<u8>> { let offset = u32::try_from(self.offset).map_err(|e| eyre!("Offset too large for u32: {}", e))?; let limit = u32::try_from(self.limit).map_err(|e| eyre!("Limit too large for u32: {}", e))?; Ok((offset, limit).abi_encode()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let struct_type = "tuple(bytes,bytes)[]".parse::<DynSolType>()?; let decoded = struct_type.abi_decode(&response)?; let DynSolValue::Array(entries) = decoded else { return Err(eyre!("Expected array")); };
-        Ok(entries.into_iter().map(|entry| { let DynSolValue::Tuple(fields) = entry else { return Err(eyre!("Expected tuple")); }; let all_bytes = fields[1].as_bytes().ok_or_else(|| eyre!("Failed to get bytes from field"))?; let key_len = all_bytes[31] as usize; let key = all_bytes[32..32 + key_len].to_vec(); #[allow(clippy::integer_division)] let value_offset = 32 + ((key_len + 31) / 32) * 32; let value_len = all_bytes[value_offset + 31] as usize; let value = all_bytes[value_offset + 32..value_offset + 32 + value_len].to_vec(); Ok(ContextStorageEntry { key, value }) }).collect::<Result<Vec<_>, _>>()?)
-    }
-}
+// Ethereum-specific impls moved to query/ethereum.rs
 
 // Inlined from context_variable.rs
 #[derive(Clone, Debug, Serialize)]
@@ -259,11 +243,7 @@ impl Method<Stellar> for ContextVariableRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Ok(Vec::new()); } let env = Env::default(); let value: Bytes = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to Bytes: {:?}", e))?; Ok(value.to_alloc_vec()) }
 }
 
-impl Method<Ethereum> for ContextVariableRequest {
-    type Returns = Vec<u8>; const METHOD: &'static str = "getContextValue(bytes)";
-    fn encode(self) -> eyre::Result<Vec<u8>> { Ok(self.key.abi_encode()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { Ok(SolValue::abi_decode(&response, false)?) }
-}
+// Ethereum-specific impls moved to query/ethereum.rs
 
 // Inlined from proposal_approvals.rs
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -299,11 +279,7 @@ impl Method<Stellar> for ProposalApprovalsRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Err(eyre!("Proposal not found")); } let env = Env::default(); let val: Val = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert ScVal to Val: {:?}", e))?; let stellar_proposal: StellarProposalWithApprovals = val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to StellarProposalWithApprovals: {:?}", e))?; Ok(ProposalWithApprovals::from(stellar_proposal)) }
 }
 
-impl Method<Ethereum> for ProposalApprovalsRequest {
-    type Returns = ProposalWithApprovals; const METHOD: &'static str = "getConfirmationsCount(bytes32)";
-    fn encode(self) -> eyre::Result<Vec<u8>> { let proposal_id: [u8; 32] = self.proposal_id.rt().map_err(|e| eyre!("Failed to convert proposal_id: {}", e))?; Ok(proposal_id.abi_encode()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let (proposal_id, num_approvals): (B256, u32) = SolValue::abi_decode(&response, false)?; Ok(ProposalWithApprovals { proposal_id: proposal_id.rt().wrap_err("infallible conversion")?, num_approvals: num_approvals as usize }) }
-}
+// Ethereum-specific impls moved to query/ethereum.rs
 
 // Inlined from proposal_approvers.rs
 #[derive(Clone, Debug, Serialize)]
@@ -344,11 +320,7 @@ impl Method<Stellar> for ProposalApproversRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Ok(Vec::new()); } let env = Env::default(); let approvers: soroban_sdk::Vec<BytesN<32>> = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to approvers: {:?}", e))?; approvers.iter().map(|bytes| bytes.to_array().rt().map_err(|e| eyre!("Failed to convert bytes to identity: {}", e))).collect() }
 }
 
-impl Method<Ethereum> for ProposalApproversRequest {
-    type Returns = Vec<ContextIdentity>; const METHOD: &'static str = "proposalApprovers(bytes32)";
-    fn encode(self) -> eyre::Result<Vec<u8>> { let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion"); Ok(proposal_id.abi_encode()) }
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?; Ok(decoded.into_iter().map(|bytes| bytes.rt().expect("infallible conversion")).collect()) }
-}
+// Ethereum-specific impls moved to query/ethereum.rs
 
 // Inlined from proposal.rs
 #[derive(Clone, Debug, Serialize)]
@@ -377,7 +349,7 @@ impl Method<Stellar> for ProposalRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; if sc_val == ScVal::Void { return Ok(None); } let env = Env::default(); let proposal_val = Val::try_from_val(&env, &sc_val).map_err(|e| eyre!("Failed to convert to proposal: {:?}", e))?; let proposal = StellarProposal::try_from_val(&env, &proposal_val).map_err(|e| eyre!("Failed to convert to proposal: {:?}", e))?; Ok(Some(Proposal::from(proposal))) }
 }
 
-impl Method<Ethereum> for ProposalRequest { type Returns = Option<Proposal>; const METHOD: &'static str = "getProposal(bytes32)"; fn encode(self) -> eyre::Result<Vec<u8>> { let proposal_id: [u8; 32] = self.proposal_id.rt().map_err(|e| eyre!("Failed to convert proposal_id: {}", e))?; Ok(proposal_id.abi_encode()) } fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { if response.is_empty() || response.iter().all(|&b| b == 0) { return Ok(None); } let sol_proposal: SolProposal = SolValue::abi_decode(&response, false)?; sol_proposal.try_into().map(Some) } }
+// Ethereum-specific impls moved to query/ethereum.rs
 
 // Inlined from proposals.rs
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -406,4 +378,6 @@ impl Method<Stellar> for ProposalsRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let cursor = Cursor::new(response); let mut limited = Limited::new(cursor, Limits::none()); let sc_val = ScVal::read_xdr(&mut limited).map_err(|e| eyre!("Failed to read XDR: {}", e))?; let env = Env::default(); let proposals: soroban_sdk::Vec<StellarProposal> = sc_val.try_into_val(&env).map_err(|e| eyre!("Failed to convert to proposals: {:?}", e))?; Ok(proposals.iter().map(|p| Proposal::from(p.clone())).collect()) }
 }
 
-impl Method<Ethereum> for ProposalsRequest { type Returns = Vec<Proposal>; const METHOD: &'static str = "getProposals(uint32,uint32)"; fn encode(self) -> eyre::Result<Vec<u8>> { let offset = u32::try_from(self.offset).map_err(|e| eyre!("Offset too large for u32: {}", e))?; let length = u32::try_from(self.length).map_err(|e| eyre!("Limit too large for u32: {}", e))?; Ok((offset, length).abi_encode()) } fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> { let proposals: Vec<SolProposal> = SolValue::abi_decode(&response, false)?; proposals.into_iter().map(TryInto::try_into).collect() } }
+// Ethereum-specific impls moved to query/ethereum.rs
+
+mod ethereum;
