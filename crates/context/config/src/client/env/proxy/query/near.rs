@@ -28,7 +28,7 @@
 
 use serde::Serialize;
 
-use super::{
+use super::super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
     ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
 };

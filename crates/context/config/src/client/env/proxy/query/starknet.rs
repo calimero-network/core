@@ -31,7 +31,7 @@ use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 use starknet_crypto::Felt as CryptoFelt;
 
-use super::{
+use super::super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
     ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
 };

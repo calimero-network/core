@@ -33,7 +33,7 @@ use eyre::eyre;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Bytes, BytesN, Env, IntoVal, TryFromVal, TryIntoVal, Val};
 
-use super::{
+use super::super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
     ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
 };

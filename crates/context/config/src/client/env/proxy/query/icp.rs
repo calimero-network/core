@@ -28,7 +28,7 @@
 
 use candid::{Decode, Encode};
 
-use super::{
+use super::super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
     ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
 };

@@ -11,15 +11,17 @@
 //! The client supports multiple protocols through protocol-specific implementations
 //! in separate modules: `ethereum`, `icp`, `near`, `starknet`, and `stellar`.
 
-use candid::CandidType;
-use serde::{Deserialize, Serialize};
-
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
 use crate::types::{ContextIdentity, ContextStorageEntry};
 use crate::{Proposal, ProposalId, ProposalWithApprovals};
+
+use super::requests::{
+    ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
+    ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
+};
 
 /// A client for querying context-related data across different blockchain protocols.
 ///
@@ -232,85 +234,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     }
 }
 
-// Request structs for context proxy queries
 
-/// Request to get the number of active proposals in the context.
-///
-/// This is a simple request that doesn't require any parameters.
-#[derive(Copy, Clone, Debug, Serialize, CandidType)]
-pub(super) struct ActiveProposalRequest;
-
-/// Request to retrieve paginated context storage entries.
-///
-/// # Fields
-///
-/// * `offset` - The number of entries to skip from the beginning
-/// * `limit` - The maximum number of entries to return
-#[derive(Clone, Debug, Serialize, CandidType)]
-pub(super) struct ContextStorageEntriesRequest {
-    /// The number of entries to skip from the beginning
-    pub(super) offset: usize,
-    /// The maximum number of entries to return
-    pub(super) limit: usize,
-}
-
-/// Request to retrieve a context variable value by its key.
-///
-/// # Fields
-///
-/// * `key` - The byte array key identifying the context variable
-#[derive(Clone, Debug, Serialize, CandidType)]
-pub(super) struct ContextVariableRequest {
-    /// The byte array key identifying the context variable
-    pub(super) key: Vec<u8>,
-}
-
-/// Request to get approval information for a specific proposal.
-///
-/// # Fields
-///
-/// * `proposal_id` - The unique identifier of the proposal
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct ProposalApprovalsRequest {
-    /// The unique identifier of the proposal
-    pub(super) proposal_id: Repr<ProposalId>,
-}
-
-/// Request to get the list of identities that have approved a proposal.
-///
-/// # Fields
-///
-/// * `proposal_id` - The unique identifier of the proposal
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct ProposalApproversRequest {
-    /// The unique identifier of the proposal
-    pub(super) proposal_id: Repr<ProposalId>,
-}
-
-/// Request to retrieve a specific proposal by its ID.
-///
-/// # Fields
-///
-/// * `proposal_id` - The unique identifier of the proposal to retrieve
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct ProposalRequest {
-    /// The unique identifier of the proposal to retrieve
-    pub(super) proposal_id: Repr<ProposalId>,
-}
-
-/// Request to retrieve a paginated list of proposals.
-///
-/// # Fields
-///
-/// * `offset` - The number of proposals to skip from the beginning
-/// * `length` - The maximum number of proposals to return
-#[derive(Copy, Clone, Debug, Serialize, CandidType)]
-pub(super) struct ProposalsRequest {
-    /// The number of proposals to skip from the beginning
-    pub(super) offset: usize,
-    /// The maximum number of proposals to return
-    pub(super) length: usize,
-}
 
 // Protocol-specific implementations
 // These modules contain the actual Method trait implementations for each blockchain protocol

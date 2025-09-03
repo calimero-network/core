@@ -14,11 +14,10 @@
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::repr::Repr;
 use crate::types::{ProposalId, SignerId};
-use crate::{
-    Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest,
-};
+use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
+
+use super::requests::{ApproveRequest, ProposeRequest};
 
 /// A client for mutating context-related data across different blockchain protocols.
 ///
@@ -100,14 +99,11 @@ impl<'a, T> ContextProxyMutate<'a, T> {
         author_id: SignerId,
         actions: Vec<ProposalAction>,
     ) -> ContextProxyMutateRequest<'a, T> {
+        let propose_request = ProposeRequest::new(proposal_id, author_id, actions);
         ContextProxyMutateRequest {
             client: self.client,
             raw_request: ProxyMutateRequest::Propose {
-                proposal: Proposal {
-                    id: Repr::new(proposal_id),
-                    author_id: Repr::new(author_id),
-                    actions,
-                },
+                proposal: propose_request.proposal,
             },
         }
     }
@@ -137,14 +133,11 @@ impl<'a, T> ContextProxyMutate<'a, T> {
         signer_id: SignerId,
         proposal_id: ProposalId,
     ) -> ContextProxyMutateRequest<'a, T> {
+        let approve_request = ApproveRequest::new(signer_id, proposal_id);
         ContextProxyMutateRequest {
             client: self.client,
             raw_request: ProxyMutateRequest::Approve {
-                approval: ProposalApprovalWithSigner {
-                    proposal_id: Repr::new(proposal_id),
-                    signer_id: Repr::new(signer_id),
-                    added_timestamp: 0, // TODO: add timestamp
-                },
+                approval: approve_request.approval,
             },
         }
     }

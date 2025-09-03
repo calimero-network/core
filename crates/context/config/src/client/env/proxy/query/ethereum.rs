@@ -29,7 +29,7 @@ use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 
-use super::{
+use super::super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
     ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
 };
