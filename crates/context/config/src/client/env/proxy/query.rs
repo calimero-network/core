@@ -11,17 +11,16 @@
 //! The client supports multiple protocols through protocol-specific implementations
 //! in separate modules: `ethereum`, `icp`, `near`, `starknet`, and `stellar`.
 
+use super::requests::{
+    ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
+    ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
+};
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
 use crate::types::{ContextIdentity, ContextStorageEntry};
 use crate::{Proposal, ProposalId, ProposalWithApprovals};
-
-use super::requests::{
-    ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
-    ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
-};
 
 /// A client for querying context-related data across different blockchain protocols.
 ///
@@ -233,8 +232,6 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send(&self.client, Operation::Read(params)).await
     }
 }
-
-
 
 // Protocol-specific implementations
 // These modules contain the actual Method trait implementations for each blockchain protocol

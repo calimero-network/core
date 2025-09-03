@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::repr::Repr;
 use crate::types::{ProposalId, SignerId};
-use crate::{
-    Proposal, ProposalAction, ProposalApprovalWithSigner,
-};
+use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner};
 
 // ============================================================================
 // Query Request Types

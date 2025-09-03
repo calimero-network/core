@@ -11,13 +11,12 @@
 //! The client supports multiple protocols through protocol-specific implementations
 //! in separate modules: `ethereum`, `icp`, `near`, `starknet`, and `stellar`.
 
+use super::requests::{ApproveRequest, ProposeRequest};
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::types::{ProposalId, SignerId};
 use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
-
-use super::requests::{ApproveRequest, ProposeRequest};
 
 /// A client for mutating context-related data across different blockchain protocols.
 ///
