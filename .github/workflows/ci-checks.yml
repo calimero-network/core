@@ -38,6 +38,8 @@ jobs:
 
       - name: Cargo format
         run: |
+          rustup component add rustfmt
+
           cargo fmt --check
 
       - name: Cargo clippy
