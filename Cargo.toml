@@ -8,7 +8,7 @@ description = "Core Calimero infrastructure and tools"
 
 [workspace.metadata.workspaces]
 # Shared version of all public crates in the workspace.
-version = "0.2.4"
+version = "0.2.5"
 exclude = [
     "./apps/abi_conformance",
     "./apps/kv-store", 
@@ -47,7 +47,6 @@ members = [
     "./crates/server/primitives",
     "./crates/storage",
     "./crates/storage-macros",
-
     "./crates/store",
     "./crates/store/blobs",
     "./crates/store/impl/rocksdb",
@@ -55,10 +54,8 @@ members = [
     "./crates/utils/actix",
     "./crates/version",
     "./crates/wasm-abi",
-
     "./apps/kv-store",
     "./apps/abi_conformance",
-
     "./e2e-tests",
     "./tools/calimero-abi",
 ]
