@@ -1,31 +1,6 @@
 #![cfg(feature = "starknet_client")]
 
 //! Starknet specific implementations for context proxy mutations.
-//!
-//! This module provides Starknet blockchain-specific implementations of the
-//! `Method<Starknet>` trait for context proxy mutation operations. It handles
-//! Starknet's Cairo serialization format using the `starknet_core` and `starknet_crypto` crates.
-//!
-//! ## Key Features
-//!
-//! - **Cairo Serialization**: Uses Cairo's native serialization for parameter encoding and response decoding
-//! - **ECDSA Signing**: Implements ECDSA signature generation using Starknet's signing key
-//! - **Poseidon Hashing**: Uses Poseidon hash function for message hashing
-//! - **Error Handling**: Converts Starknet-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! The mutation request is encoded using Cairo serialization:
-//! - ED25519 keys are derived to ECDSA keys for Starknet compatibility
-//! - Request data is serialized and hashed using Poseidon hash function
-//! - Signatures are generated using ECDSA with Starknet's signing key
-//! - Responses are decoded by parsing Cairo-encoded field elements
-//! - 32-byte chunks are processed for proper field element alignment
-//!
-//! ## Usage
-//!
-//! These implementations are used automatically by the `ContextProxyMutate` client
-//! when the underlying transport is configured for Starknet. No direct usage is required.
 
 use eyre::WrapErr;
 use starknet::core::codec::Encode;

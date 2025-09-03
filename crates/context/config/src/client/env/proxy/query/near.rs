@@ -1,30 +1,6 @@
 #![cfg(feature = "near_client")]
 
 //! NEAR Protocol specific implementations for context proxy queries.
-//!
-//! This module provides NEAR Protocol blockchain-specific implementations of the
-//! `Method<Near>` trait for all context proxy query operations. It handles NEAR's
-//! JSON-based serialization format using the `serde_json` crate.
-//!
-//! ## Key Features
-//!
-//! - **JSON Serialization**: Uses JSON format for parameter encoding and response decoding
-//! - **Simple Integration**: Leverages standard JSON for easy debugging and inspection
-//! - **NEAR Compatibility**: Optimized for NEAR's view function calls and RPC interface
-//! - **Error Handling**: Converts NEAR-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! Each request type is encoded using JSON serialization:
-//! - All request structs implement `Serialize` for JSON encoding
-//! - Responses are decoded using `serde_json::from_slice` for type safety
-//! - NEAR-specific types are handled through the `Repr` wrapper system
-//! - Simple and efficient for NEAR's view function architecture
-//!
-//! ## Usage
-//!
-//! These implementations are used automatically by the `ContextProxyQuery` client
-//! when the underlying transport is configured for NEAR Protocol. No direct usage is required.
 
 use serde::Serialize;
 

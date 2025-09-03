@@ -1,15 +1,4 @@
-//! Context proxy query client for interacting with context management operations.
-//!
-//! This module provides a high-level interface for querying context-related data
-//! across different blockchain protocols. It abstracts away protocol-specific
-//! encoding/decoding details and provides a unified API for:
-//!
-//! - Proposal management (listing, retrieving, approvals)
-//! - Context storage operations (key-value storage)
-//! - Context variable access
-//!
-//! The client supports multiple protocols through protocol-specific implementations
-//! in separate modules: `ethereum`, `icp`, `near`, `starknet`, and `stellar`.
+//! Context proxy query client.
 
 use super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
@@ -22,21 +11,7 @@ use crate::repr::Repr;
 use crate::types::{ContextIdentity, ContextStorageEntry};
 use crate::{Proposal, ProposalId, ProposalWithApprovals};
 
-/// A client for querying context-related data across different blockchain protocols.
-///
-/// This client provides methods to interact with context management operations
-/// such as proposal queries, context storage access, and variable retrieval.
-/// It automatically handles protocol-specific encoding and decoding based on
-/// the configured transport.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Create a query client and use it to fetch proposals
-/// let query_client = ContextProxyQuery { client: your_client };
-/// let proposals = query_client.proposals(0, 10).await?;
-/// let proposal = query_client.proposal(proposal_id).await?;
-/// ```
+/// Context proxy query client.
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {
     /// The underlying call client for making requests

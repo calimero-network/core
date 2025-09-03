@@ -1,31 +1,6 @@
 #![cfg(feature = "stellar_client")]
 
 //! Stellar specific implementations for context proxy mutations.
-//!
-//! This module provides Stellar blockchain-specific implementations of the
-//! `Method<Stellar>` trait for context proxy mutation operations. It handles
-//! Stellar's XDR (External Data Representation) serialization format using the `soroban_sdk` crate.
-//!
-//! ## Key Features
-//!
-//! - **XDR Serialization**: Uses Stellar's XDR format for parameter encoding and response decoding
-//! - **ED25519 Signing**: Implements ED25519 signature generation and verification
-//! - **Soroban Integration**: Leverages Soroban SDK for Stellar smart contract interactions
-//! - **Error Handling**: Converts Stellar-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! The mutation request is encoded using XDR serialization:
-//! - Request data is converted to Stellar-specific types using `StellarProxyMutateRequest`
-//! - Signatures are generated using ED25519 with XDR message encoding
-//! - Responses are decoded using XDR's `FromXdr` trait with environment context
-//! - Stellar-specific types are handled through dedicated wrapper types
-//! - Environment context is managed through `Env::default()` for XDR operations
-//!
-//! ## Usage
-//!
-//! These implementations are used automatically by the `ContextProxyMutate` client
-//! when the underlying transport is configured for Stellar. No direct usage is required.
 
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::xdr::{FromXdr, ToXdr};

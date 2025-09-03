@@ -1,15 +1,4 @@
-//! Context proxy mutation client for interacting with context management operations.
-//!
-//! This module provides a high-level interface for mutating context-related data
-//! across different blockchain protocols. It abstracts away protocol-specific
-//! encoding/decoding details and provides a unified API for:
-//!
-//! - Proposal creation and management
-//! - Proposal approval workflows
-//! - Signed transaction handling
-//!
-//! The client supports multiple protocols through protocol-specific implementations
-//! in separate modules: `ethereum`, `icp`, `near`, `starknet`, and `stellar`.
+//! Context proxy mutation client.
 
 use super::requests::{ApproveRequest, ProposeRequest};
 use crate::client::env::utils;
@@ -18,37 +7,14 @@ use crate::client::{CallClient, ClientError, Operation};
 use crate::types::{ProposalId, SignerId};
 use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 
-/// A client for mutating context-related data across different blockchain protocols.
-///
-/// This client provides methods to interact with context management operations
-/// such as proposal creation and approval workflows. It automatically handles
-/// protocol-specific encoding and decoding based on the configured transport.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Create a mutation client and use it to propose changes
-/// let mutate_client = ContextProxyMutate { client: your_client };
-/// let request = mutate_client.propose(proposal_id, author_id, actions);
-/// let result = request.send(signing_key).await?;
-/// ```
+/// Context proxy mutation client.
 #[derive(Debug)]
 pub struct ContextProxyMutate<'a, T> {
     /// The underlying call client for making requests
     pub client: CallClient<'a, T>,
 }
 
-/// A request builder for context proxy mutations.
-///
-/// This struct holds the mutation request data and provides a method to send
-/// the request with the appropriate signing key for the target protocol.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let request = mutate_client.approve(signer_id, proposal_id);
-/// let result = request.send(signing_key).await?;
-/// ```
+/// Request builder for context proxy mutations.
 #[derive(Debug)]
 pub struct ContextProxyMutateRequest<'a, T> {
     client: CallClient<'a, T>,

@@ -1,30 +1,6 @@
 #![cfg(feature = "icp_client")]
 
 //! Internet Computer (ICP) specific implementations for context proxy queries.
-//!
-//! This module provides Internet Computer blockchain-specific implementations of the
-//! `Method<Icp>` trait for all context proxy query operations. It handles ICP's
-//! Candid serialization format using the `candid` crate.
-//!
-//! ## Key Features
-//!
-//! - **Candid Serialization**: Uses Candid format for parameter encoding and response decoding
-//! - **Type Safety**: Leverages Candid's type system for safe data serialization
-//! - **Efficient Encoding**: Optimized for ICP's message passing and canister calls
-//! - **Error Handling**: Converts ICP-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! Each request type is encoded using Candid serialization:
-//! - Simple types (u16, u32, Vec<u8>) are encoded directly with Candid
-//! - Complex types use Candid's compound type encoding
-//! - Responses are decoded using Candid's `Decode!` macro for type safety
-//! - ICP-specific types are wrapped in `ICRepr` for proper serialization
-//!
-//! ## Usage
-//!
-//! These implementations are used automatically by the `ContextProxyQuery` client
-//! when the underlying transport is configured for Internet Computer. No direct usage is required.
 
 use candid::{Decode, Encode};
 

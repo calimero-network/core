@@ -1,29 +1,6 @@
 #![cfg(feature = "ethereum_client")]
 
 //! Ethereum-specific implementations for context proxy queries.
-//!
-//! This module provides Ethereum blockchain-specific implementations of the `Method<Ethereum>`
-//! trait for all context proxy query operations. It handles Ethereum's Solidity ABI
-//! encoding and decoding using the `alloy` and `alloy_sol_types` crates.
-//!
-//! ## Key Features
-//!
-//! - **ABI Encoding**: Uses Solidity ABI for parameter encoding and response decoding
-//! - **Type Safety**: Leverages `alloy_sol_types` for type-safe Solidity interactions
-//! - **Error Handling**: Converts Ethereum-specific errors to generic `eyre::Result`
-//! - **Gas Optimization**: Efficient encoding/decoding for smart contract calls
-//!
-//! ## Implementation Details
-//!
-//! Each request type is encoded using Solidity ABI encoding:
-//! - Simple types (u16, u32) are encoded directly
-//! - Complex types (structs, arrays) use ABI tuple encoding
-//! - Responses are decoded using dynamic ABI decoding with `DynSolValue`
-//!
-//! ## Usage
-//!
-//! These implementations are used automatically by the `ContextProxyQuery` client
-//! when the underlying transport is configured for Ethereum. No direct usage is required.
 
 use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy::primitives::B256;
