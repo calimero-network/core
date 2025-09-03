@@ -1,31 +1,6 @@
 #![cfg(feature = "stellar_client")]
 
 //! Stellar specific implementations for context proxy queries.
-//!
-//! This module provides Stellar blockchain-specific implementations of the
-//! `Method<Stellar>` trait for all context proxy query operations. It handles
-//! Stellar's XDR (External Data Representation) serialization format using the `soroban_sdk` crate.
-//!
-//! ## Key Features
-//!
-//! - **XDR Serialization**: Uses Stellar's XDR format for parameter encoding and response decoding
-//! - **Soroban Integration**: Leverages Soroban SDK for Stellar smart contract interactions
-//! - **Type Safety**: Uses `ScVal` and `Val` types for safe data representation
-//! - **Error Handling**: Converts Stellar-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! Each request type is encoded using XDR serialization:
-//! - Simple types (u16, u32, Vec<u8>) are converted to appropriate XDR types
-//! - Complex types use XDR's compound type encoding with `ToXdr` trait
-//! - Responses are decoded using XDR's `ReadXdr` trait with `Limited` reader
-//! - Stellar-specific types are handled through dedicated wrapper types
-//! - Environment context is managed through `Env::default()` for XDR operations
-//!
-//! ## Usage
-//!
-//! These implementations are used automatically by the `ContextProxyQuery` client
-//! when the underlying transport is configured for Stellar. No direct usage is required.
 
 use std::io::Cursor;
 

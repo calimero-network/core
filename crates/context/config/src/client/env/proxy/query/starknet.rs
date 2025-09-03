@@ -1,31 +1,6 @@
 #![cfg(feature = "starknet_client")]
 
 //! Starknet specific implementations for context proxy queries.
-//!
-//! This module provides Starknet blockchain-specific implementations of the
-//! `Method<Starknet>` trait for all context proxy query operations. It handles
-//! Starknet's Cairo serialization format using the `starknet_core` and `starknet_crypto` crates.
-//!
-//! ## Key Features
-//!
-//! - **Cairo Serialization**: Uses Cairo's native serialization for parameter encoding and response decoding
-//! - **Felt Encoding**: Leverages Starknet's `Felt` type for efficient field element handling
-//! - **Call Data**: Uses `CallData` for structured parameter encoding in smart contract calls
-//! - **Error Handling**: Converts Starknet-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! Each request type is encoded using Cairo serialization:
-//! - Simple types (u16, u32) are converted to `Felt` and encoded
-//! - Complex types use `CallData` for structured encoding
-//! - Responses are decoded using Cairo's `Decode` trait implementations
-//! - Starknet-specific types are handled through dedicated wrapper types
-//! - 32-byte chunks are processed for proper field element alignment
-//!
-//! ## Usage
-//!
-//! These implementations are used automatically by the `ContextProxyQuery` client
-//! when the underlying transport is configured for Starknet. No direct usage is required.
 
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;

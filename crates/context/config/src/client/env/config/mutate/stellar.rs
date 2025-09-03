@@ -1,25 +1,6 @@
 #![cfg(feature = "stellar_client")]
 
 //! Stellar-specific implementations for context config mutations.
-//!
-//! This module provides Stellar blockchain-specific implementations of the `Method<Stellar>`
-//! trait for context config mutation operations. It handles Stellar's XDR-based
-//! encoding and decoding using `soroban_sdk`.
-//!
-//! ## Key Features
-//!
-//! - **XDR Encoding**: Uses XDR for parameter encoding and response decoding
-//! - **ED25519 Signing**: Implements ED25519 signature generation and verification
-//! - **Type Safety**: Leverages Soroban SDK for type-safe interactions
-//! - **Error Handling**: Converts Stellar-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! The mutation request is encoded using XDR:
-//! - ED25519 keys are used directly for Stellar compatibility
-//! - Request data is encoded using XDR serialization
-//! - Signatures are generated using ED25519
-//! - Responses are decoded using XDR deserialization
 
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::xdr::ToXdr;

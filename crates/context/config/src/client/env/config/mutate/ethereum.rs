@@ -1,25 +1,6 @@
 #![cfg(feature = "ethereum_client")]
 
 //! Ethereum-specific implementations for context config mutations.
-//!
-//! This module provides Ethereum blockchain-specific implementations of the `Method<Ethereum>`
-//! trait for context config mutation operations. It handles Ethereum's Solidity ABI
-//! encoding and decoding using the `alloy` and `alloy_sol_types` crates.
-//!
-//! ## Key Features
-//!
-//! - **ABI Encoding**: Uses Solidity ABI for parameter encoding and response decoding
-//! - **ECDSA Signing**: Implements ECDSA signature generation and verification
-//! - **Type Safety**: Leverages `alloy_sol_types` for type-safe Solidity interactions
-//! - **Error Handling**: Converts Ethereum-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! The mutation request is encoded using Solidity ABI encoding:
-//! - ED25519 keys are derived to ECDSA keys for Ethereum compatibility
-//! - Request data is encoded using ABI tuple encoding
-//! - Signatures are generated using ECDSA with keccak256 message hashing
-//! - Responses are decoded using dynamic ABI decoding with `SolValue`
 
 use alloy::primitives::{keccak256, B256};
 use alloy::signers::local::PrivateKeySigner;

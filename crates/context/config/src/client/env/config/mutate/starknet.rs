@@ -1,25 +1,6 @@
 #![cfg(feature = "starknet_client")]
 
 //! Starknet-specific implementations for context config mutations.
-//!
-//! This module provides Starknet blockchain-specific implementations of the `Method<Starknet>`
-//! trait for context config mutation operations. It handles Starknet's custom encoding
-//! and decoding using `starknet::core::codec::Encode`.
-//!
-//! ## Key Features
-//!
-//! - **Custom Encoding**: Uses Starknet's custom encoding for parameter encoding and response decoding
-//! - **ECDSA Signing**: Implements ECDSA signature generation and verification for Starknet
-//! - **Type Safety**: Leverages Starknet's encoding traits for type-safe interactions
-//! - **Error Handling**: Converts Starknet-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! The mutation request is encoded using Starknet's custom encoding:
-//! - ED25519 keys are derived to ECDSA keys for Starknet compatibility
-//! - Request data is encoded using Starknet's encoding traits
-//! - Signatures are generated using ECDSA with poseidon hashing
-//! - Responses are decoded using Starknet's decoding traits
 
 use ed25519_dalek::SigningKey;
 use starknet::core::codec::Encode as StarknetEncode;

@@ -1,25 +1,6 @@
 #![cfg(feature = "icp_client")]
 
 //! ICP-specific implementations for context config mutations.
-//!
-//! This module provides ICP (Internet Computer Protocol) blockchain-specific implementations
-//! of the `Method<Icp>` trait for context config mutation operations. It handles ICP's
-//! Candid-based encoding and decoding.
-//!
-//! ## Key Features
-//!
-//! - **Candid Encoding**: Uses Candid for parameter encoding and response decoding
-//! - **ED25519 Signing**: Implements ED25519 signature generation and verification
-//! - **Type Safety**: Leverages Candid for type-safe interactions
-//! - **Error Handling**: Converts ICP-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! The mutation request is encoded using Candid:
-//! - ED25519 keys are used directly for ICP compatibility
-//! - Request data is encoded using Candid serialization
-//! - Signatures are generated using ED25519
-//! - Responses are decoded using Candid deserialization
 
 use ed25519_dalek::{Signer, SigningKey};
 

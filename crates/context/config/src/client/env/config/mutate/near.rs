@@ -1,25 +1,6 @@
 #![cfg(feature = "near_client")]
 
 //! NEAR-specific implementations for context config mutations.
-//!
-//! This module provides NEAR blockchain-specific implementations of the `Method<Near>`
-//! trait for context config mutation operations. It handles NEAR's JSON-based
-//! encoding and decoding using `serde_json`.
-//!
-//! ## Key Features
-//!
-//! - **JSON Encoding**: Uses JSON for parameter encoding and response decoding
-//! - **ED25519 Signing**: Implements ED25519 signature generation and verification
-//! - **Type Safety**: Leverages serde for type-safe JSON interactions
-//! - **Error Handling**: Converts NEAR-specific errors to generic `eyre::Result`
-//!
-//! ## Implementation Details
-//!
-//! The mutation request is encoded using JSON:
-//! - ED25519 keys are used directly for NEAR compatibility
-//! - Request data is encoded using JSON serialization
-//! - Signatures are generated using ED25519
-//! - Responses are decoded using JSON deserialization
 
 use ed25519_dalek::{Signer, SigningKey};
 
