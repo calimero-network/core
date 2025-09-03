@@ -9,7 +9,7 @@ use actix::{
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::messages::execute::{
+use calimero_context_primitives::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
 };
 use calimero_context_primitives::{ContextAtomic, ContextAtomicKey};
