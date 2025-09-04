@@ -1,4 +1,4 @@
-use calimero_context_primitives::messages::execute::ExecuteError;
+use calimero_context_primitives::messages::ExecuteError;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;

@@ -2,6 +2,7 @@ use crate::client::{CallClient, Environment};
 
 mod mutate;
 mod query;
+mod requests;
 mod types;
 use mutate::ContextProxyMutate;
 use query::ContextProxyQuery;

@@ -5,8 +5,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use super::ContextClient;
-use crate::messages::sync::SyncRequest;
-use crate::messages::ContextMessage;
+use crate::messages::{ContextMessage, SyncRequest};
 
 impl ContextClient {
     pub async fn sync_context_config(
