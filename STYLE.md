@@ -2,10 +2,10 @@
 
 ## Formatting
 
-### Use rustfmt with nightly features to maintain consistent code formatting
+### Use rustfmt to maintain consistent code formatting
   
   ```bash
-  cargo +nightly fmt
+  cargo fmt
   ```
 
 ### Sort `Cargo.toml` dependencies alphabetically

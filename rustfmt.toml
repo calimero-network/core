@@ -1,2 +1,7 @@
-group_imports = "StdExternalCrate"
-imports_granularity = "Module"
+edition = "2024"
+reorder_imports = true
+use_try_shorthand = true
+
+# These options are useful for formatting & merging imports, however they are only available in nightly toolchain.
+# group_imports = "StdExternalCrate"
+# imports_granularity = "Module"
