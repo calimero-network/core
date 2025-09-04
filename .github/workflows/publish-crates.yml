@@ -12,7 +12,6 @@ jobs:
     environment: deploy
     permissions:
       contents: write # required for crates push
-    timeout-minutes: 30 
     
     steps:
       - name: Checkout core repository
@@ -30,6 +29,7 @@ jobs:
         run: rustc --version
 
       - name: Check if version is already published
+        id: version-check
         run: |
           # Extract package name and version from workspace metadata
           VERSION=$(cargo metadata --format-version 1 | jq -r '.metadata.workspaces.version // empty' 2>/dev/null || echo "")
@@ -41,18 +41,34 @@ jobs:
           
           echo "Publishing version: $VERSION"
           
-          # Check if version is already published
-          CRATES_RESPONSE=$(curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME/versions")
-          PUBLISHED=$(echo "$CRATES_RESPONSE" | jq -r --arg ver "$VERSION" '.versions[] | select(.num == $ver) | .num // empty' 2>/dev/null || echo "")
+          # Extract package name from workspace metadata
           
-          if [ "$PUBLISHED" = "$VERSION" ]; then
-            echo "Version $VERSION is already published. Exiting."
+          # Check if version is already published
+          CRATES_RESPONSE=$(curl -s  --user-agent "calimero-publish-workflow" "https://crates.io/api/v1/crates/calimero-primitives/versions")
+          echo "API Response preview: $(echo "$CRATES_RESPONSE" | head -c 200)..."
+          
+          # Check if API response contains errors
+          if echo "$CRATES_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "ERROR: crates.io API returned errors, cannot verify version status"
+            echo "API Response: $CRATES_RESPONSE"
             exit 1
           else
+            PUBLISHED=$(echo "$CRATES_RESPONSE" | jq -r ".versions[] | select(.num == \"$VERSION\") | .num // empty" 2>/dev/null || echo "")
+            echo "Debug: VERSION=$VERSION, PUBLISHED=$PUBLISHED"
+          fi
+          
+          echo "Published version: $PUBLISHED" 
+          
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "Version $VERSION is already published. Skipping publish steps."
+            echo "skip_publish=true" >> $GITHUB_OUTPUT
+          else
             echo "Version $VERSION is not yet published. Proceeding with publish."
+            echo "skip_publish=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Publish calimero-workspaces on crates.io
+        if: steps.version-check.outputs.skip_publish != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -66,6 +82,7 @@ jobs:
               --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
 
       - name: Create tag on https://github.com/calimero-network/core
+        if: steps.version-check.outputs.skip_publish != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
