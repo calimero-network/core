@@ -295,18 +295,24 @@ pub async fn refresh_token_handler(
 
     // Check node URL if token has node information
     if let Some(token_node_url) = &refresh_claims.node_url {
-        // Get referrer URL from headers
-        if let Some(referrer) = headers.get("referer") {
-            if let Ok(referrer_str) = referrer.to_str() {
-                // Compare if referrer starts with the token's node URL
-                if !referrer_str.starts_with(token_node_url) {
-                    let mut error_headers = HeaderMap::new();
-                    error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
-                    return error_response(
-                        StatusCode::FORBIDDEN,
-                        "Token is not valid for this node",
-                        Some(error_headers),
-                    );
+        // Get the host from the request headers (use Host header since X-Forwarded-Host may not be set)
+        if let Some(host_header) = headers.get("host") {
+            if let Ok(request_host) = host_header.to_str() {
+                // Extract the host from the token's node URL
+                if let Ok(token_url) = Url::parse(token_node_url) {
+                    if let Some(token_host) = token_url.host_str() {
+                        // Compare the hosts (handle both with and without port)
+                        let request_host_without_port = request_host.split(':').next().unwrap_or(request_host);
+                        if request_host_without_port != token_host && request_host != token_host {
+                            let mut error_headers = HeaderMap::new();
+                            error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+                            return error_response(
+                                StatusCode::FORBIDDEN,
+                                format!("Token is not valid for this host. Token is for '{}' but request is to '{}'", token_host, request_host),
+                                Some(error_headers),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -374,18 +380,24 @@ pub async fn validate_handler(
         Ok(claims) => {
             // Check node URL if token has node information
             if let Some(token_node_url) = &claims.node_url {
-                // Get referrer URL from headers
-                if let Some(referrer) = headers.get("referer") {
-                    if let Ok(referrer_str) = referrer.to_str() {
-                        // Compare if referrer starts with the token's node URL
-                        if !referrer_str.starts_with(token_node_url) {
-                            let mut error_headers = HeaderMap::new();
-                            error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
-                            return error_response(
-                                StatusCode::FORBIDDEN,
-                                "Token is not valid for this node",
-                                Some(error_headers),
-                            );
+                // Get the host from the request headers (use Host header since X-Forwarded-Host may not be set)
+                if let Some(host_header) = headers.get("host") {
+                    if let Ok(request_host) = host_header.to_str() {
+                        // Extract the host from the token's node URL
+                        if let Ok(token_url) = Url::parse(token_node_url) {
+                            if let Some(token_host) = token_url.host_str() {
+                                // Compare the hosts (handle both with and without port)
+                                let request_host_without_port = request_host.split(':').next().unwrap_or(request_host);
+                                if request_host_without_port != token_host && request_host != token_host {
+                                    let mut error_headers = HeaderMap::new();
+                                    error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+                                    return error_response(
+                                        StatusCode::FORBIDDEN,
+                                        format!("Token is not valid for this host. Token is for '{}' but request is to '{}'", token_host, request_host),
+                                        Some(error_headers),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
