@@ -8,6 +8,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
+use url::Url;
 use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
