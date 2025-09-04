@@ -278,8 +278,10 @@ impl TokenManager {
                     if let Ok(token_url) = Url::parse(token_node_url) {
                         if let Some(token_host) = token_url.host_str() {
                             // Compare the hosts (handle both with and without port)
-                            let request_host_without_port = request_host.split(':').next().unwrap_or(request_host);
-                            if request_host_without_port != token_host && request_host != token_host {
+                            let request_host_without_port =
+                                request_host.split(':').next().unwrap_or(request_host);
+                            if request_host_without_port != token_host && request_host != token_host
+                            {
                                 return Err(AuthError::InvalidToken(
                                     format!("Token is not valid for this host. Token is for '{}' but request is to '{}'", token_host, request_host),
                                 ));

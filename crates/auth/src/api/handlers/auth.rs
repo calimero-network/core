@@ -303,7 +303,8 @@ pub async fn refresh_token_handler(
                 if let Ok(token_url) = Url::parse(token_node_url) {
                     if let Some(token_host) = token_url.host_str() {
                         // Compare the hosts (handle both with and without port)
-                        let request_host_without_port = request_host.split(':').next().unwrap_or(request_host);
+                        let request_host_without_port =
+                            request_host.split(':').next().unwrap_or(request_host);
                         if request_host_without_port != token_host && request_host != token_host {
                             let mut error_headers = HeaderMap::new();
                             error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
@@ -382,10 +383,11 @@ pub async fn validate_handler(
             // Check node URL if token has node information
             if let Some(token_node_url) = &claims.node_url {
                 // Get the original host from X-Forwarded-Host (set by Traefik) or fallback to Host header
-                let request_host = headers.get("X-Forwarded-Host")
+                let request_host = headers
+                    .get("X-Forwarded-Host")
                     .or_else(|| headers.get("host"))
                     .and_then(|h| h.to_str().ok());
-                    
+
                 if let Some(request_host) = request_host {
                     // Skip validation if request is coming from internal auth service
                     if request_host.starts_with("auth:") {
@@ -395,10 +397,14 @@ pub async fn validate_handler(
                         if let Ok(token_url) = Url::parse(token_node_url) {
                             if let Some(token_host) = token_url.host_str() {
                                 // Compare the hosts (handle both with and without port)
-                                let request_host_without_port = request_host.split(':').next().unwrap_or(request_host);
-                                if request_host_without_port != token_host && request_host != token_host {
+                                let request_host_without_port =
+                                    request_host.split(':').next().unwrap_or(request_host);
+                                if request_host_without_port != token_host
+                                    && request_host != token_host
+                                {
                                     let mut error_headers = HeaderMap::new();
-                                    error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+                                    error_headers
+                                        .insert("X-Auth-Error", "invalid_node".parse().unwrap());
                                     return error_response(
                                         StatusCode::FORBIDDEN,
                                         format!("Token is not valid for this host. Token is for '{}' but request is to '{}'", token_host, request_host),
