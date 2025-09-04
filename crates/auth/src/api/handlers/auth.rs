@@ -381,9 +381,16 @@ pub async fn validate_handler(
         Ok(claims) => {
             // Check node URL if token has node information
             if let Some(token_node_url) = &claims.node_url {
-                // Get the host from the request headers (use Host header since X-Forwarded-Host may not be set)
-                if let Some(host_header) = headers.get("host") {
-                    if let Ok(request_host) = host_header.to_str() {
+                // Get the original host from X-Forwarded-Host (set by Traefik) or fallback to Host header
+                let request_host = headers.get("X-Forwarded-Host")
+                    .or_else(|| headers.get("host"))
+                    .and_then(|h| h.to_str().ok());
+                    
+                if let Some(request_host) = request_host {
+                    // Skip validation if request is coming from internal auth service
+                    if request_host.starts_with("auth:") {
+                        debug!("Skipping host validation for internal auth service request");
+                    } else {
                         // Extract the host from the token's node URL
                         if let Ok(token_url) = Url::parse(token_node_url) {
                             if let Some(token_host) = token_url.host_str() {
