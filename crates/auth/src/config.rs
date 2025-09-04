@@ -36,6 +36,10 @@ pub struct AuthConfig {
     /// Username/password configuration
     #[serde(default)]
     pub user_password: UserPasswordConfig,
+
+    /// Development/testing configuration
+    #[serde(default)]
+    pub development: DevelopmentConfig,
 }
 
 fn default_listen_addr() -> SocketAddr {
@@ -353,6 +357,32 @@ fn default_min_password_length() -> usize {
 
 fn default_max_password_length() -> usize {
     128
+}
+
+/// Development and testing configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevelopmentConfig {
+    /// Enable mock token endpoint for CI/testing
+    #[serde(default)]
+    pub enable_mock_auth: bool,
+
+    /// Require authorization header for mock endpoint
+    #[serde(default)]
+    pub mock_auth_require_header: bool,
+
+    /// Authorization header value required for mock endpoint
+    #[serde(default)]
+    pub mock_auth_header_value: Option<String>,
+}
+
+impl Default for DevelopmentConfig {
+    fn default() -> Self {
+        Self {
+            enable_mock_auth: false, // Disabled by default for security
+            mock_auth_require_header: true, // Require auth header by default
+            mock_auth_header_value: None,
+        }
+    }
 }
 
 /// Load the configuration from a file

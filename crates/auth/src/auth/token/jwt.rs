@@ -132,6 +132,43 @@ impl TokenManager {
         .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
     }
 
+    /// Generate mock tokens without requiring key storage (for CI/testing only)
+    /// 
+    /// This method bypasses all key storage and validation for mock token generation.
+    /// Should only be used in development/testing environments.
+    pub async fn generate_mock_token_pair(
+        &self,
+        key_id: String,
+        permissions: Vec<String>,
+        node_url: Option<String>,
+        custom_expiry: Option<u64>,
+    ) -> Result<(String, String), AuthError> {
+        let access_expiry = Duration::seconds(
+            custom_expiry.unwrap_or(self.config.access_token_expiry) as i64
+        );
+        let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
+
+        let access_token = self
+            .generate_token(
+                key_id.clone(),
+                permissions.clone(),
+                access_expiry,
+                node_url.clone(),
+            )
+            .await?;
+
+        let refresh_token = self
+            .generate_token(
+                key_id,
+                permissions,
+                refresh_expiry,
+                node_url,
+            )
+            .await?;
+
+        Ok((access_token, refresh_token))
+    }
+
     /// Generate a pair of access and refresh tokens
     ///
     /// # Arguments
