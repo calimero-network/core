@@ -3,6 +3,7 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use libp2p::kad::{Event, GetRecordError, GetRecordOk, QueryResult};
 use libp2p::PeerId;
+use libp2p_metrics::Recorder;
 use owo_colors::OwoColorize;
 use tracing::{debug, info};
 
@@ -10,6 +11,7 @@ use super::{EventHandler, NetworkManager};
 
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {
+        self.metrics.record(&event);
         debug!("{}: {:?}", "kad".yellow(), event);
 
         match event {

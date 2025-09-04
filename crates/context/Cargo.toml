@@ -1,10 +1,12 @@
 [package]
 name = "calimero-context"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
+publish = true
 
 [dependencies]
 actix.workspace = true
@@ -14,6 +16,7 @@ eyre.workspace = true
 futures-util.workspace = true
 memchr.workspace = true
 ouroboros.workspace = true
+prometheus-client.workspace = true
 rand.workspace = true
 schemars = { workspace = true, features = ["chrono04"] }
 serde.workspace = true

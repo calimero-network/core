@@ -65,7 +65,7 @@ pub(crate) struct ServiceState {
 pub(crate) fn service(
     config: &ServerConfig,
     node_client: NodeClient,
-) -> Option<(&'static str, MethodRouter)> {
+) -> Option<(String, MethodRouter)> {
     let _config = match &config.websocket {
         Some(config) if config.enabled => config,
         _ => {
@@ -74,7 +74,14 @@ pub(crate) fn service(
         }
     };
 
-    let path = "/ws"; // todo! source from config
+    let base_path = "/ws";
+
+    // Get the node prefix from env var
+    let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
+        format!("{}{}", prefix, base_path)
+    } else {
+        base_path.to_owned()
+    };
 
     for listen in &config.listen {
         info!("WebSocket server listening on {}/ws{{{}}}", listen, path);

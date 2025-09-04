@@ -1,11 +1,15 @@
 [package]
 name = "calimero-version"
-version = "0.8.0-rc.8"
+version = "0.8.0-rc.9"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 [build-dependencies]
 eyre.workspace = true
-rustc_version.workspace = true
+rustc_version = "0.2.0"
+
+[package.metadata.workspaces]
+independent = true

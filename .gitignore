@@ -2,7 +2,7 @@
 data/
 corpus/
 certs/
-contracts/*
+**/contracts/*
 !contracts/.gitkeep
 
 # rust

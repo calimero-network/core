@@ -1,5 +1,6 @@
 use libp2p::identify::{Event, Info};
 use libp2p::Multiaddr;
+use libp2p_metrics::Recorder;
 use multiaddr::Protocol;
 use owo_colors::OwoColorize;
 use tracing::{debug, error, info};
@@ -8,6 +9,7 @@ use super::{EventHandler, NetworkManager};
 
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {
+        self.metrics.record(&event);
         debug!("{}: {:?}", "identify".yellow(), event);
 
         if let Event::Received {
@@ -18,6 +20,7 @@ impl EventHandler<Event> for NetworkManager {
                     protocols,
                     ..
                 },
+            ..
         } = event
         {
             self.discovery

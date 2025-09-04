@@ -1,19 +1,21 @@
 [package]
 name = "calimero-sdk"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
+publish = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
 bs58.workspace = true
-cfg-if.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 calimero-sdk-macros.workspace = true
-calimero-wasm-abi-v1.workspace = true
+calimero-sys.workspace = true
+calimero-wasm-abi.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true

@@ -1,7 +1,4 @@
-use std::io::{self, BufRead, BufReader};
 use std::pin::{pin, Pin};
-use std::sync::Arc;
-use std::thread;
 
 use actix::{Actor, Arbiter, System};
 use calimero_blobstore::config::BlobStoreConfig;
@@ -23,10 +20,10 @@ use camino::Utf8PathBuf;
 use eyre::{OptionExt, WrapErr};
 use futures_util::{stream, StreamExt};
 use libp2p::identity::Keypair;
+use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, event_enabled, info, Level};
+use tracing::info;
 
-use crate::interactive_cli::handle_line;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
@@ -43,6 +40,8 @@ pub struct NodeConfig {
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
+    let mut registry = <Registry>::default();
+
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);
@@ -97,8 +96,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         }
     };
 
-    let network_manager =
-        NetworkManager::new(&config.network, network_event_recipient.clone()).await?;
+    let network_manager = NetworkManager::new(
+        &config.network,
+        network_event_recipient.clone(),
+        &mut registry,
+    )
+    .await?;
 
     let network_client = NetworkClient::new(network_recipient.clone());
 
@@ -134,6 +137,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         config.context.client.clone(),
+        &mut registry,
     );
 
     let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
@@ -167,49 +171,17 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_client.clone(),
         node_client.clone(),
         datastore.clone(),
+        registry,
     );
-
-    let config = Arc::new(config);
 
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
-
-    let (lines_tx, mut lines) = mpsc::channel(1);
-
-    let _ignored = thread::spawn(move || {
-        let stdin = BufReader::new(io::stdin());
-
-        for line in stdin.lines() {
-            let line = line.expect("unable to receive line from stdin");
-
-            lines_tx.blocking_send(line).expect("unable to send line");
-        }
-    });
 
     loop {
         tokio::select! {
             _ = &mut sync => {},
             res = &mut server => res??,
             res = &mut system => break res?,
-            Some(line) = lines.recv() => {
-                let it = handle_line(
-                    context_client.clone(),
-                    node_client.clone(),
-                    datastore.clone(),
-                    config.clone(),
-                    line,
-                );
-
-                let _ignored = tokio::spawn(async {
-                    if let Err(err) = it.await {
-                        if event_enabled!(Level::DEBUG) {
-                            error!(?err, "failed handling user command");
-                        } else {
-                            error!(%err, "failed handling user command");
-                        }
-                    }
-                });
-            }
         }
     }
 }

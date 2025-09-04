@@ -1,29 +1,26 @@
 [package]
 name = "calimero-node"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = true
 
 [dependencies]
 actix.workspace = true
 borsh.workspace = true
 camino = { workspace = true, features = ["serde1"] }
-clap = { workspace = true, features = ["derive"] }
 either.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, features = ["io"] }
-hex.workspace = true
 libp2p.workspace = true
-owo-colors.workspace = true
+prometheus-client.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
-url.workspace = true
-webbrowser.workspace = true
 
 calimero-context.workspace = true
 calimero-context-config.workspace = true
@@ -34,7 +31,7 @@ calimero-network.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
-calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
+calimero-server = { workspace = true, features = ["jsonrpc", "metrics", "websocket", "admin"] }
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true

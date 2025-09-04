@@ -1,10 +1,11 @@
 [package]
 name = "meroctl"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -33,11 +34,16 @@ toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 webbrowser.workspace = true
 
+calimero-client.workspace = true
 calimero-config.workspace = true
 calimero-context-config.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-version.workspace = true
+async-trait.workspace = true
+
+[package.metadata.workspaces]
+independent = true
 
 [lints]
 workspace = true

@@ -61,11 +61,12 @@ impl AuthService {
 
     /// Authenticate a token request
     ///
-    /// This method validates a token request against all providers.
+    /// This method authenticates the user using the provided token request
     ///
     /// # Arguments
     ///
     /// * `token_request` - The token request
+    /// * `node_url` - The node URL this authentication is for (optional)
     ///
     /// # Returns
     ///
@@ -73,6 +74,7 @@ impl AuthService {
     pub async fn authenticate_token_request(
         &self,
         token_request: &TokenRequest,
+        node_url: Option<&str>,
     ) -> Result<AuthResponse, AuthError> {
         let auth_method = &token_request.auth_method;
 
@@ -95,8 +97,28 @@ impl AuthService {
             .map_err(|e| AuthError::InvalidRequest(e.to_string()))?;
 
         // Use the auth data registry to parse auth data to the correct type
-        self.authenticate_with_data(auth_method, auth_data_json)
-            .await
+        let auth_response = self
+            .authenticate_with_data(auth_method, auth_data_json)
+            .await?;
+
+        // If node_id is provided, validate that the key is valid for this node
+        if let Some(node_url) = node_url {
+            if let Some(key) = self
+                .token_manager
+                .get_key_manager()
+                .get_key(&auth_response.key_id)
+                .await
+                .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))?
+            {
+                if !key.is_valid_for_node(Some(node_url)) {
+                    return Err(AuthError::AuthenticationFailed(
+                        "Key is not valid for this node".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(auth_response)
     }
 
     /// Authenticate using parsed auth data

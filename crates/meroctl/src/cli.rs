@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use calimero_client::ClientError;
 use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -10,6 +11,7 @@ use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
+use crate::client::Client;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
@@ -17,21 +19,20 @@ use crate::defaults;
 use crate::output::{Format, Output, Report};
 
 mod app;
-pub mod auth;
 mod blob;
 mod call;
 mod context;
 mod node;
 mod peers;
-pub mod storage;
 
 use app::AppCommand;
-use auth::{authenticate_with_session_cache, check_authentication};
 use blob::BlobCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
+
+use crate::auth::{authenticate_with_session_cache, check_authentication};
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -90,21 +91,27 @@ pub struct RootArgs {
     pub output_format: Format,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Environment {
     pub output: Output,
-    connection: Option<ConnectionInfo>,
+    client: Option<Client>,
 }
 
 impl Environment {
-    pub const fn new(output: Output, connection: Option<ConnectionInfo>) -> Self {
-        Self { output, connection }
+    pub fn new(output: Output, connection: Option<ConnectionInfo>) -> Result<Self, CliError> {
+        let client = if let Some(conn) = connection {
+            Some(Client::new(conn)?)
+        } else {
+            None
+        };
+
+        Ok(Self { output, client })
     }
 
-    pub fn connection(&self) -> Result<&ConnectionInfo, CliError> {
-        self.connection.as_ref().ok_or(CliError::Other(eyre::eyre!(
-            "Unable to create a connection."
-        )))
+    pub fn client(&self) -> Result<&Client, CliError> {
+        self.client
+            .as_ref()
+            .ok_or_else(|| CliError::Other(eyre::eyre!("Unable to create a connection.")))
     }
 }
 
@@ -124,25 +131,24 @@ impl RootCommand {
             None
         };
 
-        let environment = Environment::new(output, connection);
+        let mut environment = Environment::new(output, connection)?;
 
         let result = match self.action {
-            SubCommands::App(application) => application.run(&environment).await,
-            SubCommands::Blob(blob) => blob.run(&environment).await,
-            SubCommands::Context(context) => context.run(&environment).await,
-            SubCommands::Call(call) => call.run(&environment).await,
-            SubCommands::Peers(peers) => peers.run(&environment).await,
+            SubCommands::App(application) => application.run(&mut environment).await,
+            SubCommands::Blob(blob) => blob.run(&mut environment).await,
+            SubCommands::Context(context) => context.run(&mut environment).await,
+            SubCommands::Call(call) => call.run(&mut environment).await,
+            SubCommands::Peers(peers) => peers.run(&mut environment).await,
             SubCommands::Node(node) => node.run(&environment).await,
         };
 
         if let Err(err) = result {
-            let err = match err.downcast::<ApiError>() {
-                Ok(err) => CliError::ApiError(err),
+            let cli_err = match err.downcast::<ClientError>() {
+                Ok(client_err) => CliError::ClientError(client_err),
                 Err(err) => CliError::Other(err),
             };
-
-            environment.output.write(&err);
-            return Err(err);
+            environment.output.write(&cli_err);
+            return Err(cli_err);
         }
 
         Ok(())
@@ -163,7 +169,8 @@ impl RootCommand {
             let multiaddr = fetch_multiaddr(&config)?;
             let url = multiaddr_to_url(&multiaddr, "")?;
 
-            // Even local nodes might require authentication - use session cache for unregistered nodes
+            // For unregistered local nodes, use authenticate_with_session_cache
+            // This will handle authentication if needed, or bypass it for local nodes
             let connection =
                 authenticate_with_session_cache(&url, &format!("local node {}", node), output)
                     .await?;
@@ -189,10 +196,10 @@ impl RootCommand {
             }
 
             // No active node set - fall back to default localhost server
+            // For default localhost, use authenticate_with_session_cache
             let default_url = "http://127.0.0.1:2528".parse()?;
             let connection =
-                authenticate_with_session_cache(&default_url, "default localhost server", output)
-                    .await?;
+                authenticate_with_session_cache(&default_url, "default", output).await?;
             Ok(connection)
         }
     }
@@ -201,7 +208,7 @@ impl RootCommand {
 #[derive(Debug, Serialize, ThisError)]
 pub enum CliError {
     #[error(transparent)]
-    ApiError(#[from] ApiError),
+    ClientError(#[from] ClientError),
 
     #[error(transparent)]
     Other(
@@ -214,7 +221,7 @@ pub enum CliError {
 impl From<CliError> for ExitCode {
     fn from(error: CliError) -> Self {
         match error {
-            CliError::ApiError(_) => Self::from(101),
+            CliError::ClientError(_) => Self::from(101),
             CliError::Other(_) => Self::FAILURE,
         }
     }
@@ -225,18 +232,11 @@ impl Report for CliError {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
         let _ = table.add_row(vec![match self {
-            CliError::ApiError(e) => format!("API Error ({}): {}", e.status_code, e.message),
+            CliError::ClientError(e) => format!("Client Error: {}", e),
             CliError::Other(e) => format!("Error: {:?}", e),
         }]);
         println!("{table}");
     }
-}
-
-#[derive(Debug, Serialize, ThisError)]
-#[error("{status_code}: {message}")]
-pub struct ApiError {
-    pub status_code: u16,
-    pub message: String,
 }
 
 fn serialize_eyre_report<S>(report: &EyreReport, serializer: S) -> Result<S::Ok, S::Error>

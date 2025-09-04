@@ -5,6 +5,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -51,6 +52,9 @@ calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true
 calimero-version.workspace = true
+
+[package.metadata.workspaces]
+independent = true
 
 [lints]
 workspace = true

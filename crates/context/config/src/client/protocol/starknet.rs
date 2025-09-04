@@ -73,18 +73,18 @@ mod serde_creds {
         type Error = CredentialsError;
 
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            let secret_key_felt = Felt::from_str(&creds.secret_key)
-                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
-            let public_key_felt = Felt::from_str(&creds.public_key)
-                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            let secret_key_felt =
+                Felt::from_str(&creds.secret_key).map_err(|e| CredentialsError::ParseError(e))?;
+            let public_key_felt =
+                Felt::from_str(&creds.public_key).map_err(|e| CredentialsError::ParseError(e))?;
             let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
 
             if public_key_felt != extracted_public_key {
                 return Err(CredentialsError::PublicKeyMismatch);
             }
 
-            let account_id_felt = Felt::from_str(&creds.account_id)
-                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            let account_id_felt =
+                Felt::from_str(&creds.account_id).map_err(|e| CredentialsError::ParseError(e))?;
 
             Ok(Self {
                 account_id: account_id_felt,
@@ -239,7 +239,7 @@ impl Network {
 
         let response = self
             .client
-            .call(&function_call, BlockId::Tag(BlockTag::Pending))
+            .call(&function_call, BlockId::Tag(BlockTag::Latest))
             .await
             .map_err(|e| StarknetError::Custom {
                 operation: ErrorOperation::Query,
@@ -299,10 +299,10 @@ impl Network {
             ExecutionEncoding::New,
         );
 
-        let _ = account.set_block_id(BlockId::Tag(BlockTag::Pending));
+        let _ = account.set_block_id(BlockId::Tag(BlockTag::Latest));
 
         let response = account
-            .execute_v1(vec![Call {
+            .execute_v3(vec![Call {
                 to: contract_id,
                 selector: entry_point_selector,
                 calldata,
@@ -338,6 +338,10 @@ impl Network {
                             )
                             | (
                                 TransactionFinalityStatus::AcceptedOnL1,
+                                ExecutionResult::Succeeded,
+                            )
+                            | (
+                                TransactionFinalityStatus::PreConfirmed,
                                 ExecutionResult::Succeeded,
                             ) => {
                                 break receipt;

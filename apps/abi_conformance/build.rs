@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::{env, fs};
 
-use calimero_wasm_abi_v1::embed::generate_embed_code;
-use calimero_wasm_abi_v1::emitter::emit_manifest;
+use calimero_wasm_abi::embed::generate_embed_code;
+use calimero_wasm_abi::emitter::emit_manifest;
 use syn::parse_file;
 
 fn main() {
