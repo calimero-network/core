@@ -11,5 +11,5 @@ fi
 # Check for changes in Rust files
 if git diff --cached --name-only | grep -qE '\.rs$'; then
   echo "Running checks for the Rust code..."
-  cargo +nightly fmt
+  cargo fmt --check
 fi
