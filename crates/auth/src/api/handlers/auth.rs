@@ -8,11 +8,13 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
+use url::Url;
 use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::validation::{sanitize_identifier, sanitize_string, ValidatedJson};
 use crate::server::AppState;
+use crate::storage::models::Key;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, HeaderMap, Json<serde_json::Value>);
@@ -756,6 +758,173 @@ pub async fn revoke_token_handler(
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to revoke tokens: {}", err),
+                None,
+            )
+        }
+    }
+}
+
+/// Mock token request for CI and testing
+#[derive(Debug, Deserialize, Validate)]
+pub struct MockTokenRequest {
+    /// Client name for identification
+    #[validate(length(min = 1, message = "Client name is required"))]
+    pub client_name: String,
+
+    /// Permissions to grant (optional, defaults to admin)
+    pub permissions: Option<Vec<String>>,
+
+    /// Node URL this token should be valid for (optional)
+    pub node_url: Option<String>,
+
+    /// Token expiry override in seconds (optional, uses config defaults)
+    pub access_token_expiry: Option<u64>,
+
+    /// Refresh token expiry override in seconds (optional, uses config defaults)
+    pub refresh_token_expiry: Option<u64>,
+}
+
+/// Mock token handler for CI and testing
+///
+/// This endpoint generates JWT tokens without authentication for testing purposes.
+/// It should only be enabled in development/testing environments.
+///
+/// # Security Warning
+/// This endpoint bypasses all authentication and should NEVER be enabled in production.
+/// It creates temporary keys and generates valid JWT tokens for testing purposes.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+/// * `request` - The mock token request
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - The response containing access and refresh tokens
+pub async fn mock_token_handler(
+    state: Extension<Arc<AppState>>,
+    headers: HeaderMap,
+    ValidatedJson(mut request): ValidatedJson<MockTokenRequest>,
+) -> impl IntoResponse {
+    warn!("⚠️  MOCK TOKEN ENDPOINT ACCESSED - This should only be used for testing!");
+
+    // Check if mock endpoints are enabled in config
+    if !state.0.config.development.enable_mock_auth {
+        warn!("Mock token endpoint is disabled in configuration");
+        return error_response(StatusCode::NOT_FOUND, "Endpoint not found", None);
+    }
+
+    // Check authorization header if required
+    if state.0.config.development.mock_auth_require_header {
+        let auth_header = headers
+            .get("Authorization")
+            .and_then(|value| value.to_str().ok());
+
+        if let Some(required_value) = &state.0.config.development.mock_auth_header_value {
+            match auth_header {
+                Some(value) if value == required_value => {
+                    // Authorization header matches, continue
+                }
+                _ => {
+                    warn!("Mock token endpoint accessed without proper authorization");
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Invalid or missing authorization for mock endpoint",
+                        None,
+                    );
+                }
+            }
+        } else if auth_header.is_none() {
+            warn!("Mock token endpoint requires authorization header but none provided");
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "Authorization header required for mock endpoint",
+                None,
+            );
+        }
+    }
+
+    // Sanitize inputs
+    request.client_name = sanitize_string(&request.client_name);
+
+    if request.client_name.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Client name cannot be empty after sanitization",
+            None,
+        );
+    }
+
+    // Default permissions for mock tokens
+    let permissions = request
+        .permissions
+        .unwrap_or_else(|| vec!["admin".to_string()]);
+
+    // Generate a mock key ID for this client
+    let timestamp = chrono::Utc::now().timestamp();
+    let key_id = format!("mock_{}_{}", request.client_name, timestamp);
+
+    // Create a temporary root key that can be validated
+    // This allows the tokens to pass validation for e2e testing
+    let mock_key = Key::new_root_key_with_permissions(
+        format!("mock_public_key_{}", timestamp),
+        "mock_auth".to_string(),
+        permissions.clone(),
+        request.node_url.clone(),
+    );
+
+    // Store the temporary key so tokens can be validated
+    if let Err(err) = state.0.key_manager.set_key(&key_id, &mock_key).await {
+        error!("Failed to store mock key: {}", err);
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to create mock key: {}", err),
+            None,
+        );
+    }
+
+    info!(
+        "Created temporary mock key: {} for client: {}",
+        key_id, request.client_name
+    );
+
+    // Generate tokens using the stored mock key (will pass validation)
+    match state
+        .0
+        .token_generator
+        .generate_token_pair(key_id.clone(), permissions, request.node_url)
+        .await
+    {
+        Ok((access_token, refresh_token)) => {
+            info!(
+                "Generated mock tokens for client '{}' with key_id '{}'",
+                request.client_name, key_id
+            );
+
+            let response = TokenResponse::new(access_token, refresh_token);
+
+            // Add warning headers
+            let mut headers = HeaderMap::new();
+            headers.insert("X-Mock-Token", "true".parse().unwrap());
+            headers.insert("X-Key-Id", key_id.parse().unwrap());
+            headers.insert(
+                "X-Warning",
+                "Mock token - for testing only".parse().unwrap(),
+            );
+
+            success_response(response, Some(headers))
+        }
+        Err(err) => {
+            error!("Failed to generate mock tokens: {}", err);
+
+            // Clean up the mock key on failure
+            if let Err(cleanup_err) = state.0.key_manager.delete_key(&key_id).await {
+                warn!("Failed to cleanup mock key {}: {}", key_id, cleanup_err);
+            }
+
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate mock tokens",
                 None,
             )
         }

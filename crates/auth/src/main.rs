@@ -6,8 +6,9 @@ use clap::Parser;
 use eyre::Result;
 use mero_auth::auth::token::TokenManager;
 use mero_auth::config::{
-    load_config, AuthConfig, ContentSecurityPolicyConfig, JwtConfig, NearWalletConfig,
-    RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
+    load_config, AuthConfig, ContentSecurityPolicyConfig, DevelopmentConfig, JwtConfig,
+    NearWalletConfig, RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig,
+    UserPasswordConfig,
 };
 use mero_auth::secrets::SecretManager;
 use mero_auth::server::{shutdown_signal, start_server};
@@ -76,6 +77,7 @@ fn create_default_config() -> AuthConfig {
         providers,
         near: NearWalletConfig::default(),
         user_password: UserPasswordConfig::default(),
+        development: DevelopmentConfig::default(),
     }
 }
 
