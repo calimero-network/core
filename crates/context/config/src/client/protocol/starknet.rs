@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use starknet::accounts::{Account, ConnectedAccount, ExecutionEncoding, SingleOwnerAccount};
 use starknet::core::codec::Decode;
@@ -21,6 +22,7 @@ use crate::client::env::proxy::starknet::StarknetProposalWithApprovals;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
+use crate::schema::FeltSchema;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Starknet {}
@@ -33,11 +35,14 @@ impl AssociatedTransport for StarknetTransport<'_> {
     type Protocol = Starknet;
 }
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
+    #[schemars(with = "FeltSchema")]
     pub account_id: Felt,
+    #[schemars(with = "FeltSchema")]
     pub public_key: Felt,
+    #[schemars(with = "FeltSchema")]
     pub secret_key: Felt,
 }
 
