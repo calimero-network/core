@@ -31,28 +31,14 @@ fi
 cd "${CONTRACTS_DIR}"
 
 # Start Stellar Quickstart container
-echo "Starting Stellar Quickstart container..."
-if ! docker run --rm -d -p 8000:8000 \
+docker run --rm -d -p 8000:8000 \
     --name stellar \
     stellar/quickstart:v508-latest \
-    --local --enable rpc --limits unlimited; then
-    echo "Error: Failed to start Stellar container"
-    exit 1
-fi
+    --local --enable rpc --limits unlimited
 
 # Wait for the container to be ready
 echo "Waiting for Stellar container to be ready..."
-TIMEOUT=120  # 2 minutes timeout
-ELAPSED=0
-while [ $ELAPSED -lt $TIMEOUT ]; do
-    # Check if container is still running
-    if ! docker ps | grep -q stellar; then
-        echo "Error: Stellar container stopped unexpectedly"
-        echo "Container logs:"
-        docker logs stellar 2>&1 || true
-        exit 1
-    fi
-    
+while true; do
     # Check logs for completion
     LOGS=$(docker logs stellar 2>&1)
 
@@ -67,17 +53,9 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
             break
         fi
     fi
-    echo "Waiting for services to be fully operational... (${ELAPSED}s/${TIMEOUT}s)"
+    echo "Waiting for services to be fully operational..."
     sleep 2
-    ELAPSED=$((ELAPSED + 2))
 done
-
-if [ $ELAPSED -ge $TIMEOUT ]; then
-    echo "Error: Timeout waiting for Stellar container to be ready"
-    echo "Container logs:"
-    docker logs stellar 2>&1 || true
-    exit 1
-fi
 
 # Remove existing network and keys if they exist
 stellar network rm local || true
@@ -94,54 +72,33 @@ ACCOUNT_ADDRESS=$(stellar keys address local)
 SECRET_KEY=$(stellar keys show local)
 
 # Deploy the contract and capture the contract ID
-echo "Deploying context config contract..."
-if ! CONTRACT_ID=$(stellar contract deploy \
+CONTRACT_ID=$(stellar contract deploy \
     --wasm "$CONTEXT_CONFIG_CONTRACT".wasm \
     --source local \
     --network local \
     --salt "12345" \
     -- \
     --owner "$ACCOUNT_ADDRESS" \
-    --ledger_id CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | tail -n 1); then
-    echo "Error: Failed to deploy context config contract"
-    exit 1
-fi
-
-if [ -z "$CONTRACT_ID" ]; then
-    echo "Error: Contract ID is empty"
-    exit 1
-fi
+    --ledger_id CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | tail -n 1)
 
 # Invoke the contract to set proxy code
-echo "Setting proxy code..."
-if ! stellar contract invoke \
+stellar contract invoke \
     --id "$CONTRACT_ID" \
     --source local \
     --network local \
     -- \
     set_proxy_code \
     --proxy-wasm-file-path "$CONTEXT_PROXY_CONTRACT".wasm \
-    --owner "$ACCOUNT_ADDRESS"; then
-    echo "Error: Failed to set proxy code"
-    exit 1
-fi
+    --owner "$ACCOUNT_ADDRESS"
 
-echo "Deploying external contract..."
-if ! EXTERNAL_CONTRACT_ID=$(stellar contract deploy \
+
+EXTERNAL_CONTRACT_ID=$(stellar contract deploy \
     --wasm "$EXTERNAL_CONTRACT".wasm \
     --source local \
     --network local \
     --salt "98765" \
     -- \
-    --token CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | tail -n 1); then
-    echo "Error: Failed to deploy external contract"
-    exit 1
-fi
-
-if [ -z "$EXTERNAL_CONTRACT_ID" ]; then
-    echo "Error: External contract ID is empty"
-    exit 1
-fi
+    --token CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | tail -n 1)
 
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="
