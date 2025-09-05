@@ -2,6 +2,7 @@ use core::time::Duration;
 use std::cell::RefCell;
 use std::net::TcpStream;
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
@@ -13,7 +14,7 @@ use soroban_client::soroban_rpc::SimulateTransactionResponse;
 use soroban_client::transaction::{TransactionBuilder, TransactionBuilderBehavior};
 use soroban_client::xdr::ScVal;
 use soroban_client::{Options, Server};
-use soroban_sdk::{Env, String as SorobanString};
+use soroban_sdk::Env;
 use url::Url;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -90,8 +91,6 @@ impl StellarSandboxEnvironment {
             friendbot_url: None,
         };
 
-        let env = Env::default();
-
         let server = Arc::new(
             Server::new(self.config.rpc_url.as_str(), options).expect("Failed to create server"),
         );
@@ -105,14 +104,12 @@ impl StellarSandboxEnvironment {
         let contract =
             Contracts::new(contract_id).map_err(|_| eyre!("Failed to create contract"))?;
 
-        // Match the args array to create appropriate tuples
-        let _scval_args = match &args[..] {
-            [v1] => (SorobanString::from_str(&env, v1),),
-            _ => bail!("Unsupported number of arguments: {}", args.len()),
-        };
+        // Convert the string arguments directly to ScVal
+        let sc_vals: Vec<ScVal> = args.iter().map(|arg| {
+            ScVal::String(soroban_client::xdr::ScString(soroban_client::xdr::StringM::from_str(arg).unwrap()))
+        }).collect();
 
-        // For now, let's use a simple approach with no arguments
-        let encoded_args = None;
+        let encoded_args = Some(sc_vals);
 
         let transaction = TransactionBuilder::new(account, Networks::standalone(), None)
             .fee(10000u32)
@@ -126,8 +123,6 @@ impl StellarSandboxEnvironment {
 
         let response = result.unwrap();
         let (sc_val, _) = response.to_result().unwrap();
-
-        // The sc_val is already the result, no need to decode XDR bytes
         let result_str = match sc_val {
             ScVal::String(s) => Some(s.to_string()),
             ScVal::Symbol(s) => Some(s.to_string()),
