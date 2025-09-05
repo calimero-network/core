@@ -138,11 +138,28 @@ jobs:
           mv "$TMPDIR/stellar" "$HOME/.local/bin/"
           rm -rf "$TMPDIR"
 
-          ./scripts/stellar/deploy-devnet.sh > env_output.txt
+          if ! ./scripts/stellar/deploy-devnet.sh > env_output.txt 2>&1; then
+            echo "Error: Stellar devnet deployment failed"
+            echo "Deployment output:"
+            cat env_output.txt
+            exit 1
+          fi
 
           CONTRACT_ID=$(grep "Contract ID:" env_output.txt | awk '{print $3}')
           ACCOUNT_ADDRESS=$(grep "Account address:" env_output.txt | awk '{print $3}')
           SECRET_KEY=$(grep "Secret key:" env_output.txt | awk '{print $3}')
+
+          if [ -z "$CONTRACT_ID" ] || [ -z "$ACCOUNT_ADDRESS" ] || [ -z "$SECRET_KEY" ]; then
+            echo "Error: Failed to extract deployment information"
+            echo "Deployment output:"
+            cat env_output.txt
+            exit 1
+          fi
+
+          echo "Deployment successful:"
+          echo "Contract ID: $CONTRACT_ID"
+          echo "Account address: $ACCOUNT_ADDRESS"
+          echo "Secret key: $SECRET_KEY"
 
           jq --arg contractId "$CONTRACT_ID" \
              --arg publicKey "$ACCOUNT_ADDRESS" \

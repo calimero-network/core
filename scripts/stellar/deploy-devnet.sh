@@ -30,6 +30,11 @@ fi
 
 cd "${CONTRACTS_DIR}"
 
+# Stop and remove existing container if it exists
+echo "Cleaning up existing Stellar container..."
+docker stop stellar 2>/dev/null || true
+docker rm stellar 2>/dev/null || true
+
 # Start Stellar Quickstart container
 echo "Starting Stellar Quickstart container..."
 if ! docker run --rm -d -p 8000:8000 \
