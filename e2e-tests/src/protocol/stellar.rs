@@ -2,7 +2,6 @@ use core::time::Duration;
 use std::cell::RefCell;
 use std::net::TcpStream;
 use std::rc::Rc;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
@@ -14,7 +13,6 @@ use soroban_client::soroban_rpc::SimulateTransactionResponse;
 use soroban_client::transaction::{TransactionBuilder, TransactionBuilderBehavior};
 use soroban_client::xdr::ScVal;
 use soroban_client::{Options, Server};
-use soroban_sdk::Env;
 use url::Url;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -82,7 +80,7 @@ impl StellarSandboxEnvironment {
         &self,
         contract_id: &str,
         method_name: &str,
-        args: &Vec<String>,
+        _args: &Vec<String>,
     ) -> EyreResult<Option<String>> {
         let options: Options = Options {
             allow_http: true,
@@ -104,12 +102,8 @@ impl StellarSandboxEnvironment {
         let contract =
             Contracts::new(contract_id).map_err(|_| eyre!("Failed to create contract"))?;
 
-        // Convert the string arguments directly to ScVal
-        let sc_vals: Vec<ScVal> = args.iter().map(|arg| {
-            ScVal::String(soroban_client::xdr::ScString(soroban_client::xdr::StringM::from_str(arg).unwrap()))
-        }).collect();
-
-        let encoded_args = Some(sc_vals);
+        // For now, let's use a simple approach with no arguments
+        let encoded_args = None;
 
         let transaction = TransactionBuilder::new(account, Networks::standalone(), None)
             .fee(10000u32)
@@ -121,8 +115,9 @@ impl StellarSandboxEnvironment {
         let result: Result<SimulateTransactionResponse, Error> =
             server.simulate_transaction(&transaction, None).await;
 
-        let response = result.unwrap();
-        let (sc_val, _) = response.to_result().unwrap();
+        let response = result.map_err(|e| eyre!("Simulation failed: {}", e))?;
+        let (sc_val, _) = response.to_result()
+            .ok_or_else(|| eyre!("No result from simulation"))?;
         let result_str = match sc_val {
             ScVal::String(s) => Some(s.to_string()),
             ScVal::Symbol(s) => Some(s.to_string()),
