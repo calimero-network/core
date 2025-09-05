@@ -295,14 +295,14 @@ pub async fn refresh_token_handler(
 
     // Check node URL if token has node information
     if let Some(token_node_url) = &refresh_claims.node_url {
-        if let Err(error_msg) = state.0.token_generator.validate_node_host(token_node_url, &headers) {
+        if let Err(error_msg) = state
+            .0
+            .token_generator
+            .validate_node_host(token_node_url, &headers)
+        {
             let mut error_headers = HeaderMap::new();
             error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
-            return error_response(
-                StatusCode::FORBIDDEN,
-                error_msg,
-                Some(error_headers),
-            );
+            return error_response(StatusCode::FORBIDDEN, error_msg, Some(error_headers));
         }
     }
 
@@ -368,14 +368,14 @@ pub async fn validate_handler(
         Ok(claims) => {
             // Check node URL if token has node information
             if let Some(token_node_url) = &claims.node_url {
-                if let Err(error_msg) = state.0.token_generator.validate_node_host(token_node_url, &headers) {
+                if let Err(error_msg) = state
+                    .0
+                    .token_generator
+                    .validate_node_host(token_node_url, &headers)
+                {
                     let mut error_headers = HeaderMap::new();
                     error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
-                    return error_response(
-                        StatusCode::FORBIDDEN,
-                        error_msg,
-                        Some(error_headers),
-                    );
+                    return error_response(StatusCode::FORBIDDEN, error_msg, Some(error_headers));
                 }
             }
 
