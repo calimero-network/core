@@ -819,22 +819,19 @@ pub async fn mock_token_handler(
     ValidatedJson(mut request): ValidatedJson<MockTokenRequest>,
 ) -> impl IntoResponse {
     warn!("⚠️  MOCK TOKEN ENDPOINT ACCESSED - This should only be used for testing!");
-    
+
     // Check if mock endpoints are enabled in config
     if !state.0.config.development.enable_mock_auth {
         warn!("Mock token endpoint is disabled in configuration");
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "Endpoint not found",
-            None,
-        );
+        return error_response(StatusCode::NOT_FOUND, "Endpoint not found", None);
     }
 
     // Check authorization header if required
     if state.0.config.development.mock_auth_require_header {
-        let auth_header = headers.get("Authorization")
+        let auth_header = headers
+            .get("Authorization")
             .and_then(|value| value.to_str().ok());
-        
+
         if let Some(required_value) = &state.0.config.development.mock_auth_header_value {
             match auth_header {
                 Some(value) if value == required_value => {
@@ -858,10 +855,10 @@ pub async fn mock_token_handler(
             );
         }
     }
-    
+
     // Sanitize inputs
     request.client_name = sanitize_string(&request.client_name);
-    
+
     if request.client_name.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -871,12 +868,14 @@ pub async fn mock_token_handler(
     }
 
     // Default permissions for mock tokens
-    let permissions = request.permissions.unwrap_or_else(|| vec!["admin".to_string()]);
-    
+    let permissions = request
+        .permissions
+        .unwrap_or_else(|| vec!["admin".to_string()]);
+
     // Generate a mock key ID for this client
     let timestamp = chrono::Utc::now().timestamp();
     let key_id = format!("mock_{}_{}", request.client_name, timestamp);
-    
+
     // Create a temporary root key that can be validated
     // This allows the tokens to pass validation for e2e testing
     let mock_key = Key::new_root_key_with_permissions(
@@ -885,7 +884,7 @@ pub async fn mock_token_handler(
         permissions.clone(),
         request.node_url.clone(),
     );
-    
+
     // Store the temporary key so tokens can be validated
     if let Err(err) = state.0.key_manager.set_key(&key_id, &mock_key).await {
         error!("Failed to store mock key: {}", err);
@@ -895,9 +894,12 @@ pub async fn mock_token_handler(
             None,
         );
     }
-    
-    info!("Created temporary mock key: {} for client: {}", key_id, request.client_name);
-    
+
+    info!(
+        "Created temporary mock key: {} for client: {}",
+        key_id, request.client_name
+    );
+
     // Generate tokens using the stored mock key (will pass validation)
     match state
         .0
@@ -910,28 +912,28 @@ pub async fn mock_token_handler(
                 "Generated mock tokens for client '{}' with key_id '{}'",
                 request.client_name, key_id
             );
-            
+
             let response = TokenResponse::new(access_token, refresh_token);
-            
+
             // Add warning headers
             let mut headers = HeaderMap::new();
             headers.insert("X-Mock-Token", "true".parse().unwrap());
             headers.insert("X-Key-Id", key_id.parse().unwrap());
             headers.insert(
-                "X-Warning", 
-                "Mock token - for testing only".parse().unwrap()
+                "X-Warning",
+                "Mock token - for testing only".parse().unwrap(),
             );
-            
+
             success_response(response, Some(headers))
         }
         Err(err) => {
             error!("Failed to generate mock tokens: {}", err);
-            
+
             // Clean up the mock key on failure
             if let Err(cleanup_err) = state.0.key_manager.delete_key(&key_id).await {
                 warn!("Failed to cleanup mock key {}: {}", key_id, cleanup_err);
             }
-            
+
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to generate mock tokens",

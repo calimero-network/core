@@ -378,7 +378,7 @@ pub struct DevelopmentConfig {
 impl Default for DevelopmentConfig {
     fn default() -> Self {
         Self {
-            enable_mock_auth: false, // Disabled by default for security
+            enable_mock_auth: false,        // Disabled by default for security
             mock_auth_require_header: true, // Require auth header by default
             mock_auth_header_value: None,
         }
