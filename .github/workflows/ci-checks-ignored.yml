@@ -13,6 +13,6 @@ on:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-8cpu
     steps:
       - run: echo "Ignored"
