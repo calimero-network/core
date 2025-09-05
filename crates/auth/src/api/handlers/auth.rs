@@ -8,7 +8,6 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
-use url::Url;
 use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
@@ -296,27 +295,14 @@ pub async fn refresh_token_handler(
 
     // Check node URL if token has node information
     if let Some(token_node_url) = &refresh_claims.node_url {
-        // Get the host from the request headers (use Host header since X-Forwarded-Host may not be set)
-        if let Some(host_header) = headers.get("host") {
-            if let Ok(request_host) = host_header.to_str() {
-                // Extract the host from the token's node URL
-                if let Ok(token_url) = Url::parse(token_node_url) {
-                    if let Some(token_host) = token_url.host_str() {
-                        // Compare the hosts (handle both with and without port)
-                        let request_host_without_port =
-                            request_host.split(':').next().unwrap_or(request_host);
-                        if request_host_without_port != token_host && request_host != token_host {
-                            let mut error_headers = HeaderMap::new();
-                            error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
-                            return error_response(
-                                StatusCode::FORBIDDEN,
-                                format!("Token is not valid for this host. Token is for '{}' but request is to '{}'", token_host, request_host),
-                                Some(error_headers),
-                            );
-                        }
-                    }
-                }
-            }
+        if let Err(error_msg) = state.0.token_generator.validate_node_host(token_node_url, &headers) {
+            let mut error_headers = HeaderMap::new();
+            error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+            return error_response(
+                StatusCode::FORBIDDEN,
+                error_msg,
+                Some(error_headers),
+            );
         }
     }
 
@@ -382,38 +368,14 @@ pub async fn validate_handler(
         Ok(claims) => {
             // Check node URL if token has node information
             if let Some(token_node_url) = &claims.node_url {
-                // Get the original host from X-Forwarded-Host (set by Traefik) or fallback to Host header
-                let request_host = headers
-                    .get("X-Forwarded-Host")
-                    .or_else(|| headers.get("host"))
-                    .and_then(|h| h.to_str().ok());
-
-                if let Some(request_host) = request_host {
-                    // Skip validation if request is coming from internal auth service
-                    if request_host.starts_with("auth:") {
-                        debug!("Skipping host validation for internal auth service request");
-                    } else {
-                        // Extract the host from the token's node URL
-                        if let Ok(token_url) = Url::parse(token_node_url) {
-                            if let Some(token_host) = token_url.host_str() {
-                                // Compare the hosts (handle both with and without port)
-                                let request_host_without_port =
-                                    request_host.split(':').next().unwrap_or(request_host);
-                                if request_host_without_port != token_host
-                                    && request_host != token_host
-                                {
-                                    let mut error_headers = HeaderMap::new();
-                                    error_headers
-                                        .insert("X-Auth-Error", "invalid_node".parse().unwrap());
-                                    return error_response(
-                                        StatusCode::FORBIDDEN,
-                                        format!("Token is not valid for this host. Token is for '{}' but request is to '{}'", token_host, request_host),
-                                        Some(error_headers),
-                                    );
-                                }
-                            }
-                        }
-                    }
+                if let Err(error_msg) = state.0.token_generator.validate_node_host(token_node_url, &headers) {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        error_msg,
+                        Some(error_headers),
+                    );
                 }
             }
 
