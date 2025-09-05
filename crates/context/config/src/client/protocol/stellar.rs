@@ -199,7 +199,10 @@ impl Network {
         let result: Result<SimulateTransactionResponse, Error> =
             self.client.simulate_transaction(&transaction, None).await;
 
-        let response = result.unwrap();
+        let response = result.map_err(|e| StellarError::Custom {
+            operation: ErrorOperation::Query,
+            reason: format!("Simulation failed: {}", e),
+        })?;
 
         match response.to_result() {
             Some((sc_val, _auth)) => {
@@ -269,7 +272,7 @@ impl Network {
         if let Err(err) = simulation_result {
             return Err(StellarError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: format!("Simulation failed: {:?}", err),
+                reason: format!("Simulation failed: {}", err),
             });
         }
 

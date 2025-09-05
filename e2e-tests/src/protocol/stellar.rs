@@ -2,6 +2,7 @@ use core::time::Duration;
 use std::cell::RefCell;
 use std::net::TcpStream;
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
@@ -102,8 +103,15 @@ impl StellarSandboxEnvironment {
         let contract =
             Contracts::new(contract_id).map_err(|_| eyre!("Failed to create contract"))?;
 
-        // For now, let's use a simple approach with no arguments
-        let encoded_args = None;
+        // Convert the string arguments to ScVal for Stellar contract calls
+        let encoded_args = if !_args.is_empty() {
+            let sc_vals: Vec<ScVal> = _args.iter().map(|arg| {
+                ScVal::String(soroban_client::xdr::ScString(soroban_client::xdr::StringM::from_str(arg).unwrap()))
+            }).collect();
+            Some(sc_vals)
+        } else {
+            None
+        };
 
         let transaction = TransactionBuilder::new(account, Networks::standalone(), None)
             .fee(10000u32)
