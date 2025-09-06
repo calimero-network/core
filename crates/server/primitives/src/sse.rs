@@ -53,7 +53,7 @@ pub enum ServerResponseError {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum SseEvent {
     Message,
     Close,
