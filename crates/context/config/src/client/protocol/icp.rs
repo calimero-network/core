@@ -5,7 +5,6 @@ use ed25519_consensus::SigningKey;
 use ic_agent::export::Principal;
 use ic_agent::identity::BasicIdentity;
 use ic_agent::Agent;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
@@ -25,45 +24,31 @@ impl AssociatedTransport for IcpTransport<'_> {
     type Protocol = Icp;
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(try_from = "serde_creds::Credentials")]
+#[derive(Clone, Debug)]
 pub struct Credentials {
     pub account_id: Principal,
     pub public_key: String,
     pub secret_key: String,
 }
 
-mod serde_creds {
-    use candid::Principal;
-    use hex::FromHexError;
-    use serde::{Deserialize, Serialize};
-    use thiserror::Error;
+impl TryFrom<&crate::client::config::RawCredentials> for Credentials {
+    type Error = String;
 
-    #[derive(Debug, Deserialize, Serialize)]
-    pub struct Credentials {
-        account_id: Principal,
-        public_key: String,
-        secret_key: String,
-    }
+    fn try_from(raw_creds: &crate::client::config::RawCredentials) -> Result<Self, Self::Error> {
+        let account_id = raw_creds.account_id.as_ref()
+            .ok_or_else(|| "missing account_id".to_string())?
+            .parse::<Principal>()
+            .map_err(|_| "invalid account_id".to_string())?;
 
-    #[derive(Clone, Debug, Error)]
-    pub enum CredentialsError {
-        #[error("failed to parse SigningKey from hex")]
-        ParseError(#[from] FromHexError),
-        #[error("failed to parse SigningKey from string")]
-        IntoError(String),
-    }
+        let public_key = raw_creds.public_key.as_ref()
+            .ok_or_else(|| "missing public_key".to_string())?
+            .clone();
 
-    impl TryFrom<Credentials> for super::Credentials {
-        type Error = CredentialsError;
-
-        fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            Ok(Self {
-                account_id: creds.account_id,
-                public_key: creds.public_key,
-                secret_key: creds.secret_key,
-            })
-        }
+        Ok(Self {
+            account_id,
+            public_key,
+            secret_key: raw_creds.secret_key.clone(),
+        })
     }
 }
 
