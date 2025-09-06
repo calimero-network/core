@@ -1,10 +1,12 @@
 [package]
 name = "calimero-context-config"
 version.workspace = true
+description.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = true
 
 [dependencies]
 alloy = { workspace = true, optional = true }
@@ -27,9 +29,11 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-soroban-client.workspace = true
+soroban-client = { workspace = true, optional = true }
 soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
+starknet-core = { workspace = true, optional = true }
+starknet-core-derive = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
@@ -40,6 +44,8 @@ url = { workspace = true, optional = true }
 workspace = true
 
 [features]
+default = []
+
 client = [
   "near_client",
   "icp_client",
@@ -58,7 +64,7 @@ icp = ["candid"]
 
 icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
-starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starknet-types-core"]
+starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-core", "dep:starknet-core-derive", "dep:starknet-crypto", "dep:starknet-types-core"]
 
 stellar = ["dep:soroban-sdk"]
 
@@ -71,4 +77,5 @@ ethereum = [
 ethereum_client = [
   "ethereum"
 ]
-stellar_client = ["stellar"]
+
+stellar_client = ["stellar", "dep:soroban-client"]

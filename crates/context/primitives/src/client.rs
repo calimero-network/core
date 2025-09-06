@@ -15,12 +15,11 @@ use eyre::{bail, eyre};
 use futures_util::Stream;
 use tokio::sync::oneshot;
 
-use crate::messages::create_context::{CreateContextRequest, CreateContextResponse};
-use crate::messages::delete_context::{DeleteContextRequest, DeleteContextResponse};
-use crate::messages::execute::{ExecuteError, ExecuteRequest, ExecuteResponse};
-use crate::messages::join_context::{JoinContextRequest, JoinContextResponse};
-use crate::messages::update_application::UpdateApplicationRequest;
-use crate::messages::ContextMessage;
+use crate::messages::{
+    ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
+    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, JoinContextRequest,
+    JoinContextResponse, UpdateApplicationRequest,
+};
 use crate::ContextAtomic;
 
 pub mod crypto;

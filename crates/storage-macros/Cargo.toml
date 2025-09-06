@@ -1,0 +1,19 @@
+[package]
+name = "calimero-storage-macros"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Procedural macros for calimero-storage"
+publish = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
+[lints]
+workspace = true

@@ -5,6 +5,8 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
+publish = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
@@ -13,7 +15,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 calimero-sdk-macros.workspace = true
 calimero-sys.workspace = true
-calimero-wasm-abi-v1.workspace = true
+calimero-wasm-abi.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true

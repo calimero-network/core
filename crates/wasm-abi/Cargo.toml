@@ -1,0 +1,27 @@
+[package]
+name = "calimero-wasm-abi"
+version.workspace = true
+description = "WASM-level ABI v1 for Calimero applications"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+proc-macro2.workspace = true
+syn = { workspace = true, features = ["full", "visit"] }
+
+[dev-dependencies]
+jsonschema.workspace = true
+
+# This crate inherits the workspace version
+
+[lints]
+workspace = true
+
+[lib]
+name = "calimero_wasm_abi" 

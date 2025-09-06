@@ -8,6 +8,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 cargo_metadata.workspace = true
@@ -16,6 +17,9 @@ const_format.workspace = true
 eyre.workspace = true
 rust-embed.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
+
+[package.metadata.workspaces]
+independent = true
 
 [lints]
 workspace = true

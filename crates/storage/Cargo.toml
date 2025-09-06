@@ -5,6 +5,8 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
+publish = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
@@ -18,6 +20,7 @@ thiserror.workspace = true
 
 calimero-sdk.workspace = true
 calimero-storage-macros.workspace = true
+
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rand.workspace = true

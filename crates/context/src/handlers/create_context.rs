@@ -7,9 +7,7 @@ use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_config::client::utils::humanize_iter;
 use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::messages::create_context::{
-    CreateContextRequest, CreateContextResponse,
-};
+use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};

@@ -5,6 +5,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -37,6 +38,9 @@ alloy.workspace = true
 soroban-client.workspace = true
 soroban-sdk.workspace = true
 base64.workspace = true
+
+[package.metadata.workspaces]
+independent = true
 
 [lints]
 workspace = true

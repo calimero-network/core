@@ -219,7 +219,7 @@ impl Network {
 
         let response = self
             .client
-            .call(&function_call, BlockId::Tag(BlockTag::Pending))
+            .call(&function_call, BlockId::Tag(BlockTag::Latest))
             .await
             .map_err(|e| StarknetError::Custom {
                 operation: ErrorOperation::Query,
@@ -279,10 +279,10 @@ impl Network {
             ExecutionEncoding::New,
         );
 
-        let _ = account.set_block_id(BlockId::Tag(BlockTag::Pending));
+        let _ = account.set_block_id(BlockId::Tag(BlockTag::Latest));
 
         let response = account
-            .execute_v1(vec![Call {
+            .execute_v3(vec![Call {
                 to: contract_id,
                 selector: entry_point_selector,
                 calldata,
@@ -318,6 +318,10 @@ impl Network {
                             )
                             | (
                                 TransactionFinalityStatus::AcceptedOnL1,
+                                ExecutionResult::Succeeded,
+                            )
+                            | (
+                                TransactionFinalityStatus::PreConfirmed,
                                 ExecutionResult::Succeeded,
                             ) => {
                                 break receipt;
