@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
-use axum_extra::extract::Query;
+use axum_extra::extract::{Query, QueryRejection};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
@@ -81,40 +81,51 @@ pub(crate) fn service(
 }
 
 async fn sse_handler(
-    Query(query): Query<SubscribeRequest>,
+    query: Result<Query<SubscribeRequest>, QueryRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let (commands_sender, commands_receiver) = mpsc::channel::<Command>(32);
+    
+    match query {
+        Ok(Query(q)) => {
+            let (connection_id, _) = loop {
+                let connection_id = random();
+                let context_ids: HashSet<ContextId> = q.context_id.clone().into_iter().collect();
+                let mut connections = state.connections.write().await;
+                match connections.entry(connection_id) {
+                    Entry::Occupied(_) => continue,
+                    Entry::Vacant(entry) => {
+                        let inner = Arc::new(RwLock::new(ConnectionStateInner {
+                            subscriptions: context_ids,
+                        }));
+                        let connection_state = ConnectionState {
+                            _commands: commands_sender.clone(),
+                            inner,
+                        };
+                        let _ = entry.insert(connection_state.clone());
+                        break (connection_id, connection_state);
+                    }
+                }
+            };
+            
+            debug!(%connection_id, "Client connection established");
+            drop(tokio::spawn(handle_node_events(
+                connection_id,
+                Arc::clone(&state),
+                commands_sender.clone(),
+            )));
 
-    let (connection_id, _) = loop {
-        let connection_id = random();
-        let context_ids: HashSet<ContextId> = query.context_id.clone().into_iter().collect();
-        let mut connections = state.connections.write().await;
-
-        match connections.entry(connection_id) {
-            Entry::Occupied(_) => continue,
-            Entry::Vacant(entry) => {
-                let inner = Arc::new(RwLock::new(ConnectionStateInner {
-                    subscriptions: context_ids,
-                }));
-
-                let connection_state = ConnectionState {
-                    _commands: commands_sender.clone(),
-                    inner,
-                };
-
-                let _ = entry.insert(connection_state.clone());
-                break (connection_id, connection_state);
-            }
+            drop(tokio::spawn(handle_connection_cleanups(
+                connection_id,
+                Arc::clone(&state),
+                commands_sender.clone(),
+            )));
         }
-    };
-
-    debug!(%connection_id, "Client connection established");
-    drop(tokio::spawn(handle_node_events(
-        connection_id,
-        Arc::clone(&state),
-        commands_sender.clone(),
-    )));
+        Err(e) => {
+            drop(commands_sender.send(Command::Close(e.to_string())).await);
+            drop(commands_sender)
+        }
+    }
 
     // converts commands from the nodes to tokio_stream
     let stream = ReceiverStream::new(commands_receiver).map(move |command| match command {
@@ -126,24 +137,13 @@ async fn sse_handler(
                 .event(SseEvent::Message.as_str())
                 .data(message)),
             Err(err) => {
-                error!(
-                    %connection_id,
-                    %err,
-                    "Failed to serialize SseResponse",
-                );
+                error!("Failed to serialize SseResponse: {}", err);
                 Ok(Event::default()
                     .event(SseEvent::Error.as_str())
-                    .data("Failed to serilaize SseResponse"))
+                    .data("Failed to serialize SseResponse"))
             }
         },
     });
-
-    // cleanups after connection is closed
-    drop(tokio::spawn(handle_connection_cleanups(
-        connection_id,
-        Arc::clone(&state),
-        commands_sender.clone(),
-    )));
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -172,7 +172,7 @@ async fn handle_node_events(
         );
 
         let event = match event {
-            NodeEvent::Context(event)
+            NodeEvent::Context(event) 
                 if {
                     connection_state
                         .inner
