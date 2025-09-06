@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use starknet::accounts::{Account, ConnectedAccount, ExecutionEncoding, SingleOwnerAccount};
 use starknet::core::codec::Decode;
 use starknet::core::types::{
@@ -33,60 +32,46 @@ impl AssociatedTransport for StarknetTransport<'_> {
     type Protocol = Starknet;
 }
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(try_from = "serde_creds::Credentials")]
+#[derive(Copy, Clone, Debug)]
 pub struct Credentials {
     pub account_id: Felt,
     pub public_key: Felt,
     pub secret_key: Felt,
 }
 
-mod serde_creds {
-    use core::str::FromStr;
+impl TryFrom<&crate::client::config::RawCredentials> for Credentials {
+    type Error = String;
 
-    use serde::{Deserialize, Serialize};
-    use starknet_crypto::Felt;
-    use starknet_types_core::felt::FromStrError;
-    use thiserror::Error;
+    fn try_from(raw_creds: &crate::client::config::RawCredentials) -> Result<Self, Self::Error> {
+        let account_id = raw_creds.account_id.as_ref()
+            .ok_or_else(|| "missing account_id".to_string())?
+            .parse::<Felt>()
+            .map_err(|_| "invalid account_id".to_string())?;
 
-    #[derive(Debug, Deserialize, Serialize)]
-    pub struct Credentials {
-        secret_key: String,
-        public_key: String,
-        account_id: String,
-    }
+        let secret_key = raw_creds.secret_key.parse::<Felt>()
+            .map_err(|_| "invalid secret_key".to_string())?;
 
-    #[derive(Debug, Error)]
-    pub enum CredentialsError {
-        #[error("failed to parse Felt from string")]
-        ParseError(#[from] FromStrError),
-        #[error("public key extracted from secret key does not match the provided public key")]
-        PublicKeyMismatch,
-    }
+        let public_key = if let Some(public_key_str) = &raw_creds.public_key {
+            let provided_public_key = public_key_str.parse::<Felt>()
+                .map_err(|_| "invalid public_key".to_string())?;
 
-    impl TryFrom<Credentials> for super::Credentials {
-        type Error = CredentialsError;
+            let extracted_public_key = starknet_crypto::get_public_key(&secret_key);
 
-        fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            let secret_key_felt = Felt::from_str(&creds.secret_key)
-                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
-            let public_key_felt = Felt::from_str(&creds.public_key)
-                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
-            let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
-
-            if public_key_felt != extracted_public_key {
-                return Err(CredentialsError::PublicKeyMismatch);
+            if provided_public_key != extracted_public_key {
+                return Err("public key extracted from secret key does not match the provided public key".to_string());
             }
 
-            let account_id_felt = Felt::from_str(&creds.account_id)
-                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            provided_public_key
+        } else {
+            // If no public_key is provided, derive it from the secret key
+            starknet_crypto::get_public_key(&secret_key)
+        };
 
-            Ok(Self {
-                account_id: account_id_felt,
-                public_key: public_key_felt,
-                secret_key: secret_key_felt,
-            })
-        }
+        Ok(Self {
+            account_id,
+            public_key,
+            secret_key,
+        })
     }
 }
 

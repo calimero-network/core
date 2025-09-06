@@ -7,7 +7,6 @@ use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::time::Duration;
 use url::Url;
@@ -27,31 +26,24 @@ impl Protocol for Ethereum {
 impl AssociatedTransport for EthereumTransport<'_> {
     type Protocol = Ethereum;
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(try_from = "serde_creds::Credentials")]
+#[derive(Clone, Debug)]
 pub struct Credentials {
     pub account_id: String,
     pub secret_key: String,
 }
 
-mod serde_creds {
-    use serde::{Deserialize, Serialize};
+impl TryFrom<&crate::client::config::RawCredentials> for Credentials {
+    type Error = String;
 
-    #[derive(Debug, Deserialize, Serialize)]
-    pub struct Credentials {
-        account_id: String,
-        secret_key: String,
-    }
+    fn try_from(raw_creds: &crate::client::config::RawCredentials) -> Result<Self, Self::Error> {
+        let account_id = raw_creds.account_id.as_ref()
+            .ok_or_else(|| "missing account_id".to_string())?
+            .clone();
 
-    impl TryFrom<Credentials> for super::Credentials {
-        type Error = &'static str;
-
-        fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            Ok(Self {
-                account_id: creds.account_id,
-                secret_key: creds.secret_key,
-            })
-        }
+        Ok(Self {
+            account_id,
+            secret_key: raw_creds.secret_key.clone(),
+        })
     }
 }
 

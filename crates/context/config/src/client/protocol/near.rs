@@ -23,7 +23,6 @@ use near_primitives::views::{
     AccessKeyPermissionView, AccessKeyView, CallResult, FinalExecutionStatus, QueryRequest,
     TxExecutionStatus,
 };
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
@@ -43,67 +42,57 @@ impl AssociatedTransport for NearTransport<'_> {
     type Protocol = Near;
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(try_from = "serde_creds::Credentials")]
+#[derive(Clone, Debug)]
 pub struct Credentials {
     pub account_id: AccountId,
     pub public_key: PublicKey,
     pub secret_key: SecretKey,
 }
 
-mod serde_creds {
-    use near_crypto::{PublicKey, SecretKey};
-    use near_primitives::types::AccountId;
-    use serde::{Deserialize, Serialize};
+impl TryFrom<&crate::client::config::RawCredentials> for Credentials {
+    type Error = String;
 
-    #[derive(Debug, Deserialize, Serialize)]
-    pub struct Credentials {
-        account_id: AccountId,
-        public_key: PublicKey,
-        secret_key: SecretKey,
-    }
+    fn try_from(raw_creds: &crate::client::config::RawCredentials) -> Result<Self, Self::Error> {
+        let account_id: AccountId = raw_creds.account_id.as_ref()
+            .ok_or_else(|| "missing account_id".to_string())?
+            .parse()
+            .map_err(|_| "invalid account_id".to_string())?;
 
-    impl TryFrom<Credentials> for super::Credentials {
-        type Error = &'static str;
+        let secret_key: SecretKey = raw_creds.secret_key.parse()
+            .map_err(|_| "invalid secret_key".to_string())?;
 
-        fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            'pass: {
-                if let SecretKey::ED25519(key) = &creds.secret_key {
-                    let mut buf = [0; 32];
+        let public_key = if let Some(public_key_str) = &raw_creds.public_key {
+            let provided_public_key = public_key_str.parse()
+                .map_err(|_| "invalid public_key".to_string())?;
 
-                    buf.copy_from_slice(&key.0[..32]);
-
-                    if ed25519_dalek::SigningKey::from_bytes(&buf)
-                        .verifying_key()
-                        .as_bytes()
-                        == &key.0[32..]
-                    {
-                        break 'pass;
-                    }
-                } else if creds.public_key == creds.secret_key.public_key() {
-                    break 'pass;
-                }
-
-                return Err("public key and secret key do not match");
-            };
-
-            if creds.account_id.get_account_type().is_implicit() {
-                let Ok(public_key) = PublicKey::from_near_implicit_account(&creds.account_id)
-                else {
-                    return Err("fatal: failed to derive public key from implicit account ID");
-                };
-
-                if creds.public_key != public_key {
-                    return Err("implicit account ID and public key do not match");
-                }
+            // Verify that the provided public key matches the secret key
+            if provided_public_key != secret_key.public_key() {
+                return Err("public key and secret key do not match".to_string());
             }
 
-            Ok(Self {
-                account_id: creds.account_id,
-                public_key: creds.public_key,
-                secret_key: creds.secret_key,
-            })
+            provided_public_key
+        } else {
+            // If no public_key is provided, derive it from the secret key
+            secret_key.public_key()
+        };
+
+        // For implicit accounts, verify that the account_id matches the public key
+        if account_id.get_account_type().is_implicit() {
+            let Ok(derived_public_key) = PublicKey::from_near_implicit_account(&account_id)
+            else {
+                return Err("fatal: failed to derive public key from implicit account ID".to_string());
+            };
+
+            if public_key != derived_public_key {
+                return Err("implicit account ID and public key do not match".to_string());
+            }
         }
+
+        Ok(Self {
+            account_id,
+            public_key,
+            secret_key,
+        })
     }
 }
 

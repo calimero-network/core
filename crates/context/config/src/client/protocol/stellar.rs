@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use base64::Engine;
-use serde::{Deserialize, Serialize};
 use soroban_client::contract::{ContractBehavior, Contracts};
 use soroban_client::error::Error;
 use soroban_client::keypair::{Keypair, KeypairBehavior};
@@ -40,10 +39,25 @@ impl AssociatedTransport for StellarTransport<'_> {
     type Protocol = Stellar;
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Credentials {
     pub public_key: String,
     pub secret_key: String,
+}
+
+impl TryFrom<&crate::client::config::RawCredentials> for Credentials {
+    type Error = String;
+
+    fn try_from(raw_creds: &crate::client::config::RawCredentials) -> Result<Self, Self::Error> {
+        let public_key = raw_creds.public_key.as_ref()
+            .ok_or_else(|| "missing public_key".to_string())?
+            .clone();
+
+        Ok(Self {
+            public_key,
+            secret_key: raw_creds.secret_key.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
