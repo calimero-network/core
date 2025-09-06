@@ -9,6 +9,8 @@
     - [3. Websocket](#3-websocket)
       - [Subscription Handling:](#subscription-handling)
       - [Unsubscription Handling:](#unsubscription-handling)
+    - [4. Server Sent Event (SSE)](#4-server-sent-event-sse)
+      - [SSE Subscription Handling:](#sse-subscription-handling)
   - [Node Server Workflows](#node-server-workflows)
     - [Client Login Workflow](#client-login-workflow)
     - [JSON rpc Workflow](#json-rpc-workflow)
@@ -18,6 +20,7 @@
     - [Unprotected Routes](#unprotected-routes)
   - [JSON rpc endpoint](#json-rpc-endpoint)
   - [Websocket endpoints](#websocket-endpoints)
+  - [SSE endpoints](#sse-endpoints)
   - [Examples](#examples)
 
 ## Introduction
@@ -30,7 +33,8 @@ Node Server component is split into 3 parts:
 
 1.  [Admin API](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/admin/service.rs)
 2.  [JSON rpc](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/jsonrpc.rs)
-3.  [Websocket](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/ws.rs)
+3.  [WebSocket](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/ws.rs)\ 
+    [SSE](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/sse.rs)
 
 ### 1. Admin API
 
@@ -109,6 +113,20 @@ back to the client with the subscribed context IDs.
 Websocket handle requests to unsubscribe from specific contexts and send
 responses back to the client with the unsubscribed context IDs.
 
+### 4. Server Sent Event (SSE) 
+
+The Server-Sent Events (SSE) endpoint allows clients to subscribe to real-time 
+updates for specific contexts running in the Node Server. Unlike WebSockets, which 
+support two-way communication, SSE provides a one-way channel where the server continuously 
+pushes updates to the client over a single long-lived HTTP connection.
+
+#### SSE Subscription Handling:
+
+Subscriptions are created by making a GET request to the /sse endpoint with one or more 
+contextId query parameters. Each open connection corresponds to an active subscription.
+When the client disconnects, the server automatically cleans up the subscription.
+
+
 ## Node Server Workflows
 
 ### Client Login Workflow
@@ -180,6 +198,22 @@ sequenceDiagram
     WebSocket->>Node: Handle subscribe/unsubscribe
     Node-->>WebSocket: Subscription response
     WebSocket-->>Client: Subscription messages (context application updates)
+```
+
+### SSE Workflow
+
+```mermaid
+sequenceDiagram
+    title SSE Subscription Workflow
+
+    participant Client
+    participant SSE
+    participant Node
+
+    Client->>SSE: Subsribe request 
+    SSE->>Node: Register subscription for contextId
+    Node-->>SSE: Stream events for contextId
+    SSE-->>Client: Push events as text/event-stream
 ```
 
 ## Admin API endpoints
@@ -340,6 +374,19 @@ Server.
 - **Method**: `GET`
 - **Description**: Handles incoming WebSocket requests, which can be subscribe
   or unsubscribe requests, processes them, and returns the appropriate response.
+
+## SSE endpoints
+
+The SSE endpoint, accessible at /sse, allows clients to subscribe to real-time updates
+about specific contexts within the Node Server.
+
+**1. Handle SSE Request**
+
+- **Path**: `/sse?contextId=<value>&contextId=<value>`
+- **Method**: `GET`
+- **Description**: Subscribes to the specified context IDs provided via the URL. 
+    Subscriptions are automatically terminated when the client disconnects.
+
 
 ## Examples
 
