@@ -1,9 +1,7 @@
 use core::error::Error;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
-use calimero_context_primitives::messages::delete_context::{
-    DeleteContextRequest, DeleteContextResponse,
-};
+use calimero_context_primitives::messages::{DeleteContextRequest, DeleteContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_store::key::Key;
