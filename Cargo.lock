@@ -2119,6 +2119,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower 0.4.13",
  "tower-http 0.5.2",
  "tower-sessions",
  "tracing",
@@ -8859,7 +8860,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d2de91cf02bbc07cde38891769ccd5d4f073d22a40683aa4bc7a95781aaa2c4"
 dependencies = [
  "form_urlencoded",
- "indexmap 2.6.0",
+ "indexmap 2.11.0",
  "itoa",
  "ryu",
  "serde",

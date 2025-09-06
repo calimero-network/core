@@ -33,6 +33,7 @@ use eyre::Result;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
+use reqwest::header::{ACCEPT, CACHE_CONTROL};
 
 // Local crate
 use crate::connection::ConnectionInfo;
@@ -272,6 +273,22 @@ where
 
         Ok(response)
     }
+    pub async fn stream_sse(&self, context_id: ContextId) -> Result<reqwest::Response> {
+        let mut url = self.api_url().join("sse")?;
+        url.set_query(Some(&format!("contextId={}", context_id)));
+
+        let response = self
+            .connection
+            .client
+            .get(url.as_str())
+            .header(ACCEPT, "text/event-stream")
+            .header(CACHE_CONTROL, "no-cache")
+            .send()
+            .await?;
+
+        Ok(response)
+    }
+
 
     pub async fn grant_permissions(
         &self,
