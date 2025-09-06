@@ -51,22 +51,9 @@ pub struct WatchCommand {
 
 impl Report for Response {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Sse Events").fg(Color::Blue)]);
-
-        match &self.body {
-            ResponseBody::Result(value) => {
-                let _ = table.add_row(vec![format!("Result: {:#}", value)]);
-            }
-            ResponseBody::Error(error) => {
-                let _ = table.add_row(vec![format!("Error: {:?}", error)]);
-            }
-        }
-
-        println!("{table}");
+        println!("Received response: {:?}", self);
     }
 }
-
 #[derive(Serialize, Deserialize, Debug)]
 struct ExecutionOutput<'a> {
     #[serde(borrow)]
@@ -91,23 +78,17 @@ impl Report for ExecutionOutput<'_> {
     }
 }
 
-impl Report for Response {
-    fn report(&self) {
-        println!("Received response: {:?}", self);
-    }
-}
-
 impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let client = environment.client()?;
 
-        let resolve_response = resolve_alias(connection, self.context, None).await?;
+        let resolve_response = client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let mut url = connection.api_url.clone();
+        let mut url = client.api_url().clone();
         url.set_path("sse");
         url.set_query(Some(&format!("contextId={}", context_id)));
 
@@ -115,14 +96,7 @@ impl WatchCommand {
             .output
             .write(&InfoLine(&format!("Connecting to {url}")));
 
-        let response = connection
-            .client
-            .get(url.as_str())
-            .header("Accept", "text/event-stream")
-            .header("Cache-Control", "no-cache")
-            .send()
-            .await?;
-
+        let response = client.stream_sse(context_id).await?;
         let status = response.status();
 
         if !status.is_success() {
@@ -182,44 +156,56 @@ impl WatchCommand {
                 match event_type {
                     SseEvent::Message => {
                         if data_str.is_empty() || data_str.starts_with(':') {
-                            // keep-alive
-                            continue;
+                            continue; // keep-alive
                         }
 
                         let response: Response = serde_json::from_str(&data_str)?;
                         environment.output.write(&response);
 
                         if let Some(cmd) = &self.exec {
+                            if let Some(max) = self.count {
+                                if event_count >= max {
+                                    break;
+                                }
+                            }
+
                             let mut child = Command::new(&cmd[0])
                                 .args(&cmd[1..])
                                 .stdin(Stdio::piped())
                                 .spawn()?;
 
-                            if let Some(mut stdin) = child.stdin.take() {
-                                if let ResponseBody::Result(result) = &response.body {
-                                    stdin.write_all(result.to_string().as_bytes()).await?;
-                                }
-                            }
+                            let stdin = child.stdin.take();
 
-                            let output = child.wait_with_output().await?;
+                            let stdin = tokio::spawn(async move {
+                                let Some(mut stdin) = stdin else {
+                                    return Ok(());
+                                };
+
+                                if let ResponseBody::Result(result) = &response.body {
+                                    return stdin.write_all(result.to_string().as_bytes()).await;
+                                }
+
+                                Ok(())
+                            });
+
+                            let output = child
+                                .wait_with_output()
+                                .await
+                                .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
+
+                            stdin.await??;
+
                             let outcome = ExecutionOutput {
                                 cmd: cmd.into(),
                                 status: output.status.code(),
                                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                             };
+
                             environment.output.write(&outcome);
                         }
 
                         event_count += 1;
-                        if let Some(max) = self.count {
-                            if event_count >= max {
-                                environment
-                                    .output
-                                    .write(&InfoLine("Max event count reached, exiting."));
-                                return Ok(());
-                            }
-                        }
                     }
                     SseEvent::Close => {
                         environment
