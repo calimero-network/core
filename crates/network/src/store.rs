@@ -1,14 +1,13 @@
 use std::{
     borrow::Cow,
-    collections::{hash_map, hash_set, HashSet},
+    collections::{hash_set, HashSet},
     iter,
+    time::Instant,
     vec::IntoIter,
 };
 
-use eyre::WrapErr;
 use libp2p::{
     kad::{
-        self,
         store::{self, Error as KadError, RecordStore, Result},
         KBucketKey, ProviderRecord, Record, RecordKey, K_VALUE,
     },
@@ -22,6 +21,8 @@ use calimero_store::{key, types, Store};
 pub struct KadStore {
     /// Number of stored records.
     records_len: usize,
+    /// Number of providers.
+    providers_len: usize,
     /// The identity of the peer owning the store.
     local_key: KBucketKey<PeerId>,
     /// The configuration of the store.
@@ -68,40 +69,84 @@ impl KadStore {
     }
 
     pub fn with_config(local_id: PeerId, db: Store, config: KadStoreConfig) -> KadStore {
-        let valid_kad_record_count = db
-            .handle()
+        let local_id = KBucketKey::from(local_id);
+
+        let valid_regular_record_count = Self::get_all_records(&db).len();
+
+        // TODO: We still need to re-announce the records to the DHT.
+        let providers = Self::get_all_providers(&db);
+        let providers_len = providers.len();
+
+        let provided_records = providers
+            .into_iter()
+            .filter(|a| &a[0].provider == local_id.preimage())
+            .flatten()
+            .flat_map(|a| {
+                if a.is_expired(Instant::now()) {
+                    return None;
+                } else {
+                    return Some(a);
+                }
+            })
+            .collect::<HashSet<_>>();
+
+        KadStore {
+            db,
+            providers_len,
+            config,
+            provided: provided_records,
+            local_key: KBucketKey::from(local_id),
+            records_len: valid_regular_record_count,
+        }
+    }
+
+    fn get_all_records(db: &Store) -> Vec<Record> {
+        db.handle()
             .iter::<key::RecordMeta>()
             .unwrap()
             .read()
             .into_iter()
             .flat_map(|a| {
-                // TODO: Discard expired records.
+                let Ok(record) = a.record() else { return None };
 
-                Some(())
+                Some(record)
             })
-            .count();
+            .collect()
+    }
 
-        let provided_record = db
+    fn get_all_providers(db: &Store) -> Vec<Vec<ProviderRecord>> {
+        let a = db
             .handle()
             .iter::<key::ProviderRecordMeta>()
             .unwrap()
             .read()
             .into_iter()
-            .flat_map(|a| {
-                // TODO: Discard expired records and delete from DB.
+            .map(|a| a.provider_record())
+            .collect::<Vec<_>>();
+        a
+    }
 
-                // TODO: Skip if record doesn't belong to local.
-                a.provider_record().ok()
-            })
-            .collect::<HashSet<ProviderRecord>>();
+    fn get_provider(db: &Store, key: &RecordKey) -> Option<Vec<ProviderRecord>> {
+        db.handle()
+            .get(&key::ProviderRecordMeta::new(key))
+            .unwrap()
+            .map(|a| a.provider_record())
+    }
 
-        KadStore {
-            db,
-            config,
-            provided: provided_record,
-            local_key: KBucketKey::from(local_id),
-            records_len: valid_kad_record_count,
+    fn delete_provider_record(db: &Store, key: &RecordKey) {
+        db.handle().delete(&key::ProviderRecordMeta::new(&key));
+    }
+
+    fn update_provider_record(db: &Store, record: Vec<ProviderRecord>) {
+        if record.is_empty() {
+            warn!("an empty provider record was provided for DB update");
+            return;
         }
+
+        db.handle().put(
+            &key::ProviderRecordMeta::new(&record[0].key),
+            &types::ProviderRecordsMeta::new(record.into_iter()),
+        );
     }
 }
 
@@ -171,29 +216,75 @@ impl RecordStore for KadStore {
         }
     }
 
-    fn add_provider(&mut self, record: ProviderRecord) -> Result<()> {
-        todo!()
-    }
-
     fn records(&self) -> Self::RecordsIter<'_> {
-        self.db
-            .handle()
-            .iter::<key::RecordMeta>()
-            .unwrap()
-            .read()
+        let a = Self::get_all_records(&self.db)
             .into_iter()
-            .flat_map(|a| a.record())
-            .map(|r| Cow::Owned(r))
-            .collect::<Vec<_>>()
-            .into_iter()
+            .map(Cow::Owned)
+            .collect::<Vec<_>>();
+
+        a.into_iter()
     }
 
-    fn remove_provider(&mut self, k: &RecordKey, p: &libp2p::PeerId) {
-        todo!()
+    fn add_provider(&mut self, record: ProviderRecord) -> Result<()> {
+        let mut providers = Self::get_provider(&self.db, &record.key).unwrap_or_default();
+
+        if providers.is_empty() && self.config.max_provided_keys == self.providers_len {
+            return Err(KadError::MaxProvidedKeys);
+        }
+
+        for p in providers.iter_mut() {
+            if p.provider == record.provider {
+                // In-place update of an existing provider record.
+                if self.local_key.preimage() == &record.provider {
+                    self.provided.remove(p);
+                    self.provided.insert(record.clone());
+                }
+
+                *p = record;
+                Self::update_provider_record(&self.db, providers);
+                return Ok(());
+            }
+        }
+
+        // If the providers list is full, we ignore the new provider.
+        // This strategy can mitigate Sybil attacks, in which an attacker
+        // floods the network with fake provider records.
+        if providers.len() == self.config.max_providers_per_key {
+            return Ok(());
+        }
+
+        // Otherwise, insert the new provider record.
+        if self.local_key.preimage() == &record.provider {
+            self.provided.insert(record.clone());
+        }
+
+        providers.push(record);
+        Self::update_provider_record(&self.db, providers);
+
+        Ok(())
+    }
+
+    fn remove_provider(&mut self, k: &RecordKey, peer_id: &PeerId) {
+        let Some(mut providers) = Self::get_provider(&self.db, k) else {
+            return;
+        };
+
+        if let Some(i) = providers.iter().position(|p| &p.provider == peer_id) {
+            let p = providers.remove(i);
+            if &p.provider == self.local_key.preimage() {
+                self.provided.remove(&p);
+            }
+        }
+        if providers.is_empty() {
+            Self::delete_provider_record(&self.db, k);
+            return;
+        }
+
+        Self::update_provider_record(&self.db, providers);
     }
 
     fn providers(&self, key: &RecordKey) -> Vec<ProviderRecord> {
-        todo!()
+        Self::get_provider(&self.db, key).unwrap_or_default()
     }
 
     fn provided(&self) -> Self::ProvidedIter<'_> {

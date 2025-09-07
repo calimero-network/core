@@ -47,43 +47,57 @@ impl PredefinedEntry for key::RecordMeta {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
-pub struct ProviderRecordMeta {
+pub struct ProviderRecordsMeta {
+    pub records: Vec<ProviderRecordValue>,
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct ProviderRecordValue {
     pub expires: Option<u128>,
     pub key: key::RecordMeta,
     pub provider: Vec<u8>,
     pub addresses: Vec<Vec<u8>>,
 }
 
-impl ProviderRecordMeta {
+impl ProviderRecordsMeta {
     #[must_use]
-    pub fn new(record: ProviderRecord) -> Self {
+    pub fn new(records: impl Iterator<Item = ProviderRecord>) -> Self {
         Self {
-            expires: record.expires.map(instant_to_timestamp),
-            key: key::RecordMeta::new(&record.key).into(),
-            addresses: record.addresses.into_iter().map(|a| a.to_vec()).collect(),
-            provider: record.provider.to_bytes(),
+            records: records
+                .map(|a| ProviderRecordValue {
+                    expires: a.expires.map(instant_to_timestamp),
+                    key: key::RecordMeta::new(&a.key).into(),
+                    addresses: a.addresses.into_iter().map(|a| a.to_vec()).collect(),
+                    provider: a.provider.to_bytes(),
+                })
+                .collect(),
         }
     }
 
-    pub fn provider_record(self) -> eyre::Result<ProviderRecord> {
-        let mut addresses = Vec::with_capacity(self.addresses.len());
+    pub fn provider_record(self) -> Vec<ProviderRecord> {
+        self.records
+            .into_iter()
+            .filter_map(|a| {
+                let mut addresses = Vec::with_capacity(a.addresses.len());
 
-        for peer_address_data in self.addresses {
-            addresses.push(Multiaddr::try_from(peer_address_data)?);
-        }
+                for peer_address_data in a.addresses {
+                    addresses.push(Multiaddr::try_from(peer_address_data).ok()?);
+                }
 
-        Ok(ProviderRecord {
-            key: self.key.record(),
-            addresses,
-            provider: PeerId::from_bytes(&self.provider)?,
-            expires: self.expires.and_then(timestamp_to_instant),
-        })
+                Some(ProviderRecord {
+                    key: a.key.record(),
+                    addresses,
+                    provider: PeerId::from_bytes(&a.provider).ok()?,
+                    expires: a.expires.and_then(timestamp_to_instant),
+                })
+            })
+            .collect()
     }
 }
 
 impl PredefinedEntry for key::ProviderRecordMeta {
     type Codec = Borsh;
-    type DataType<'a> = ProviderRecordMeta;
+    type DataType<'a> = ProviderRecordsMeta;
 }
 
 fn instant_to_timestamp(deadline: Instant) -> u128 {
