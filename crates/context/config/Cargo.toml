@@ -71,7 +71,6 @@ stellar = ["dep:soroban-sdk"]
 
 ethereum = ["alloy", "alloy-sol-types", "ethabi"]
 
-stellar_client = ["stellar"]
 ethereum_client = [
   "ethereum"
 ]
