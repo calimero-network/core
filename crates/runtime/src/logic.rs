@@ -1081,3 +1081,353 @@ impl VMHostFunctions<'_> {
         Ok(bytes_read)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Key, Value};
+    use core::ops::Deref;
+    use wasmer::{AsStoreMut, Memory, MemoryType, Store};
+
+    // This implementation is more suitable for testing host-side components
+    // in comparison to `store::MockedStorage` which is a better for guest-side
+    // tests - e.g. testing Calimero application contracts.
+    // This version minimally satisfies the `Storage` trait without introducing
+    // the global state, guaranteed having a proper test isolation and not having a risk
+    // to collide with other tests due to developer error, too (i.e. developer accidentally
+    // used the same scope for the global state of `store::MockedStorage` in two different
+    // tests).
+    struct SimpleMockStorage {
+        data: HashMap<Vec<u8>, Vec<u8>>,
+    }
+
+    impl SimpleMockStorage {
+        fn new() -> Self {
+            Self {
+                data: HashMap::new(),
+            }
+        }
+    }
+
+    impl Storage for SimpleMockStorage {
+        fn get(&self, key: &Key) -> Option<Value> {
+            self.data.get(key).cloned()
+        }
+
+        fn set(&mut self, key: Key, value: Value) -> Option<Value> {
+            self.data.insert(key, value)
+        }
+
+        fn remove(&mut self, key: &Key) -> Option<Value> {
+            self.data.remove(key)
+        }
+
+        fn has(&self, key: &Key) -> bool {
+            self.data.contains_key(key)
+        }
+    }
+
+    // A macro to set up the VM environment within a test.
+    // It takes references to storage and limits, which are owned by the test function,
+    // ensuring that all lifetimes are valid.
+    macro_rules! setup_vm {
+        ($storage:expr, $limits:expr, $input:expr) => {{
+            let context = VMContext::new(Cow::Owned($input), [0u8; 32], [0u8; 32]);
+            let mut store = Store::default();
+            let memory = Memory::new(&mut store, MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new($storage, context, $limits, None);
+            let _ = logic.with_memory(memory);
+            (logic, store)
+        }};
+    }
+
+    /// Helper to write a `sys::Buffer` struct representation to memory.
+    /// Simulates a WASM guest preparing a memory descriptor for a host call.
+    ///
+    /// # Why this is necessary
+    /// When a WASM guest needs the host to read/write a slice of its memory, it cannot
+    /// pass a slice directly. Instead, it must pass a pointer to a "descriptor" structure
+    /// that exists within guest's memory. This descriptor tells the host where the
+    /// actual data is (`ptr`) and how long it is (`len`). This function simulates the guest
+    /// writing that descriptor into the mock memory.
+    ///
+    /// # Parameters
+    /// - `host`: A reference to the `VMHostFunctions` to get access to the guest memory view.
+    /// - `offset`: The address **of the descriptor struct itself** in the guest memory.
+    ///   This is the pointer that the guest would pass to the host function.
+    /// - `ptr`: The address **of the actual data payload** (e.g., a string or byte array) in the
+    ///   guest memory. This value is written inside the descriptor structure.
+    /// - `len`: The length of the data payload. This value is also written inside the
+    ///   descriptor structure.
+    ///
+    /// # ABI and Memory Layout
+    /// Although the guest is `wasm32` and uses `u32` pointers internally, the host-guest
+    /// ABI often standardizes on `u64` for all pointers and lengths for consistency and
+    /// forward-compatibility with `wasm64`. Therefore, this function writes both `ptr` and `len`
+    /// as `u64`, creating a 16-byte descriptor in memory with the layout `{ ptr: u64, len: u64 }`.
+    fn prepare_guest_buf_descriptor(host: &VMHostFunctions<'_>, offset: u64, ptr: u64, len: u64) {
+        let data: Vec<u8> = [ptr.to_le_bytes(), len.to_le_bytes()].concat();
+
+        host.borrow_memory()
+            .write(offset, &data)
+            .expect("Failed to write buffer");
+    }
+
+    // Helper to write a string to memory.
+    fn write_str(host: &VMHostFunctions<'_>, offset: u64, s: &str) {
+        host.borrow_memory()
+            .write(offset, s.as_bytes())
+            .expect("Failed to write string");
+    }
+
+    #[test]
+    fn test_default_limits() {
+        let limits = VMLimits::default();
+        assert_eq!(limits.max_memory_pages, 1 << 10);
+        assert_eq!(limits.max_stack_size, 200 << 10);
+        assert_eq!(*limits.max_register_size.deref(), 100 << 20);
+    }
+
+    #[test]
+    fn test_input() {
+        let input = vec![1u8, 2, 3];
+        let input_len = input.len() as u64;
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, input.clone());
+
+        {
+            let mut host = logic.host_functions(store.as_store_mut());
+            let register_id = 1u64;
+
+            host.input(register_id).expect("Input call failed");
+            assert_eq!(host.register_len(register_id).unwrap(), input_len);
+
+            let buf_ptr = 100u64;
+            let data_output_ptr = 200u64;
+            prepare_guest_buf_descriptor(&host, buf_ptr, data_output_ptr, input_len);
+
+            let res = host.read_register(register_id, buf_ptr).unwrap();
+            assert_eq!(res, 1);
+
+            let mut mem_buffer = vec![0u8; input_len as usize];
+            host.borrow_memory()
+                .read(data_output_ptr, &mut mem_buffer)
+                .unwrap();
+            assert_eq!(mem_buffer, input);
+        }
+    }
+
+    #[test]
+    fn test_log_utf8() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "test log";
+        let msg_ptr = 200u64;
+        write_str(&host, msg_ptr, msg);
+
+        let buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, msg_ptr, msg.len() as u64);
+        host.log_utf8(buf_ptr).expect("Log failed");
+
+        assert_eq!(host.borrow_logic().logs.len(), 1);
+        assert_eq!(host.borrow_logic().logs[0], "test log");
+    }
+
+    #[test]
+    fn test_log_utf8_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "log";
+        let msg_ptr = 200u64;
+        write_str(&host, msg_ptr, msg);
+        let buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, msg_ptr, msg.len() as u64);
+
+        for _ in 0..100 {
+            host.log_utf8(buf_ptr).expect("Log failed");
+        }
+        let err = host.log_utf8(buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogsOverflow)
+        ));
+    }
+
+    fn test_panic_utf8() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let context = VMContext::new(Cow::Owned(vec![]), [0u8; 32], [0u8; 32]);
+        let mut logic = VMLogic::new(&mut storage, context, &limits, None);
+
+        let mut store = Store::default();
+        let memory = Memory::new(&mut store, MemoryType::new(1, None, false)).unwrap();
+        logic.with_memory(memory);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "panic message";
+        let msg_ptr = 200u64;
+        write_str(&host, msg_ptr, msg);
+        let msg_buf_ptr = 16u64; // Use aligned address
+        prepare_guest_buf_descriptor(&host, msg_buf_ptr, msg_ptr, msg.len() as u64);
+
+        let file = "file.rs";
+        let file_ptr = 400u64;
+        write_str(&host, file_ptr, file);
+
+        let loc_data_ptr = 304u64; // Use aligned address
+        prepare_guest_buf_descriptor(&host, loc_data_ptr, file_ptr, file.len() as u64);
+
+        let line: u32 = 10;
+        let column: u32 = 5;
+        host.borrow_memory()
+            .write(loc_data_ptr + 16, &line.to_le_bytes())
+            .unwrap();
+        host.borrow_memory()
+            .write(loc_data_ptr + 20, &column.to_le_bytes())
+            .unwrap();
+
+        let err = host.panic_utf8(msg_buf_ptr, loc_data_ptr).unwrap_err();
+        match err {
+            VMLogicError::HostError(HostError::Panic {
+                message, location, ..
+            }) => {
+                assert_eq!(message, "panic message");
+                match location {
+                    Location::At { file, line, column } => {
+                        assert_eq!(file, "file.rs");
+                        assert_eq!(line, 10);
+                        assert_eq!(column, 5);
+                    }
+                    _ => panic!("Unexpected location variant"),
+                }
+            }
+            _ => panic!("Unexpected error variant"),
+        }
+    }
+
+    #[test]
+    fn test_storage_write_read() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "key";
+        let key_ptr = 200u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let value = "value";
+        let value_ptr = 300u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let register_id = 1u64;
+        let res = host
+            .storage_write(key_buf_ptr, value_buf_ptr, register_id)
+            .unwrap();
+        assert_eq!(res, 0);
+
+        let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+        assert_eq!(res, 1);
+        assert_eq!(
+            host.register_len(register_id).unwrap(),
+            value.len() as u64
+        );
+    }
+
+    #[test]
+    fn test_random_bytes() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let buf_ptr = 10u64;
+        let data_ptr = 200u64;
+        let data_len = 32u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
+
+        // Call the host function to fill the buffer
+        host.random_bytes(buf_ptr).unwrap();
+
+        // Read the bytes back from guest memory
+        let mut random_data = vec![0u8; data_len as usize];
+        host.borrow_memory()
+            .read(data_ptr, &mut random_data)
+            .unwrap();
+
+        // Verify that the buffer is not empty and doesn't contain all zeros.
+        assert!(!random_data.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_time_now() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let buf_ptr = 16u64;
+        let time_data_ptr = 200u64;
+        // The `time_now()` function expects an 8-byte buffer to write the u64 timestamp.
+        let time_data_len = 8u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, time_data_ptr, time_data_len);
+
+        let time_before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Call the host function
+        host.time_now(buf_ptr).unwrap();
+
+        let time_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Read the timestamp back from guest memory
+        let mut time_buffer = [0u8; 8];
+        host.borrow_memory()
+            .read(time_data_ptr, &mut time_buffer)
+            .unwrap();
+        let timestamp_from_host = u64::from_le_bytes(time_buffer);
+
+        // Verify the timestamp is current and valid
+        assert!(timestamp_from_host >= time_before);
+        assert!(timestamp_from_host <= time_after);
+    }
+
+
+    #[test]
+    fn test_blob_create_without_client() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        let err = host.blob_create().unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    #[test]
+    fn test_smoke_finish_with_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (logic, _) = setup_vm!(&mut storage, &limits, vec![]);
+        let outcome = logic.finish(Some(FunctionCallError::ExecutionError(vec![])));
+        assert!(outcome.returns.is_err());
+    }
+}
