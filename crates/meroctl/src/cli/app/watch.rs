@@ -39,22 +39,25 @@ pub struct WatchCommand {
     pub metadata: Option<String>,
 
     /// Current application ID to find contexts (if not provided, will install and find by blob comparison)
-    #[arg(long, help = "Current application ID - will find all contexts using this app")]
+    #[arg(
+        long,
+        help = "Current application ID - will find all contexts using this app"
+    )]
     pub current_app_id: Option<ApplicationId>,
 }
 
 impl WatchCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;
-        
+
         // First, install the initial application to get the baseline
         let metadata = self.metadata.clone().map(String::into_bytes);
-        
+
         environment.output.write(&InfoLine(&format!(
-            "Installing initial application from {} to establish baseline...", 
+            "Installing initial application from {} to establish baseline...",
             self.path
         )));
-        
+
         let initial_app_id = client
             .install_dev_application(InstallDevApplicationRequest::new(
                 self.path.clone(),
@@ -66,7 +69,7 @@ impl WatchCommand {
 
         // Determine which application ID to track
         let target_app_id = self.current_app_id.unwrap_or(initial_app_id);
-        
+
         // Get all contexts that use this application
         let contexts_response = client.list_contexts().await?;
         let target_contexts: Vec<_> = contexts_response
@@ -82,7 +85,9 @@ impl WatchCommand {
                 "No contexts found using application {}. You may need to manually update contexts to use this application first.", 
                 target_app_id
             )));
-            environment.output.write(&InfoLine("The command will still watch for file changes and install new versions."));
+            environment.output.write(&InfoLine(
+                "The command will still watch for file changes and install new versions.",
+            ));
         } else {
             environment.output.write(&InfoLine(&format!(
                 "Found {} context(s) using application {}: {:?}",
@@ -162,7 +167,7 @@ async fn watch_app_and_update_contexts(
             .application_id;
 
         environment.output.write(&InfoLine(&format!(
-            "📦 Installed new application version: {}", 
+            "📦 Installed new application version: {}",
             new_application_id
         )));
 
@@ -178,14 +183,14 @@ async fn watch_app_and_update_contexts(
 
         if target_contexts.is_empty() {
             environment.output.write(&InfoLine(&format!(
-                "No contexts currently use application {}. Skipping updates.", 
+                "No contexts currently use application {}. Skipping updates.",
                 baseline_app_id
             )));
             continue;
         }
 
         environment.output.write(&InfoLine(&format!(
-            "🔄 Updating {} context(s) from {} to {}...", 
+            "🔄 Updating {} context(s) from {} to {}...",
             target_contexts.len(),
             baseline_app_id,
             new_application_id
@@ -194,33 +199,28 @@ async fn watch_app_and_update_contexts(
         // Update all contexts with the new application
         let mut success_count = 0;
         let mut error_count = 0;
-        
+
         for context_id in &target_contexts {
             // Try to resolve default executor for this context
             let default_alias = "default".parse().expect("'default' is a valid alias name");
-            let executor_result = client
-                .resolve_alias(default_alias, Some(*context_id))
-                .await;
+            let executor_result = client.resolve_alias(default_alias, Some(*context_id)).await;
 
             let executor_id = match executor_result {
-                Ok(resolve_response) => {
-                    match resolve_response.value().copied() {
-                        Some(id) => id,
-                        None => {
-                            environment.output.write(&ErrorLine(&format!(
-                                "✗ No default executor found for context {}. Skipping.", 
-                                context_id
-                            )));
-                            error_count += 1;
-                            continue;
-                        }
+                Ok(resolve_response) => match resolve_response.value().copied() {
+                    Some(id) => id,
+                    None => {
+                        environment.output.write(&ErrorLine(&format!(
+                            "✗ No default executor found for context {}. Skipping.",
+                            context_id
+                        )));
+                        error_count += 1;
+                        continue;
                     }
-                }
+                },
                 Err(err) => {
                     environment.output.write(&ErrorLine(&format!(
-                        "✗ Failed to resolve executor for context {}: {}. Skipping.", 
-                        context_id, 
-                        err
+                        "✗ Failed to resolve executor for context {}: {}. Skipping.",
+                        context_id, err
                     )));
                     error_count += 1;
                     continue;
@@ -228,22 +228,20 @@ async fn watch_app_and_update_contexts(
             };
 
             let request = UpdateContextApplicationRequest::new(new_application_id, executor_id);
-            
+
             match client.update_context_application(context_id, request).await {
                 Ok(response) => {
                     environment.output.write(&InfoLine(&format!(
-                        "✓ Updated context {} with application {}", 
-                        context_id, 
-                        new_application_id
+                        "✓ Updated context {} with application {}",
+                        context_id, new_application_id
                     )));
                     environment.output.write(&response);
                     success_count += 1;
                 }
                 Err(err) => {
                     environment.output.write(&ErrorLine(&format!(
-                        "✗ Failed to update context {}: {}", 
-                        context_id, 
-                        err
+                        "✗ Failed to update context {}: {}",
+                        context_id, err
                     )));
                     error_count += 1;
                 }
@@ -251,9 +249,8 @@ async fn watch_app_and_update_contexts(
         }
 
         environment.output.write(&InfoLine(&format!(
-            "📊 Update complete: {} successful, {} failed", 
-            success_count, 
-            error_count
+            "📊 Update complete: {} successful, {} failed",
+            success_count, error_count
         )));
     }
 
