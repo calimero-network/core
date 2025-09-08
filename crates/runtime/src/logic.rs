@@ -1357,7 +1357,9 @@ mod tests {
         // This makes the test deterministic (for CI) and ensures it fails
         // correctly if the function under this test does not write to the buffer.
         let initial_pattern = vec![0xAB; data_len as usize];
-        host.borrow_memory().write(data_ptr, &initial_pattern).unwrap();
+        host.borrow_memory()
+            .write(data_ptr, &initial_pattern)
+            .unwrap();
 
         prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
 
@@ -1371,7 +1373,10 @@ mod tests {
             .unwrap();
 
         // Assert that the memory content has changed from our initial pattern.
-        assert_ne!(random_data, initial_pattern, "The data buffer should have been overwritten with random bytes, but it was not.");
+        assert_ne!(
+            random_data, initial_pattern,
+            "The data buffer should have been overwritten with random bytes, but it was not."
+        );
         //// Verify that the buffer is not empty and doesn't contain all zeros.
         //assert!(!random_data.iter().all(|&b| b == 0));
     }
