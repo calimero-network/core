@@ -610,10 +610,9 @@ impl VMHostFunctions<'_> {
         let mut buf = self.read_slice(&byte_slice).to_vec();
 
         rand::thread_rng().fill_bytes(&mut buf);
-        println!("Random data in `random_bytes()`: {:?}", buf);
-
         self.borrow_memory().write(ptr, &buf)?;
 
+        println!("Random data in `random_bytes()`: {:?}", buf);
 
         Ok(())
     }
