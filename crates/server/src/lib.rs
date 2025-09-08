@@ -1,11 +1,11 @@
 use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::http::Method;
-use axum::Router;
-use axum::response::Response;
-use axum::middleware::{from_fn, Next};
 use axum::body::{to_bytes, Body};
+use axum::http::Method;
+use axum::middleware::{from_fn, Next};
+use axum::response::Response;
+use axum::Router;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
@@ -17,8 +17,8 @@ use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::Level;
 use tracing::warn;
+use tracing::Level;
 
 use crate::admin::service::{setup, site};
 
@@ -193,14 +193,18 @@ pub async fn start(
                     "incoming request"
                 );
             })
-            .on_response(|response: &axum::http::Response<_>, latency: std::time::Duration, _span: &tracing::Span| {
-                tracing::debug!(
-                    target: "server::http",
-                    status = %response.status(),
-                    elapsed_ms = latency.as_millis() as u64,
-                    "response sent"
-                );
-            }),
+            .on_response(
+                |response: &axum::http::Response<_>,
+                 latency: std::time::Duration,
+                 _span: &tracing::Span| {
+                    tracing::debug!(
+                        target: "server::http",
+                        status = %response.status(),
+                        elapsed_ms = latency.as_millis() as u64,
+                        "response sent"
+                    );
+                },
+            ),
     );
 
     // Log response bodies (capped) after handlers run
