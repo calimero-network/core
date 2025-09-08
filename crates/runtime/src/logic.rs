@@ -1352,6 +1352,13 @@ mod tests {
         let buf_ptr = 10u64;
         let data_ptr = 200u64;
         let data_len = 32u64;
+
+        // Explicitly fill the memory with zeroes before the host call.
+        // This makes the test deterministic (for CI) and ensures it fails
+        // correctly if the function under this test does not write to the buffer.
+        let zero_buffer = vec![0u8; data_len as usize];
+        host.borrow_memory().write(data_ptr, &zero_buffer).unwrap();
+
         prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
 
         // Call the host function to fill the buffer
