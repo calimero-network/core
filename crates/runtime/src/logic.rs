@@ -1339,10 +1339,7 @@ mod tests {
 
         let res = host.storage_read(key_buf_ptr, register_id).unwrap();
         assert_eq!(res, 1);
-        assert_eq!(
-            host.register_len(register_id).unwrap(),
-            value.len() as u64
-        );
+        assert_eq!(host.register_len(register_id).unwrap(), value.len() as u64);
     }
 
     #[test]
@@ -1407,7 +1404,6 @@ mod tests {
         assert!(timestamp_from_host >= time_before);
         assert!(timestamp_from_host <= time_after);
     }
-
 
     #[test]
     fn test_blob_create_without_client() {
