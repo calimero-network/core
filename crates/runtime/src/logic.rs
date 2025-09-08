@@ -610,7 +610,10 @@ impl VMHostFunctions<'_> {
         let mut buf = self.read_slice(&byte_slice).to_vec();
 
         rand::thread_rng().fill_bytes(&mut buf);
+        println!("Random data in `random_bytes()`: {:?}", buf);
+
         self.borrow_memory().write(ptr, &buf)?;
+
 
         Ok(())
     }
@@ -1371,6 +1374,7 @@ mod tests {
         host.borrow_memory()
             .read(data_ptr, &mut random_data)
             .unwrap();
+        println!("Random data in test: {:?}", random_data);
 
         // Assert that the memory content has changed from our initial pattern.
         assert_ne!(
