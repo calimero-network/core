@@ -612,8 +612,6 @@ impl VMHostFunctions<'_> {
         rand::thread_rng().fill_bytes(&mut buf);
         self.borrow_memory().write(ptr, &buf)?;
 
-        println!("Random data in `random_bytes()`: {:?}", buf);
-
         Ok(())
     }
 
@@ -1373,15 +1371,12 @@ mod tests {
         host.borrow_memory()
             .read(data_ptr, &mut random_data)
             .unwrap();
-        println!("Random data in test: {:?}", random_data);
 
         // Assert that the memory content has changed from our initial pattern.
         assert_ne!(
             random_data, initial_pattern,
             "The data buffer should have been overwritten with random bytes, but it was not."
         );
-        //// Verify that the buffer is not empty and doesn't contain all zeros.
-        //assert!(!random_data.iter().all(|&b| b == 0));
     }
 
     #[test]
