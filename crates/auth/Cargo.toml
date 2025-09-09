@@ -1,5 +1,5 @@
 [package]
-name = "mero-auth"
+name = "calimero-auth"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
