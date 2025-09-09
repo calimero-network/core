@@ -297,20 +297,14 @@ pub async fn refresh_token_handler(
 
     // Check node URL if token has node information
     if let Some(token_node_url) = &refresh_claims.node_url {
-        // Get referrer URL from headers
-        if let Some(referrer) = headers.get("referer") {
-            if let Ok(referrer_str) = referrer.to_str() {
-                // Compare if referrer starts with the token's node URL
-                if !referrer_str.starts_with(token_node_url) {
-                    let mut error_headers = HeaderMap::new();
-                    error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
-                    return error_response(
-                        StatusCode::FORBIDDEN,
-                        "Token is not valid for this node",
-                        Some(error_headers),
-                    );
-                }
-            }
+        if let Err(error_msg) = state
+            .0
+            .token_generator
+            .validate_node_host(token_node_url, &headers)
+        {
+            let mut error_headers = HeaderMap::new();
+            error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+            return error_response(StatusCode::FORBIDDEN, error_msg, Some(error_headers));
         }
     }
 
@@ -376,20 +370,14 @@ pub async fn validate_handler(
         Ok(claims) => {
             // Check node URL if token has node information
             if let Some(token_node_url) = &claims.node_url {
-                // Get referrer URL from headers
-                if let Some(referrer) = headers.get("referer") {
-                    if let Ok(referrer_str) = referrer.to_str() {
-                        // Compare if referrer starts with the token's node URL
-                        if !referrer_str.starts_with(token_node_url) {
-                            let mut error_headers = HeaderMap::new();
-                            error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
-                            return error_response(
-                                StatusCode::FORBIDDEN,
-                                "Token is not valid for this node",
-                                Some(error_headers),
-                            );
-                        }
-                    }
+                if let Err(error_msg) = state
+                    .0
+                    .token_generator
+                    .validate_node_host(token_node_url, &headers)
+                {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+                    return error_response(StatusCode::FORBIDDEN, error_msg, Some(error_headers));
                 }
             }
 
