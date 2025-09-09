@@ -29,8 +29,6 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-soroban-client = { workspace = true, optional = true }
-soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
 starknet-core = { workspace = true, optional = true }
 starknet-core-derive = { workspace = true, optional = true }
@@ -50,7 +48,6 @@ client = [
   "near_client",
   "icp_client",
   "starknet_client",
-  "stellar_client",
   "ethereum_client",
   "dep:either",
   "dep:eyre",
@@ -66,8 +63,6 @@ icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
 starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-core", "dep:starknet-core-derive", "dep:starknet-crypto", "dep:starknet-types-core"]
 
-stellar = ["dep:soroban-sdk"]
-
 ethereum = [
   "alloy",
   "alloy-sol-types",
@@ -77,5 +72,3 @@ ethereum = [
 ethereum_client = [
   "ethereum"
 ]
-
-stellar_client = ["stellar", "dep:soroban-client"]

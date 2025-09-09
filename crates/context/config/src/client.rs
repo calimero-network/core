@@ -18,13 +18,12 @@ pub mod utils;
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use env::Method;
 use macros::transport;
-use protocol::{ethereum, icp, near, starknet, stellar, Protocol};
+use protocol::{ethereum, icp, near, starknet, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 type MaybeNear = Option<near::NearTransport<'static>>;
 type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
-type MaybeStellar = Option<stellar::StellarTransport<'static>>;
 type MaybeEthereum = Option<ethereum::EthereumTransport<'static>>;
 
 transport! {
@@ -32,7 +31,6 @@ transport! {
         MaybeNear,
         MaybeStarknet,
         MaybeIcp,
-        MaybeStellar,
         MaybeEthereum
     );
 }
@@ -178,45 +176,6 @@ impl Client<AnyTransport> {
             }
         }
 
-        let mut stellar_transport = None;
-
-        'skipped: {
-            if let Some(stellar_config) = config.signer.local.protocols.get("stellar") {
-                let Some(e) = config.params.get("stellar") else {
-                    eyre::bail!("missing config specification for `{}` signer", "stellar");
-                };
-
-                if !matches!(e.signer, ClientSelectedSigner::Local) {
-                    break 'skipped;
-                }
-
-                let mut config = stellar::StellarConfig {
-                    networks: Default::default(),
-                };
-
-                for (network, signer) in &stellar_config.signers {
-                    let Credentials::Raw(credentials) = &signer.credentials else {
-                        eyre::bail!(
-                            "expected Stellar credentials but got {:?}",
-                            signer.credentials
-                        )
-                    };
-
-                    let _ignored = config.networks.insert(
-                        network.clone().into(),
-                        stellar::NetworkConfig {
-                            network: network.clone().into(),
-                            rpc_url: signer.rpc_url.clone(),
-                            public_key: credentials.public_key.clone(),
-                            secret_key: credentials.secret_key.clone(),
-                        },
-                    );
-                }
-
-                stellar_transport = Some(stellar::StellarTransport::new(&config));
-            }
-        }
-
         let mut ethereum_transport = None;
 
         'skipped: {
@@ -262,7 +221,6 @@ impl Client<AnyTransport> {
             near_transport,
             starknet_transport,
             icp_transport,
-            stellar_transport,
             ethereum_transport
         );
 

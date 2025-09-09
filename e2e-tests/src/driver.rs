@@ -21,7 +21,6 @@ use crate::output::OutputWriter;
 use crate::protocol::ethereum::EthereumSandboxEnvironment;
 use crate::protocol::icp::IcpSandboxEnvironment;
 use crate::protocol::near::NearSandboxEnvironment;
-use crate::protocol::stellar::StellarSandboxEnvironment;
 use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
 use crate::{Protocol, TestEnvironment};
@@ -107,7 +106,6 @@ impl Driver {
 
             for sandbox_cfg in &self.config.protocol_sandboxes {
                 let config_protocol = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(_) => Protocol::Stellar,
                     ProtocolSandboxConfig::Near(_) => Protocol::Near,
                     ProtocolSandboxConfig::Icp(_) => Protocol::Icp,
                     ProtocolSandboxConfig::Ethereum(_) => Protocol::Ethereum,
@@ -118,9 +116,6 @@ impl Driver {
                 }
 
                 let sandbox_env = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(config) => ProtocolSandboxEnvironment::Stellar(
-                        StellarSandboxEnvironment::init(config.clone())?,
-                    ),
                     ProtocolSandboxConfig::Near(config) => ProtocolSandboxEnvironment::Near(
                         NearSandboxEnvironment::init(config.clone()).await?,
                     ),
