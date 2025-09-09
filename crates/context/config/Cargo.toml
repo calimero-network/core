@@ -64,7 +64,7 @@ icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
 starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-core", "dep:starknet-core-derive", "dep:starknet-crypto", "dep:starknet-types-core"]
 
-stellar = ["dep:soroban-sdk"]
+# stellar = ["dep:soroban-sdk"]
 
 ethereum = [
   "alloy",
