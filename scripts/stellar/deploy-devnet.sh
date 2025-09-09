@@ -33,8 +33,8 @@ cd "${CONTRACTS_DIR}"
 # Start Stellar Quickstart container
 docker run --rm -d -p 8000:8000 \
     --name stellar \
-    stellar/quickstart:v508-latest \
-    --local --enable rpc --limits unlimited
+    stellar/quickstart:latest \
+    --local --enable-soroban-rpc
 
 # Wait for the container to be ready
 echo "Waiting for Stellar container to be ready..."
@@ -67,7 +67,7 @@ stellar network add local \
     --network-passphrase "Standalone Network ; February 2017"
 
 # Generate and fund keys
-stellar keys generate --default-seed local --network local --fund
+stellar keys generate --default-seed --network local --fund local
 ACCOUNT_ADDRESS=$(stellar keys address local)
 SECRET_KEY=$(stellar keys show local)
 

@@ -118,10 +118,10 @@ jobs:
           # Map OS and architecture to release file names
           case "$OS-$ARCH" in
               "Linux-x86_64")
-                  BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
+                  BINARY_NAME="stellar-cli-23.1.2-x86_64-unknown-linux-gnu.tar.gz"
                   ;;
               "Linux-aarch64"|"Linux-arm64")
-                  BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
+                  BINARY_NAME="stellar-cli-23.1.2-aarch64-unknown-linux-gnu.tar.gz"
                   ;;
               *)
                   echo "Unsupported platform: $OS-$ARCH"
@@ -130,7 +130,7 @@ jobs:
           esac
 
           TMPDIR=$(mktemp -d)
-          wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
+          wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v23.1.2/${BINARY_NAME}"
           tar xzf "${TMPDIR}/${BINARY_NAME}" -C "$TMPDIR"
 
           mkdir -p "$HOME/.local/bin"
