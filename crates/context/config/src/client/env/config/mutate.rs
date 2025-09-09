@@ -38,8 +38,6 @@ mod icp;
 mod near;
 #[cfg(feature = "starknet_client")]
 mod starknet;
-#[cfg(feature = "stellar_client")]
-mod stellar;
 
 impl<'a, T> ContextConfigMutate<'a, T> {
     pub fn add_context(
