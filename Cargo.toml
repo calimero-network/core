@@ -8,7 +8,7 @@ description = "Core Calimero infrastructure and tools"
 
 [workspace.metadata.workspaces]
 # Shared version of all public crates in the workspace.
-version = "0.2.4"
+version = "0.2.5"
 exclude = [
     "./apps/abi_conformance",
     "./apps/kv-store", 
@@ -153,7 +153,7 @@ syn = { version = "2.0", features = ["full"] }
 tempdir = "0.3.7"
 thiserror = "1.0.56"
 thunderdome = "0.6.1"
-tokio = "1.35.1"
+tokio = "1.47.1"
 tokio-stream = "0.1.17"
 tokio-test = "0.4.4"
 tokio-tungstenite = "0.24.0"
