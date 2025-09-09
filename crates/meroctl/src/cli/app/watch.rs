@@ -112,7 +112,7 @@ impl WatchCommand {
 async fn watch_app_and_update_contexts(
     environment: &mut Environment,
     mut target_contexts: Vec<calimero_primitives::context::ContextId>,
-    baseline_app_id: ApplicationId,
+    mut baseline_app_id: ApplicationId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
 ) -> Result<()> {
@@ -201,26 +201,29 @@ async fn watch_app_and_update_contexts(
         let mut error_count = 0;
 
         for context_id in &target_contexts {
-            // Try to resolve default executor for this context
-            let default_alias = "default".parse().expect("'default' is a valid alias name");
-            let executor_result = client.resolve_alias(default_alias, Some(*context_id)).await;
+            // Try to get any available identity for this context
+            let identities_result = client
+                .get_context_identities(context_id, true) // owned = true to get identities we control
+                .await;
 
-            let executor_id = match executor_result {
-                Ok(resolve_response) => match resolve_response.value().copied() {
-                    Some(id) => id,
-                    None => {
+            let executor_id = match identities_result {
+                Ok(identities_response) => {
+                    if let Some(first_identity) = identities_response.data.identities.first() {
+                        *first_identity
+                    } else {
                         environment.output.write(&ErrorLine(&format!(
-                            "✗ No default executor found for context {}. Skipping.",
+                            "✗ No identities found for context {}. Skipping.", 
                             context_id
                         )));
                         error_count += 1;
                         continue;
                     }
-                },
+                }
                 Err(err) => {
                     environment.output.write(&ErrorLine(&format!(
-                        "✗ Failed to resolve executor for context {}: {}. Skipping.",
-                        context_id, err
+                        "✗ Failed to get identities for context {}: {}. Skipping.", 
+                        context_id, 
+                        err
                     )));
                     error_count += 1;
                     continue;
@@ -252,6 +255,15 @@ async fn watch_app_and_update_contexts(
             "📊 Update complete: {} successful, {} failed",
             success_count, error_count
         )));
+
+        // If we had successful updates, update the baseline to track the new app ID
+        if success_count > 0 {
+            baseline_app_id = new_application_id;
+            environment.output.write(&InfoLine(&format!(
+                "🔄 Updated baseline tracking to application {}", 
+                baseline_app_id
+            )));
+        }
     }
 
     Ok(())
