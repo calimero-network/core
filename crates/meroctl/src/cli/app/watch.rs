@@ -212,7 +212,7 @@ async fn watch_app_and_update_contexts(
                         *first_identity
                     } else {
                         environment.output.write(&ErrorLine(&format!(
-                            "✗ No identities found for context {}. Skipping.", 
+                            "✗ No identities found for context {}. Skipping.",
                             context_id
                         )));
                         error_count += 1;
@@ -221,9 +221,8 @@ async fn watch_app_and_update_contexts(
                 }
                 Err(err) => {
                     environment.output.write(&ErrorLine(&format!(
-                        "✗ Failed to get identities for context {}: {}. Skipping.", 
-                        context_id, 
-                        err
+                        "✗ Failed to get identities for context {}: {}. Skipping.",
+                        context_id, err
                     )));
                     error_count += 1;
                     continue;
@@ -260,7 +259,7 @@ async fn watch_app_and_update_contexts(
         if success_count > 0 {
             baseline_app_id = new_application_id;
             environment.output.write(&InfoLine(&format!(
-                "🔄 Updated baseline tracking to application {}", 
+                "🔄 Updated baseline tracking to application {}",
                 baseline_app_id
             )));
         }
