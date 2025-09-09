@@ -398,45 +398,49 @@ pub struct RawCredentialsSchema {
 }
 
 pub fn generate_schema() -> ConfigSchema {
-    let mut config_schema: ConfigSchema = schema_for!(ConfigFile).into();
+    let schema = schema_for!(ConfigFile);
+    let mut config_schema: ConfigSchema =
+        serde_json::from_value(serde_json::to_value(schema).unwrap()).expect("valid config schema");
 
-    config_schema.protocols = Some(ProtocolsSchema {
-        ethereum: Some(EthereumProtocolSchema {
-            network: "sepolia".to_owned(),
-            contract_id: "".to_owned(),
-            signer: "".to_owned(),
-            rpc_url: None,
-            account_id: None,
-            secret_key: None,
-        }),
-        icp: Some(IcpProtocolSchema {
-            network: "local".to_owned(),
-            contract_id: "".to_owned(),
-            signer: "".to_owned(),
-            rpc_url: None,
-            account_id: None,
-            public_key: None,
-            secret_key: None,
-        }),
-        near: Some(NearProtocolSchema {
-            network: "testnet".to_owned(),
-            contract_id: "".to_owned(),
-            signer: "".to_owned(),
-            rpc_url: None,
-            account_id: None,
-            public_key: None,
-            secret_key: None,
-        }),
-        stellar: Some(StellarProtocolSchema {
-            network: "testnet".to_owned(),
-            contract_id: "".to_owned(),
-            signer: "".to_owned(),
-            rpc_url: None,
-            account_id: None,
-            public_key: None,
-            secret_key: None,
-        }),
-    });
+    if config_schema.protocols.is_none() {
+        config_schema.protocols = Some(ProtocolsSchema {
+            ethereum: Some(EthereumProtocolSchema {
+                network: "sepolia".to_owned(),
+                contract_id: "".to_owned(),
+                signer: "".to_owned(),
+                rpc_url: None,
+                account_id: None,
+                secret_key: None,
+            }),
+            icp: Some(IcpProtocolSchema {
+                network: "local".to_owned(),
+                contract_id: "".to_owned(),
+                signer: "".to_owned(),
+                rpc_url: None,
+                account_id: None,
+                public_key: None,
+                secret_key: None,
+            }),
+            near: Some(NearProtocolSchema {
+                network: "testnet".to_owned(),
+                contract_id: "".to_owned(),
+                signer: "".to_owned(),
+                rpc_url: None,
+                account_id: None,
+                public_key: None,
+                secret_key: None,
+            }),
+            stellar: Some(StellarProtocolSchema {
+                network: "testnet".to_owned(),
+                contract_id: "".to_owned(),
+                signer: "".to_owned(),
+                rpc_url: None,
+                account_id: None,
+                public_key: None,
+                secret_key: None,
+            }),
+        });
+    }
 
     config_schema
 }
