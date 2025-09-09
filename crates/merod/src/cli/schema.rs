@@ -123,13 +123,43 @@ impl From<schemars::Schema> for ConfigSchema {
             serde_json::from_value(serde_json::to_value(schema).unwrap())
                 .expect("valid config schema");
 
-        // Add protocol defaults if they don't exist
         if config_schema.protocols.is_none() {
             config_schema.protocols = Some(ProtocolsSchema {
-                ethereum: None,
-                icp: None,
-                near: None,
-                stellar: None,
+                ethereum: Some(EthereumProtocolSchema {
+                    network: "sepolia".to_owned(),
+                    contract_id: "".to_owned(),
+                    signer: "".to_owned(),
+                    rpc_url: None,
+                    account_id: None,
+                    secret_key: None,
+                }),
+                icp: Some(IcpProtocolSchema {
+                    network: "local".to_owned(),
+                    contract_id: "".to_owned(),
+                    signer: "".to_owned(),
+                    rpc_url: None,
+                    account_id: None,
+                    public_key: None,
+                    secret_key: None,
+                }),
+                near: Some(NearProtocolSchema {
+                    network: "testnet".to_owned(),
+                    contract_id: "".to_owned(),
+                    signer: "".to_owned(),
+                    rpc_url: None,
+                    account_id: None,
+                    public_key: None,
+                    secret_key: None,
+                }),
+                stellar: Some(StellarProtocolSchema {
+                    network: "testnet".to_owned(),
+                    contract_id: "".to_owned(),
+                    signer: "".to_owned(),
+                    rpc_url: None,
+                    account_id: None,
+                    public_key: None,
+                    secret_key: None,
+                }),
             });
         }
 
@@ -418,6 +448,7 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
 
     let mut current: &dyn std::any::Any = schema;
 
+    // Handle both old context.config.* path and new protocols.* path
     if path.len() >= 3 && path[0] == "context" && path[1] == "config" {
         if let Some(protocol) = path.get(2) {
             if let Some(protocols) = &schema.protocols {
@@ -440,6 +471,37 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
                     "stellar" => {
                         if let Some(stellar) = &protocols.stellar {
                             return get_protocol_field_hint(&path[3..], "Stellar", stellar);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Handle new protocols.* path directly
+    if path.len() >= 2 && path[0] == "protocols" {
+        if let Some(protocols) = &schema.protocols {
+            if let Some(protocol) = path.get(1) {
+                match *protocol {
+                    "ethereum" => {
+                        if let Some(ethereum) = &protocols.ethereum {
+                            return get_protocol_field_hint(&path[2..], "Ethereum", ethereum);
+                        }
+                    }
+                    "icp" => {
+                        if let Some(icp) = &protocols.icp {
+                            return get_protocol_field_hint(&path[2..], "ICP", icp);
+                        }
+                    }
+                    "near" => {
+                        if let Some(near) = &protocols.near {
+                            return get_protocol_field_hint(&path[2..], "NEAR", near);
+                        }
+                    }
+                    "stellar" => {
+                        if let Some(stellar) = &protocols.stellar {
+                            return get_protocol_field_hint(&path[2..], "Stellar", stellar);
                         }
                     }
                     _ => {}
@@ -480,6 +542,97 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
                     current = &config_schema.context;
                     continue;
                 }
+                "protocols" => {
+                    if let Some(protocols) = &config_schema.protocols {
+                        current = protocols;
+                        continue;
+                    } else {
+                        return Some("Protocol configurations (optional)".to_owned());
+                    }
+                }
+                _ => {}
+            }
+        } else if let Some(protocols_schema) = current.downcast_ref::<ProtocolsSchema>() {
+            match part.to_lowercase().as_str() {
+                "ethereum" => {
+                    if let Some(ethereum) = &protocols_schema.ethereum {
+                        current = ethereum;
+                        continue;
+                    } else {
+                        return Some("Ethereum protocol configuration (optional)".to_owned());
+                    }
+                }
+                "icp" => {
+                    if let Some(icp) = &protocols_schema.icp {
+                        current = icp;
+                        continue;
+                    } else {
+                        return Some("ICP protocol configuration (optional)".to_owned());
+                    }
+                }
+                "near" => {
+                    if let Some(near) = &protocols_schema.near {
+                        current = near;
+                        continue;
+                    } else {
+                        return Some("NEAR protocol configuration (optional)".to_owned());
+                    }
+                }
+                "stellar" => {
+                    if let Some(stellar) = &protocols_schema.stellar {
+                        current = stellar;
+                        continue;
+                    } else {
+                        return Some("Stellar protocol configuration (optional)".to_owned());
+                    }
+                }
+                _ => {}
+            }
+        } else if let Some(ethereum_schema) = current.downcast_ref::<EthereumProtocolSchema>() {
+            match part.to_lowercase().as_str() {
+                "network" => {
+                    return Some("Ethereum network name (e.g. sepolia, mainnet)".to_owned())
+                }
+                "contract_id" => return Some("Ethereum contract address".to_owned()),
+                "signer" => return Some("Signer type (relayer or local)".to_owned()),
+                "rpc_url" => return Some("Optional RPC URL for direct connection".to_owned()),
+                "account_id" => return Some("Optional account ID".to_owned()),
+                "secret_key" => return Some("Optional secret key".to_owned()),
+                _ => {}
+            }
+        } else if let Some(icp_schema) = current.downcast_ref::<IcpProtocolSchema>() {
+            match part.to_lowercase().as_str() {
+                "network" => return Some("ICP network name (e.g. local, ic)".to_owned()),
+                "contract_id" => return Some("ICP contract address".to_owned()),
+                "signer" => return Some("Signer type (relayer or local)".to_owned()),
+                "rpc_url" => return Some("Optional RPC URL for direct connection".to_owned()),
+                "account_id" => return Some("Optional account ID".to_owned()),
+                "public_key" => return Some("Optional public key".to_owned()),
+                "secret_key" => return Some("Optional secret key".to_owned()),
+                _ => {}
+            }
+        } else if let Some(near_schema) = current.downcast_ref::<NearProtocolSchema>() {
+            match part.to_lowercase().as_str() {
+                "network" => return Some("NEAR network name (e.g. testnet, mainnet)".to_owned()),
+                "contract_id" => return Some("NEAR contract address".to_owned()),
+                "signer" => return Some("Signer type (relayer or local)".to_owned()),
+                "rpc_url" => return Some("Optional RPC URL for direct connection".to_owned()),
+                "account_id" => return Some("Optional account ID".to_owned()),
+                "public_key" => return Some("Optional public key".to_owned()),
+                "secret_key" => return Some("Optional secret key".to_owned()),
+                _ => {}
+            }
+        } else if let Some(stellar_schema) = current.downcast_ref::<StellarProtocolSchema>() {
+            match part.to_lowercase().as_str() {
+                "network" => {
+                    return Some("Stellar network name (e.g. testnet, mainnet)".to_owned())
+                }
+                "contract_id" => return Some("Stellar contract address".to_owned()),
+                "signer" => return Some("Signer type (relayer or local)".to_owned()),
+                "rpc_url" => return Some("Optional RPC URL for direct connection".to_owned()),
+                "account_id" => return Some("Optional account ID".to_owned()),
+                "public_key" => return Some("Optional public key".to_owned()),
+                "secret_key" => return Some("Optional secret key".to_owned()),
                 _ => {}
             }
         } else if let Some(identity_schema) = current.downcast_ref::<IdentitySchema>() {

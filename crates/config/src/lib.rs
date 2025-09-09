@@ -37,6 +37,88 @@ pub struct ConfigFile {
     pub blobstore: BlobStoreConfig,
 
     pub context: ContextConfig,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocols: Option<ProtocolsConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct ProtocolsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ethereum: Option<EthereumProtocolConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icp: Option<IcpProtocolConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near: Option<NearProtocolConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stellar: Option<StellarProtocolConfig>,
+}
+
+// Protocol config structs
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct EthereumProtocolConfig {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct IcpProtocolConfig {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct NearProtocolConfig {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct StellarProtocolConfig {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -171,6 +253,7 @@ impl ConfigFile {
             datastore,
             blobstore,
             context,
+            protocols: None,
         }
     }
 

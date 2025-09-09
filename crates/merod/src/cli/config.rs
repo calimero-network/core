@@ -246,44 +246,56 @@ impl ConfigCommand {
         let original = doc.clone();
         let mut changes_made = false;
 
-        // First pass: check if we need to create the protocols table
         let needs_protocols = changes.iter().any(|kv| {
             let parts: Vec<&str> = kv.key.split('.').collect();
             parts.get(0) == Some(&"context") && parts.get(1) == Some(&"config")
-        }) && doc.get("protocols").is_none();
+        });
 
-        // Create protocols table if needed
-        if needs_protocols {
+        if needs_protocols && doc.get("protocols").is_none() {
             doc["protocols"] = toml_edit::table();
         }
 
-        // Second pass: process all changes
         for kv in changes {
             let key_parts: Vec<&str> = kv.key.split('.').collect();
-            let mut current = doc.as_item_mut();
 
-            // Special handling for protocol-specific configurations
+            // Handle protocol-specific configurations
             if key_parts.get(0) == Some(&"context") && key_parts.get(1) == Some(&"config") {
                 if let Some(protocol) = key_parts.get(2) {
-                    let protocol_key = format!("protocols.{}", protocol);
-                    let new_key = kv.key.replacen("context.config.", &protocol_key, 1);
+                    // Build the new key in protocols section
+                    let new_key =
+                        kv.key
+                            .replacen("context.config.", &format!("protocols.{}.", protocol), 1);
+                    let new_parts: Vec<&str> = new_key.split('.').collect();
 
-                    let mut new_parts: Vec<&str> = new_key.split('.').collect();
                     let mut protocol_current = doc.as_item_mut();
+                    let mut old_value = None;
 
-                    for key in &new_parts[..new_parts.len() - 1] {
-                        protocol_current = &mut protocol_current[key];
+                    // Navigate to the correct position in the document
+                    for (i, key) in new_parts.iter().enumerate() {
+                        if i == new_parts.len() - 1 {
+                            // Last part - this is where we set the value
+                            old_value = Some(protocol_current[*key].clone());
+                            protocol_current[*key] = Item::Value(kv.value.clone());
+                        } else {
+                            // Ensure intermediate tables exist
+                            if protocol_current[*key].is_none() {
+                                protocol_current[*key] = toml_edit::table();
+                            }
+                            protocol_current = &mut protocol_current[*key];
+                        }
                     }
 
-                    let last_key = new_parts[new_parts.len() - 1];
-                    let old_value = protocol_current[last_key].clone();
-
-                    protocol_current[last_key] = Item::Value(kv.value.clone());
                     changes_made = true;
 
                     if show_diff {
-                        self.show_diff(&old_value, &protocol_current[last_key], &new_key)
+                        if let Some(old_val) = old_value {
+                            self.show_diff(
+                                &old_val,
+                                &protocol_current[new_parts[new_parts.len() - 1]],
+                                &new_key,
+                            )
                             .await?;
+                        }
                     }
 
                     continue;
@@ -291,6 +303,7 @@ impl ConfigCommand {
             }
 
             // Original handling for non-protocol configs
+            let mut current = doc.as_item_mut();
             for key in &key_parts[..key_parts.len() - 1] {
                 current = &mut current[key];
             }
@@ -376,7 +389,10 @@ impl ConfigCommand {
                 // Provide more detailed error message for protocol config validation
                 if let Some(serde_err) = e.downcast_ref::<serde_json::Error>() {
                     if serde_err.to_string().contains("missing field `network`") {
-                        bail!("Protocol configuration is missing required 'network' field");
+                        // Check if this is a protocol configuration error
+                        if doc.to_string().contains("protocols") {
+                            bail!("Protocol configuration is missing required 'network' field. Make sure you specify context.config.<protocol>.network=<value>");
+                        }
                     }
                 }
                 Err(e)

@@ -62,16 +62,16 @@ icp = ["candid"]
 
 icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
-starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-core", "dep:starknet-core-derive", "dep:starknet-crypto", "dep:starknet-types-core"]
-
-# stellar = ["dep:soroban-sdk"]
-
-ethereum = [
-  "alloy",
-  "alloy-sol-types",
-  "ethabi"
+starknet_client = [
+  "dep:hex",
+  "dep:starknet",
+  "dep:starknet-core",
+  "dep:starknet-core-derive",
+  "dep:starknet-crypto",
+  "dep:starknet-types-core",
 ]
 
-ethereum_client = [
-  "ethereum"
-]
+
+ethereum = ["alloy", "alloy-sol-types", "ethabi"]
+
+ethereum_client = ["ethereum"]
