@@ -118,17 +118,19 @@ pub struct StellarProtocolSchema {
 
 impl From<schemars::Schema> for ConfigSchema {
     fn from(schema: schemars::Schema) -> Self {
+        // Generate schema from the actual ConfigFile struct
         let schema = schema_for!(ConfigFile);
         let mut config_schema: ConfigSchema =
             serde_json::from_value(serde_json::to_value(schema).unwrap())
                 .expect("valid config schema");
 
+        // Set proper defaults for protocols if they don't exist
         if config_schema.protocols.is_none() {
             config_schema.protocols = Some(ProtocolsSchema {
                 ethereum: Some(EthereumProtocolSchema {
                     network: "sepolia".to_owned(),
                     contract_id: "".to_owned(),
-                    signer: "".to_owned(),
+                    signer: "relayer".to_owned(),
                     rpc_url: None,
                     account_id: None,
                     secret_key: None,
@@ -136,7 +138,7 @@ impl From<schemars::Schema> for ConfigSchema {
                 icp: Some(IcpProtocolSchema {
                     network: "local".to_owned(),
                     contract_id: "".to_owned(),
-                    signer: "".to_owned(),
+                    signer: "relayer".to_owned(),
                     rpc_url: None,
                     account_id: None,
                     public_key: None,
@@ -145,7 +147,7 @@ impl From<schemars::Schema> for ConfigSchema {
                 near: Some(NearProtocolSchema {
                     network: "testnet".to_owned(),
                     contract_id: "".to_owned(),
-                    signer: "".to_owned(),
+                    signer: "relayer".to_owned(),
                     rpc_url: None,
                     account_id: None,
                     public_key: None,
@@ -154,7 +156,7 @@ impl From<schemars::Schema> for ConfigSchema {
                 stellar: Some(StellarProtocolSchema {
                     network: "testnet".to_owned(),
                     contract_id: "".to_owned(),
-                    signer: "".to_owned(),
+                    signer: "relayer".to_owned(),
                     rpc_url: None,
                     account_id: None,
                     public_key: None,
@@ -402,7 +404,7 @@ pub fn generate_schema() -> ConfigSchema {
     let mut config_schema: ConfigSchema =
         serde_json::from_value(serde_json::to_value(schema).unwrap()).expect("valid config schema");
 
-    // Ensure protocols section has proper defaults
+    // Ensure protocols section has proper defaults that match ConfigFile structure
     if config_schema.protocols.is_none() {
         config_schema.protocols = Some(ProtocolsSchema {
             ethereum: Some(EthereumProtocolSchema {

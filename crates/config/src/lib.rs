@@ -40,6 +40,30 @@ pub struct ConfigFile {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocols: Option<ProtocolsConfig>,
+
+    // Support both old and new format during migration
+    #[serde(rename = "context", default, skip_serializing_if = "Option::is_none")]
+    pub old_context: Option<OldContextConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct OldContextConfig {
+    #[serde(rename = "config", default, skip_serializing_if = "Option::is_none")]
+    pub old_protocols: Option<OldProtocolsConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct OldProtocolsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ethereum: Option<EthereumProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near: Option<NearProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icp: Option<IcpProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stellar: Option<StellarProtocolConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -266,6 +290,7 @@ impl ConfigFile {
             blobstore,
             context,
             protocols: None,
+            old_context: None,
         }
     }
 
@@ -283,12 +308,33 @@ impl ConfigFile {
             )
         })?;
 
-        toml::from_str(&content).map_err(Into::into)
+        let mut config: Self = toml::from_str(&content)?;
+
+        // Migrate old context.config.* format to new protocols.* format
+        if let Some(old_context) = config.old_context.take() {
+            if let Some(old_protocols) = old_context.old_protocols {
+                if config.protocols.is_none() {
+                    config.protocols = Some(ProtocolsConfig {
+                        ethereum: old_protocols.ethereum,
+                        near: old_protocols.near,
+                        icp: old_protocols.icp,
+                        stellar: old_protocols.stellar,
+                    });
+                }
+            }
+        }
+
+        Ok(config)
     }
 
-    pub async fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
+    pub async fn save(&mut self, dir: &Utf8Path) -> EyreResult<()> {
         let path = dir.join(CONFIG_FILE);
-        let content = toml::to_string_pretty(self)?;
+
+        // Create a copy without the old context field for serialization
+        let config_for_serialization = self;
+        config_for_serialization.old_context = None;
+
+        let content = toml::to_string_pretty(&config_for_serialization)?;
 
         write(&path, content).await.wrap_err_with(|| {
             format!(

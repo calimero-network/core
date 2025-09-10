@@ -207,7 +207,7 @@ impl ConfigCommand {
             }
         } else {
             // Print specific keys
-            let mut output = serde_json::Map::new();
+            let output = serde_json::Map::new();
 
             for key in &keys {
                 let parts: Vec<&str> = key.split('.').collect();
@@ -246,67 +246,74 @@ impl ConfigCommand {
         let original = doc.clone();
         let mut changes_made = false;
 
+        let needs_protocols = changes.iter().any(|kv| {
+            let parts: Vec<&str> = kv.key.split('.').collect();
+            parts.get(0) == Some(&"protocols")
+                || (parts.get(0) == Some(&"context") && parts.get(1) == Some(&"config"))
+        });
+
+        // Create protocols section if it doesn't exist and we need it
+        if needs_protocols && doc.get("protocols").is_none() {
+            doc["protocols"] = toml_edit::table();
+            changes_made = true;
+        }
+
         for kv in changes {
             let key_parts: Vec<&str> = kv.key.split('.').collect();
 
-            // Handle protocol migration from context.config.* to protocols.*
+            // Handle both old context.config.* and new protocols.* paths
             if key_parts.get(0) == Some(&"context") && key_parts.get(1) == Some(&"config") {
                 if let Some(protocol) = key_parts.get(2) {
-                    // Ensure protocols section exists
-                    if doc.get("protocols").is_none() {
-                        doc["protocols"] = toml_edit::table();
-                    }
+                    // Build the new key in protocols section
+                    let new_key =
+                        kv.key
+                            .replacen("context.config.", &format!("protocols.{}.", protocol), 1);
+                    let new_parts: Vec<&str> = new_key.split('.').collect();
 
-                    // Ensure protocol subsection exists
-                    if doc["protocols"].get(protocol).is_none() {
-                        doc["protocols"][protocol] = toml_edit::table();
+                    let mut protocol_current = doc.as_item_mut();
+                    let mut old_value = None;
 
-                        // Initialize required fields with empty values
-                        doc["protocols"][protocol]["network"] = toml_edit::value("");
-                        doc["protocols"][protocol]["contract_id"] = toml_edit::value("");
-                        doc["protocols"][protocol]["signer"] = toml_edit::value("");
-                    }
-
-                    // Build the new key and set the value
-                    let new_key_parts: Vec<&str> = if key_parts.len() > 3 {
-                        key_parts[3..].to_vec()
-                    } else {
-                        vec![]
-                    };
-
-                    let mut current = &mut doc["protocols"][protocol];
-                    for part in &new_key_parts[..new_key_parts.len() - 1] {
-                        if current.get(part).is_none() {
-                            current[part] = toml_edit::table();
+                    // Navigate to the correct position in the document
+                    for (i, key) in new_parts.iter().enumerate() {
+                        if i == new_parts.len() - 1 {
+                            // Last part - this is where we set the value
+                            old_value = Some(protocol_current[*key].clone());
+                            protocol_current[*key] = Item::Value(kv.value.clone());
+                        } else {
+                            // Ensure intermediate tables exist
+                            if protocol_current[*key].is_none() {
+                                protocol_current[*key] = toml_edit::table();
+                            }
+                            protocol_current = &mut protocol_current[*key];
                         }
-                        current = &mut current[part];
                     }
 
-                    let last_key = new_key_parts.last().unwrap_or(&"");
-                    let old_value = current[*last_key].clone();
-                    current[*last_key] = Item::Value(kv.value.clone());
                     changes_made = true;
 
                     if show_diff {
-                        self.show_diff(&old_value, &current[*last_key], &kv.key)
+                        if let Some(old_val) = old_value {
+                            self.show_diff(
+                                &old_val,
+                                &protocol_current[new_parts[new_parts.len() - 1]],
+                                &new_key,
+                            )
                             .await?;
+                        }
                     }
 
                     continue;
                 }
             }
 
-            // Original handling for non-protocol configs...
+            // Original handling for non-protocol configs
             let mut current = doc.as_item_mut();
             for key in &key_parts[..key_parts.len() - 1] {
-                if current[*key].is_none() {
-                    current[*key] = toml_edit::table();
-                }
-                current = &mut current[*key];
+                current = &mut current[key];
             }
 
             let last_key = key_parts[key_parts.len() - 1];
             let old_value = current[last_key].clone();
+
             current[last_key] = Item::Value(kv.value.clone());
             changes_made = true;
 
@@ -375,71 +382,42 @@ impl ConfigCommand {
         let tmp_dir = temp_dir();
         let tmp_path = tmp_dir.join(CONFIG_FILE);
 
-        // Create a modified document for validation that handles protocol migration
-        let mut validation_doc = doc.clone();
+        write(&tmp_path, doc.to_string()).await?;
 
-        // Ensure protocols section exists
-        if validation_doc.get("protocols").is_none() {
-            validation_doc["protocols"] = toml_edit::table();
-        }
-
-        // Collect protocol names first to avoid borrowing issues
-        let protocol_names: Vec<String> =
-            if let Some(protocols) = validation_doc.get("protocols").and_then(|p| p.as_table()) {
-                protocols.iter().map(|(name, _)| name.to_owned()).collect()
-            } else {
-                Vec::new()
-            };
-
-        // Process each protocol separately to avoid borrowing conflicts
-        for protocol_name in protocol_names {
-            if let Some(protocol_config) = validation_doc["protocols"].get(&protocol_name) {
-                if let Some(protocol_table) = protocol_config.as_table() {
-                    let mut updated_protocol = toml_edit::Table::new();
-
-                    // Copy existing fields
-                    for (key, value) in protocol_table.iter() {
-                        updated_protocol[key] = value.clone();
-                    }
-
-                    // Ensure required fields exist with empty defaults if missing
-                    if !updated_protocol.contains_key("network") {
-                        updated_protocol["network"] = toml_edit::value("");
-                    }
-                    if !updated_protocol.contains_key("contract_id") {
-                        updated_protocol["contract_id"] = toml_edit::value("");
-                    }
-                    if !updated_protocol.contains_key("signer") {
-                        updated_protocol["signer"] = toml_edit::value("");
-                    }
-
-                    // Update the protocol table
-                    validation_doc["protocols"][&protocol_name] = Item::Table(updated_protocol);
-                }
-            }
-        }
-
-        write(&tmp_path, validation_doc.to_string()).await?;
         let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
 
         match ConfigFile::load(&tmp_path_utf8).await {
-            Ok(_) => Ok(()),
+            Ok(config) => {
+                // Additional validation for required protocol fields
+                if let Some(protocols) = &config.protocols {
+                    Self::validate_protocol_config(&protocols)?;
+                }
+                Ok(())
+            }
             Err(e) => {
                 // Provide more detailed error message for protocol config validation
-                let doc_str = validation_doc.to_string();
+                let doc_str = doc.to_string();
 
                 // Check for protocol configuration errors
-                if doc_str.contains("[protocols]") {
+                if doc_str.contains("[protocols]") || doc_str.contains("context.config") {
                     if let Some(serde_err) = e.downcast_ref::<serde_json::Error>() {
                         if serde_err.to_string().contains("missing field `network`") {
                             // Try to identify which protocol is missing the network field
-                            let missing_protocol = if doc_str.contains("[protocols.ethereum]") {
+                            let missing_protocol = if doc_str.contains("protocols.ethereum")
+                                || doc_str.contains("context.config.ethereum")
+                            {
                                 "ethereum"
-                            } else if doc_str.contains("[protocols.near]") {
+                            } else if doc_str.contains("protocols.near")
+                                || doc_str.contains("context.config.near")
+                            {
                                 "near"
-                            } else if doc_str.contains("[protocols.icp]") {
+                            } else if doc_str.contains("protocols.icp")
+                                || doc_str.contains("context.config.icp")
+                            {
                                 "icp"
-                            } else if doc_str.contains("[protocols.stellar]") {
+                            } else if doc_str.contains("protocols.stellar")
+                                || doc_str.contains("context.config.stellar")
+                            {
                                 "stellar"
                             } else {
                                 "unknown"
@@ -452,13 +430,21 @@ impl ConfigCommand {
                             .to_string()
                             .contains("missing field `contract_id`")
                         {
-                            let missing_protocol = if doc_str.contains("[protocols.ethereum]") {
+                            let missing_protocol = if doc_str.contains("protocols.ethereum")
+                                || doc_str.contains("context.config.ethereum")
+                            {
                                 "ethereum"
-                            } else if doc_str.contains("[protocols.near]") {
+                            } else if doc_str.contains("protocols.near")
+                                || doc_str.contains("context.config.near")
+                            {
                                 "near"
-                            } else if doc_str.contains("[protocols.icp]") {
+                            } else if doc_str.contains("protocols.icp")
+                                || doc_str.contains("context.config.icp")
+                            {
                                 "icp"
-                            } else if doc_str.contains("[protocols.stellar]") {
+                            } else if doc_str.contains("protocols.stellar")
+                                || doc_str.contains("context.config.stellar")
+                            {
                                 "stellar"
                             } else {
                                 "unknown"
@@ -468,13 +454,21 @@ impl ConfigCommand {
                         }
 
                         if serde_err.to_string().contains("missing field `signer`") {
-                            let missing_protocol = if doc_str.contains("[protocols.ethereum]") {
+                            let missing_protocol = if doc_str.contains("protocols.ethereum")
+                                || doc_str.contains("context.config.ethereum")
+                            {
                                 "ethereum"
-                            } else if doc_str.contains("[protocols.near]") {
+                            } else if doc_str.contains("protocols.near")
+                                || doc_str.contains("context.config.near")
+                            {
                                 "near"
-                            } else if doc_str.contains("[protocols.icp]") {
+                            } else if doc_str.contains("protocols.icp")
+                                || doc_str.contains("context.config.icp")
+                            {
                                 "icp"
-                            } else if doc_str.contains("[protocols.stellar]") {
+                            } else if doc_str.contains("protocols.stellar")
+                                || doc_str.contains("context.config.stellar")
+                            {
                                 "stellar"
                             } else {
                                 "unknown"
@@ -487,6 +481,62 @@ impl ConfigCommand {
                 Err(e)
             }
         }
+    }
+
+    fn validate_protocol_config(protocols: &calimero_config::ProtocolsConfig) -> EyreResult<()> {
+        if let Some(ethereum) = &protocols.ethereum {
+            if Self::is_empty_or_none(&ethereum.network) {
+                bail!("Ethereum protocol requires 'network' field");
+            }
+            if Self::is_empty_or_none(&ethereum.contract_id) {
+                bail!("Ethereum protocol requires 'contract_id' field");
+            }
+            if Self::is_empty_or_none(&ethereum.signer) {
+                bail!("Ethereum protocol requires 'signer' field");
+            }
+        }
+    
+        if let Some(near) = &protocols.near {
+            if Self::is_empty_or_none(&near.network) {
+                bail!("NEAR protocol requires 'network' field");
+            }
+            if Self::is_empty_or_none(&near.contract_id) {
+                bail!("NEAR protocol requires 'contract_id' field");
+            }
+            if Self::is_empty_or_none(&near.signer) {
+                bail!("NEAR protocol requires 'signer' field");
+            }
+        }
+    
+        if let Some(icp) = &protocols.icp {
+            if Self::is_empty_or_none(&icp.network) {
+                bail!("ICP protocol requires 'network' field");
+            }
+            if Self::is_empty_or_none(&icp.contract_id) {
+                bail!("ICP protocol requires 'contract_id' field");
+            }
+            if Self::is_empty_or_none(&icp.signer) {
+                bail!("ICP protocol requires 'signer' field");
+            }
+        }
+    
+        if let Some(stellar) = &protocols.stellar {
+            if Self::is_empty_or_none(&stellar.network) {
+                bail!("Stellar protocol requires 'network' field");
+            }
+            if Self::is_empty_or_none(&stellar.contract_id) {
+                bail!("Stellar protocol requires 'contract_id' field");
+            }
+            if Self::is_empty_or_none(&stellar.signer) {
+                bail!("Stellar protocol requires 'signer' field");
+            }
+        }
+    
+        Ok(())
+    }
+
+    fn is_empty_or_none(opt: &Option<String>) -> bool {
+        opt.as_ref().map(|s| s.is_empty()).unwrap_or(true)
     }
 
     async fn print_human(
