@@ -13,6 +13,7 @@ use std::vec;
 use borsh::from_slice as from_borsh_slice;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
 use calimero_sys as sys;
 use futures_util::{StreamExt, TryStreamExt};
 use ouroboros::self_referencing;
@@ -251,29 +252,28 @@ pub struct VMHostFunctions<'a> {
 }
 
 impl VMHostFunctions<'_> {
-    fn read_slice(&mut self, slice: &sys::Buffer<'_>) -> &mut [u8] {
+    #[allow(
+        clippy::mut_from_ref,
+        reason = "We need to be able to modify self while referencing self"
+    )]
+    fn read_slice(&self, slice: &sys::Buffer<'_>) -> &mut [u8] {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
 
         unsafe { &mut self.borrow_memory().data_unchecked_mut()[ptr..ptr + len] }
     }
 
-    fn read_guest_memory_sized<const N: usize>(
-        &self,
-        ptr: u64,
-        len: u64,
-    ) -> VMLogicResult<[u8; N]> {
-        let len = usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+    fn read_str(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&mut str> {
+        let buf = self.read_slice(slice);
 
-        if len != N {
-            return Err(HostError::InvalidMemoryAccess.into());
-        }
+        std::str::from_utf8_mut(buf).map_err(|_| HostError::BadUTF8.into())
+    }
 
-        let mut buf = [0; N];
+    fn read_sized<const N: usize>(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&mut [u8; N]> {
+        let buf = self.read_slice(slice);
 
-        self.borrow_memory().read(ptr, &mut buf)?;
-
-        Ok(buf)
+        buf.try_into()
+            .map_err(|_| HostError::InvalidMemoryAccess.into())
     }
 
     /// Reads a sized type from guest memory.
@@ -292,8 +292,7 @@ impl VMHostFunctions<'_> {
     pub fn panic(&mut self, location_ptr: u64) -> VMLogicResult<()> {
         let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
 
-        let file = String::from_utf8(self.read_slice(&location.file()).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
+        let file = self.read_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
@@ -309,10 +308,8 @@ impl VMHostFunctions<'_> {
         let message_buf = unsafe { self.read_typed::<sys::Buffer<'_>>(msg_ptr)? };
         let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
 
-        let message = String::from_utf8(self.read_slice(&message_buf).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
-        let file = String::from_utf8(self.read_slice(&location.file()).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
+        let message = self.read_str(&message_buf)?.to_owned();
+        let file = self.read_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
@@ -336,11 +333,13 @@ impl VMHostFunctions<'_> {
         let register = unsafe { self.read_typed::<sys::BufferMut<'_>>(register_ptr)? };
 
         let data = self.borrow_logic().registers.get(register_id)?;
+
         if data.len() != usize::try_from(register.len()).map_err(|_| HostError::IntegerOverflow)? {
             return Ok(0);
         }
-        self.borrow_memory()
-            .write(register.ptr().value().as_usize() as u64, data)?;
+
+        self.read_slice(&register).copy_from_slice(data);
+
         Ok(1)
     }
 
@@ -386,9 +385,6 @@ impl VMHostFunctions<'_> {
     pub fn log_utf8(&mut self, log_ptr: u64) -> VMLogicResult<()> {
         let buf = unsafe { self.read_typed::<sys::Buffer<'_>>(log_ptr)? };
 
-        let message =
-            String::from_utf8(self.read_slice(&buf).to_vec()).map_err(|_| HostError::BadUTF8)?;
-
         let logic = self.borrow_logic();
 
         if logic.logs.len()
@@ -396,6 +392,8 @@ impl VMHostFunctions<'_> {
         {
             return Err(HostError::LogsOverflow.into());
         }
+
+        let message = self.read_str(&buf)?.to_owned();
 
         self.with_logic_mut(|logic| logic.logs.push(message));
 
@@ -424,8 +422,7 @@ impl VMHostFunctions<'_> {
             return Err(HostError::EventsOverflow.into());
         }
 
-        let kind = String::from_utf8(self.read_slice(event.kind()).to_vec())
-            .map_err(|_| HostError::BadUTF8)?;
+        let kind = self.read_str(event.kind())?.to_owned();
         let data = self.read_slice(event.data()).to_vec();
 
         self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
@@ -437,10 +434,7 @@ impl VMHostFunctions<'_> {
         let root_hash = unsafe { self.read_typed::<sys::Buffer<'_>>(root_hash_ptr)? };
         let artifact = unsafe { self.read_typed::<sys::Buffer<'_>>(artifact_ptr)? };
 
-        let root_hash = self
-            .read_slice(&root_hash)
-            .try_into()
-            .map_err(|_| HostError::InvalidMemoryAccess)?;
+        let root_hash = *self.read_sized::<32>(&root_hash)?;
         let artifact = self.read_slice(&artifact).to_vec();
 
         self.with_logic_mut(|logic| {
@@ -459,18 +453,13 @@ impl VMHostFunctions<'_> {
 
     pub fn storage_read(&mut self, key_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
         let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
-        let key_len = key.len();
-
-        let key = self
-            .read_slice(&key)
-            .try_into()
-            .map_err(|_| HostError::InvalidMemoryAccess)?;
 
         let logic = self.borrow_logic();
 
-        if key_len > logic.limits.max_storage_key_size.get() {
+        if key.len() > logic.limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
         }
+        let key = self.read_slice(&key).to_vec();
 
         if let Some(value) = logic.storage.get(&key) {
             self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
@@ -483,22 +472,18 @@ impl VMHostFunctions<'_> {
 
     pub fn storage_remove(&mut self, key_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
         let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
-        let key_len = key.len();
-
-        let key = self
-            .read_slice(&key)
-            .try_into()
-            .map_err(|_| HostError::InvalidMemoryAccess)?;
 
         let logic = self.borrow_logic();
 
-        if key_len > logic.limits.max_storage_key_size.get() {
+        if key.len() > logic.limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
         }
 
+        let key = self.read_slice(&key).to_vec();
+
         if let Some(value) = logic.storage.get(&key) {
             self.with_logic_mut(|logic| {
-                drop(logic.storage.remove(&key));
+                let _ignored = logic.storage.remove(&key);
                 logic.registers.set(logic.limits, register_id, value)
             })?;
 
@@ -515,29 +500,21 @@ impl VMHostFunctions<'_> {
         register_id: u64,
     ) -> VMLogicResult<u32> {
         let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
-        let key_len = key.len();
 
         let value = unsafe { self.read_typed::<sys::Buffer<'_>>(value_ptr)? };
-        let value_len = value.len();
 
         let logic = self.borrow_logic();
 
-        if key_len > logic.limits.max_storage_key_size.get() {
+        if key.len() > logic.limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
         }
 
-        if value_len > logic.limits.max_storage_value_size.get() {
+        if value.len() > logic.limits.max_storage_value_size.get() {
             return Err(HostError::ValueLengthOverflow.into());
         }
 
-        let key = self
-            .read_slice(&key)
-            .try_into()
-            .map_err(|_| HostError::InvalidMemoryAccess)?;
-        let value = self
-            .read_slice(&value)
-            .try_into()
-            .map_err(|_| HostError::InvalidMemoryAccess)?;
+        let key = self.read_slice(&key).to_vec();
+        let value = self.read_slice(&value).to_vec();
 
         let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 
@@ -564,20 +541,18 @@ impl VMHostFunctions<'_> {
         let headers = unsafe { self.read_typed::<sys::Buffer<'_>>(headers_ptr)? };
         let body = unsafe { self.read_typed::<sys::Buffer<'_>>(body_ptr)? };
 
-        let url =
-            String::from_utf8(self.read_slice(&url).to_vec()).map_err(|_| HostError::BadUTF8)?;
-        let method =
-            String::from_utf8(self.read_slice(&method).to_vec()).map_err(|_| HostError::BadUTF8)?;
+        let url = self.read_str(&url)?;
+        let method = self.read_str(&method)?;
 
-        let headers = self.read_slice(&headers).to_vec();
+        let headers = self.read_slice(&headers);
+        let body = self.read_slice(&body);
 
         // Note: The `fetch` function cannot be directly called by applications.
         // Therefore, the headers are generated exclusively by our code, ensuring
         // that it is safe to deserialize them.
         let headers: Vec<(String, String)> =
-            from_borsh_slice(&headers).map_err(|_| HostError::DeserializationError)?;
+            from_borsh_slice(headers).map_err(|_| HostError::DeserializationError)?;
 
-        let body = self.read_slice(&body).to_vec();
         let mut request = ureq::request(&method, &url);
 
         for (key, value) in &headers {
@@ -587,7 +562,7 @@ impl VMHostFunctions<'_> {
         let response = if body.is_empty() {
             request.call()
         } else {
-            request.send_bytes(&body)
+            request.send_bytes(body)
         };
 
         let (status, data) = match response {
@@ -606,11 +581,9 @@ impl VMHostFunctions<'_> {
     }
 
     pub fn random_bytes(&mut self, ptr: u64) -> VMLogicResult<()> {
-        let byte_slice = unsafe { self.read_typed::<sys::BufferMut<'_>>(ptr)? };
-        let mut buf = self.read_slice(&byte_slice).to_vec();
+        let buf = unsafe { self.read_typed::<sys::BufferMut<'_>>(ptr)? };
 
-        rand::thread_rng().fill_bytes(&mut buf);
-        self.borrow_memory().write(ptr, &buf)?;
+        rand::thread_rng().fill_bytes(self.read_slice(&buf));
 
         Ok(())
     }
@@ -637,13 +610,14 @@ impl VMHostFunctions<'_> {
             return Err(HostError::InvalidMemoryAccess.into());
         }
 
+        let time = self.read_sized::<8>(&time)?;
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
             .as_nanos() as u64;
 
-        self.borrow_memory()
-            .write(time.ptr().value().as_usize() as u64, &now.to_le_bytes())?;
+        *time = now.to_le_bytes();
 
         Ok(())
     }
@@ -665,35 +639,26 @@ impl VMHostFunctions<'_> {
     /// * `id_len`      - Length of the action data. This should be 32 bytes.
     ///
     pub fn send_proposal(&mut self, actions_ptr: u64, id_ptr: u64) -> VMLogicResult<()> {
-        let actions = unsafe { self.read_typed::<sys::Buffer<'_>>(actions_ptr)? };
         let id = unsafe { self.read_typed::<sys::BufferMut<'_>>(id_ptr)? };
+        let actions = unsafe { self.read_typed::<sys::Buffer<'_>>(actions_ptr)? };
 
-        if id.len() != 32 {
-            return Err(HostError::InvalidMemoryAccess.into());
-        }
+        let id = self.read_sized::<32>(&id)?;
 
-        let actions_bytes = self.read_slice(&actions).to_vec();
-        let mut proposal_id = [0; 32];
+        rand::thread_rng().fill_bytes(id);
 
-        rand::thread_rng().fill_bytes(&mut proposal_id);
-        drop(self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions_bytes)));
+        let id = *id;
 
-        self.borrow_memory()
-            .write(id.ptr().value().as_usize() as u64, &proposal_id)?;
+        let actions = self.read_slice(&actions).to_vec();
 
+        let _ignored = self.with_logic_mut(|logic| logic.proposals.insert(id, actions));
         Ok(())
     }
 
     pub fn approve_proposal(&mut self, approval_ptr: u64) -> VMLogicResult<()> {
         let approval = unsafe { self.read_typed::<sys::Buffer<'_>>(approval_ptr)? };
-        let approval_len = approval.len();
+        let approval = *self.read_sized::<32>(&approval)?;
 
-        if approval_len != 32 {
-            return Err(HostError::InvalidMemoryAccess.into());
-        }
-        let approval = self.read_guest_memory_sized::<32>(approval_ptr, approval_len)?;
-        let _ = self.with_logic_mut(|logic| logic.approvals.push(approval));
-
+        let _ignored = self.with_logic_mut(|logic| logic.approvals.push(approval));
         Ok(())
     }
 
@@ -801,7 +766,6 @@ impl VMHostFunctions<'_> {
     /// Returns: 1 on success
     pub fn blob_close(&mut self, fd: u64, blob_id_ptr: u64) -> VMLogicResult<u32> {
         let blob_id = unsafe { self.read_typed::<sys::BufferMut<'_>>(blob_id_ptr)? };
-        let blob_id_ptr = blob_id.ptr().value().as_usize() as u64;
 
         if self.borrow_logic().node_client.is_none() {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
@@ -818,22 +782,20 @@ impl VMHostFunctions<'_> {
                 .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))
         })?;
 
+        let blob_id = self.read_sized::<32>(&blob_id)?;
+
         match handle {
             BlobHandle::Write(write_handle) => {
-                drop(write_handle.sender);
+                let _ignored = write_handle.sender;
 
-                let (blob_id, _size) = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(write_handle.completion_handle)
-                })
-                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
-                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+                let (blob_id_, _size) = tokio::runtime::Handle::current()
+                    .block_on(write_handle.completion_handle)
+                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
+                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
-                self.borrow_memory().write(blob_id_ptr, blob_id.as_ref())?;
+                *blob_id = *blob_id_;
             }
-            BlobHandle::Read(read_handle) => {
-                self.borrow_memory()
-                    .write(blob_id_ptr, read_handle.blob_id.as_ref())?;
-            }
+            BlobHandle::Read(read_handle) => *blob_id = *read_handle.blob_id,
         }
 
         Ok(1)
@@ -854,35 +816,14 @@ impl VMHostFunctions<'_> {
         let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(blob_id_ptr)? };
         let context_id = unsafe { self.read_typed::<sys::Buffer<'_>>(context_id_ptr)? };
 
-        let blob_id_len = blob_id.ptr().value().as_usize() as u64;
-        let context_id_len = context_id.ptr().value().as_usize() as u64;
-
-        // Validate input lengths
-        if blob_id_len != 32 || context_id_len != 32 {
-            return Err(HostError::InvalidMemoryAccess.into());
-        }
-
-        // Read blob_id and context_id from memory
-        let blob_id_bytes = self.read_guest_memory_sized::<32>(blob_id_ptr, blob_id_len)?;
-        let context_id_bytes =
-            self.read_guest_memory_sized::<32>(context_id_ptr, context_id_len)?;
-
-        let blob_id = BlobId::from(blob_id_bytes);
-        let context_id = calimero_primitives::context::ContextId::from(context_id_bytes);
+        let blob_id = BlobId::from(*self.read_sized::<32>(&blob_id)?);
+        let context_id = ContextId::from(*self.read_sized::<32>(&context_id)?);
 
         // Get blob metadata to get size
-        let blob_info = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                node_client
-                    .get_blob_info(blob_id)
-                    .await
-                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
-            })
-        })?;
-
-        let blob_info =
-            blob_info.ok_or_else(|| VMLogicError::HostError(HostError::BlobsNotSupported))?;
-
+        let blob_info = tokio::runtime::Handle::current()
+            .block_on(node_client.get_blob_info(blob_id))
+            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
+            .ok_or_else(|| VMLogicError::HostError(HostError::BlobsNotSupported))?;
         // Announce blob to network
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -897,10 +838,9 @@ impl VMHostFunctions<'_> {
     }
 
     /// Open a blob for reading
-    /// Returns: file descriptor (u64) for reading operations  
+    /// Returns: file descriptor (u64) for reading operations
     pub fn blob_open(&mut self, blob_id_ptr: u64) -> VMLogicResult<u64> {
         let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(blob_id_ptr)? };
-        let blob_id_len = blob_id.len();
 
         if self.borrow_logic().node_client.is_none() {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
@@ -914,13 +854,7 @@ impl VMHostFunctions<'_> {
             }));
         }
 
-        if blob_id_len != 32 {
-            return Err(HostError::InvalidMemoryAccess.into());
-        }
-
-        let blob_id_bytes = self
-            .read_guest_memory_sized::<32>(blob_id.ptr().value().as_usize() as u64, blob_id_len)?;
-        let blob_id = BlobId::from(blob_id_bytes);
+        let blob_id = BlobId::from(*self.read_sized::<32>(&blob_id)?);
 
         let fd = self.with_logic_mut(|logic| {
             let fd = logic.next_blob_fd;
@@ -932,7 +866,7 @@ impl VMHostFunctions<'_> {
                 current_chunk_cursor: None,
                 position: 0,
             });
-            drop(logic.blob_handles.insert(fd, handle));
+            let _ignored = logic.blob_handles.insert(fd, handle);
             fd
         });
 
@@ -940,7 +874,7 @@ impl VMHostFunctions<'_> {
     }
 
     /// Read a chunk of data from a blob
-    /// Returns: number of bytes read (u64)  
+    /// Returns: number of bytes read (u64)
     pub fn blob_read(&mut self, fd: u64, data_ptr: u64) -> VMLogicResult<u64> {
         let data = unsafe { self.read_typed::<sys::BufferMut<'_>>(data_ptr)? };
         let data_len = data.len();
@@ -1008,14 +942,9 @@ impl VMHostFunctions<'_> {
             }
 
             if read_handle.stream.is_none() {
-                let blob_stream = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        node_client
-                            .get_blob(&read_handle.blob_id, None)
-                            .await
-                            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
-                    })
-                })?;
+                let blob_stream = tokio::runtime::Handle::current()
+                    .block_on(node_client.get_blob(&read_handle.blob_id, None))
+                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
                 match blob_stream {
                     Some(stream) => {
@@ -1036,36 +965,34 @@ impl VMHostFunctions<'_> {
             }
 
             if let Some(stream) = &mut read_handle.stream {
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        while output_buffer.len() < needed {
-                            match stream.next().await {
-                                Some(Ok(chunk)) => {
-                                    let chunk_bytes = chunk.as_ref();
-                                    let remaining_needed = needed - output_buffer.len();
+                tokio::runtime::Handle::current().block_on(async {
+                    while output_buffer.len() < needed {
+                        match stream.next().await {
+                            Some(Ok(chunk)) => {
+                                let chunk_bytes = chunk.as_ref();
+                                let remaining_needed = needed - output_buffer.len();
 
-                                    if chunk_bytes.len() <= remaining_needed {
-                                        output_buffer.extend_from_slice(chunk_bytes);
-                                    } else {
-                                        // Use part of chunk, save rest in cursor for next time
-                                        output_buffer
-                                            .extend_from_slice(&chunk_bytes[..remaining_needed]);
+                                if chunk_bytes.len() <= remaining_needed {
+                                    output_buffer.extend_from_slice(chunk_bytes);
+                                } else {
+                                    // Use part of chunk, save rest in cursor for next time
+                                    output_buffer
+                                        .extend_from_slice(&chunk_bytes[..remaining_needed]);
 
-                                        // Create cursor with remaining data
-                                        let remaining_data =
-                                            chunk_bytes[remaining_needed..].to_vec();
-                                        read_handle.current_chunk_cursor =
-                                            Some(Cursor::new(remaining_data));
-                                        break;
-                                    }
-                                }
-                                Some(Err(_)) | None => {
+                                    // Create cursor with remaining data
+                                    let remaining_data = chunk_bytes[remaining_needed..].to_vec();
+                                    read_handle.current_chunk_cursor =
+                                        Some(Cursor::new(remaining_data));
+
                                     break;
                                 }
                             }
+                            Some(Err(_)) | None => {
+                                break;
+                            }
                         }
-                        Ok::<(), VMLogicError>(())
-                    })
+                    }
+                    Ok::<(), VMLogicError>(())
                 })?;
             }
 
@@ -1074,8 +1001,7 @@ impl VMHostFunctions<'_> {
         })?;
 
         if bytes_read > 0 {
-            self.borrow_memory()
-                .write(data.ptr().value().as_usize() as u64, &output_buffer)?;
+            self.read_slice(&data).copy_from_slice(&output_buffer);
         }
 
         Ok(bytes_read)

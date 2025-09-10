@@ -63,4 +63,13 @@ wallet_url = "https://wallet.testnet.near.org"
 # Username/password configuration
 [user_password]
 min_password_length = 8
-max_password_length = 128 
+max_password_length = 128
+
+# Development/testing configuration
+[development]
+# Enable mock token endpoint for CI/testing (SECURITY: disabled by default)
+enable_mock_auth = true
+# Require authorization header for mock endpoint
+mock_auth_require_header = true
+# Authorization header value required for mock endpoint (set to enable)
+mock_auth_header_value = "Bearer test-auth-token" 

@@ -34,11 +34,6 @@ candid.workspace = true
 # Add Ethereum dependencies from workspace
 alloy.workspace = true
 
-# Add Stellar dependencies from workspace
-soroban-client.workspace = true
-soroban-sdk.workspace = true
-base64.workspace = true
-
 [package.metadata.workspaces]
 independent = true
 

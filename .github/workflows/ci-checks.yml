@@ -20,7 +20,7 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,9 +40,9 @@ jobs:
 
       - name: Cargo format
         run: |
-          rustup toolchain install nightly --component rustfmt
+          rustup component add rustfmt
 
-          cargo +nightly fmt -- --check
+          cargo fmt --check
 
       - name: Cargo clippy
         if: ${{ !cancelled() }}

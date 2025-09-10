@@ -1,37 +1,14 @@
 use std::fmt::Debug;
 
-use alloy::primitives::{keccak256, B256};
-use alloy::signers::local::PrivateKeySigner;
-use alloy::signers::{Signature, SignerSync};
-use alloy_sol_types::SolValue;
-use ed25519_dalek::{Signer, SigningKey};
-use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{BytesN, Env};
-use starknet::core::codec::Encode as StarknetEncode;
-use starknet::signers::SigningKey as StarknetSigningKey;
-use starknet_crypto::{poseidon_hash_many, Felt};
-
-pub mod methods;
-
-use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
-use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
-use crate::client::env::config::types::ethereum::ToSol;
-use crate::client::env::{utils, Method};
-use crate::client::protocol::ethereum::Ethereum;
-use crate::client::protocol::icp::Icp;
-use crate::client::protocol::near::Near;
-use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::stellar::Stellar;
+use super::requests::{
+    AddContextRequest, AddMembersRequest, GrantCapabilitiesRequest, RemoveMembersRequest,
+    RevokeCapabilitiesRequest, UpdateApplicationRequest, UpdateProxyContractRequest,
+};
+use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::icp::types::{ICRequest, ICSigned};
-use crate::repr::{Repr, ReprTransmute};
-use crate::stellar::stellar_types::{
-    FromWithEnv, StellarRequest, StellarRequestKind, StellarSignedRequest,
-    StellarSignedRequestPayload,
-};
-use crate::types::Signed;
-use crate::{ContextIdentity, Request, RequestKind};
+use crate::types::{Application, Capability, ContextId, ContextIdentity};
+use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
@@ -51,224 +28,131 @@ struct Mutate<'a> {
     pub(crate) kind: RequestKind<'a>,
 }
 
-impl<'a> Method<Near> for Mutate<'a> {
-    const METHOD: &'static str = "mutate";
+// Protocol-specific implementations
+// These modules contain the actual Method trait implementations for each blockchain protocol
+#[cfg(feature = "ethereum_client")]
+mod ethereum;
+#[cfg(feature = "icp_client")]
+mod icp;
+#[cfg(feature = "near_client")]
+mod near;
+#[cfg(feature = "starknet_client")]
+mod starknet;
 
-    type Returns = ();
-
-    fn encode(self) -> eyre::Result<Vec<u8>> {
-        let signer_sk = SigningKey::from_bytes(&self.signing_key);
-
-        let request = Request::new(signer_sk.verifying_key().rt()?, self.kind, self.nonce);
-
-        let signed = Signed::new(&request, |b| signer_sk.sign(b))?;
-
-        let encoded = serde_json::to_vec(&signed)?;
-
-        Ok(encoded)
-    }
-
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if !response.is_empty() {
-            eyre::bail!("unexpected response {:?}", response);
-        }
-
-        Ok(())
-    }
-}
-
-impl<'a> Method<Starknet> for Mutate<'a> {
-    type Returns = ();
-    const METHOD: &'static str = "mutate";
-
-    fn encode(self) -> eyre::Result<Vec<u8>> {
-        // Derive ecdsa key from private key
-        let secret_scalar = Felt::from_bytes_be(&self.signing_key);
-        let signing_key = StarknetSigningKey::from_secret_scalar(secret_scalar);
-        let verifying_key = signing_key.verifying_key().scalar();
-        let verifying_key_bytes = verifying_key.to_bytes_be();
-
-        // Derive ed25519 key from private key
-        let user_key = SigningKey::from_bytes(&self.signing_key).verifying_key();
-        let user_key_bytes = user_key.to_bytes();
-
-        // Create Repr wrapped ContextIdentity instances
-        let signer_id = verifying_key_bytes
-            .rt::<ContextIdentity>()
-            .map_err(|e| eyre::eyre!("Failed to convert verifying key: {}", e))?;
-        let signer_id = Repr::new(signer_id);
-
-        let user_id = user_key_bytes
-            .rt::<ContextIdentity>()
-            .map_err(|e| eyre::eyre!("Failed to convert user key: {}", e))?;
-        let user_id = Repr::new(user_id);
-
-        // Create the Request structure using into() conversions
-        let request = StarknetRequest {
-            signer_id: signer_id.into(),
-            user_id: user_id.into(),
-            nonce: self.nonce,
-            kind: self.kind.into(),
-        };
-
-        // Serialize the request
-        let mut serialized_request = vec![];
-        request.encode(&mut serialized_request)?;
-
-        // Hash the serialized request
-        let hash = poseidon_hash_many(&serialized_request);
-
-        // Sign the hash with the signing key
-        let signature = signing_key.sign(&hash)?;
-
-        let signed_request = StarknetSigned {
-            payload: serialized_request,
-            signature_r: signature.r,
-            signature_s: signature.s,
-        };
-
-        let mut signed_request_serialized = vec![];
-        signed_request.encode(&mut signed_request_serialized)?;
-
-        let bytes: Vec<u8> = signed_request_serialized
-            .iter()
-            .flat_map(|felt| felt.to_bytes_be())
-            .collect();
-
-        Ok(bytes)
-    }
-
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        Ok(())
-    }
-}
-
-impl<'a> Method<Icp> for Mutate<'a> {
-    type Returns = ();
-
-    const METHOD: &'static str = "mutate";
-
-    fn encode(self) -> eyre::Result<Vec<u8>> {
-        let signer_sk = SigningKey::from_bytes(&self.signing_key);
-
-        let request = ICRequest::new(
-            signer_sk.verifying_key().rt()?,
-            self.kind.into(),
-            self.nonce,
-        );
-
-        let signed = ICSigned::new(request, |b| signer_sk.sign(b))?;
-
-        let encoded = candid::encode_one(&signed)?;
-
-        Ok(encoded)
-    }
-
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        match candid::decode_one::<Result<(), String>>(&response) {
-            Ok(decoded) => match decoded {
-                Ok(()) => Ok(()),
-                Err(err_msg) => eyre::bail!("unexpected response {:?}", err_msg),
-            },
-            Err(e) => {
-                eyre::bail!("unexpected response {:?}", e)
-            }
+impl<'a, T> ContextConfigMutate<'a, T> {
+    pub fn add_context(
+        self,
+        context_id: ContextId,
+        author_id: ContextIdentity,
+        application: Application<'a>,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let add_request = AddContextRequest::new(context_id, author_id, application);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: add_request.context_id,
+                kind: ContextRequestKind::Add {
+                    author_id: add_request.author_id,
+                    application: add_request.application,
+                },
+            }),
         }
     }
-}
 
-impl<'a> Method<Stellar> for Mutate<'a> {
-    type Returns = ();
-    const METHOD: &'static str = "mutate";
-
-    fn encode(self) -> eyre::Result<Vec<u8>> {
-        let env = Env::default();
-        let signer_sk = SigningKey::from_bytes(&self.signing_key);
-
-        let signer_id: [u8; 32] = signer_sk.verifying_key().rt()?;
-        let signer_id = BytesN::from_array(&env, &signer_id);
-
-        let request = StellarRequest::new(
-            signer_id,
-            StellarRequestKind::from_with_env(self.kind, &env),
-            self.nonce,
-        );
-
-        let signed_request_payload = StellarSignedRequestPayload::Context(request);
-
-        let signed_request =
-            StellarSignedRequest::new(&env, signed_request_payload, |b| Ok(signer_sk.sign(b)))
-                .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
-
-        let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
-
-        Ok(bytes)
+    pub fn update_application(
+        self,
+        context_id: ContextId,
+        application: Application<'a>,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let update_request = UpdateApplicationRequest::new(context_id, application);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: update_request.context_id,
+                kind: ContextRequestKind::UpdateApplication {
+                    application: update_request.application,
+                },
+            }),
+        }
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        Ok(())
-    }
-}
-
-impl<'a> Method<Ethereum> for Mutate<'a> {
-    type Returns = ();
-    // The method needs to be encoded as a tuple with arguments that it expects
-    const METHOD: &'static str =
-        "mutate(((bytes32,bytes32,uint64,uint8,bytes),bytes32,bytes32,uint8))";
-
-    fn encode(self) -> eyre::Result<Vec<u8>> {
-        let ed25519_key = SigningKey::from_bytes(&self.signing_key);
-        let user_id_bytes = ed25519_key.verifying_key().to_bytes();
-        let user_id = B256::from_slice(&user_id_bytes);
-
-        let ecdsa_private_key_input =
-            ["ECDSA_DERIVE".as_bytes(), &self.signing_key.as_slice()].concat();
-        let ecdsa_private_key_bytes = keccak256(&ecdsa_private_key_input);
-        let signer = PrivateKeySigner::from_bytes(&ecdsa_private_key_bytes)?;
-        let address = signer.address();
-        let ecdsa_public_key = address.into_word();
-
-        let context_request = match &self.kind {
-            RequestKind::Context(req) => req.to_sol(),
-        };
-
-        let encoded_request = context_request.abi_encode();
-
-        let sol_request = SolRequest {
-            signerId: ecdsa_public_key,
-            userId: user_id,
-            nonce: self.nonce,
-            kind: SolRequestKind::Context,
-            data: encoded_request.into(),
-        };
-
-        let request_message = sol_request.abi_encode();
-
-        let message_hash = keccak256(&request_message);
-        let signature: Signature = signer.sign_message_sync(&message_hash.as_slice())?;
-
-        let r = B256::from(signature.r());
-        let s = B256::from(signature.s());
-        let v = if signature.recid().to_byte() == 0 {
-            27
-        } else {
-            28
-        };
-
-        let signed_request = SolSignedRequest {
-            payload: sol_request,
-            r,
-            s,
-            v,
-        };
-
-        let encoded = signed_request.abi_encode();
-
-        Ok(encoded)
+    pub fn add_members(
+        self,
+        context_id: ContextId,
+        members: &'a [ContextIdentity],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let add_request = AddMembersRequest::new(context_id, members);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: add_request.context_id,
+                kind: ContextRequestKind::AddMembers {
+                    members: add_request.members.into(),
+                },
+            }),
+        }
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        Ok(())
+    pub fn remove_members(
+        self,
+        context_id: ContextId,
+        members: &'a [ContextIdentity],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let remove_request = RemoveMembersRequest::new(context_id, members);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: remove_request.context_id,
+                kind: ContextRequestKind::RemoveMembers {
+                    members: remove_request.members.into(),
+                },
+            }),
+        }
+    }
+
+    pub fn grant(
+        self,
+        context_id: ContextId,
+        capabilities: &'a [(ContextIdentity, Capability)],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let grant_request = GrantCapabilitiesRequest::new(context_id, capabilities);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: grant_request.context_id,
+                kind: ContextRequestKind::Grant {
+                    capabilities: grant_request.capabilities.into(),
+                },
+            }),
+        }
+    }
+
+    pub fn revoke(
+        self,
+        context_id: ContextId,
+        capabilities: &'a [(ContextIdentity, Capability)],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let revoke_request = RevokeCapabilitiesRequest::new(context_id, capabilities);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: revoke_request.context_id,
+                kind: ContextRequestKind::Revoke {
+                    capabilities: revoke_request.capabilities.into(),
+                },
+            }),
+        }
+    }
+
+    pub fn update_proxy_contract(self, context_id: ContextId) -> ContextConfigMutateRequest<'a, T> {
+        let update_request = UpdateProxyContractRequest::new(context_id);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: update_request.context_id,
+                kind: ContextRequestKind::UpdateProxyContract,
+            }),
+        }
     }
 }
 

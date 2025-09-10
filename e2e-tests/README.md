@@ -10,7 +10,7 @@ needed) and run the e2e tests.
 Tests can be run for a single protocol or all supported protocols based on
 values in `--protocols` flag. For all protocols, don't set the flag. For a
 single protocol, set the flag to the protocol you want to test. Current
-supported protocols are: `near`, `icp`, `stellar`, `ethereum`
+supported protocols are: `near`, `icp`, `ethereum`
 
 Build application:
 
@@ -32,20 +32,6 @@ For testing ICP contracts you will need to deploy ICP devnet:
 /scripts/icp/deploy_devnet.sh
 ```
 
-For testing Stellar contract you will need to deploy Stellar devnet:
-
-```bash
-./scripts/stellar/deploy_devnet.sh
-```
-
-In case of Stellar, you will need to set the values shown in the output of the
-deploy_devnet.sh script in the config file after deploying the devnet: Replace
-the following values in the config file under `stellar` section:
-`e2e-tests/config/config.json`:
-
-- `contextConfigContractId` with the value of `CONTRACT_ID`
-- `publicKey` with the value of `ACCOUNT_ADDRESS`
-- `secretKey` with the value of `SECRET_KEY`
 
 Build binaries:
 
@@ -60,11 +46,11 @@ Example of running the e2e tests for all supported protocols:
 cargo run -p e2e-tests -- --input-dir ./e2e-tests/config --output-dir ./e2e-tests/corpus --merod-binary ./target/debug/merod --meroctl-binary ./target/debug/meroctl
 ```
 
-Example of running the e2e tests for multiple protocols (Stellar and ICP in this
+Example of running the e2e tests for multiple protocols (ICP and Ethereum in this
 case):
 
 ```bash
-cargo run -p e2e-tests -- --input-dir ./e2e-tests/config --output-dir ./e2e-tests/corpus --merod-binary ./target/debug/merod --meroctl-binary ./target/debug/meroctl --protocols stellar icp
+cargo run -p e2e-tests -- --input-dir ./e2e-tests/config --output-dir ./e2e-tests/corpus --merod-binary ./target/debug/merod --meroctl-binary ./target/debug/meroctl --protocols icp ethereum
 ```
 
 Useful env vars for debugging:

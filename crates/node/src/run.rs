@@ -19,6 +19,7 @@ use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use eyre::{OptionExt, WrapErr};
 use futures_util::{stream, StreamExt};
+use libp2p::gossipsub::IdentTopic;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc};
@@ -109,6 +110,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         assert!(network_recipient.init(ctx), "failed to initialize");
         network_manager
     });
+
+    let _ignored = network_client
+        .subscribe(IdentTopic::new("meta_topic".to_owned()))
+        .await?;
 
     let (event_sender, _) = broadcast::channel(32);
 

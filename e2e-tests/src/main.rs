@@ -99,7 +99,6 @@ pub struct RootArgs {
 pub enum Protocol {
     Ethereum,
     Near,
-    Stellar,
     Icp,
 }
 
@@ -108,7 +107,6 @@ impl Protocol {
         match self {
             Protocol::Ethereum => "ethereum",
             Protocol::Near => "near",
-            Protocol::Stellar => "stellar",
             Protocol::Icp => "icp",
         }
     }

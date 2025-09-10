@@ -1,9 +1,7 @@
 use actix::{Handler, Message, ResponseFuture};
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::messages::join_context::{
-    JoinContextRequest, JoinContextResponse,
-};
+use calimero_context_primitives::messages::{JoinContextRequest, JoinContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::{ContextConfigParams, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};

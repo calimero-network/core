@@ -30,7 +30,6 @@ reqwest = { workspace = true, features = ["json"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 starknet.workspace = true
-soroban-client.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
 toml_edit.workspace = true
 tracing.workspace = true
