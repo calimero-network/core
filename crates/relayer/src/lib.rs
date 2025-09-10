@@ -1,3 +1,8 @@
+//! Calimero relayer library for external client interactions
+//!
+//! This crate provides functionality to run a relay server that forwards
+//! requests to the appropriate blockchain protocols.
+
 use core::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
 use std::env;
 
@@ -10,40 +15,52 @@ use calimero_config::ConfigFile;
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
 use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
 use calimero_context_config::client::Client;
-use clap::Parser;
+use camino::Utf8PathBuf;
 use eyre::{bail, Result as EyreResult};
 use futures_util::FutureExt;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use super::RootArgs;
-
 pub const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
 pub const DEFAULT_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_PORT);
 
-/// Spin up a relay for external client interactions
-#[derive(Debug, Parser)]
-pub struct RelayCommand {
-    /// Sets the address to listen on [default: 0.0.0.0:63529]
-    /// Valid: `63529`, `127.0.0.1`, `127.0.0.1:63529` [env: PORT]
-    #[clap(short, long, value_name = "URI")]
-    #[clap(verbatim_doc_comment, value_parser = addr_from_str)]
-    #[clap(default_value = "0.0.0.0", hide_default_value = true)]
+/// Configuration for the relayer service
+#[derive(Debug, Clone)]
+pub struct RelayerConfig {
+    /// The socket address to listen on
     pub listen: SocketAddr,
+    /// Path to the node configuration directory
+    pub node_path: Utf8PathBuf,
 }
 
-/// Relay incoming requests to specific location
-impl RelayCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(root_args.node_name);
+impl RelayerConfig {
+    /// Create a new relayer configuration
+    pub fn new(listen: SocketAddr, node_path: Utf8PathBuf) -> Self {
+        Self { listen, node_path }
+    }
+}
 
-        if !ConfigFile::exists(&path) {
-            bail!("Node is not initialized in {:?}", path);
+/// Relayer service that handles incoming requests
+#[derive(Debug)]
+pub struct RelayerService {
+    config: RelayerConfig,
+}
+
+impl RelayerService {
+    /// Create a new relayer service with the given configuration
+    pub fn new(config: RelayerConfig) -> Self {
+        Self { config }
+    }
+
+    /// Start the relayer service
+    pub async fn start(self) -> EyreResult<()> {
+        if !ConfigFile::exists(&self.config.node_path) {
+            bail!("Node is not initialized in {:?}", self.config.node_path);
         }
 
-        let config = ConfigFile::load(&path).await?;
+        let config = ConfigFile::load(&self.config.node_path).await?;
 
         let (tx, mut rx) = mpsc::channel::<RequestPayload>(32);
 
@@ -76,9 +93,9 @@ impl RelayCommand {
 
         let app = Router::new().route("/", post(handler)).with_state(tx);
 
-        let listener = TcpListener::bind(self.listen).await?;
+        let listener = TcpListener::bind(self.config.listen).await?;
 
-        info!("Listening on '\x1b[1;33mhttp://{}\x1b[0m'", self.listen);
+        info!("Listening on '\x1b[1;33mhttp://{}\x1b[0m'", self.config.listen);
 
         let server = axum::serve(listener, app);
 
@@ -126,6 +143,7 @@ async fn handler(
     }
 }
 
+/// Parse a socket address from a string, supporting various formats
 pub fn addr_from_str(s: &str) -> Result<SocketAddr, AddrParseError> {
     let mut addr = DEFAULT_ADDR;
 
