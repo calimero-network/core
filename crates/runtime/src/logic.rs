@@ -1008,7 +1008,6 @@ impl VMHostFunctions<'_> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,14 +1130,14 @@ mod tests {
         assert_eq!(*limits.max_register_size.deref(), 100 << 20);
         assert_eq!(limits.max_registers_capacity, 1 << 30); // 1 GiB
         assert_eq!(limits.max_logs, 100);
-        assert_eq!(limits.max_log_size, 16 << 10);// 16 KiB
+        assert_eq!(limits.max_log_size, 16 << 10); // 16 KiB
         assert_eq!(limits.max_events, 100);
         assert_eq!(limits.max_event_kind_size, 100);
         assert_eq!(limits.max_event_data_size, 16 << 10); // 16 KiB
         assert_eq!(limits.max_storage_key_size.get(), 1 << 20); // 1 MiB
         assert_eq!(limits.max_storage_value_size.get(), 10 << 20); // 10 MiB
         assert_eq!(limits.max_blob_handles, 100);
-        assert_eq!(limits.max_blob_chunk_size, 10 << 20);// 10 MiB
+        assert_eq!(limits.max_blob_chunk_size, 10 << 20); // 10 MiB
     }
 
     /// Tests the `input()`, `register_len()`, `read_register()` host functions.
@@ -1201,7 +1200,11 @@ mod tests {
         // that has a value `context_id_register`.
         host.context_id(context_id_register).unwrap();
         // Very the `context_id` is correctly written into its host-side register.
-        let requested_context_id = host.borrow_logic().registers.get(context_id_register).unwrap();
+        let requested_context_id = host
+            .borrow_logic()
+            .registers
+            .get(context_id_register)
+            .unwrap();
         assert_eq!(requested_context_id, context_id);
 
         let executor_id_register = 2;
@@ -1209,7 +1212,11 @@ mod tests {
         // that has a value `executor_id_register`.
         host.executor_id(executor_id_register).unwrap();
         // Verify the `executor_id` is correctly written into its host-side register.
-        let requested_executor_id = host.borrow_logic().registers.get(executor_id_register).unwrap();
+        let requested_executor_id = host
+            .borrow_logic()
+            .registers
+            .get(executor_id_register)
+            .unwrap();
         assert_eq!(requested_executor_id, executor_id);
     }
 
@@ -1239,7 +1246,12 @@ mod tests {
             .write(ok_return_ptr, &[ok_discriminant])
             .unwrap();
         // Guest: prepare the descriptor for the buffer so host can access it.
-        prepare_guest_buf_descriptor(&host, ok_return_ptr + 8, ok_value_ptr, ok_value.len() as u64);
+        prepare_guest_buf_descriptor(
+            &host,
+            ok_return_ptr + 8,
+            ok_value_ptr,
+            ok_value.len() as u64,
+        );
 
         // Guest: ask host to read the return value.
         host.value_return(ok_return_ptr).unwrap();
@@ -1261,7 +1273,12 @@ mod tests {
             .write(err_return_ptr, &[err_discriminant])
             .unwrap();
         // Guest: prepare the descriptor for the buffer so host can access it.
-        prepare_guest_buf_descriptor(&host, err_return_ptr + 8, err_value_ptr, err_value.len() as u64);
+        prepare_guest_buf_descriptor(
+            &host,
+            err_return_ptr + 8,
+            err_value_ptr,
+            err_value.len() as u64,
+        );
 
         // Guest: ask host to read the return value.
         host.value_return(err_return_ptr).unwrap();
@@ -1368,7 +1385,12 @@ mod tests {
 
         let loc_data_ptr = 300u64;
         // Guest: prepare the descriptor for the destination buffer so host can write there.
-        prepare_guest_buf_descriptor(&host, loc_data_ptr, file_ptr, expected_file_name.len() as u64);
+        prepare_guest_buf_descriptor(
+            &host,
+            loc_data_ptr,
+            file_ptr,
+            expected_file_name.len() as u64,
+        );
 
         let expected_line: u32 = 10;
         let expected_column: u32 = 5;
@@ -1377,10 +1399,16 @@ mod tests {
         // of the expected panic message. We write the `line` after the descriptor, and the `column` -
         // after the `line`.
         host.borrow_memory()
-            .write(loc_data_ptr + DESCRIPTOR_SIZE as u64, &expected_line.to_le_bytes())
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64,
+                &expected_line.to_le_bytes(),
+            )
             .unwrap();
         host.borrow_memory()
-            .write(loc_data_ptr + DESCRIPTOR_SIZE as u64 + u32_size, &expected_column.to_le_bytes())
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64 + u32_size,
+                &expected_column.to_le_bytes(),
+            )
             .unwrap();
 
         // Guest: ask the host to panic with the given location data.
@@ -1393,11 +1421,7 @@ mod tests {
             }) => {
                 assert_eq!(message, "explicit panic");
                 match location {
-                    Location::At {
-                        file,
-                        line,
-                        column,
-                    } => {
+                    Location::At { file, line, column } => {
                         assert_eq!(file, expected_file_name);
                         assert_eq!(line, expected_line);
                         assert_eq!(column, expected_column);
@@ -1432,7 +1456,12 @@ mod tests {
 
         let loc_data_ptr = 300u64;
         // Guest: prepare the descriptor for the destination buffer so host can write there.
-        prepare_guest_buf_descriptor(&host, loc_data_ptr, file_ptr, expected_file_name.len() as u64);
+        prepare_guest_buf_descriptor(
+            &host,
+            loc_data_ptr,
+            file_ptr,
+            expected_file_name.len() as u64,
+        );
 
         let expected_line: u32 = 10;
         let expected_column: u32 = 5;
@@ -1441,10 +1470,16 @@ mod tests {
         // of the expected panic message. We write the `line` after the descriptor, and the `column` -
         // after the `line`.
         host.borrow_memory()
-            .write(loc_data_ptr + DESCRIPTOR_SIZE as u64, &expected_line.to_le_bytes())
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64,
+                &expected_line.to_le_bytes(),
+            )
             .unwrap();
         host.borrow_memory()
-            .write(loc_data_ptr + DESCRIPTOR_SIZE as u64 + u32_size, &expected_column.to_le_bytes())
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64 + u32_size,
+                &expected_column.to_le_bytes(),
+            )
             .unwrap();
 
         // Guest: ask the host to panic with the given msg and location.
@@ -1509,8 +1544,8 @@ mod tests {
         let err = host.emit(event_struct_ptr).unwrap_err();
         // Guest: verify the host didn't emit over the limit and returned an error.
         assert!(matches!(
-                err,
-                VMLogicError::HostError(HostError::EventsOverflow)
+            err,
+            VMLogicError::HostError(HostError::EventsOverflow)
         ));
     }
 
@@ -1526,13 +1561,20 @@ mod tests {
         let artifact = vec![1, 2, 3];
         let root_hash_ptr = 200u64;
         let artifact_ptr = 300u64;
-        host.borrow_memory().write(root_hash_ptr, &root_hash).unwrap();
+        host.borrow_memory()
+            .write(root_hash_ptr, &root_hash)
+            .unwrap();
         host.borrow_memory().write(artifact_ptr, &artifact).unwrap();
 
         let root_hash_buf_ptr = 16u64;
         let artifact_buf_ptr = 32u64;
         // Guest: prepare the descriptor for the root_hash and artifact buffers so host can access them.
-        prepare_guest_buf_descriptor(&host, root_hash_buf_ptr, root_hash_ptr, root_hash.len() as u64);
+        prepare_guest_buf_descriptor(
+            &host,
+            root_hash_buf_ptr,
+            root_hash_ptr,
+            root_hash.len() as u64,
+        );
         prepare_guest_buf_descriptor(&host, artifact_buf_ptr, artifact_ptr, artifact.len() as u64);
 
         // Guest: ask host to commit with the given root hash and artifact.
@@ -1580,10 +1622,7 @@ mod tests {
         // Ensure, the storage read was successful
         assert_eq!(res, 1);
         // Verify that the register length has the proper size
-        assert_eq!(
-            host.register_len(register_id).unwrap(),
-            value.len() as u64
-        );
+        assert_eq!(host.register_len(register_id).unwrap(), value.len() as u64);
 
         // Guest: ask the host to read the register and verify that the register has the proper
         // content after the `storage_read()` successfully exectued.
@@ -1620,8 +1659,11 @@ mod tests {
         let key = "to_remove";
         let value = "old_value";
         // Manually write into host storage for simplicity reasons.
-        let _unused = host.with_logic_mut(|logic| logic.storage
-            .set(key.as_bytes().to_vec(), value.as_bytes().to_vec()));
+        let _unused = host.with_logic_mut(|logic| {
+            logic
+                .storage
+                .set(key.as_bytes().to_vec(), value.as_bytes().to_vec())
+        });
 
         let key_ptr = 100u64;
         // Guest: write key to its memory
@@ -1636,7 +1678,10 @@ mod tests {
         // Verify the storage removal was successful.
         assert_eq!(res, 1);
         // Verify the storage doesn't have a specified key anymore.
-        assert_eq!(host.borrow_logic().storage.has(&key.as_bytes().to_vec()), false);
+        assert_eq!(
+            host.borrow_logic().storage.has(&key.as_bytes().to_vec()),
+            false
+        );
         // Verify the removed value was put into the host register.
         assert_eq!(
             host.borrow_logic().registers.get(register_id).unwrap(),
@@ -1771,7 +1816,10 @@ mod tests {
 
         // Verify the proposal with the given actions were successfully added.
         assert_eq!(host.borrow_logic().proposals.len(), 1);
-        assert_eq!(host.borrow_logic().proposals.values().next().unwrap(), &actions);
+        assert_eq!(
+            host.borrow_logic().proposals.values().next().unwrap(),
+            &actions
+        );
         // Verify there are no approvals yet.
         assert_eq!(host.borrow_logic().approvals.len(), 0);
 
@@ -1780,11 +1828,18 @@ mod tests {
         let approval_id = [42u8; 32];
         let approval_ptr = 500u64;
         // Write approval to guest memory.
-        host.borrow_memory().write(approval_ptr, &approval_id).unwrap();
+        host.borrow_memory()
+            .write(approval_ptr, &approval_id)
+            .unwrap();
 
         let approval_buf_ptr = 48u64;
         // Guest: prepare the descriptor for the destination buffer so host can access it.
-        prepare_guest_buf_descriptor(&host, approval_buf_ptr, approval_ptr, approval_id.len() as u64);
+        prepare_guest_buf_descriptor(
+            &host,
+            approval_buf_ptr,
+            approval_ptr,
+            approval_id.len() as u64,
+        );
 
         // Guest: send a proposal approval to host.
         host.approve_proposal(approval_buf_ptr).unwrap();
