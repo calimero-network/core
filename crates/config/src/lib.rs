@@ -58,13 +58,15 @@ pub struct ProtocolsConfig {
     pub stellar: Option<StellarProtocolConfig>,
 }
 
-// Protocol config structs
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct EthereumProtocolConfig {
-    pub network: String,
-    pub contract_id: String,
-    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,12 +75,16 @@ pub struct EthereumProtocolConfig {
     pub secret_key: Option<String>,
 }
 
+// Apply the same pattern to other protocol config structs:
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct IcpProtocolConfig {
-    pub network: String,
-    pub contract_id: String,
-    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,9 +98,12 @@ pub struct IcpProtocolConfig {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct NearProtocolConfig {
-    pub network: String,
-    pub contract_id: String,
-    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,9 +117,12 @@ pub struct NearProtocolConfig {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct StellarProtocolConfig {
-    pub network: String,
-    pub contract_id: String,
-    pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

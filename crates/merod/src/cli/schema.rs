@@ -402,12 +402,13 @@ pub fn generate_schema() -> ConfigSchema {
     let mut config_schema: ConfigSchema =
         serde_json::from_value(serde_json::to_value(schema).unwrap()).expect("valid config schema");
 
+    // Ensure protocols section has proper defaults
     if config_schema.protocols.is_none() {
         config_schema.protocols = Some(ProtocolsSchema {
             ethereum: Some(EthereumProtocolSchema {
                 network: "sepolia".to_owned(),
                 contract_id: "".to_owned(),
-                signer: "".to_owned(),
+                signer: "relayer".to_owned(),
                 rpc_url: None,
                 account_id: None,
                 secret_key: None,
@@ -415,7 +416,7 @@ pub fn generate_schema() -> ConfigSchema {
             icp: Some(IcpProtocolSchema {
                 network: "local".to_owned(),
                 contract_id: "".to_owned(),
-                signer: "".to_owned(),
+                signer: "relayer".to_owned(),
                 rpc_url: None,
                 account_id: None,
                 public_key: None,
@@ -424,7 +425,7 @@ pub fn generate_schema() -> ConfigSchema {
             near: Some(NearProtocolSchema {
                 network: "testnet".to_owned(),
                 contract_id: "".to_owned(),
-                signer: "".to_owned(),
+                signer: "relayer".to_owned(),
                 rpc_url: None,
                 account_id: None,
                 public_key: None,
@@ -433,7 +434,7 @@ pub fn generate_schema() -> ConfigSchema {
             stellar: Some(StellarProtocolSchema {
                 network: "testnet".to_owned(),
                 contract_id: "".to_owned(),
-                signer: "".to_owned(),
+                signer: "relayer".to_owned(),
                 rpc_url: None,
                 account_id: None,
                 public_key: None,
@@ -487,28 +488,44 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
     if path.len() >= 2 && path[0] == "protocols" {
         if let Some(protocols) = &schema.protocols {
             if let Some(protocol) = path.get(1) {
-                match *protocol {
+                let protocol_hint = match *protocol {
                     "ethereum" => {
-                        if let Some(ethereum) = &protocols.ethereum {
-                            return get_protocol_field_hint(&path[2..], "Ethereum", ethereum);
-                        }
+                        "Ethereum protocol configuration (requires network, contract_id, signer)"
                     }
-                    "icp" => {
-                        if let Some(icp) = &protocols.icp {
-                            return get_protocol_field_hint(&path[2..], "ICP", icp);
-                        }
-                    }
-                    "near" => {
-                        if let Some(near) = &protocols.near {
-                            return get_protocol_field_hint(&path[2..], "NEAR", near);
-                        }
-                    }
+                    "icp" => "ICP protocol configuration (requires network, contract_id, signer)",
+                    "near" => "NEAR protocol configuration (requires network, contract_id, signer)",
                     "stellar" => {
-                        if let Some(stellar) = &protocols.stellar {
-                            return get_protocol_field_hint(&path[2..], "Stellar", stellar);
-                        }
+                        "Stellar protocol configuration (requires network, contract_id, signer)"
                     }
-                    _ => {}
+                    _ => return Some(format!("Unknown protocol '{}'", protocol)),
+                };
+
+                if path.len() == 2 {
+                    return Some(protocol_hint.to_owned());
+                }
+
+                // Handle specific protocol fields
+                if let Some(field) = path.get(2) {
+                    let field_hint = match *field {
+                        "network" => match *protocol {
+                            "ethereum" => {
+                                "Ethereum network name (e.g. sepolia, mainnet) - REQUIRED"
+                            }
+                            "icp" => "ICP network name (e.g. local, ic) - REQUIRED",
+                            "near" => "NEAR network name (e.g. testnet, mainnet) - REQUIRED",
+                            "stellar" => "Stellar network name (e.g. testnet, mainnet) - REQUIRED",
+                            _ => "Network identifier - REQUIRED",
+                        },
+                        "contract_id" => "Contract address or identifier - REQUIRED",
+                        "signer" => "Signer type (relayer or local) - REQUIRED",
+                        "rpc_url" => "Optional RPC URL for direct connection",
+                        "account_id" => "Optional account ID",
+                        "public_key" => "Optional public key",
+                        "secret_key" => "Optional secret key (use with caution!)",
+                        _ => "Unknown field",
+                    };
+
+                    return Some(format!("{}: {}", field, field_hint));
                 }
             }
         }
