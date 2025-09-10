@@ -495,7 +495,7 @@ impl ConfigCommand {
                 bail!("Ethereum protocol requires 'signer' field");
             }
         }
-    
+
         if let Some(near) = &protocols.near {
             if Self::is_empty_or_none(&near.network) {
                 bail!("NEAR protocol requires 'network' field");
@@ -507,7 +507,7 @@ impl ConfigCommand {
                 bail!("NEAR protocol requires 'signer' field");
             }
         }
-    
+
         if let Some(icp) = &protocols.icp {
             if Self::is_empty_or_none(&icp.network) {
                 bail!("ICP protocol requires 'network' field");
@@ -519,7 +519,7 @@ impl ConfigCommand {
                 bail!("ICP protocol requires 'signer' field");
             }
         }
-    
+
         if let Some(stellar) = &protocols.stellar {
             if Self::is_empty_or_none(&stellar.network) {
                 bail!("Stellar protocol requires 'network' field");
@@ -531,7 +531,7 @@ impl ConfigCommand {
                 bail!("Stellar protocol requires 'signer' field");
             }
         }
-    
+
         Ok(())
     }
 
