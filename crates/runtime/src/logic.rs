@@ -1848,8 +1848,7 @@ mod tests {
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
-        // TODO: remove the `mut` after `read_slice()` function signature is improved.
-        let mut host = logic.host_functions(store.as_store_mut());
+        let host = logic.host_functions(store.as_store_mut());
 
         let expected_str = "hello world";
         let data_ptr = 100u64;
@@ -1863,10 +1862,9 @@ mod tests {
         // do internally.
         let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
 
-        // TODO: uncomment after merging with `master`.
         // Guest: ask host to read str from the `buffer` located in guest memory.
-        //let result_str = host.read_str(&buffer).unwrap();
-        //assert_eq!(result_str, expected_str);
+        let result_str = host.read_str(&buffer).unwrap();
+        assert_eq!(result_str, expected_str);
 
         // Guest: ask host to read slice from the `buffer` located in guest memory.
         let result_slice = host.read_slice(&buffer);
@@ -1893,10 +1891,9 @@ mod tests {
         // do internally.
         let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
 
-        // TODO: uncomment after merging with `master`.
         // Test that `read_str` fails as expected.
-        //let err = host.read_str(&buffer).unwrap_err();
-        //assert!(matches!(err, VMLogicError::HostError(HostError::BadUTF8)));
+        let err = host.read_str(&buffer).unwrap_err();
+        assert!(matches!(err, VMLogicError::HostError(HostError::BadUTF8)));
     }
 
     /// Verifies the success and failure paths of the private `read_guest_memory_sized` function.
@@ -1920,8 +1917,9 @@ mod tests {
 
         // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
         // do internally.
-        let result_sized_ok = host.read_guest_memory_sized::<32>(data_ptr_ok, correct_data.len() as u64).unwrap();
-        assert_eq!(&result_sized_ok, &correct_data);
+        let buffer_ok = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_ok).unwrap() };
+        let result_sized_ok = host.read_sized::<32>(&buffer_ok).unwrap();
+        assert_eq!(result_sized_ok, &correct_data);
 
         // Test failure case (incorrect length).
         let incorrect_data = [1u8; 31];
@@ -1939,8 +1937,11 @@ mod tests {
             incorrect_data.len() as u64,
         );
 
-        // Guest: ask host to read the guest memory sized. Even though we provide the
-        let err = host.read_guest_memory_sized::<32>(buf_ptr_err, incorrect_data.len() as u64).unwrap_err();
+        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
+        // do internally.
+        let buffer_err = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_err).unwrap() };
+        // Guest: ask host to read the guest memory sized.
+        let err = host.read_sized::<32>(&buffer_err).unwrap_err();
         assert!(matches!(
             err,
             VMLogicError::HostError(HostError::InvalidMemoryAccess)
