@@ -95,7 +95,10 @@ impl RelayerService {
 
         let listener = TcpListener::bind(self.config.listen).await?;
 
-        info!("Listening on '\x1b[1;33mhttp://{}\x1b[0m'", self.config.listen);
+        info!(
+            "Listening on '\x1b[1;33mhttp://{}\x1b[0m'",
+            self.config.listen
+        );
 
         let server = axum::serve(listener, app);
 
