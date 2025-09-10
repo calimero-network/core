@@ -237,6 +237,7 @@ impl ConfigCommand {
         Ok(())
     }
 
+    // Enhance the edit_config method to handle protocol configuration properly
     async fn edit_config(
         &self,
         doc: &mut toml_edit::DocumentMut,
@@ -246,59 +247,81 @@ impl ConfigCommand {
         let original = doc.clone();
         let mut changes_made = false;
 
-        let needs_protocols = changes.iter().any(|kv| {
-            let parts: Vec<&str> = kv.key.split('.').collect();
-            parts.get(0) == Some(&"protocols")
-                || (parts.get(0) == Some(&"context") && parts.get(1) == Some(&"config"))
-        });
-
         // Create protocols section if it doesn't exist and we need it
+        let needs_protocols = changes.iter().any(|kv| kv.key.starts_with("protocols."));
+
         if needs_protocols && doc.get("protocols").is_none() {
             doc["protocols"] = toml_edit::table();
             changes_made = true;
+
+            // Initialize with proper structure to avoid validation errors
+            doc["protocols"]["ethereum"] = toml_edit::table();
+            doc["protocols"]["ethereum"]["network"] = toml_edit::value("");
+            doc["protocols"]["ethereum"]["contract_id"] = toml_edit::value("");
+            doc["protocols"]["ethereum"]["signer"] = toml_edit::value("");
+
+            // Similarly initialize other protocols if needed
+            if changes
+                .iter()
+                .any(|kv| kv.key.starts_with("protocols.near."))
+            {
+                doc["protocols"]["near"] = toml_edit::table();
+                doc["protocols"]["near"]["network"] = toml_edit::value("");
+                doc["protocols"]["near"]["contract_id"] = toml_edit::value("");
+                doc["protocols"]["near"]["signer"] = toml_edit::value("");
+            }
+
+            if changes
+                .iter()
+                .any(|kv| kv.key.starts_with("protocols.icp."))
+            {
+                doc["protocols"]["icp"] = toml_edit::table();
+                doc["protocols"]["icp"]["network"] = toml_edit::value("");
+                doc["protocols"]["icp"]["contract_id"] = toml_edit::value("");
+                doc["protocols"]["icp"]["signer"] = toml_edit::value("");
+            }
+
+            if changes
+                .iter()
+                .any(|kv| kv.key.starts_with("protocols.stellar."))
+            {
+                doc["protocols"]["stellar"] = toml_edit::table();
+                doc["protocols"]["stellar"]["network"] = toml_edit::value("");
+                doc["protocols"]["stellar"]["contract_id"] = toml_edit::value("");
+                doc["protocols"]["stellar"]["signer"] = toml_edit::value("");
+            }
         }
 
         for kv in changes {
             let key_parts: Vec<&str> = kv.key.split('.').collect();
 
-            // Handle both old context.config.* and new protocols.* paths
-            if key_parts.get(0) == Some(&"context") && key_parts.get(1) == Some(&"config") {
-                if let Some(protocol) = key_parts.get(2) {
-                    // Build the new key in protocols section
-                    let new_key =
-                        kv.key
-                            .replacen("context.config.", &format!("protocols.{}.", protocol), 1);
-                    let new_parts: Vec<&str> = new_key.split('.').collect();
-
-                    let mut protocol_current = doc.as_item_mut();
-                    let mut old_value = None;
-
-                    // Navigate to the correct position in the document
-                    for (i, key) in new_parts.iter().enumerate() {
-                        if i == new_parts.len() - 1 {
-                            // Last part - this is where we set the value
-                            old_value = Some(protocol_current[*key].clone());
-                            protocol_current[*key] = Item::Value(kv.value.clone());
-                        } else {
-                            // Ensure intermediate tables exist
-                            if protocol_current[*key].is_none() {
-                                protocol_current[*key] = toml_edit::table();
-                            }
-                            protocol_current = &mut protocol_current[*key];
-                        }
+            // Handle protocol configuration
+            if key_parts.get(0) == Some(&"protocols") {
+                if let Some(protocol) = key_parts.get(1) {
+                    // Ensure protocol table exists
+                    if doc["protocols"][protocol].is_none() {
+                        doc["protocols"][protocol] = toml_edit::table();
+                        changes_made = true;
                     }
 
+                    // Handle the specific protocol field
+                    let mut current = &mut doc["protocols"][protocol];
+                    for key in &key_parts[2..key_parts.len() - 1] {
+                        if current[key].is_none() {
+                            current[key] = toml_edit::table();
+                        }
+                        current = &mut current[key];
+                    }
+
+                    let last_key = key_parts[key_parts.len() - 1];
+                    let old_value = current[last_key].clone();
+
+                    current[last_key] = Item::Value(kv.value.clone());
                     changes_made = true;
 
                     if show_diff {
-                        if let Some(old_val) = old_value {
-                            self.show_diff(
-                                &old_val,
-                                &protocol_current[new_parts[new_parts.len() - 1]],
-                                &new_key,
-                            )
+                        self.show_diff(&old_value, &current[last_key], &kv.key)
                             .await?;
-                        }
                     }
 
                     continue;

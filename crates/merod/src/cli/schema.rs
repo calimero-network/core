@@ -486,7 +486,7 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
         }
     }
 
-    // Handle new protocols.* path directly
+    // Handle protocol configuration hints
     if path.len() >= 2 && path[0] == "protocols" {
         if let Some(protocols) = &schema.protocols {
             if let Some(protocol) = path.get(1) {
