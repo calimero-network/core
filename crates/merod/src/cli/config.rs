@@ -386,7 +386,7 @@ impl ConfigCommand {
         // Collect protocol names first to avoid borrowing issues
         let protocol_names: Vec<String> =
             if let Some(protocols) = validation_doc.get("protocols").and_then(|p| p.as_table()) {
-                protocols.iter().map(|(name, _)| name.to_string()).collect()
+                protocols.iter().map(|(name, _)| name.to_owned()).collect()
             } else {
                 Vec::new()
             };
