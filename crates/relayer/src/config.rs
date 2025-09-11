@@ -184,6 +184,55 @@ impl RelayerConfig {
             if let Ok(contract_id) = std::env::var(format!("{}_CONTRACT_ID", prefix)) {
                 protocol_config.contract_id = contract_id;
             }
+
+            // Override credentials from environment variables
+            let account_id_var = format!("{}_ACCOUNT_ID", prefix);
+            let public_key_var = format!("{}_PUBLIC_KEY", prefix);
+            let secret_key_var = format!("{}_SECRET_KEY", prefix);
+
+            if let Ok(account_id) = std::env::var(&account_id_var) {
+                let credentials = match protocol_name.as_str() {
+                    "near" => {
+                        let public_key = std::env::var(&public_key_var).unwrap_or_default();
+                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
+                        Some(ProtocolCredentials::Near {
+                            account_id,
+                            public_key,
+                            secret_key,
+                        })
+                    }
+                    "starknet" => {
+                        let public_key = std::env::var(&public_key_var).unwrap_or_default();
+                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
+                        Some(ProtocolCredentials::Starknet {
+                            account_id,
+                            public_key,
+                            secret_key,
+                        })
+                    }
+                    "icp" => {
+                        let public_key = std::env::var(&public_key_var).unwrap_or_default();
+                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
+                        Some(ProtocolCredentials::Icp {
+                            account_id,
+                            public_key,
+                            secret_key,
+                        })
+                    }
+                    "ethereum" => {
+                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
+                        Some(ProtocolCredentials::Ethereum {
+                            account_id,
+                            secret_key,
+                        })
+                    }
+                    _ => None,
+                };
+
+                if let Some(creds) = credentials {
+                    protocol_config.credentials = Some(creds);
+                }
+            }
         }
 
         config
