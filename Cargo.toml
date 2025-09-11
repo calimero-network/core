@@ -8,10 +8,11 @@ description = "Core Calimero infrastructure and tools"
 
 [workspace.metadata.workspaces]
 # Shared version of all public crates in the workspace.
-version = "0.2.5"
+# [IMPORTANT: do not remove comments from next line, used as search anchor]
+version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
-    "./apps/kv-store", 
+    "./apps/kv-store",
     "./crates/cargo-mero",
     "./e2e-tests",
     "./crates/merod",
