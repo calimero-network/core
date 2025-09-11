@@ -9,7 +9,15 @@ include!(env!("GENERATED_ABI_PATH"));
 
 // Newtype bytes
 #[derive(
-    Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -43,7 +51,7 @@ pub struct Profile {
 }
 
 // Update payload type
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct UpdatePayload {
@@ -71,6 +79,7 @@ pub enum ConformanceError {
 }
 
 // Events - now just a regular enum, no macro
+#[derive(Debug)]
 pub enum Event {
     Ping,
     Named(String),

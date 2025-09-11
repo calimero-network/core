@@ -159,10 +159,3 @@ impl ApproveRequest {
         }
     }
 }
-
-// ============================================================================
-// Re-exports for backward compatibility
-// ============================================================================
-
-// Re-export the ProxyMutateRequest enum for use in mutate.rs
-pub use crate::ProxyMutateRequest;
