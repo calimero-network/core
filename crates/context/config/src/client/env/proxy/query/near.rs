@@ -2,8 +2,6 @@
 
 //! NEAR Protocol specific implementations for context proxy queries.
 
-// use serde::Serialize;  // Unused import
-
 use super::super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
     ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,

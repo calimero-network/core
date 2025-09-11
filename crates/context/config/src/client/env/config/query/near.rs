@@ -1,8 +1,6 @@
 use core::mem;
 use std::collections::BTreeMap;
 
-// use serde::Serialize;  // Unused import
-
 use crate::client::env::config::requests::{
     ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,

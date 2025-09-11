@@ -14,7 +14,6 @@ use crate::client::env::config::types::starknet::{
 };
 use crate::client::env::Method;
 use crate::client::protocol::starknet::Starknet;
-// use crate::repr::ReprTransmute;  // Unused import
 use crate::types::{Application, Capability, ContextIdentity, Revision, SignerId};
 
 impl Method<Starknet> for ApplicationRequest {
