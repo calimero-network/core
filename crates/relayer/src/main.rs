@@ -103,7 +103,8 @@ impl RelayerService {
             params,
             signer: ClientSigner {
                 relayer: ClientRelayerSigner {
-                    url: "http://localhost:63529".parse()
+                    url: "http://localhost:63529"
+                        .parse()
                         .map_err(|e| eyre::eyre!("Failed to parse relayer URL: {e}"))?, // Self-reference for relayer mode
                 },
                 local: LocalConfig { protocols },
@@ -174,7 +175,7 @@ impl RelayerService {
             "ethereum" => Ok(Credentials::Ethereum(EthereumCredentials {
                 account_id: "0x0000000000000000000000000000000000000000".to_owned(),
                 secret_key: "0000000000000000000000000000000000000000000000000000000000000001"
-                        .to_owned(),
+                    .to_owned(),
             })),
             _ => eyre::bail!("Unknown protocol: {}", protocol),
         }
