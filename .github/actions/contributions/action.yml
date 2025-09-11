@@ -19,6 +19,8 @@ runs:
   steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
 
     - name: Apply Needs Attention Label
       uses: hramos/needs-attention@v2.0.0
