@@ -12,8 +12,6 @@ use axum::http::status::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
-use calimero_context_config::client::relayer::{RelayRequest, ServerError};
-use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
@@ -22,6 +20,8 @@ use calimero_context_config::client::protocol::{
     ethereum::Credentials as EthereumCredentials, icp::Credentials as IcpCredentials,
     near::Credentials as NearCredentials, starknet::Credentials as StarknetCredentials,
 };
+use calimero_context_config::client::relayer::{RelayRequest, ServerError};
+use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
 use calimero_context_config::client::Client;
 use clap::Parser;
 use color_eyre::install;
@@ -35,11 +35,10 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::{registry, EnvFilter};
 
 mod config;
-use config::{RelayerConfig, ProtocolCredentials};
+use config::{ProtocolCredentials, RelayerConfig};
 
 const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
-const DEFAULT_ADDR: SocketAddr =
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_PORT);
+const DEFAULT_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_PORT);
 
 /// Relayer service that handles incoming requests
 #[derive(Debug)]
@@ -63,19 +62,22 @@ impl RelayerService {
     fn build_client_config(&self) -> EyreResult<ClientConfig> {
         let mut params = BTreeMap::new();
         let mut protocols = BTreeMap::new();
-        
+
         // Build configuration for each enabled protocol
         for (protocol_name, protocol_config) in self.config.enabled_protocols() {
             // Add protocol parameters
-            drop(params.insert(protocol_name.clone(), ClientConfigParams {
-                signer: ClientSelectedSigner::Local,
-                network: protocol_config.network.clone(),
-                contract_id: protocol_config.contract_id.clone(),
-            }));
-            
+            drop(params.insert(
+                protocol_name.clone(),
+                ClientConfigParams {
+                    signer: ClientSelectedSigner::Local,
+                    network: protocol_config.network.clone(),
+                    contract_id: protocol_config.contract_id.clone(),
+                },
+            ));
+
             // Add protocol signer configuration
             let mut signers = BTreeMap::new();
-            
+
             // Create credentials based on protocol and what's available
             let credentials = match protocol_config.credentials.as_ref() {
                 Some(creds) => self.convert_credentials(creds)?,
@@ -85,15 +87,18 @@ impl RelayerService {
                     self.generate_dummy_credentials(protocol_name)?
                 }
             };
-            
-            drop(signers.insert(protocol_config.network.clone(), ClientLocalSigner {
-                rpc_url: protocol_config.rpc_url.clone(),
-                credentials,
-            }));
-            
+
+            drop(signers.insert(
+                protocol_config.network.clone(),
+                ClientLocalSigner {
+                    rpc_url: protocol_config.rpc_url.clone(),
+                    credentials,
+                },
+            ));
+
             drop(protocols.insert(protocol_name.clone(), ClientLocalConfig { signers }));
         }
-        
+
         let client_config = ClientConfig {
             params,
             signer: ClientSigner {
@@ -103,43 +108,50 @@ impl RelayerService {
                 local: LocalConfig { protocols },
             },
         };
-        
+
         Ok(client_config)
     }
-    
+
     /// Convert relayer credentials to client credentials
     fn convert_credentials(&self, creds: &ProtocolCredentials) -> EyreResult<Credentials> {
         match creds {
-            ProtocolCredentials::Near { account_id, public_key, secret_key } => {
-                Ok(Credentials::Near(NearCredentials {
-                    account_id: account_id.parse()?,
-                    public_key: public_key.parse()?,
-                    secret_key: secret_key.parse()?,
-                }))
-            }
-            ProtocolCredentials::Starknet { account_id, public_key, secret_key } => {
-                Ok(Credentials::Starknet(StarknetCredentials {
-                    account_id: account_id.parse()?,
-                    public_key: public_key.parse()?,
-                    secret_key: secret_key.parse()?,
-                }))
-            }
-            ProtocolCredentials::Icp { account_id, public_key, secret_key } => {
-                Ok(Credentials::Icp(IcpCredentials {
-                    account_id: account_id.parse()?,
-                    public_key: public_key.clone(),
-                    secret_key: secret_key.clone(),
-                }))
-            }
-            ProtocolCredentials::Ethereum { account_id, secret_key } => {
-                Ok(Credentials::Ethereum(EthereumCredentials {
-                    account_id: account_id.clone(),
-                    secret_key: secret_key.clone(),
-                }))
-            }
+            ProtocolCredentials::Near {
+                account_id,
+                public_key,
+                secret_key,
+            } => Ok(Credentials::Near(NearCredentials {
+                account_id: account_id.parse()?,
+                public_key: public_key.parse()?,
+                secret_key: secret_key.parse()?,
+            })),
+            ProtocolCredentials::Starknet {
+                account_id,
+                public_key,
+                secret_key,
+            } => Ok(Credentials::Starknet(StarknetCredentials {
+                account_id: account_id.parse()?,
+                public_key: public_key.parse()?,
+                secret_key: secret_key.parse()?,
+            })),
+            ProtocolCredentials::Icp {
+                account_id,
+                public_key,
+                secret_key,
+            } => Ok(Credentials::Icp(IcpCredentials {
+                account_id: account_id.parse()?,
+                public_key: public_key.clone(),
+                secret_key: secret_key.clone(),
+            })),
+            ProtocolCredentials::Ethereum {
+                account_id,
+                secret_key,
+            } => Ok(Credentials::Ethereum(EthereumCredentials {
+                account_id: account_id.clone(),
+                secret_key: secret_key.clone(),
+            })),
         }
     }
-    
+
     /// Generate minimal dummy credentials for protocols without explicit credentials
     fn generate_dummy_credentials(&self, protocol: &str) -> EyreResult<Credentials> {
         match protocol {
@@ -160,7 +172,8 @@ impl RelayerService {
             })),
             "ethereum" => Ok(Credentials::Ethereum(EthereumCredentials {
                 account_id: "0x0000000000000000000000000000000000000000".to_string(),
-                secret_key: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+                secret_key: "0000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string(),
             })),
             _ => eyre::bail!("Unknown protocol: {}", protocol),
         }
