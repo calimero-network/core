@@ -367,8 +367,8 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     };
 
     // Remove any internal types that shouldn't be exposed
-    manifest.types.remove("AbiStateExposed");
-    manifest.types.remove("Event");
+    drop(manifest.types.remove("AbiStateExposed"));
+    drop(manifest.types.remove("Event"));
 
     Ok(manifest)
 }

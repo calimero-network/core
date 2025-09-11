@@ -117,7 +117,7 @@ pub mod near;
 pub mod starknet;
 
 // Re-export protocol-specific implementations
-pub use ethereum::*;
-pub use icp::*;
-pub use near::*;
-pub use starknet::*;
+// pub use ethereum::*;  // Unused re-export
+// pub use icp::*;  // Unused re-export
+// pub use near::*;  // Unused re-export
+// pub use starknet::*;  // Unused re-export

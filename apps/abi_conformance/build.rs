@@ -3,7 +3,6 @@ use std::{env, fs};
 
 use calimero_wasm_abi::embed::generate_embed_code;
 use calimero_wasm_abi::emitter::emit_manifest;
-use syn::parse_file;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/lib.rs");

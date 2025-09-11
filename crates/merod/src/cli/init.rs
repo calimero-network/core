@@ -10,7 +10,7 @@ use calimero_config::{
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
+    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
     ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,

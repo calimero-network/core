@@ -10,7 +10,6 @@ publish = true
 
 [dependencies]
 axum = { workspace = true, features = ["multipart"] }
-bytes.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true

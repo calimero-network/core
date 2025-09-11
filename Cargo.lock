@@ -16,12 +16,8 @@ dependencies = [
 name = "abi_conformance"
 version = "0.0.0"
 dependencies = [
- "bs58 0.5.1",
  "calimero-sdk",
- "calimero-storage",
  "calimero-wasm-abi",
- "serde_json",
- "syn 2.0.100",
  "thiserror 1.0.69",
 ]
 
@@ -1827,7 +1823,6 @@ version = "0.0.0"
 dependencies = [
  "alloy",
  "alloy-sol-types",
- "base64 0.22.1",
  "borsh",
  "bs58 0.5.1",
  "candid",
@@ -1846,8 +1841,6 @@ dependencies = [
  "serde",
  "serde_json",
  "starknet",
- "starknet-core",
- "starknet-core-derive",
  "starknet-crypto",
  "starknet-types-core",
  "thiserror 1.0.69",
