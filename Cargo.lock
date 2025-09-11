@@ -2012,17 +2012,18 @@ name = "calimero-relayer"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
- "calimero-config",
  "calimero-context-config",
- "camino",
  "clap",
  "color-eyre",
- "dirs",
  "eyre",
  "futures-util",
+ "serde",
+ "serde_json",
  "tokio",
+ "toml 0.8.19",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
