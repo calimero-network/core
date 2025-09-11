@@ -7,11 +7,11 @@ on:
   pull_request:
     branches:
       - feat/abi_v1
-      - main
+      - master
   push:
     branches:
       - feat/abi_v1
-      - main
+      - master
 
 jobs:
   abi-validation:
