@@ -103,7 +103,8 @@ impl RelayerService {
             params,
             signer: ClientSigner {
                 relayer: ClientRelayerSigner {
-                    url: "http://localhost:63529".parse().unwrap(), // Self-reference for relayer mode
+                    url: "http://localhost:63529".parse()
+                        .map_err(|e| eyre::eyre!("Failed to parse relayer URL: {e}"))?, // Self-reference for relayer mode
                 },
                 local: LocalConfig { protocols },
             },
@@ -167,13 +168,13 @@ impl RelayerService {
             })),
             "icp" => Ok(Credentials::Icp(IcpCredentials {
                 account_id: "rdmx6-jaaaa-aaaaa-aaadq-cai".parse()?,
-                public_key: "dummy".to_string(),
-                secret_key: "dummy".to_string(),
+                public_key: "dummy".to_owned(),
+                secret_key: "dummy".to_owned(),
             })),
             "ethereum" => Ok(Credentials::Ethereum(EthereumCredentials {
-                account_id: "0x0000000000000000000000000000000000000000".to_string(),
+                account_id: "0x0000000000000000000000000000000000000000".to_owned(),
                 secret_key: "0000000000000000000000000000000000000000000000000000000000000001"
-                    .to_string(),
+                        .to_owned(),
             })),
             _ => eyre::bail!("Unknown protocol: {}", protocol),
         }

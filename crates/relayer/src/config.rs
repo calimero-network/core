@@ -60,41 +60,41 @@ impl Default for RelayerConfig {
         let mut protocols = BTreeMap::new();
 
         // Default NEAR configuration with testnet credentials
-        drop(protocols.insert("near".to_string(), ProtocolConfig {
+        drop(protocols.insert("near".to_owned(), ProtocolConfig {
             enabled: true,
-            network: "testnet".to_string(),
+            network: "testnet".to_owned(),
             rpc_url: "https://rpc.testnet.near.org".parse().unwrap(),
-            contract_id: "calimero-context-config.testnet".to_string(),
+            contract_id: "calimero-context-config.testnet".to_owned(),
             credentials: Some(ProtocolCredentials::Near {
-                account_id: "dev-1642425627065-33437663923179".to_string(),
-                public_key: "ed25519:98GtfF5gBPUvBWNgz8N8WNEjXRgBhFLuSQ5MnFDEjJ8x".to_string(),
-                secret_key: "ed25519:4YdVWc7hgBUWwE9kXd4SPKmCztbGkMdHfZL2fDWw8L7gCJmrYcWAjcvK5Wek94aKSGBdLKHb7DaKoXudp6BnTqCb".to_string(),
+                account_id: "dev-1642425627065-33437663923179".to_owned(),
+                public_key: "ed25519:98GtfF5gBPUvBWNgz8N8WNEjXRgBhFLuSQ5MnFDEjJ8x".to_owned(),
+                secret_key: "ed25519:4YdVWc7hgBUWwE9kXd4SPKmCztbGkMdHfZL2fDWw8L7gCJmrYcWAjcvK5Wek94aKSGBdLKHb7DaKoXudp6BnTqCb".to_owned(),
             }),
         }));
 
         // Default Starknet configuration (disabled by default, but with working credentials when enabled)
         drop(
             protocols.insert(
-                "starknet".to_string(),
+                "starknet".to_owned(),
                 ProtocolConfig {
                     enabled: false,
-                    network: "sepolia".to_string(),
+                    network: "sepolia".to_owned(),
                     rpc_url: "https://free-rpc.nethermind.io/sepolia-juno/"
                         .parse()
                         .unwrap(),
                     contract_id:
                         "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
-                            .to_string(),
+                            .to_owned(),
                     credentials: Some(ProtocolCredentials::Starknet {
                         account_id:
                             "0x01cf4d57ba01109f018dec3ea079a38fc08b0f8a78eed0d4c5e5fb22928dbc8c"
-                                .to_string(),
+                                .to_owned(),
                         public_key:
                             "0x02c5dbad71c92a45cc4b40573ae661f8147869a91d57b8d9b8f48c8af7f83159"
-                                .to_string(),
+                                .to_owned(),
                         secret_key:
                             "0x0178eb2a625c0a8d85b0a5fd69fc879f9884f5205ad9d1ba41db0d7d1a77950a"
-                                .to_string(),
+                                .to_owned(),
                     }),
                 },
             ),
@@ -103,19 +103,19 @@ impl Default for RelayerConfig {
         // Default ICP configuration (disabled by default, but with working credentials when enabled)
         drop(
             protocols.insert(
-                "icp".to_string(),
+                "icp".to_owned(),
                 ProtocolConfig {
                     enabled: false,
-                    network: "local".to_string(),
+                    network: "local".to_owned(),
                     rpc_url: "http://127.0.0.1:4943".parse().unwrap(),
-                    contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".to_string(),
+                    contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".to_owned(),
                     credentials: Some(ProtocolCredentials::Icp {
-                        account_id: "rdmx6-jaaaa-aaaaa-aaadq-cai".to_string(),
+                        account_id: "rdmx6-jaaaa-aaaaa-aaadq-cai".to_owned(),
                         public_key: "MCowBQYDK2VwAyEAL8XDEY1gGOWvv/0h01tW/ZV14qYY7GrHJF3pZoNxmHE="
-                            .to_string(),
+                            .to_owned(),
                         secret_key:
                             "MFECAQEwBQYDK2VwBCIEIJKDIfd1Ybt7xliQlRmXZGRWG8dJ1Dl9qKGT0pOhMwPjaE30"
-                                .to_string(),
+                                .to_owned(),
                     }),
                 },
             ),
@@ -124,17 +124,17 @@ impl Default for RelayerConfig {
         // Default Ethereum configuration (disabled by default, but with working credentials when enabled)
         drop(
             protocols.insert(
-                "ethereum".to_string(),
+                "ethereum".to_owned(),
                 ProtocolConfig {
                     enabled: false,
-                    network: "sepolia".to_string(),
+                    network: "sepolia".to_owned(),
                     rpc_url: "https://sepolia.drpc.org".parse().unwrap(),
-                    contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".to_string(),
+                    contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".to_owned(),
                     credentials: Some(ProtocolCredentials::Ethereum {
-                        account_id: "0x8ba1f109551bD432803012645Hac136c22C177ec".to_string(),
+                        account_id: "0x8ba1f109551bD432803012645Hac136c22C177ec".to_owned(),
                         secret_key:
                             "0ac1e735c1ca39db4a9c54d4edf2c6a50a75a3b3dce1cd2a64e8f5a44d1e2d2c"
-                                .to_string(),
+                                .to_owned(),
                     }),
                 },
             ),

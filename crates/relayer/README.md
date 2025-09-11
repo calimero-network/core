@@ -54,24 +54,40 @@ To customize protocols or credentials, use environment variables:
 # Basic relayer settings
 export RELAYER_LISTEN="0.0.0.0:63529"
 
-# Enable and configure Near protocol
+# Near Protocol Configuration
 export ENABLE_NEAR=true
 export NEAR_NETWORK="testnet"
 export NEAR_RPC_URL="https://rpc.testnet.near.org"
 export NEAR_CONTRACT_ID="calimero-context-config.testnet"
 export NEAR_ACCOUNT_ID="your-account.testnet"
-export NEAR_PUBLIC_KEY="ed25519:..."
-export NEAR_SECRET_KEY="ed25519:..."
+export NEAR_PUBLIC_KEY="ed25519:98GtfF5gBPUvBWNgz8N8WNEjXRgBhFLuSQ5MnFDEjJ8x"
+export NEAR_SECRET_KEY="ed25519:4YdVWc7hgBUWwE9kXd4SPKmCztbGkMdHfZL2fDWw8L7g..."
 
-# Enable and configure Starknet protocol
+# Starknet Protocol Configuration
 export ENABLE_STARKNET=true
 export STARKNET_NETWORK="sepolia"
 export STARKNET_RPC_URL="https://free-rpc.nethermind.io/sepolia-juno/"
-# ... other Starknet settings
+export STARKNET_CONTRACT_ID="0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
+export STARKNET_ACCOUNT_ID="0x01cf4d57ba01109f018dec3ea079a38fc08b0f8a78eed0d4c5e5fb22928dbc8c"
+export STARKNET_PUBLIC_KEY="0x02c5dbad71c92a45cc4b40573ae661f8147869a91d57b8d9b8f48c8af7f83159"
+export STARKNET_SECRET_KEY="0x0178eb2a625c0a8d85b0a5fd69fc879f9884f5205ad9d1ba41db0d7d1a77950a"
 
-# Similar for ICP and Ethereum
-export ENABLE_ICP=false
-export ENABLE_ETHEREUM=false
+# ICP Protocol Configuration
+export ENABLE_ICP=true
+export ICP_NETWORK="local"
+export ICP_RPC_URL="http://127.0.0.1:4943"
+export ICP_CONTRACT_ID="bkyz2-fmaaa-aaaaa-qaaaq-cai"
+export ICP_ACCOUNT_ID="rdmx6-jaaaa-aaaaa-aaadq-cai"
+export ICP_PUBLIC_KEY="MCowBQYDK2VwAyEAL8XDEY1gGOWvv/0h01tW/ZV14qYY7GrHJF3pZoNxmHE="
+export ICP_SECRET_KEY="MFECAQEwBQYDK2VwBCIEIJKDIfd1Ybt7xliQlRmXZGRWG8dJ1Dl9qKGT0pOhMwPjaE30"
+
+# Ethereum Protocol Configuration
+export ENABLE_ETHEREUM=true
+export ETHEREUM_NETWORK="sepolia"
+export ETHEREUM_RPC_URL="https://sepolia.drpc.org"
+export ETHEREUM_CONTRACT_ID="0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB"
+export ETHEREUM_ACCOUNT_ID="0x8ba1f109551bD432803012645Hac136c22C177ec"
+export ETHEREUM_SECRET_KEY="0ac1e735c1ca39db4a9c54d4edf2c6a50a75a3b3dce1cd2a64e8f5a44d1e2d2c"
 ```
 
 #### 3. Configuration File
@@ -117,35 +133,41 @@ The relayer functionality has been **completely removed from merod** and is now 
 calimero-relayer --listen 127.0.0.1:63529
 ```
 
-## Docker Usage
-
-The relayer can be run in Docker:
-
-```bash
-# Build the image
-docker build -f Dockerfile.relayer -t calimero-relayer .
-
-# Run with environment variables
-docker run -p 63529:63529 \
-  -e ENABLE_NEAR=true \
-  -e NEAR_ACCOUNT_ID=your-account.testnet \
-  -e NEAR_PUBLIC_KEY=ed25519:... \
-  -e NEAR_SECRET_KEY=ed25519:... \
-  calimero-relayer
-
-# Run with config file
-docker run -p 63529:63529 \
-  -v $(pwd)/relayer-config.toml:/data/config.toml \
-  calimero-relayer --config /data/config.toml
-```
 
 ## Environment Variables
 
+### General Settings
 - `RELAYER_LISTEN`: Listen address (default: "0.0.0.0:63529")
 - `PORT`: Override port (used by `addr_from_str` parser)
 - `RUST_LOG`: Set logging level (e.g., `RUST_LOG=info`)
 
-For each protocol, use the pattern: `ENABLE_{PROTOCOL}`, `{PROTOCOL}_NETWORK`, `{PROTOCOL}_RPC_URL`, etc.
+### Protocol Configuration Pattern
+For each protocol (`NEAR`, `STARKNET`, `ICP`, `ETHEREUM`), use these patterns:
+
+**Basic Protocol Settings:**
+- `ENABLE_{PROTOCOL}`: Enable/disable protocol (true/false)
+- `{PROTOCOL}_NETWORK`: Network name (e.g., "testnet", "mainnet", "local")
+- `{PROTOCOL}_RPC_URL`: RPC endpoint URL
+- `{PROTOCOL}_CONTRACT_ID`: Contract address/ID
+
+**Protocol Credentials:**
+- `{PROTOCOL}_ACCOUNT_ID`: Account address/ID/principal
+- `{PROTOCOL}_PUBLIC_KEY`: Public key (Near, Starknet, ICP only)
+- `{PROTOCOL}_SECRET_KEY`: Private/secret key
+
+**Examples:**
+```bash
+# Near
+ENABLE_NEAR=true
+NEAR_ACCOUNT_ID=dev-1642425627065-33437663923179
+NEAR_PUBLIC_KEY=ed25519:98GtfF5gBPUvBWNgz8N8WNEjXRgBhFLuSQ5MnFDEjJ8x
+NEAR_SECRET_KEY=ed25519:4YdVWc7hgBUWwE9kXd4SPKmCztbGkMdHfZL2fDWw8L7g...
+
+# Ethereum  
+ENABLE_ETHEREUM=true
+ETHEREUM_ACCOUNT_ID=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+ETHEREUM_SECRET_KEY=ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
 
 ## API
 
