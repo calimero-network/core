@@ -83,7 +83,7 @@ fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> eyre
             let json_str = String::from_utf8(data)?;
 
             // Validate JSON
-            serde_json::from_str::<serde_json::Value>(&json_str)?;
+            drop(serde_json::from_str::<serde_json::Value>(&json_str)?);
 
             json_str
         }
@@ -102,7 +102,7 @@ fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> eyre
         Some(path) => path.to_path_buf(),
         None => {
             let mut path = wasm_file.clone();
-            path.set_extension("abi.json");
+            let _ = path.set_extension("abi.json");
             path
         }
     };
