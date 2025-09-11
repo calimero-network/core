@@ -10,6 +10,8 @@ pub mod client;
 #[cfg(feature = "icp")]
 pub mod icp;
 pub mod repr;
+#[cfg(feature = "client")]
+pub mod schema;
 pub mod types;
 
 use repr::Repr;

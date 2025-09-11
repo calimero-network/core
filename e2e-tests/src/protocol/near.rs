@@ -83,24 +83,24 @@ impl NearSandboxEnvironment {
 
         Ok(vec![
             format!(
-                "context.config.near.contract_id=\"{}\"",
+                "protocols.near.contract_id=\"{}\"",
                 self.contract.as_account().id()
             ),
-            format!("context.config.near.signer=\"{}\"", "self"),
+            format!("protocols.near.signer=\"{}\"", "self"),
             format!(
-                "context.config.signer.self.near.testnet.rpc_url=\"{}\"",
+                "protocols.signer.self.near.testnet.rpc_url=\"{}\"",
                 self.worker.rpc_addr()
             ),
             format!(
-                "context.config.signer.self.near.testnet.account_id=\"{}\"",
+                "protocols.signer.self.near.testnet.account_id=\"{}\"",
                 near_account.id()
             ),
             format!(
-                "context.config.signer.self.near.testnet.public_key=\"{}\"",
+                "protocols.signer.self.near.testnet.public_key=\"{}\"",
                 near_secret_key.public_key()
             ),
             format!(
-                "context.config.signer.self.near.testnet.secret_key=\"{}\"",
+                "protocols.signer.self.near.testnet.secret_key=\"{}\"",
                 near_secret_key
             ),
         ])

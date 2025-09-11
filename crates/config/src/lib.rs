@@ -8,18 +8,23 @@ use calimero_server::ws::WsConfig;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read_to_string, write};
 
+use crate::serde_duration::DurationSchema;
+use crate::serde_identity::KeypairSchema;
+
 pub const CONFIG_FILE: &str = "config.toml";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct ConfigFile {
     #[serde(
         with = "serde_identity",
         default = "libp2p_identity::Keypair::generate_ed25519"
     )]
+    #[schemars(with = "KeypairSchema")]
     pub identity: libp2p_identity::Keypair,
 
     #[serde(flatten)]
@@ -32,19 +37,140 @@ pub struct ConfigFile {
     pub blobstore: BlobStoreConfig,
 
     pub context: ContextConfig,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocols: Option<ProtocolsConfig>,
+
+    // Support both old and new format during migration
+    #[serde(rename = "context", default, skip_serializing_if = "Option::is_none")]
+    pub old_context: Option<OldContextConfig>,
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct OldContextConfig {
+    #[serde(rename = "config", default, skip_serializing_if = "Option::is_none")]
+    pub old_protocols: Option<OldProtocolsConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct OldProtocolsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ethereum: Option<EthereumProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near: Option<NearProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icp: Option<IcpProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stellar: Option<StellarProtocolConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct ProtocolsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ethereum: Option<EthereumProtocolConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icp: Option<IcpProtocolConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near: Option<NearProtocolConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stellar: Option<StellarProtocolConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct EthereumProtocolConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+// Apply the same pattern to other protocol config structs:
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct IcpProtocolConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct NearProtocolConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
+pub struct StellarProtocolConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SyncConfig {
     #[serde(rename = "timeout_ms", with = "serde_duration")]
+    #[schemars(with = "DurationSchema")]
     pub timeout: Duration,
     #[serde(rename = "interval_ms", with = "serde_duration")]
+    #[schemars(with = "DurationSchema")]
     pub interval: Duration,
     #[serde(rename = "frequency_ms", with = "serde_duration")]
+    #[schemars(with = "DurationSchema")]
     pub frequency: Duration,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub swarm: SwarmConfig,
@@ -75,9 +201,10 @@ impl NetworkConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct ServerConfig {
+    #[schemars(with = "MultiaddrWrapper")]
     pub listen: Vec<Multiaddr>,
 
     #[serde(default)]
@@ -89,6 +216,11 @@ pub struct ServerConfig {
     #[serde(default)]
     pub websocket: Option<WsConfig>,
 }
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(transparent)]
+#[schemars(description = "A libp2p multiaddress string")]
+pub struct MultiaddrWrapper(#[schemars(with = "String")] pub Multiaddr);
 
 impl ServerConfig {
     #[must_use]
@@ -107,9 +239,10 @@ impl ServerConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct DataStoreConfig {
+    #[schemars(with = "Utf8PathBufWrapper")]
     pub path: Utf8PathBuf,
 }
 
@@ -120,11 +253,17 @@ impl DataStoreConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct BlobStoreConfig {
+    #[schemars(with = "Utf8PathBufWrapper")]
     pub path: Utf8PathBuf,
 }
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(transparent)]
+#[schemars(description = "A libp2p multiaddress string")]
+pub struct Utf8PathBufWrapper(#[schemars(with = "String")] pub Utf8PathBuf);
 
 impl BlobStoreConfig {
     #[must_use]
@@ -150,6 +289,8 @@ impl ConfigFile {
             datastore,
             blobstore,
             context,
+            protocols: None,
+            old_context: None,
         }
     }
 
@@ -167,12 +308,33 @@ impl ConfigFile {
             )
         })?;
 
-        toml::from_str(&content).map_err(Into::into)
+        let mut config: Self = toml::from_str(&content)?;
+
+        // Migrate old context.config.* format to new protocols.* format
+        if let Some(old_context) = config.old_context.take() {
+            if let Some(old_protocols) = old_context.old_protocols {
+                if config.protocols.is_none() {
+                    config.protocols = Some(ProtocolsConfig {
+                        ethereum: old_protocols.ethereum,
+                        near: old_protocols.near,
+                        icp: old_protocols.icp,
+                        stellar: old_protocols.stellar,
+                    });
+                }
+            }
+        }
+
+        Ok(config)
     }
 
-    pub async fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
+    pub async fn save(&mut self, dir: &Utf8Path) -> EyreResult<()> {
         let path = dir.join(CONFIG_FILE);
-        let content = toml::to_string_pretty(self)?;
+
+        // Create a copy without the old context field for serialization
+        let config_for_serialization = self;
+        config_for_serialization.old_context = None;
+
+        let content = toml::to_string_pretty(&config_for_serialization)?;
 
         write(&path, content).await.wrap_err_with(|| {
             format!(
@@ -188,6 +350,7 @@ impl ConfigFile {
 mod serde_duration {
     use core::time::Duration;
 
+    use schemars::JsonSchema;
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
@@ -203,12 +366,17 @@ mod serde_duration {
     {
         u64::deserialize(deserializer).map(Duration::from_millis)
     }
+
+    #[derive(JsonSchema)]
+    #[serde(transparent)]
+    pub struct DurationSchema(#[schemars(with = "u64")] pub Duration);
 }
 
 pub mod serde_identity {
     use core::fmt::{self, Formatter};
 
     use libp2p_identity::Keypair;
+    use schemars::JsonSchema;
     use serde::de::{self, MapAccess};
     use serde::ser::{self, SerializeMap};
     use serde::{Deserializer, Serializer};
@@ -276,4 +444,8 @@ pub mod serde_identity {
 
         deserializer.deserialize_struct("Keypair", &["peer_id", "keypair"], IdentityVisitor)
     }
+
+    #[derive(JsonSchema, Debug)]
+    #[serde(transparent)]
+    pub struct KeypairSchema(#[schemars(with = "String")] pub Keypair);
 }

@@ -320,7 +320,7 @@ impl InitCommand {
             params: client_params,
         };
 
-        let config = ConfigFile::new(
+        let mut config = ConfigFile::new(
             identity,
             NetworkConfig::new(
                 SwarmConfig::new(listen),

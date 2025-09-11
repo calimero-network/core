@@ -75,23 +75,23 @@ impl EthereumSandboxEnvironment {
     pub fn node_args(&self) -> Vec<String> {
         vec![
             // Protocol and network configuration
-            format!("context.config.ethereum.network=\"{}\"", "sepolia"),
+            format!("protocols.ethereum.network=\"{}\"", "sepolia"),
             format!(
-                "context.config.ethereum.contract_id=\"{}\"",
+                "protocols.ethereum.contract_id=\"{}\"",
                 self.config.context_config_contract_id
             ),
             // Signer configuration
-            format!("context.config.ethereum.signer=\"{}\"", "self"),
+            format!("protocols.ethereum.signer=\"{}\"", "self"),
             format!(
-                "context.config.signer.self.ethereum.sepolia.rpc_url=\"{}\"",
+                "protocols.signer.self.ethereum.sepolia.rpc_url=\"{}\"",
                 self.config.rpc_url
             ),
             format!(
-                "context.config.signer.self.ethereum.sepolia.account_id=\"{}\"",
+                "protocols.signer.self.ethereum.sepolia.account_id=\"{}\"",
                 self.config.account_id
             ),
             format!(
-                "context.config.signer.self.ethereum.sepolia.secret_key=\"{}\"",
+                "protocols.signer.self.ethereum.sepolia.secret_key=\"{}\"",
                 self.config.secret_key
             ),
         ]
