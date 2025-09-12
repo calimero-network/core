@@ -63,7 +63,7 @@ impl Registers {
             Entry::Vacant(entry) => {
                 let _ = entry.insert(data.into());
             }
-        };
+        }
 
         Ok(())
     }

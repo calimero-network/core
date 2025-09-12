@@ -1,19 +1,18 @@
 #![allow(single_use_lifetimes, unused_lifetimes, reason = "False positive")]
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
+use core::mem::MaybeUninit;
 use core::num::NonZeroU64;
 use core::{fmt, slice};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Cursor, Read};
-use std::mem::MaybeUninit;
+use std::io::{Cursor, Error, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::{blobs::BlobId, context::ContextId};
 use calimero_sys as sys;
 use futures_util::{StreamExt, TryStreamExt};
 use ouroboros::self_referencing;
@@ -86,7 +85,7 @@ impl Default for VMLimits {
             t.expect("is valid")
         }
 
-        VMLimits {
+        Self {
             max_memory_pages: 1 << 10,                               // 1 KiB (64 KiB?)
             max_stack_size: 200 << 10,                               // 200 KiB
             max_registers: 100,                                      //
@@ -119,8 +118,7 @@ struct BlobWriteHandle {
 struct BlobReadHandle {
     blob_id: BlobId,
     // Stream state
-    stream:
-        Option<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin>>,
+    stream: Option<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, Error>> + Unpin>>,
     // Cursor for current storage chunk - automatic position tracking!
     current_chunk_cursor: Option<Cursor<Vec<u8>>>,
     position: u64,
@@ -252,10 +250,6 @@ pub struct VMHostFunctions<'a> {
 }
 
 impl VMHostFunctions<'_> {
-    #[allow(
-        clippy::mut_from_ref,
-        reason = "We need to be able to modify self while referencing self"
-    )]
     fn read_slice(&self, slice: &sys::Buffer<'_>) -> &mut [u8] {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
@@ -522,12 +516,11 @@ impl VMHostFunctions<'_> {
             self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, evicted))?;
 
             return Ok(1);
-        };
+        }
 
         Ok(0)
     }
 
-    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
     pub fn fetch(
         &mut self,
         url_ptr: u64,
@@ -633,7 +626,7 @@ impl VMHostFunctions<'_> {
     /// # Parameters
     ///
     /// * `actions_ptr` - Pointer to the start of the action data in WASM
-    ///                   memory.
+    ///   memory.
     /// * `actions_len` - Length of the action data.
     /// * `id_ptr`      - Pointer to the start of the id data in WASM memory.
     /// * `id_len`      - Length of the action data. This should be 32 bytes.
@@ -671,9 +664,16 @@ impl VMHostFunctions<'_> {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
         }
 
-        if self.borrow_logic().blob_handles.len()
-            >= self.borrow_logic().limits.max_blob_handles as usize
-        {
+        // The error should never happen as unlikely we have limits set with a value >= u32::MAX.
+        // Still, the check is essential as downcasting on 32-bit systems might lead to
+        // undefined behavior.
+        let Ok(limits_max_blob_handles) =
+            usize::try_from(self.borrow_logic().limits.max_blob_handles)
+        else {
+            return Err(VMLogicError::HostError(HostError::IntegerOverflow));
+        };
+
+        if self.borrow_logic().blob_handles.len() >= limits_max_blob_handles {
             return Err(VMLogicError::HostError(HostError::TooManyBlobHandles {
                 max: self.borrow_logic().limits.max_blob_handles,
             }));
@@ -685,7 +685,10 @@ impl VMHostFunctions<'_> {
             };
 
             let fd = logic.next_blob_fd;
-            logic.next_blob_fd += 1;
+            logic.next_blob_fd = logic
+                .next_blob_fd
+                .checked_add(1)
+                .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
 
             let (data_sender, data_receiver) = mpsc::unbounded_channel();
 
@@ -693,7 +696,7 @@ impl VMHostFunctions<'_> {
                 let stream = UnboundedReceiverStream::new(data_receiver);
 
                 let byte_stream =
-                    stream.map(|data: Vec<u8>| Ok::<bytes::Bytes, std::io::Error>(data.into()));
+                    stream.map(|data: Vec<u8>| Ok::<bytes::Bytes, Error>(data.into()));
                 let reader = byte_stream.into_async_read();
 
                 node_client.add_blob(reader, None, None).await
@@ -754,7 +757,9 @@ impl VMHostFunctions<'_> {
                         .send(data.clone())
                         .map_err(|_| VMLogicError::HostError(HostError::InvalidBlobHandle))?;
                 }
-                _ => return Err(VMLogicError::HostError(HostError::InvalidBlobHandle)),
+                BlobHandle::Read(_) => {
+                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                }
             }
             Ok::<(), VMLogicError>(())
         })?;
@@ -824,6 +829,7 @@ impl VMHostFunctions<'_> {
             .block_on(node_client.get_blob_info(blob_id))
             .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
             .ok_or_else(|| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+
         // Announce blob to network
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -846,9 +852,16 @@ impl VMHostFunctions<'_> {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
         }
 
-        if self.borrow_logic().blob_handles.len()
-            >= self.borrow_logic().limits.max_blob_handles as usize
-        {
+        // The error should never happen as unlikely we have limits set with a value >= u32::MAX.
+        // Still, the check is essential as downcasting on 32-bit systems might lead to
+        // undefined behavior.
+        let Ok(limits_max_blob_handles) =
+            usize::try_from(self.borrow_logic().limits.max_blob_handles)
+        else {
+            return Err(VMLogicError::HostError(HostError::IntegerOverflow));
+        };
+
+        if self.borrow_logic().blob_handles.len() >= limits_max_blob_handles {
             return Err(VMLogicError::HostError(HostError::TooManyBlobHandles {
                 max: self.borrow_logic().limits.max_blob_handles,
             }));
@@ -856,9 +869,12 @@ impl VMHostFunctions<'_> {
 
         let blob_id = BlobId::from(*self.read_sized::<32>(&blob_id)?);
 
-        let fd = self.with_logic_mut(|logic| {
+        let fd = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
             let fd = logic.next_blob_fd;
-            logic.next_blob_fd += 1;
+            logic.next_blob_fd = logic
+                .next_blob_fd
+                .checked_add(1)
+                .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
 
             let handle = BlobHandle::Read(BlobReadHandle {
                 blob_id,
@@ -866,9 +882,10 @@ impl VMHostFunctions<'_> {
                 current_chunk_cursor: None,
                 position: 0,
             });
-            let _ignored = logic.blob_handles.insert(fd, handle);
-            fd
-        });
+
+            drop(logic.blob_handles.insert(fd, handle));
+            Ok(fd)
+        })?;
 
         Ok(fd)
     }
@@ -897,7 +914,13 @@ impl VMHostFunctions<'_> {
             return Ok(0);
         }
 
-        let mut output_buffer = Vec::with_capacity(data_len as usize);
+        // The error should never happen as we already validated the buffer size before.
+        // Still, the check is essential as downcasting on 32-bit systems might lead to
+        // undefined behavior.
+        let Ok(data_len) = usize::try_from(data_len) else {
+            return Err(VMLogicError::HostError(HostError::IntegerOverflow));
+        };
+        let mut output_buffer = Vec::with_capacity(data_len);
 
         let bytes_read = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
             let handle = logic
@@ -912,11 +935,9 @@ impl VMHostFunctions<'_> {
                 }
             };
 
-            let needed = data_len as usize;
-
             // First, try to read from current chunk cursor if available
             if let Some(cursor) = &mut read_handle.current_chunk_cursor {
-                let mut temp_buffer = vec![0u8; needed];
+                let mut temp_buffer = vec![0_u8; data_len];
                 match cursor.read(&mut temp_buffer) {
                     Ok(bytes_from_cursor) => {
                         output_buffer.extend_from_slice(&temp_buffer[..bytes_from_cursor]);
@@ -929,8 +950,12 @@ impl VMHostFunctions<'_> {
                         }
 
                         // If we satisfied the request entirely from cursor, we're done
-                        if output_buffer.len() >= needed {
-                            read_handle.position += output_buffer.len() as u64;
+                        if output_buffer.len() >= data_len {
+                            read_handle.position = read_handle
+                                .position
+                                .checked_add(output_buffer.len() as u64)
+                                .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
+
                             return Ok(output_buffer.len() as u64);
                         }
                     }
@@ -946,31 +971,33 @@ impl VMHostFunctions<'_> {
                     .block_on(node_client.get_blob(&read_handle.blob_id, None))
                     .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
-                match blob_stream {
-                    Some(stream) => {
-                        let mapped_stream = stream.map(|result| match result {
-                            Ok(chunk) => Ok(bytes::Bytes::copy_from_slice(&chunk)),
-                            Err(_) => Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "blob read error",
-                            )),
-                        });
-                        read_handle.stream = Some(Box::new(mapped_stream));
-                    }
-                    None => {
-                        read_handle.position += output_buffer.len() as u64;
-                        return Ok(output_buffer.len() as u64);
-                    }
+                if let Some(stream) = blob_stream {
+                    let mapped_stream = stream.map(|result| {
+                        result
+                            .map(|chunk| bytes::Bytes::copy_from_slice(&chunk))
+                            .map_err(|_| Error::other("blob read error"))
+                    });
+                    read_handle.stream = Some(Box::new(mapped_stream));
+                } else {
+                    read_handle.position = read_handle
+                        .position
+                        .checked_add(output_buffer.len() as u64)
+                        .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
+
+                    return Ok(output_buffer.len() as u64);
                 }
             }
 
             if let Some(stream) = &mut read_handle.stream {
                 tokio::runtime::Handle::current().block_on(async {
-                    while output_buffer.len() < needed {
+                    while output_buffer.len() < data_len {
                         match stream.next().await {
                             Some(Ok(chunk)) => {
                                 let chunk_bytes = chunk.as_ref();
-                                let remaining_needed = needed - output_buffer.len();
+
+                                let remaining_needed = data_len
+                                    .checked_sub(output_buffer.len())
+                                    .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
 
                                 if chunk_bytes.len() <= remaining_needed {
                                     output_buffer.extend_from_slice(chunk_bytes);
@@ -996,7 +1023,10 @@ impl VMHostFunctions<'_> {
                 })?;
             }
 
-            read_handle.position += output_buffer.len() as u64;
+            read_handle.position = read_handle
+                .position
+                .checked_add(output_buffer.len() as u64)
+                .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
             Ok(output_buffer.len() as u64)
         })?;
 

@@ -13,8 +13,7 @@ thread_local! {
     static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
 }
 
-impl<'a> VMLogic<'a> {
-    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
+impl VMLogic<'_> {
     pub fn imports(&mut self, store: &mut Store) -> Imports {
         imports! {
             store;
