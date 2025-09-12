@@ -35,20 +35,22 @@ use registers::Registers;
 
 pub type VMLogicResult<T, E = VMLogicError> = Result<T, E>;
 
+const DIGEST_SIZE: usize = 32;
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct VMContext<'a> {
     pub input: Cow<'a, [u8]>,
-    pub context_id: [u8; 32],
-    pub executor_public_key: [u8; 32],
+    pub context_id: [u8; DIGEST_SIZE],
+    pub executor_public_key: [u8; DIGEST_SIZE],
 }
 
 impl<'a> VMContext<'a> {
     #[must_use]
     pub const fn new(
         input: Cow<'a, [u8]>,
-        context_id: [u8; 32],
-        executor_public_key: [u8; 32],
+        context_id: [u8; DIGEST_SIZE],
+        executor_public_key: [u8; DIGEST_SIZE],
     ) -> Self {
         Self {
             input,
@@ -137,10 +139,10 @@ pub struct VMLogic<'a> {
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
     events: Vec<Event>,
-    root_hash: Option<[u8; 32]>,
+    root_hash: Option<[u8; DIGEST_SIZE]>,
     artifact: Vec<u8>,
-    proposals: BTreeMap<[u8; 32], Vec<u8>>,
-    approvals: Vec<[u8; 32]>,
+    proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
+    approvals: Vec<[u8; DIGEST_SIZE]>,
 
     // Blob functionality
     node_client: Option<NodeClient>,
@@ -200,11 +202,11 @@ pub struct Outcome {
     pub returns: VMLogicResult<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
     pub events: Vec<Event>,
-    pub root_hash: Option<[u8; 32]>,
+    pub root_hash: Option<[u8; DIGEST_SIZE]>,
     pub artifact: Vec<u8>,
-    pub proposals: BTreeMap<[u8; 32], Vec<u8>>,
+    pub proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
     //list of ids for approved proposals
-    pub approvals: Vec<[u8; 32]>,
+    pub approvals: Vec<[u8; DIGEST_SIZE]>,
     // execution runtime
     // current storage usage of the app
 }
@@ -445,7 +447,7 @@ impl VMHostFunctions<'_> {
         let root_hash = unsafe { self.read_typed::<sys::Buffer<'_>>(root_hash_ptr)? };
         let artifact = unsafe { self.read_typed::<sys::Buffer<'_>>(artifact_ptr)? };
 
-        let root_hash = *self.read_guest_memory_sized::<32>(&root_hash)?;
+        let root_hash = *self.read_guest_memory_sized::<DIGEST_SIZE>(&root_hash)?;
         let artifact = self.read_guest_memory_slice(&artifact).to_vec();
 
         self.with_logic_mut(|logic| {
@@ -652,7 +654,7 @@ impl VMHostFunctions<'_> {
         let guest_memory_id = unsafe { self.read_typed::<sys::BufferMut<'_>>(id_ptr)? };
         let actions = unsafe { self.read_typed::<sys::Buffer<'_>>(actions_ptr)? };
 
-        let mut proposal_id = [0u8; 32];
+        let mut proposal_id = [0u8; DIGEST_SIZE];
         rand::thread_rng().fill_bytes(&mut proposal_id);
 
         // Record newly created ID to guest memory
@@ -667,7 +669,7 @@ impl VMHostFunctions<'_> {
 
     pub fn approve_proposal(&mut self, approval_ptr: u64) -> VMLogicResult<()> {
         let approval = unsafe { self.read_typed::<sys::Buffer<'_>>(approval_ptr)? };
-        let approval = *self.read_guest_memory_sized::<32>(&approval)?;
+        let approval = *self.read_guest_memory_sized::<DIGEST_SIZE>(&approval)?;
 
         let _ignored = self.with_logic_mut(|logic| logic.approvals.push(approval));
         Ok(())
@@ -790,7 +792,7 @@ impl VMHostFunctions<'_> {
     pub fn blob_close(&mut self, fd: u64, blob_id_ptr: u64) -> VMLogicResult<u32> {
         let guest_blob_id_ptr = unsafe { self.read_typed::<sys::BufferMut<'_>>(blob_id_ptr)? };
 
-        if guest_blob_id_ptr.len() != 32 {
+        if guest_blob_id_ptr.len() != DIGEST_SIZE as u64 {
             return Err(HostError::InvalidMemoryAccess.into());
         }
 
@@ -842,8 +844,8 @@ impl VMHostFunctions<'_> {
         let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(blob_id_ptr)? };
         let context_id = unsafe { self.read_typed::<sys::Buffer<'_>>(context_id_ptr)? };
 
-        let blob_id = BlobId::from(*self.read_guest_memory_sized::<32>(&blob_id)?);
-        let context_id = ContextId::from(*self.read_guest_memory_sized::<32>(&context_id)?);
+        let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
+        let context_id = ContextId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&context_id)?);
 
         // Get blob metadata to get size
         let blob_info = tokio::runtime::Handle::current()
@@ -888,7 +890,7 @@ impl VMHostFunctions<'_> {
             }));
         }
 
-        let blob_id = BlobId::from(*self.read_guest_memory_sized::<32>(&blob_id)?);
+        let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
 
         let fd = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
             let fd = logic.next_blob_fd;
@@ -1115,7 +1117,7 @@ mod tests {
     // ensuring that all lifetimes are valid.
     macro_rules! setup_vm {
         ($storage:expr, $limits:expr, $input:expr) => {{
-            let context = VMContext::new(Cow::Owned($input), [0u8; 32], [0u8; 32]);
+            let context = VMContext::new(Cow::Owned($input), [0u8; DIGEST_SIZE], [0u8; DIGEST_SIZE]);
             let mut store = Store::default();
             let memory = Memory::new(&mut store, MemoryType::new(1, None, false)).unwrap();
             let mut logic = VMLogic::new($storage, context, $limits, None);
@@ -1236,8 +1238,8 @@ mod tests {
     /// This test verifies that the guest can request and receive context and executor IDs.
     #[test]
     fn test_context_and_executor_id() {
-        let context_id = [3u8; 32];
-        let executor_id = [5u8; 32];
+        let context_id = [3u8; DIGEST_SIZE];
+        let executor_id = [5u8; DIGEST_SIZE];
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
         let context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
@@ -1610,7 +1612,7 @@ mod tests {
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
-        let root_hash = [1u8; 32];
+        let root_hash = [1u8; DIGEST_SIZE];
         let artifact = vec![1, 2, 3];
         let root_hash_ptr = 200u64;
         let artifact_ptr = 300u64;
@@ -1862,7 +1864,7 @@ mod tests {
         let id_out_ptr = 300u64;
         let id_buf_ptr = 32u64;
         // Guest: prepare the descriptor for the destination buffer so host can write there.
-        prepare_guest_buf_descriptor(&host, id_buf_ptr, id_out_ptr, 32);
+        prepare_guest_buf_descriptor(&host, id_buf_ptr, id_out_ptr, DIGEST_SIZE as u64);
         // Guest: send proposal to host with actions `actions_buf_ptr` and get back the proposal ID
         // in `id_buf_ptr`.
         host.send_proposal(actions_buf_ptr, id_buf_ptr).unwrap();
@@ -1878,7 +1880,7 @@ mod tests {
 
         // Test approving a proposal.
         // Approval ID is the Answer to the Ultimate Question of Life, the Universe, and Everything.
-        let approval_id = [42u8; 32];
+        let approval_id = [42u8; DIGEST_SIZE];
         let approval_ptr = 500u64;
         // Write approval to guest memory.
         host.borrow_memory()
@@ -2002,11 +2004,13 @@ mod tests {
         // Guest: ask host to read slice from the `buffer` located in guest memory.
         let result_slice = host.read_guest_memory_slice(&buffer);
         assert_eq!(result_slice, expected_str.as_bytes());
-        //// Host: modify the memory (this could happen accidentally and not intended).
-        //result_slice[0] = result_slice[0] + 1;
-        //for value in result_slice.iter_mut() {
-        //    *value += 1;
-        //}
+
+        // Now, this code won't be compilable as we get an immutable ref.
+        // Host: modify the memory (this could happen accidentally and not intended).
+        // ```compile_fail
+        // for value in result_slice.iter() {
+        // }
+        // ```
 
         // Guest: ask host to read str from the `buffer` located in guest memory.
         let result_str = host.read_guest_memory_str(&buffer).unwrap();
@@ -2047,7 +2051,7 @@ mod tests {
         let host = logic.host_functions(store.as_store_mut());
 
         // Test success case.
-        let correct_data = [42u8; 32];
+        let correct_data = [42u8; DIGEST_SIZE];
         let data_ptr_ok = 100u64;
         // Write correct data to guest memory.
         host.borrow_memory()
@@ -2060,7 +2064,7 @@ mod tests {
         // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
         // do internally.
         let buffer_ok = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_ok).unwrap() };
-        let result_sized_ok = host.read_guest_memory_sized::<32>(&buffer_ok).unwrap();
+        let result_sized_ok = host.read_guest_memory_sized::<DIGEST_SIZE>(&buffer_ok).unwrap();
         assert_eq!(result_sized_ok, &correct_data);
 
         // Test failure case (incorrect length).
@@ -2083,7 +2087,7 @@ mod tests {
         // do internally.
         let buffer_err = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_err).unwrap() };
         // Guest: ask host to read the guest memory sized.
-        let err = host.read_guest_memory_sized::<32>(&buffer_err).unwrap_err();
+        let err = host.read_guest_memory_sized::<DIGEST_SIZE>(&buffer_err).unwrap_err();
         assert!(matches!(
             err,
             VMLogicError::HostError(HostError::InvalidMemoryAccess)
