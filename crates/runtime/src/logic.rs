@@ -1956,6 +1956,39 @@ mod tests {
         assert_eq!(result_slice, expected_str.as_bytes());
     }
 
+    /// Verifies the `read_slice` function can't modify the guest buffer.
+    #[test]
+    fn test_private_read_slice_unmutable() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        let expected_str = "hello world";
+        let data_ptr = 100u64;
+        // Write msg to guest memory.
+        write_str(&host, data_ptr, expected_str);
+        let buf_ptr = 16u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, expected_str.len() as u64);
+
+        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
+        // do internally.
+        let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+
+        // Guest: ask host to read slice from the `buffer` located in guest memory.
+        let result_slice = host.read_slice(&buffer);
+        assert_eq!(result_slice, expected_str.as_bytes());
+        // Host: modify the memory (this could happen accidentally and not intended).
+        for value in result_slice.iter_mut() {
+            *value += 1;
+        }
+
+        // Guest: ask host to read str from the `buffer` located in guest memory.
+        let result_str = host.read_str(&buffer).unwrap();
+        assert_eq!(result_str, expected_str);
+    }
+
     /// Verifies the error handling of the private `read_str` function for invalid UTF-8.
     #[test]
     fn test_private_read_str_invalid_utf8() {
