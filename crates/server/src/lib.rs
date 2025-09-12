@@ -225,7 +225,7 @@ pub async fn start(
 }
 
 // Log request body if it is small (cap to avoid huge payloads), then restore the body for downstream handlers
-async fn log_request_body(mut req: axum::http::Request<Body>, next: Next) -> Response {
+async fn log_request_body(req: axum::http::Request<Body>, next: Next) -> Response {
     const MAX_LOG_BYTES: usize = 4096;
 
     // Read and buffer the body (with a size cap)

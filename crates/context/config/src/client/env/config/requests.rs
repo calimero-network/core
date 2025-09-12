@@ -216,7 +216,7 @@ impl<'a> RevokeCapabilitiesRequest<'a> {
 }
 
 /// Request to update proxy contract.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct UpdateProxyContractRequest {
     pub context_id: Repr<ContextId>,
 }

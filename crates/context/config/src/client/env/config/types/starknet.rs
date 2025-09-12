@@ -230,7 +230,7 @@ impl From<&crate::Capability> for Capability {
     }
 }
 
-#[derive(Debug, Encode)]
+#[derive(Debug, Copy, Clone, Encode)]
 pub struct CapabilityAssignment {
     pub member: ContextIdentity,
     pub capability: Capability,
@@ -428,7 +428,7 @@ impl<'a> Decode<'a> for EncodableString {
     }
 }
 
-#[derive(Debug, Encode)]
+#[derive(Debug, Copy, Clone, Encode)]
 pub struct StarknetMembersRequest {
     pub context_id: ContextId,
     pub offset: u32,
@@ -445,7 +445,7 @@ impl From<crate::client::env::config::requests::MembersRequest> for StarknetMemb
     }
 }
 
-#[derive(Debug, Encode)]
+#[derive(Debug, Copy, Clone, Encode)]
 pub struct StarknetApplicationRevisionRequest {
     pub context_id: ContextId,
 }
