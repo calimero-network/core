@@ -489,15 +489,15 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `location_ptr` - A pointer in guest memory to a `sys::Location` struct,
+    /// * `src_location_ptr` - A pointer in guest memory to a `sys::Location` struct,
     ///   containing file, line, and column information about the panic's origin.
     ///
     /// # Returns/Errors
     ///
     /// * `HostError::Panic` if the panic action was successfully executed.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
-    pub fn panic(&mut self, location_ptr: u64) -> VMLogicResult<()> {
-        let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
+    pub fn panic(&mut self, src_location_ptr: u64) -> VMLogicResult<()> {
+        let location = unsafe { self.read_typed::<sys::Location<'_>>(src_location_ptr)? };
 
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
         let line = location.line();
@@ -518,27 +518,27 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `msg_ptr` - A pointer in guest memory to a source-buffer `sys::Buffer` containing
+    /// * `src_panic_msg_ptr` - A pointer in guest memory to a source-buffer `sys::Buffer` containing
     /// the UTF-8 panic message.
-    /// * `location_ptr` - A pointer in guest memory to a `sys::Location` struct for the panic's origin.
+    /// * `src_location_ptr` - A pointer in guest memory to a `sys::Location` struct for the panic's origin.
     ///
     /// # Returns/Errors
     ///
     /// * `HostError::Panic` if the panic action was successfully executed.
     /// * `HostError::BadUTF8` if reading UTF8 string from guest memory fails.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
-    pub fn panic_utf8(&mut self, msg_ptr: u64, location_ptr: u64) -> VMLogicResult<()> {
-        let message_buf = unsafe { self.read_typed::<sys::Buffer<'_>>(msg_ptr)? };
-        let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
+    pub fn panic_utf8(&mut self, src_panic_msg_ptr: u64, src_location_ptr: u64) -> VMLogicResult<()> {
+        let panic_message_buf = unsafe { self.read_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
+        let location = unsafe { self.read_typed::<sys::Location<'_>>(src_location_ptr)? };
 
-        let message = self.read_guest_memory_str(&message_buf)?.to_owned();
+        let panic_message = self.read_guest_memory_str(&panic_message_buf)?.to_owned();
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
         Err(HostError::Panic {
             context: PanicContext::Guest,
-            message,
+            message: panic_message,
             location: Location::At { file, line, column },
         }
         .into())
@@ -567,7 +567,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `register_id` - The ID of the register to read from.
-    /// * `register_ptr` - A pointer in guest memory to a destination buffer `sys::BufferMut`
+    /// * `dest_data_ptr` - A pointer in guest memory to a destination buffer `sys::BufferMut`
     /// where the data should be copied.
     ///
     /// # Returns
@@ -579,16 +579,16 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidRegisterId` if the register does not exist.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
-    pub fn read_register(&self, register_id: u64, register_ptr: u64) -> VMLogicResult<u32> {
-        let register = unsafe { self.read_typed::<sys::BufferMut<'_>>(register_ptr)? };
+    pub fn read_register(&self, register_id: u64, dest_data_ptr: u64) -> VMLogicResult<u32> {
+        let dest_data = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
 
         let data = self.borrow_logic().registers.get(register_id)?;
 
-        if data.len() != usize::try_from(register.len()).map_err(|_| HostError::IntegerOverflow)? {
+        if data.len() != usize::try_from(dest_data.len()).map_err(|_| HostError::IntegerOverflow)? {
             return Ok(0);
         }
 
-        self.read_guest_memory_slice_mut(&register).copy_from_slice(data);
+        self.read_guest_memory_slice_mut(&dest_data).copy_from_slice(data);
 
         Ok(1)
     }
@@ -597,16 +597,16 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `register_id` - The ID of the destination register.
+    /// * `dest_register_id` - The ID of the destination register.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
-    pub fn context_id(&mut self, register_id: u64) -> VMLogicResult<()> {
+    pub fn context_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(logic.limits, register_id, logic.context.context_id)
+                .set(logic.limits, dest_register_id, logic.context.context_id)
         })
     }
 
@@ -614,16 +614,16 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `register_id` - The ID of the destination register.
+    /// * `dest_register_id` - The ID of the destination register.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
-    pub fn executor_id(&mut self, register_id: u64) -> VMLogicResult<()> {
+    pub fn executor_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(logic.limits, register_id, logic.context.executor_public_key)
+                .set(logic.limits, dest_register_id, logic.context.executor_public_key)
         })
     }
 
@@ -631,16 +631,16 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `register_id` - The ID of the destination register.
+    /// * `dest_register_id` - The ID of the destination register.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
-    pub fn input(&mut self, register_id: u64) -> VMLogicResult<()> {
+    pub fn input(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(logic.limits, register_id, &*logic.context.input)
+                .set(logic.limits, dest_register_id, &*logic.context.input)
         })?;
 
         Ok(())
@@ -653,14 +653,14 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `value_ptr` - A pointer in guest memory to a source-`sys::ValueReturn`, which is an
-    ///   enum indicating success or error, along with the data buffer.
+    /// * `src_value_ptr` - A pointer in guest memory to a source-`sys::ValueReturn`,
+    /// which is an enum indicating success or error, along with the data buffer.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
-    pub fn value_return(&mut self, value_ptr: u64) -> VMLogicResult<()> {
-        let result = unsafe { self.read_typed::<sys::ValueReturn<'_>>(value_ptr)? };
+    pub fn value_return(&mut self, src_value_ptr: u64) -> VMLogicResult<()> {
+        let result = unsafe { self.read_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
 
         let result = match result {
             sys::ValueReturn::Ok(value) => Ok(self.read_guest_memory_slice(&value).to_vec()),
@@ -677,15 +677,15 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `log_ptr` - A pointer in guest memory to a source-`sys::Buffer` containing the log message.
+    /// * `src_log_ptr` - A pointer in guest memory to a source-`sys::Buffer` containing the log message.
     ///
     /// # Errors
     ///
     /// * `HostError::LogsOverflow` if the maximum number of logs has been reached.
     /// * `HostError::BadUTF8` if the message is not a valid UTF-8 string.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
-    pub fn log_utf8(&mut self, log_ptr: u64) -> VMLogicResult<()> {
-        let buf = unsafe { self.read_typed::<sys::Buffer<'_>>(log_ptr)? };
+    pub fn log_utf8(&mut self, src_log_ptr: u64) -> VMLogicResult<()> {
+        let src_log_buf = unsafe { self.read_typed::<sys::Buffer<'_>>(src_log_ptr)? };
 
         let logic = self.borrow_logic();
 
@@ -695,7 +695,7 @@ impl VMHostFunctions<'_> {
             return Err(HostError::LogsOverflow.into());
         }
 
-        let message = self.read_guest_memory_str(&buf)?.to_owned();
+        let message = self.read_guest_memory_str(&src_log_buf)?.to_owned();
 
         self.with_logic_mut(|logic| logic.logs.push(message));
 
@@ -708,8 +708,8 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `event_ptr` - A pointer in guest memory to a `sys::Event` struct, which contains
-    ///   source-buffers for the event `kind` and `data`.
+    /// * `src_event_ptr` - A pointer in guest memory to a `sys::Event` struct, which
+    /// contains source-buffers for the event `kind` and `data`.
     ///
     /// # Errors
     ///
@@ -717,8 +717,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::EventDataSizeOverflow` if the event data is too large.
     /// * `HostError::EventsOverflow` if the maximum number of events has been reached.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
-    pub fn emit(&mut self, event_ptr: u64) -> VMLogicResult<()> {
-        let event = unsafe { self.read_typed::<sys::Event<'_>>(event_ptr)? };
+    pub fn emit(&mut self, src_event_ptr: u64) -> VMLogicResult<()> {
+        let event = unsafe { self.read_typed::<sys::Event<'_>>(src_event_ptr)? };
 
         let kind_len = event.kind().len();
         let data_len = event.data().len();
@@ -753,16 +753,16 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `root_hash_ptr` - A pointer to a source-buffer in guest memory containing the 32-byte state root hash.
-    /// * `artifact_ptr` - A pointer to a source-buffer in guest memory containing a binary artifact.
+    /// * `src_root_hash_ptr` - A pointer to a source-buffer in guest memory containing the 32-byte state root hash.
+    /// * `src_artifact_ptr` - A pointer to a source-buffer in guest memory containing a binary artifact.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if this function is called more than once or if memory
     /// access fails for descriptor buffers.
-    pub fn commit(&mut self, root_hash_ptr: u64, artifact_ptr: u64) -> VMLogicResult<()> {
-        let root_hash = unsafe { self.read_typed::<sys::Buffer<'_>>(root_hash_ptr)? };
-        let artifact = unsafe { self.read_typed::<sys::Buffer<'_>>(artifact_ptr)? };
+    pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
+        let root_hash = unsafe { self.read_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
+        let artifact = unsafe { self.read_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
 
         let root_hash = *self.read_guest_memory_sized::<DIGEST_SIZE>(&root_hash)?;
         let artifact = self.read_guest_memory_slice(&artifact).to_vec();
@@ -787,9 +787,9 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `key_ptr` - A pointer to the key source-buffer in guest memory.
-    /// * `register_id` - The ID of the destination register in host memory where to place
-    /// the value (if found).
+    /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
+    /// * `dest_register_id` - The ID of the destination register in host memory where
+    /// to place the value (if found).
     ///
     /// # Returns
     ///
@@ -800,8 +800,8 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::KeyLengthOverflow` if the key size exceeds the configured limit.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
-    pub fn storage_read(&mut self, key_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
-        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
+    pub fn storage_read(&mut self, src_key_ptr: u64, dest_register_id: u64) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
 
@@ -811,7 +811,7 @@ impl VMHostFunctions<'_> {
         let key = self.read_guest_memory_slice(&key).to_vec();
 
         if let Some(value) = logic.storage.get(&key) {
-            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, dest_register_id, value))?;
 
             return Ok(1);
         }
@@ -825,8 +825,8 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `key_ptr` - A pointer to the key source-buffer in guest memory.
-    /// * `register_id` - The ID of the destination register in host memory where to place
+    /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
+    /// * `dest_register_id` - The ID of the destination register in host memory where to place
     /// the value (if found).
     ///
     /// # Returns
@@ -838,8 +838,8 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::KeyLengthOverflow` if the key size exceeds the configured limit.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
-    pub fn storage_remove(&mut self, key_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
-        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
+    pub fn storage_remove(&mut self, src_key_ptr: u64, dest_register_id: u64) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
 
@@ -852,7 +852,7 @@ impl VMHostFunctions<'_> {
         if let Some(value) = logic.storage.get(&key) {
             self.with_logic_mut(|logic| {
                 let _ignored = logic.storage.remove(&key);
-                logic.registers.set(logic.limits, register_id, value)
+                logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
             return Ok(1);
@@ -868,9 +868,9 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `key_ptr` - A pointer to the key source-buffer in guest memory.
-    /// * `value_ptr` - A pointer to the value source-buffer in guest memory.
-    /// * `register_id` - The ID of the destination register in host memory where to place
+    /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
+    /// * `src_value_ptr` - A pointer to the value source-buffer in guest memory.
+    /// * `dest_register_id` - The ID of the destination register in host memory where to place
     /// the old value (if found).
     ///
     /// # Returns
@@ -885,13 +885,12 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn storage_write(
         &mut self,
-        key_ptr: u64,
-        value_ptr: u64,
-        register_id: u64,
+        src_key_ptr: u64,
+        src_value_ptr: u64,
+        dest_register_id: u64,
     ) -> VMLogicResult<u32> {
-        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(key_ptr)? };
-
-        let value = unsafe { self.read_typed::<sys::Buffer<'_>>(value_ptr)? };
+        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        let value = unsafe { self.read_typed::<sys::Buffer<'_>>(src_value_ptr)? };
 
         let logic = self.borrow_logic();
 
@@ -909,7 +908,7 @@ impl VMHostFunctions<'_> {
         let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 
         if let Some(evicted) = evicted {
-            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, evicted))?;
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, dest_register_id, evicted))?;
 
             return Ok(1);
         }
@@ -924,13 +923,13 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `url_ptr` - Pointer to the URL string source-buffer in guest memory.
-    /// * `method_ptr` - Pointer to the HTTP method string source-buffer (e.g., "GET", "POST")
+    /// * `src_url_ptr` - Pointer to the URL string source-buffer in guest memory.
+    /// * `src_method_ptr` - Pointer to the HTTP method string source-buffer (e.g., "GET", "POST")
     /// in guest memory.
-    /// * `headers_ptr` - Pointer to a borsh-serialized `Vec<(String, String)>` source-buffer of
+    /// * `src_headers_ptr` - Pointer to a borsh-serialized `Vec<(String, String)>` source-buffer of
     /// headers in guest memory.
-    /// * `body_ptr` - Pointer to the request body source-buffer in guest memory.
-    /// * `register_id` - The ID of the destination register in host memory where to store
+    /// * `src_body_ptr` - Pointer to the request body source-buffer in guest memory.
+    /// * `dest_register_id` - The ID of the destination register in host memory where to store
     /// the response body.
     ///
     /// # Returns
@@ -945,16 +944,16 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn fetch(
         &mut self,
-        url_ptr: u64,
-        method_ptr: u64,
-        headers_ptr: u64,
-        body_ptr: u64,
-        register_id: u64,
+        src_url_ptr: u64,
+        src_method_ptr: u64,
+        src_headers_ptr: u64,
+        src_body_ptr: u64,
+        dest_register_id: u64,
     ) -> VMLogicResult<u32> {
-        let url = unsafe { self.read_typed::<sys::Buffer<'_>>(url_ptr)? };
-        let method = unsafe { self.read_typed::<sys::Buffer<'_>>(method_ptr)? };
-        let headers = unsafe { self.read_typed::<sys::Buffer<'_>>(headers_ptr)? };
-        let body = unsafe { self.read_typed::<sys::Buffer<'_>>(body_ptr)? };
+        let url = unsafe { self.read_typed::<sys::Buffer<'_>>(src_url_ptr)? };
+        let method = unsafe { self.read_typed::<sys::Buffer<'_>>(src_method_ptr)? };
+        let headers = unsafe { self.read_typed::<sys::Buffer<'_>>(src_headers_ptr)? };
+        let body = unsafe { self.read_typed::<sys::Buffer<'_>>(src_body_ptr)? };
 
         let url = self.read_guest_memory_str(&url)?;
         let method = self.read_guest_memory_str(&method)?;
@@ -992,7 +991,7 @@ impl VMHostFunctions<'_> {
             Err(e) => (1, e.to_string().into_bytes()),
         };
 
-        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, data))?;
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, dest_register_id, data))?;
         Ok(status)
     }
 
@@ -1000,15 +999,15 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `ptr` - A destination pointer to a `sys::BufferMut` in guest memory to be filled.
+    /// * `dest_ptr` - A destination pointer to a `sys::BufferMut` in guest memory to be filled.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
-    pub fn random_bytes(&mut self, ptr: u64) -> VMLogicResult<()> {
-        let buf = unsafe { self.read_typed::<sys::BufferMut<'_>>(ptr)? };
+    pub fn random_bytes(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
+        let dest_buf = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
-        rand::thread_rng().fill_bytes(self.read_guest_memory_slice_mut(&buf));
+        rand::thread_rng().fill_bytes(self.read_guest_memory_slice_mut(&dest_buf));
 
         Ok(())
     }
@@ -1023,7 +1022,7 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `ptr` - A pointer to an 8-byte destination buffer `sys::BufferMut`
+    /// * `dest_ptr` - A pointer to an 8-byte destination buffer `sys::BufferMut`
     /// in guest memory where the `u64` timestamp will be written.
     ///
     /// # Errors
@@ -1039,8 +1038,8 @@ impl VMHostFunctions<'_> {
         clippy::unwrap_in_result,
         reason = "Effectively infallible here"
     )]
-    pub fn time_now(&mut self, ptr: u64) -> VMLogicResult<()> {
-        let guest_time_ptr = unsafe { self.read_typed::<sys::BufferMut<'_>>(ptr)? };
+    pub fn time_now(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
+        let guest_time_ptr = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
         if guest_time_ptr.len() != 8 {
             return Err(HostError::InvalidMemoryAccess.into());
@@ -1074,24 +1073,24 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `actions_ptr` - pointer to a source-buffer `sys::Buffer` in guest memory,
+    /// * `src_actions_ptr` - pointer to a source-buffer `sys::Buffer` in guest memory,
     /// containing the proposal's actions.
-    /// * `id_ptr` - A pointer to a 32-byte destination buffer `sys::BufferMut`
+    /// * `dest_id_ptr` - A pointer to a 32-byte destination buffer `sys::BufferMut`
     /// in guest memory where the generated proposal ID will be written.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
-    pub fn send_proposal(&mut self, actions_ptr: u64, id_ptr: u64) -> VMLogicResult<()> {
-        let guest_memory_id = unsafe { self.read_typed::<sys::BufferMut<'_>>(id_ptr)? };
-        let actions = unsafe { self.read_typed::<sys::Buffer<'_>>(actions_ptr)? };
+    pub fn send_proposal(&mut self, src_actions_ptr: u64, dest_id_ptr: u64) -> VMLogicResult<()> {
+        let actions = unsafe { self.read_typed::<sys::Buffer<'_>>(src_actions_ptr)? };
+        let dest_id = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_id_ptr)? };
 
         let mut proposal_id = [0u8; DIGEST_SIZE];
         rand::thread_rng().fill_bytes(&mut proposal_id);
 
         // Record newly created ID to guest memory
-        let guest_memory_id: &mut [u8] = self.read_guest_memory_slice_mut(&guest_memory_id);
-        guest_memory_id.copy_from_slice(&proposal_id);
+        let dest_id: &mut [u8] = self.read_guest_memory_slice_mut(&dest_id);
+        dest_id.copy_from_slice(&proposal_id);
 
         let actions = self.read_guest_memory_slice(&actions).to_vec();
 
@@ -1105,14 +1104,14 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `approval_ptr` - Pointer to a 32-byte destination buffer `sys::BufferMut`
+    /// * `src_approval_ptr` - Pointer to a 32-byte source-buffer `sys::Buffer`
     /// in guest memory containing the ID of the proposal to approve.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
-    pub fn approve_proposal(&mut self, approval_ptr: u64) -> VMLogicResult<()> {
-        let approval = unsafe { self.read_typed::<sys::Buffer<'_>>(approval_ptr)? };
+    pub fn approve_proposal(&mut self, src_approval_ptr: u64) -> VMLogicResult<()> {
+        let approval = unsafe { self.read_typed::<sys::Buffer<'_>>(src_approval_ptr)? };
         let approval = *self.read_guest_memory_sized::<DIGEST_SIZE>(&approval)?;
 
         let _ignored = self.with_logic_mut(|logic| logic.approvals.push(approval));
@@ -1198,7 +1197,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `fd` - The file descriptor obtained from `blob_create()` operation.
-    /// * `data_ptr` - A pointer to a source-buffer `sys::Buffer` in guest memory
+    /// * `src_data_ptr` - A pointer to a source-buffer `sys::Buffer` in guest memory
     /// containing the data chunk to write.
     ///
     /// # Returns
@@ -1210,8 +1209,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BlobsNotSupported` if the node client is not configured.
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid or not a write handle.
     /// * `HostError::BlobWriteTooLarge` if the data chunk exceeds `max_blob_chunk_size`.
-    pub fn blob_write(&mut self, fd: u64, data_ptr: u64) -> VMLogicResult<u64> {
-        let data = unsafe { self.read_typed::<sys::Buffer<'_>>(data_ptr)? };
+    pub fn blob_write(&mut self, fd: u64, src_data_ptr: u64) -> VMLogicResult<u64> {
+        let data = unsafe { self.read_typed::<sys::Buffer<'_>>(src_data_ptr)? };
         let data_len = data.len();
 
         if self.borrow_logic().node_client.is_none() {
@@ -1269,7 +1268,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `fd` - The file descriptor to close.
-    /// * `blob_id_ptr` - A pointer to a 32-byte destination buffer `sys::BufferMut`
+    /// * `dest_blob_id_ptr` - A pointer to a 32-byte destination buffer `sys::BufferMut`
     /// in guest memory where the final `BlobId` will be written (for write handles).
     ///
     /// # Returns
@@ -1282,8 +1281,8 @@ impl VMHostFunctions<'_> {
     /// or if memory access fails for a descriptor buffer.
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid.
     /// * `HostError::BlobsNotSupported` if the node client is not supported or upload operation fails.
-    pub fn blob_close(&mut self, fd: u64, blob_id_ptr: u64) -> VMLogicResult<u32> {
-        let guest_blob_id_ptr = unsafe { self.read_typed::<sys::BufferMut<'_>>(blob_id_ptr)? };
+    pub fn blob_close(&mut self, fd: u64, dest_blob_id_ptr: u64) -> VMLogicResult<u32> {
+        let guest_blob_id_ptr = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_blob_id_ptr)? };
 
         if guest_blob_id_ptr.len() != DIGEST_SIZE as u64 {
             return Err(HostError::InvalidMemoryAccess.into());
@@ -1326,9 +1325,9 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `blob_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
+    /// * `src_blob_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
     /// containing the 32-byte `BlobId`.
-    /// * `context_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
+    /// * `src_context_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
     /// containing the 32-byte `ContextId`.
     ///
     /// # Returns
@@ -1342,8 +1341,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn blob_announce_to_context(
         &mut self,
-        blob_id_ptr: u64,
-        context_id_ptr: u64,
+        src_blob_id_ptr: u64,
+        src_context_id_ptr: u64,
     ) -> VMLogicResult<u32> {
         // Check if blob functionality is available
         let node_client = match &self.borrow_logic().node_client {
@@ -1351,8 +1350,8 @@ impl VMHostFunctions<'_> {
             None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
         };
 
-        let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(blob_id_ptr)? };
-        let context_id = unsafe { self.read_typed::<sys::Buffer<'_>>(context_id_ptr)? };
+        let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
+        let context_id = unsafe { self.read_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
 
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
         let context_id = ContextId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&context_id)?);
@@ -1380,7 +1379,7 @@ impl VMHostFunctions<'_> {
     ///
     /// # Arguments
     ///
-    /// * `blob_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
+    /// * `src_blob_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
     /// containing the 32-byte `BlobId`.
     ///
     /// # Returns
@@ -1392,8 +1391,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BlobsNotSupported` if the node client is not configured.
     /// * `HostError::TooManyBlobHandles` if the maximum number of handles is exceeded.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
-    pub fn blob_open(&mut self, blob_id_ptr: u64) -> VMLogicResult<u64> {
-        let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(blob_id_ptr)? };
+    pub fn blob_open(&mut self, src_blob_id_ptr: u64) -> VMLogicResult<u64> {
+        let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
 
         if self.borrow_logic().node_client.is_none() {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
@@ -1446,7 +1445,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `fd` - The file descriptor obtained from `blob_open`.
-    /// * `data_ptr` - A pointer to a destination buffer `sys::BufferMut` in guest memory where
+    /// * `dest_data_ptr` - A pointer to a destination buffer `sys::BufferMut` in guest memory where
     /// the read data will be stored
     ///
     /// # Returns
@@ -1460,9 +1459,9 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid or not a read handle.
     /// * `HostError::BlobBufferTooLarge` if the guest buffer exceeds `max_blob_chunk_size`.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
-    pub fn blob_read(&mut self, fd: u64, data_ptr: u64) -> VMLogicResult<u64> {
-        let data = unsafe { self.read_typed::<sys::BufferMut<'_>>(data_ptr)? };
-        let data_len = data.len();
+    pub fn blob_read(&mut self, fd: u64, dest_data_ptr: u64) -> VMLogicResult<u64> {
+        let dest_data = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
+        let data_len = dest_data.len();
 
         // Check if blob functionality is available
         let node_client = match &self.borrow_logic().node_client {
@@ -1488,6 +1487,7 @@ impl VMHostFunctions<'_> {
         let Ok(data_len) = usize::try_from(data_len) else {
             return Err(VMLogicError::HostError(HostError::IntegerOverflow));
         };
+        // Local output buffer.
         let mut output_buffer = Vec::with_capacity(data_len);
 
         let bytes_read = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
@@ -1599,7 +1599,9 @@ impl VMHostFunctions<'_> {
         })?;
 
         if bytes_read > 0 {
-            self.read_guest_memory_slice_mut(&data).copy_from_slice(&output_buffer);
+            // Copy data from the local output buffer to destination buffer located in guest
+            // memory.
+            self.read_guest_memory_slice_mut(&dest_data).copy_from_slice(&output_buffer);
         }
 
         Ok(bytes_read)
