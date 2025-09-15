@@ -1,13 +1,11 @@
 //! Credential management for the relayer
 
-use eyre::Result as EyreResult;
 use calimero_context_config::client::config::Credentials;
 use calimero_context_config::client::protocol::{
-    ethereum::Credentials as EthereumCredentials, 
-    icp::Credentials as IcpCredentials,
-    near::Credentials as NearCredentials, 
-    starknet::Credentials as StarknetCredentials,
+    ethereum::Credentials as EthereumCredentials, icp::Credentials as IcpCredentials,
+    near::Credentials as NearCredentials, starknet::Credentials as StarknetCredentials,
 };
+use eyre::Result as EyreResult;
 
 use crate::config::ProtocolCredentials;
 use crate::constants::{dummy, protocols};
@@ -16,10 +14,10 @@ use crate::constants::{dummy, protocols};
 pub trait CredentialBuilder {
     /// Create credentials from environment variables
     fn from_env(protocol: &str) -> Option<ProtocolCredentials>;
-    
+
     /// Create default credentials (for testing only)
     fn default_credentials(protocol: &str) -> Option<ProtocolCredentials>;
-    
+
     /// Create dummy/fallback credentials
     fn dummy_credentials(protocol: &str) -> EyreResult<Credentials>;
 }
@@ -29,17 +27,18 @@ pub struct RelayerCredentials;
 impl CredentialBuilder for RelayerCredentials {
     fn from_env(protocol: &str) -> Option<ProtocolCredentials> {
         let prefix = protocol.to_uppercase();
-        
+
         // Get environment variables
         let account_id = std::env::var(format!("{}_ACCOUNT_ID", prefix)).ok();
         let public_key = std::env::var(format!("{}_PUBLIC_KEY", prefix)).ok();
         let secret_key = std::env::var(format!("{}_SECRET_KEY", prefix)).ok();
-        
+
         // Only create credentials if all required variables are set and non-empty
         match protocol {
             protocols::near::NAME => {
-                if let (Some(account_id), Some(public_key), Some(secret_key)) = 
-                    (&account_id, &public_key, &secret_key) {
+                if let (Some(account_id), Some(public_key), Some(secret_key)) =
+                    (&account_id, &public_key, &secret_key)
+                {
                     if !account_id.is_empty() && !public_key.is_empty() && !secret_key.is_empty() {
                         return Some(ProtocolCredentials::Near {
                             account_id: account_id.clone(),
@@ -50,8 +49,9 @@ impl CredentialBuilder for RelayerCredentials {
                 }
             }
             protocols::starknet::NAME => {
-                if let (Some(account_id), Some(public_key), Some(secret_key)) = 
-                    (&account_id, &public_key, &secret_key) {
+                if let (Some(account_id), Some(public_key), Some(secret_key)) =
+                    (&account_id, &public_key, &secret_key)
+                {
                     if !account_id.is_empty() && !public_key.is_empty() && !secret_key.is_empty() {
                         return Some(ProtocolCredentials::Starknet {
                             account_id: account_id.clone(),
@@ -62,8 +62,9 @@ impl CredentialBuilder for RelayerCredentials {
                 }
             }
             protocols::icp::NAME => {
-                if let (Some(account_id), Some(public_key), Some(secret_key)) = 
-                    (&account_id, &public_key, &secret_key) {
+                if let (Some(account_id), Some(public_key), Some(secret_key)) =
+                    (&account_id, &public_key, &secret_key)
+                {
                     if !account_id.is_empty() && !public_key.is_empty() && !secret_key.is_empty() {
                         return Some(ProtocolCredentials::Icp {
                             account_id: account_id.clone(),
@@ -85,10 +86,10 @@ impl CredentialBuilder for RelayerCredentials {
             }
             _ => {}
         }
-        
+
         None
     }
-    
+
     fn default_credentials(protocol: &str) -> Option<ProtocolCredentials> {
         match protocol {
             protocols::near::NAME => {
@@ -137,10 +138,10 @@ impl CredentialBuilder for RelayerCredentials {
             }
             _ => {}
         }
-        
+
         None
     }
-    
+
     fn dummy_credentials(protocol: &str) -> EyreResult<Credentials> {
         match protocol {
             protocols::near::NAME => Ok(Credentials::Near(NearCredentials {

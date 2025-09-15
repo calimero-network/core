@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::constants::{DEFAULT_ADDR, protocols};
+use crate::constants::{protocols, DEFAULT_ADDR};
 use crate::credentials::{CredentialBuilder, RelayerCredentials};
 
 /// Standalone relayer configuration
@@ -63,13 +63,16 @@ impl Default for RelayerConfig {
         let mut protocols = BTreeMap::new();
 
         // Default NEAR configuration - credentials must come from environment
-        drop(protocols.insert(protocols::near::NAME.to_owned(), ProtocolConfig {
-            enabled: true,
-            network: protocols::near::DEFAULT_NETWORK.to_owned(),
-            rpc_url: protocols::near::DEFAULT_RPC_URL.parse().unwrap(),
-            contract_id: protocols::near::DEFAULT_CONTRACT_ID.to_owned(),
-            credentials: RelayerCredentials::default_credentials(protocols::near::NAME),
-        }));
+        drop(protocols.insert(
+            protocols::near::NAME.to_owned(),
+            ProtocolConfig {
+                enabled: true,
+                network: protocols::near::DEFAULT_NETWORK.to_owned(),
+                rpc_url: protocols::near::DEFAULT_RPC_URL.parse().unwrap(),
+                contract_id: protocols::near::DEFAULT_CONTRACT_ID.to_owned(),
+                credentials: RelayerCredentials::default_credentials(protocols::near::NAME),
+            },
+        ));
 
         // Default Starknet configuration (disabled by default)
         drop(protocols.insert(
