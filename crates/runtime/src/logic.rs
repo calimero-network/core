@@ -25,10 +25,10 @@ use crate::Constraint;
 mod errors;
 mod imports;
 mod registers;
-mod blob_host_fns;
+mod host_functions;
 
 pub use errors::VMLogicError;
-pub use blob_host_fns::*;
+pub use host_functions::*;
 use registers::Registers;
 
 /// A specialized `Result` type for VMLogic operations.
