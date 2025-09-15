@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::env::var;
-use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{AddrParseError, SocketAddr};
 
 use axum::extract::State;
 use axum::http::status::StatusCode;
@@ -15,10 +15,6 @@ use axum::{Json, Router};
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
-};
-use calimero_context_config::client::protocol::{
-    ethereum::Credentials as EthereumCredentials, icp::Credentials as IcpCredentials,
-    near::Credentials as NearCredentials, starknet::Credentials as StarknetCredentials,
 };
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
 use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
@@ -35,10 +31,12 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::{registry, EnvFilter};
 
 mod config;
-use config::{ProtocolCredentials, RelayerConfig};
+mod constants;
+mod credentials;
 
-const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
-const DEFAULT_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_PORT);
+use config::RelayerConfig;
+use constants::{DEFAULT_ADDR, DEFAULT_RELAYER_URL};
+use credentials::{convert_to_client_credentials, CredentialBuilder, RelayerCredentials};
 
 /// Relayer service that handles incoming requests
 #[derive(Debug)]
@@ -103,7 +101,7 @@ impl RelayerService {
             params,
             signer: ClientSigner {
                 relayer: ClientRelayerSigner {
-                    url: "http://localhost:63529"
+                    url: DEFAULT_RELAYER_URL
                         .parse()
                         .map_err(|e| eyre::eyre!("Failed to parse relayer URL: {e}"))?, // Self-reference for relayer mode
                 },
@@ -115,70 +113,13 @@ impl RelayerService {
     }
 
     /// Convert relayer credentials to client credentials
-    fn convert_credentials(&self, creds: &ProtocolCredentials) -> EyreResult<Credentials> {
-        match creds {
-            ProtocolCredentials::Near {
-                account_id,
-                public_key,
-                secret_key,
-            } => Ok(Credentials::Near(NearCredentials {
-                account_id: account_id.parse()?,
-                public_key: public_key.parse()?,
-                secret_key: secret_key.parse()?,
-            })),
-            ProtocolCredentials::Starknet {
-                account_id,
-                public_key,
-                secret_key,
-            } => Ok(Credentials::Starknet(StarknetCredentials {
-                account_id: account_id.parse()?,
-                public_key: public_key.parse()?,
-                secret_key: secret_key.parse()?,
-            })),
-            ProtocolCredentials::Icp {
-                account_id,
-                public_key,
-                secret_key,
-            } => Ok(Credentials::Icp(IcpCredentials {
-                account_id: account_id.parse()?,
-                public_key: public_key.clone(),
-                secret_key: secret_key.clone(),
-            })),
-            ProtocolCredentials::Ethereum {
-                account_id,
-                secret_key,
-            } => Ok(Credentials::Ethereum(EthereumCredentials {
-                account_id: account_id.clone(),
-                secret_key: secret_key.clone(),
-            })),
-        }
+    fn convert_credentials(&self, creds: &config::ProtocolCredentials) -> EyreResult<Credentials> {
+        convert_to_client_credentials(creds)
     }
 
     /// Generate minimal dummy credentials for protocols without explicit credentials
     fn generate_dummy_credentials(&self, protocol: &str) -> EyreResult<Credentials> {
-        match protocol {
-            "near" => Ok(Credentials::Near(NearCredentials {
-                account_id: "dummy.testnet".parse()?,
-                public_key: "ed25519:dummy".parse()?,
-                secret_key: "ed25519:dummy".parse()?,
-            })),
-            "starknet" => Ok(Credentials::Starknet(StarknetCredentials {
-                account_id: "0x0".parse()?,
-                public_key: "0x0".parse()?,
-                secret_key: "0x0".parse()?,
-            })),
-            "icp" => Ok(Credentials::Icp(IcpCredentials {
-                account_id: "rdmx6-jaaaa-aaaaa-aaadq-cai".parse()?,
-                public_key: "dummy".to_owned(),
-                secret_key: "dummy".to_owned(),
-            })),
-            "ethereum" => Ok(Credentials::Ethereum(EthereumCredentials {
-                account_id: "0x0000000000000000000000000000000000000000".to_owned(),
-                secret_key: "0000000000000000000000000000000000000000000000000000000000000001"
-                    .to_owned(),
-            })),
-            _ => eyre::bail!("Unknown protocol: {}", protocol),
-        }
+        RelayerCredentials::dummy_credentials(protocol)
     }
 
     /// Start the relayer service

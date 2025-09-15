@@ -39,12 +39,23 @@ calimero-relayer
 ```
 
 **Default Configuration:**
-- **Near Protocol**: ✅ Enabled with testnet credentials
+- **Near Protocol**: ✅ Enabled (requires `NEAR_DEFAULT_SECRET_KEY` environment variable)
 - **Starknet**: ❌ Disabled (enable with `ENABLE_STARKNET=true`)
 - **ICP**: ❌ Disabled (enable with `ENABLE_ICP=true`)  
 - **Ethereum**: ❌ Disabled (enable with `ENABLE_ETHEREUM=true`)
 
-All protocols include working default testnet credentials when enabled.
+**Security Note**: For security reasons, secret keys are **never** hardcoded. Even default configurations require environment variables for credentials.
+
+**Default Secret Key Environment Variables:**
+```bash
+# For Near testnet to work out-of-the-box
+export NEAR_DEFAULT_SECRET_KEY="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af7e2dWgNPEaiQfdJnZq1CNPp5im4Rg5b2rKtXFv"
+
+# Optional: For other protocols when enabled  
+export STARKNET_DEFAULT_SECRET_KEY="0x0178eb2a625c0a8d85b0a5fd69fc879f9884f5205ad9d1ba41db0d7d1a77950a"
+export ICP_DEFAULT_SECRET_KEY="MFECAQEwBQYDK2VwBCIEIJKDIfd1Ybt7xliQlRmXZGRWG8dJ1Dl9qKGT0pOhMwPjaE30"
+export ETHEREUM_DEFAULT_SECRET_KEY="0ac1e735c1ca39db4a9c54d4edf2c6a50a75a3b3dce1cd2a64e8f5a44d1e2d2c"
+```
 
 #### 2. Environment Variables (Custom Configuration)
 

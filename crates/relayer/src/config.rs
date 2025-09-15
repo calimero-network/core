@@ -6,6 +6,9 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::constants::{DEFAULT_ADDR, protocols};
+use crate::credentials::{CredentialBuilder, RelayerCredentials};
+
 /// Standalone relayer configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayerConfig {
@@ -59,89 +62,53 @@ impl Default for RelayerConfig {
     fn default() -> Self {
         let mut protocols = BTreeMap::new();
 
-        // Default NEAR configuration with testnet credentials
-        drop(protocols.insert("near".to_owned(), ProtocolConfig {
+        // Default NEAR configuration - credentials must come from environment
+        drop(protocols.insert(protocols::near::NAME.to_owned(), ProtocolConfig {
             enabled: true,
-            network: "testnet".to_owned(),
-            rpc_url: "https://rpc.testnet.near.org".parse().unwrap(),
-            contract_id: "calimero-context-config.testnet".to_owned(),
-            credentials: Some(ProtocolCredentials::Near {
-                account_id: "dev-1642425627065-33437663923179".to_owned(),
-                public_key: "ed25519:98GtfF5gBPUvBWNgz8N8WNEjXRgBhFLuSQ5MnFDEjJ8x".to_owned(),
-                secret_key: "ed25519:4YdVWc7hgBUWwE9kXd4SPKmCztbGkMdHfZL2fDWw8L7gCJmrYcWAjcvK5Wek94aKSGBdLKHb7DaKoXudp6BnTqCb".to_owned(),
-            }),
+            network: protocols::near::DEFAULT_NETWORK.to_owned(),
+            rpc_url: protocols::near::DEFAULT_RPC_URL.parse().unwrap(),
+            contract_id: protocols::near::DEFAULT_CONTRACT_ID.to_owned(),
+            credentials: RelayerCredentials::default_credentials(protocols::near::NAME),
         }));
 
-        // Default Starknet configuration (disabled by default, but with working credentials when enabled)
-        drop(
-            protocols.insert(
-                "starknet".to_owned(),
-                ProtocolConfig {
-                    enabled: false,
-                    network: "sepolia".to_owned(),
-                    rpc_url: "https://free-rpc.nethermind.io/sepolia-juno/"
-                        .parse()
-                        .unwrap(),
-                    contract_id:
-                        "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
-                            .to_owned(),
-                    credentials: Some(ProtocolCredentials::Starknet {
-                        account_id:
-                            "0x01cf4d57ba01109f018dec3ea079a38fc08b0f8a78eed0d4c5e5fb22928dbc8c"
-                                .to_owned(),
-                        public_key:
-                            "0x02c5dbad71c92a45cc4b40573ae661f8147869a91d57b8d9b8f48c8af7f83159"
-                                .to_owned(),
-                        secret_key:
-                            "0x0178eb2a625c0a8d85b0a5fd69fc879f9884f5205ad9d1ba41db0d7d1a77950a"
-                                .to_owned(),
-                    }),
-                },
-            ),
-        );
+        // Default Starknet configuration (disabled by default)
+        drop(protocols.insert(
+            protocols::starknet::NAME.to_owned(),
+            ProtocolConfig {
+                enabled: false,
+                network: protocols::starknet::DEFAULT_NETWORK.to_owned(),
+                rpc_url: protocols::starknet::DEFAULT_RPC_URL.parse().unwrap(),
+                contract_id: protocols::starknet::DEFAULT_CONTRACT_ID.to_owned(),
+                credentials: RelayerCredentials::default_credentials(protocols::starknet::NAME),
+            },
+        ));
 
-        // Default ICP configuration (disabled by default, but with working credentials when enabled)
-        drop(
-            protocols.insert(
-                "icp".to_owned(),
-                ProtocolConfig {
-                    enabled: false,
-                    network: "local".to_owned(),
-                    rpc_url: "http://127.0.0.1:4943".parse().unwrap(),
-                    contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".to_owned(),
-                    credentials: Some(ProtocolCredentials::Icp {
-                        account_id: "rdmx6-jaaaa-aaaaa-aaadq-cai".to_owned(),
-                        public_key: "MCowBQYDK2VwAyEAL8XDEY1gGOWvv/0h01tW/ZV14qYY7GrHJF3pZoNxmHE="
-                            .to_owned(),
-                        secret_key:
-                            "MFECAQEwBQYDK2VwBCIEIJKDIfd1Ybt7xliQlRmXZGRWG8dJ1Dl9qKGT0pOhMwPjaE30"
-                                .to_owned(),
-                    }),
-                },
-            ),
-        );
+        // Default ICP configuration (disabled by default)
+        drop(protocols.insert(
+            protocols::icp::NAME.to_owned(),
+            ProtocolConfig {
+                enabled: false,
+                network: protocols::icp::DEFAULT_NETWORK.to_owned(),
+                rpc_url: protocols::icp::DEFAULT_RPC_URL.parse().unwrap(),
+                contract_id: protocols::icp::DEFAULT_CONTRACT_ID.to_owned(),
+                credentials: RelayerCredentials::default_credentials(protocols::icp::NAME),
+            },
+        ));
 
-        // Default Ethereum configuration (disabled by default, but with working credentials when enabled)
-        drop(
-            protocols.insert(
-                "ethereum".to_owned(),
-                ProtocolConfig {
-                    enabled: false,
-                    network: "sepolia".to_owned(),
-                    rpc_url: "https://sepolia.drpc.org".parse().unwrap(),
-                    contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".to_owned(),
-                    credentials: Some(ProtocolCredentials::Ethereum {
-                        account_id: "0x8ba1f109551bD432803012645Hac136c22C177ec".to_owned(),
-                        secret_key:
-                            "0ac1e735c1ca39db4a9c54d4edf2c6a50a75a3b3dce1cd2a64e8f5a44d1e2d2c"
-                                .to_owned(),
-                    }),
-                },
-            ),
-        );
+        // Default Ethereum configuration (disabled by default)
+        drop(protocols.insert(
+            protocols::ethereum::NAME.to_owned(),
+            ProtocolConfig {
+                enabled: false,
+                network: protocols::ethereum::DEFAULT_NETWORK.to_owned(),
+                rpc_url: protocols::ethereum::DEFAULT_RPC_URL.parse().unwrap(),
+                contract_id: protocols::ethereum::DEFAULT_CONTRACT_ID.to_owned(),
+                credentials: RelayerCredentials::default_credentials(protocols::ethereum::NAME),
+            },
+        ));
 
         Self {
-            listen: "0.0.0.0:63529".parse().unwrap(),
+            listen: DEFAULT_ADDR,
             protocols,
         }
     }
@@ -185,53 +152,9 @@ impl RelayerConfig {
                 protocol_config.contract_id = contract_id;
             }
 
-            // Override credentials from environment variables
-            let account_id_var = format!("{}_ACCOUNT_ID", prefix);
-            let public_key_var = format!("{}_PUBLIC_KEY", prefix);
-            let secret_key_var = format!("{}_SECRET_KEY", prefix);
-
-            if let Ok(account_id) = std::env::var(&account_id_var) {
-                let credentials = match protocol_name.as_str() {
-                    "near" => {
-                        let public_key = std::env::var(&public_key_var).unwrap_or_default();
-                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
-                        Some(ProtocolCredentials::Near {
-                            account_id,
-                            public_key,
-                            secret_key,
-                        })
-                    }
-                    "starknet" => {
-                        let public_key = std::env::var(&public_key_var).unwrap_or_default();
-                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
-                        Some(ProtocolCredentials::Starknet {
-                            account_id,
-                            public_key,
-                            secret_key,
-                        })
-                    }
-                    "icp" => {
-                        let public_key = std::env::var(&public_key_var).unwrap_or_default();
-                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
-                        Some(ProtocolCredentials::Icp {
-                            account_id,
-                            public_key,
-                            secret_key,
-                        })
-                    }
-                    "ethereum" => {
-                        let secret_key = std::env::var(&secret_key_var).unwrap_or_default();
-                        Some(ProtocolCredentials::Ethereum {
-                            account_id,
-                            secret_key,
-                        })
-                    }
-                    _ => None,
-                };
-
-                if let Some(creds) = credentials {
-                    protocol_config.credentials = Some(creds);
-                }
+            // Override credentials from environment variables if available
+            if let Some(env_credentials) = RelayerCredentials::from_env(protocol_name) {
+                protocol_config.credentials = Some(env_credentials);
             }
         }
 
