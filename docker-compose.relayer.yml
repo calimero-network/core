@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  relayer:
+    build:
+      context: .
+      dockerfile: Dockerfile.relayer
+    ports:
+      - "${RELAYER_PORT:-63529}:63529"
+    environment:
+      # General settings
+      - RELAYER_LISTEN=${RELAYER_LISTEN:-0.0.0.0:63529}
+      - RUST_LOG=${RUST_LOG:-info}
+
+      # Protocol enablement (Near enabled by default)
+      - ENABLE_NEAR=true
+      - ENABLE_STARKNET=${ENABLE_STARKNET:-false}
+      - ENABLE_ICP=${ENABLE_ICP:-false}
+      - ENABLE_ETHEREUM=${ENABLE_ETHEREUM:-false}
+
+      # Near (testnet by default) - requires secret keys via environment
+      - NEAR_NETWORK=${NEAR_NETWORK:-testnet}
+      - NEAR_RPC_URL=${NEAR_RPC_URL:-https://rpc.testnet.near.org}
+      - NEAR_CONTRACT_ID=${NEAR_CONTRACT_ID:-calimero-context-config.testnet}
+      - NEAR_ACCOUNT_ID=${NEAR_ACCOUNT_ID}
+      - NEAR_PUBLIC_KEY=${NEAR_PUBLIC_KEY}
+      - NEAR_SECRET_KEY=${NEAR_SECRET_KEY}
+      - NEAR_DEFAULT_SECRET_KEY=${NEAR_DEFAULT_SECRET_KEY}
+
+      # Starknet (disabled by default)
+      - STARKNET_NETWORK=${STARKNET_NETWORK:-sepolia}
+      - STARKNET_RPC_URL=${STARKNET_RPC_URL:-https://free-rpc.nethermind.io/sepolia-juno/}
+      - STARKNET_CONTRACT_ID=${STARKNET_CONTRACT_ID:-0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c}
+      - STARKNET_ACCOUNT_ID=${STARKNET_ACCOUNT_ID}
+      - STARKNET_PUBLIC_KEY=${STARKNET_PUBLIC_KEY}
+      - STARKNET_SECRET_KEY=${STARKNET_SECRET_KEY}
+      - STARKNET_DEFAULT_SECRET_KEY=${STARKNET_DEFAULT_SECRET_KEY}
+
+      # ICP (requires local dfx)
+      - ICP_NETWORK=${ICP_NETWORK:-local}
+      - ICP_RPC_URL=${ICP_RPC_URL:-http://host.docker.internal:4943}
+      - ICP_CONTRACT_ID=${ICP_CONTRACT_ID:-bkyz2-fmaaa-aaaaa-qaaaq-cai}
+      - ICP_ACCOUNT_ID=${ICP_ACCOUNT_ID}
+      - ICP_PUBLIC_KEY=${ICP_PUBLIC_KEY}
+      - ICP_SECRET_KEY=${ICP_SECRET_KEY}
+      - ICP_DEFAULT_SECRET_KEY=${ICP_DEFAULT_SECRET_KEY}
+
+      # Ethereum (disabled by default)
+      - ETHEREUM_NETWORK=${ETHEREUM_NETWORK:-sepolia}
+      - ETHEREUM_RPC_URL=${ETHEREUM_RPC_URL:-https://sepolia.drpc.org}
+      - ETHEREUM_CONTRACT_ID=${ETHEREUM_CONTRACT_ID:-0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB}
+      - ETHEREUM_ACCOUNT_ID=${ETHEREUM_ACCOUNT_ID}
+      - ETHEREUM_SECRET_KEY=${ETHEREUM_SECRET_KEY}
+      - ETHEREUM_DEFAULT_SECRET_KEY=${ETHEREUM_DEFAULT_SECRET_KEY}
+    volumes:
+      - relayer_data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  relayer_data:

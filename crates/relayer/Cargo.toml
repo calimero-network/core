@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 axum.workspace = true
 calimero-context-config = { workspace = true, features = ["client"] }
+chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 eyre.workspace = true
