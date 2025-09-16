@@ -13,6 +13,7 @@ use calimero_sys as sys;
 use ouroboros::self_referencing;
 use serde::Serialize;
 
+use crate::constants::{DIGEST_SIZE, ONE_GIB, ONE_KIB, ONE_MIB};
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
 use crate::store::Storage;
@@ -29,17 +30,6 @@ use registers::Registers;
 
 /// A specialized `Result` type for VMLogic operations.
 pub type VMLogicResult<T, E = VMLogicError> = Result<T, E>;
-
-/// The standard size of the digest used in bytes.
-/// The digest is used everywhere: for context, public key, proposals, etc.
-const DIGEST_SIZE: usize = 32;
-
-// The constant for one kibibyte for a better readability and less error-prone approach on usage.
-const ONE_KIB: u32 = 1024;
-// The constant for one mibibyte for a better readability and less error-prone approach on usage.
-const ONE_MIB: u32 = ONE_KIB * 1024;
-// The constant for one gibibyte for a better readability and less error-prone approach on usage.
-const ONE_GIB: u32 = ONE_MIB * 1024;
 
 /// Encapsulates the context for a single VM execution.
 ///
