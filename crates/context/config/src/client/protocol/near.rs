@@ -54,13 +54,78 @@ pub struct Credentials {
 mod serde_creds {
     use near_crypto::{PublicKey, SecretKey};
     use near_primitives::types::AccountId;
-    use serde::{Deserialize, Serialize};
+    use serde::{Deserialize, Serialize, Deserializer, Serializer};
 
-    #[derive(Debug, Deserialize, Serialize)]
+    #[derive(Debug)]
     pub struct Credentials {
-        account_id: AccountId,
-        public_key: PublicKey,
-        secret_key: SecretKey,
+        pub account_id: AccountId,
+        pub public_key: PublicKey,
+        pub secret_key: SecretKey,
+    }
+
+    impl<'de> Deserialize<'de> for Credentials {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            use serde::de::Error;
+
+            #[derive(Deserialize)]
+            struct RawCredentials {
+                account_id: AccountId,
+                public_key: Option<PublicKey>,
+                secret_key: SecretKey,
+            }
+
+            let raw = RawCredentials::deserialize(deserializer)?;
+            
+            let public_key = match raw.public_key {
+                Some(pk) => pk,
+                None => {
+                    // If public_key is missing, derive it from secret_key
+                    raw.secret_key.public_key()
+                }
+            };
+
+            Ok(Credentials {
+                account_id: raw.account_id,
+                public_key,
+                secret_key: raw.secret_key,
+            })
+        }
+    }
+
+    impl Serialize for Credentials {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            use serde::ser::SerializeStruct;
+
+            // For implicit accounts, the account_id is exactly the same as the public key representation
+            let should_skip_public_key = if self.account_id.get_account_type().is_implicit() {
+                if let Ok(derived_public_key) = PublicKey::from_near_implicit_account(&self.account_id) {
+                    derived_public_key == self.public_key
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if should_skip_public_key {
+                let mut state = serializer.serialize_struct("Credentials", 2)?;
+                state.serialize_field("account_id", &self.account_id)?;
+                state.serialize_field("secret_key", &self.secret_key)?;
+                state.end()
+            } else {
+                let mut state = serializer.serialize_struct("Credentials", 3)?;
+                state.serialize_field("account_id", &self.account_id)?;
+                state.serialize_field("public_key", &self.public_key)?;
+                state.serialize_field("secret_key", &self.secret_key)?;
+                state.end()
+            }
+        }
     }
 
     impl TryFrom<Credentials> for super::Credentials {

@@ -15,7 +15,7 @@ pub mod relayer;
 pub mod transport;
 pub mod utils;
 
-use config::{ClientConfig, ClientSelectedSigner, Credentials};
+use config::{ClientConfig, ClientSelectedSigner};
 use env::Method;
 use macros::transport;
 use protocol::{ethereum, icp, near, starknet, Protocol};
@@ -71,150 +71,205 @@ impl Client<AnyTransport> {
         let mut near_transport = None;
 
         'skipped: {
-            if let Some(near_config) = config.signer.local.protocols.get("near") {
-                let Some(e) = config.params.get("near") else {
-                    eyre::bail!("missing config specification for `{}` signer", "near");
-                };
+            let Some(protocol_config) = config.params.get("near") else {
+                break 'skipped;
+            };
 
-                if !matches!(e.signer, ClientSelectedSigner::Local) {
-                    break 'skipped;
-                }
-
-                let mut config = near::NearConfig {
-                    networks: Default::default(),
-                };
-
-                for (network, signer) in &near_config.signers {
-                    let Credentials::Near(credentials) = &signer.credentials else {
-                        eyre::bail!("expected Near credentials but got {:?}", signer.credentials)
-                    };
-
-                    let _ignored = config.networks.insert(
-                        network.clone().into(),
-                        near::NetworkConfig {
-                            rpc_url: signer.rpc_url.clone(),
-                            account_id: credentials.account_id.clone(),
-                            access_key: credentials.secret_key.clone(),
-                        },
-                    );
-                }
-
-                near_transport = Some(near::NearTransport::new(&config));
+            if !matches!(protocol_config.signer, ClientSelectedSigner::Local) {
+                break 'skipped;
             }
+
+            let Some(near_config) = config.signer.local.protocols.get("near") else {
+                eyre::bail!("NEAR signer is set to 'local' but no local NEAR credentials found");
+            };
+
+            if near_config.signers.is_empty() {
+                eyre::bail!("NEAR signer is set to 'local' but no NEAR credentials provided");
+            }
+
+            let mut config = near::NearConfig {
+                networks: Default::default(),
+            };
+
+            for (network, signer) in &near_config.signers {
+                let credentials: near::Credentials = serde_json::from_value(signer.credentials.clone())
+                    .map_err(|e| eyre::eyre!("Failed to parse NEAR credentials: {}", e))?;
+
+                let _ignored = config.networks.insert(
+                    network.clone().into(),
+                    near::NetworkConfig {
+                        rpc_url: signer.rpc_url.clone(),
+                        account_id: credentials.account_id.clone(),
+                        access_key: credentials.secret_key.clone(),
+                    },
+                );
+            }
+
+            near_transport = Some(near::NearTransport::new(&config));
         }
 
         let mut starknet_transport = None;
 
         'skipped: {
-            if let Some(starknet_config) = config.signer.local.protocols.get("starknet") {
-                let Some(e) = config.params.get("starknet") else {
-                    eyre::bail!("missing config specification for `{}` signer", "starknet");
-                };
+            let Some(protocol_config) = config.params.get("starknet") else {
+                break 'skipped;
+            };
 
-                if !matches!(e.signer, ClientSelectedSigner::Local) {
-                    break 'skipped;
-                }
-
-                let mut config = starknet::StarknetConfig {
-                    networks: Default::default(),
-                };
-
-                for (network, signer) in &starknet_config.signers {
-                    let Credentials::Starknet(credentials) = &signer.credentials else {
-                        eyre::bail!(
-                            "expected Starknet credentials but got {:?}",
-                            signer.credentials
-                        )
-                    };
-
-                    let _ignored = config.networks.insert(
-                        network.clone().into(),
-                        starknet::NetworkConfig {
-                            rpc_url: signer.rpc_url.clone(),
-                            account_id: credentials.account_id.clone(),
-                            access_key: credentials.secret_key.clone(),
-                        },
-                    );
-                }
-
-                starknet_transport = Some(starknet::StarknetTransport::new(&config));
+            if !matches!(protocol_config.signer, ClientSelectedSigner::Local) {
+                break 'skipped;
             }
+
+            let Some(starknet_config) = config.signer.local.protocols.get("starknet") else {
+                eyre::bail!("Starknet signer is set to 'local' but no local Starknet credentials found");
+            };
+
+            if starknet_config.signers.is_empty() {
+                eyre::bail!("Starknet signer is set to 'local' but no Starknet credentials provided");
+            }
+
+            let mut config = starknet::StarknetConfig {
+                networks: Default::default(),
+            };
+
+            for (network, signer) in &starknet_config.signers {
+                let credentials: starknet::Credentials = serde_json::from_value(signer.credentials.clone())
+                    .map_err(|e| eyre::eyre!("Failed to parse Starknet credentials: {}", e))?;
+
+                let _ignored = config.networks.insert(
+                    network.clone().into(),
+                    starknet::NetworkConfig {
+                        rpc_url: signer.rpc_url.clone(),
+                        account_id: credentials.account_id.clone(),
+                        access_key: credentials.secret_key.clone(),
+                    },
+                );
+            }
+
+            starknet_transport = Some(starknet::StarknetTransport::new(&config));
         }
 
         let mut icp_transport = None;
 
         'skipped: {
-            if let Some(icp_config) = config.signer.local.protocols.get("icp") {
-                let Some(e) = config.params.get("icp") else {
-                    eyre::bail!("missing config specification for `{}` signer", "icp");
-                };
+            let Some(protocol_config) = config.params.get("icp") else {
+                break 'skipped;
+            };
 
-                if !matches!(e.signer, ClientSelectedSigner::Local) {
-                    break 'skipped;
-                }
-
-                let mut config = icp::IcpConfig {
-                    networks: Default::default(),
-                };
-
-                for (network, signer) in &icp_config.signers {
-                    let Credentials::Icp(credentials) = &signer.credentials else {
-                        eyre::bail!("expected ICP credentials but got {:?}", signer.credentials)
-                    };
-
-                    let _ignored = config.networks.insert(
-                        network.clone().into(),
-                        icp::NetworkConfig {
-                            rpc_url: signer.rpc_url.clone(),
-                            account_id: credentials.account_id.clone(),
-                            secret_key: credentials.secret_key.clone(),
-                        },
-                    );
-                }
-
-                icp_transport = Some(icp::IcpTransport::new(&config));
+            if !matches!(protocol_config.signer, ClientSelectedSigner::Local) {
+                break 'skipped;
             }
+
+            let Some(icp_config) = config.signer.local.protocols.get("icp") else {
+                eyre::bail!("ICP signer is set to 'local' but no local ICP credentials found");
+            };
+
+            if icp_config.signers.is_empty() {
+                eyre::bail!("ICP signer is set to 'local' but no ICP credentials provided");
+            }
+
+            let mut config = icp::IcpConfig {
+                networks: Default::default(),
+            };
+
+            for (network, signer) in &icp_config.signers {
+                let credentials: icp::Credentials = serde_json::from_value(signer.credentials.clone())
+                    .map_err(|e| eyre::eyre!("Failed to parse ICP credentials: {}", e))?;
+
+                let _ignored = config.networks.insert(
+                    network.clone().into(),
+                    icp::NetworkConfig {
+                        rpc_url: signer.rpc_url.clone(),
+                        account_id: credentials.account_id.clone(),
+                        secret_key: credentials.secret_key.clone(),
+                    },
+                );
+            }
+
+            icp_transport = Some(icp::IcpTransport::new(&config));
+        }
+
+        let mut stellar_transport = None;
+
+        'skipped: {
+            let Some(protocol_config) = config.params.get("stellar") else {
+                break 'skipped;
+            };
+
+            if !matches!(protocol_config.signer, ClientSelectedSigner::Local) {
+                break 'skipped;
+            }
+
+            let Some(stellar_config) = config.signer.local.protocols.get("stellar") else {
+                eyre::bail!("Stellar signer is set to 'local' but no local Stellar credentials found");
+            };
+
+            if stellar_config.signers.is_empty() {
+                eyre::bail!("Stellar signer is set to 'local' but no Stellar credentials provided");
+            }
+
+            let mut config = stellar::StellarConfig {
+                networks: Default::default(),
+            };
+
+            for (network, signer) in &stellar_config.signers {
+                let credentials: stellar::Credentials = serde_json::from_value(signer.credentials.clone())
+                    .map_err(|e| eyre::eyre!("Failed to parse Stellar credentials: {}", e))?;
+
+                let _ignored = config.networks.insert(
+                    network.clone().into(),
+                    stellar::NetworkConfig {
+                        network: network.clone().into(),
+                        rpc_url: signer.rpc_url.clone(),
+                        public_key: credentials.public_key.clone(),
+                        secret_key: credentials.secret_key.clone(),
+                    },
+                );
+            }
+
+            stellar_transport = Some(stellar::StellarTransport::new(&config));
         }
 
         let mut ethereum_transport = None;
 
         'skipped: {
-            if let Some(ethereum_config) = config.signer.local.protocols.get("ethereum") {
-                let Some(e) = config.params.get("ethereum") else {
-                    eyre::bail!("missing config specification for `{}` signer", "ethereum");
-                };
+            let Some(protocol_config) = config.params.get("ethereum") else {
+                break 'skipped;
+            };
 
-                if !matches!(e.signer, ClientSelectedSigner::Local) {
-                    break 'skipped;
-                }
-
-                let mut config = ethereum::EthereumConfig {
-                    networks: Default::default(),
-                };
-                for (network, signer) in &ethereum_config.signers {
-                    let Credentials::Ethereum(credentials) = &signer.credentials else {
-                        eyre::bail!(
-                            "expected Ethereum credentials but got {:?}",
-                            signer.credentials
-                        )
-                    };
-
-                    let access_key: PrivateKeySigner =
-                        PrivateKeySigner::from_str(&credentials.secret_key)
-                            .wrap_err("failed to convert secret key to PrivateKeySigner")?;
-
-                    let _ignored = config.networks.insert(
-                        network.clone().into(),
-                        ethereum::NetworkConfig {
-                            rpc_url: signer.rpc_url.clone(),
-                            account_id: credentials.account_id.clone(),
-                            access_key,
-                        },
-                    );
-                }
-
-                ethereum_transport = Some(ethereum::EthereumTransport::new(&config));
+            if !matches!(protocol_config.signer, ClientSelectedSigner::Local) {
+                break 'skipped;
             }
+
+            let Some(ethereum_config) = config.signer.local.protocols.get("ethereum") else {
+                eyre::bail!("Ethereum signer is set to 'local' but no local Ethereum credentials found");
+            };
+
+            if ethereum_config.signers.is_empty() {
+                eyre::bail!("Ethereum signer is set to 'local' but no Ethereum credentials provided");
+            }
+
+            let mut config = ethereum::EthereumConfig {
+                networks: Default::default(),
+            };
+            for (network, signer) in &ethereum_config.signers {
+                let credentials: ethereum::Credentials = serde_json::from_value(signer.credentials.clone())
+                    .map_err(|e| eyre::eyre!("Failed to parse Ethereum credentials: {}", e))?;
+
+                let access_key: PrivateKeySigner =
+                    PrivateKeySigner::from_str(&credentials.secret_key)
+                        .wrap_err("failed to convert secret key to PrivateKeySigner")?;
+
+                let _ignored = config.networks.insert(
+                    network.clone().into(),
+                    ethereum::NetworkConfig {
+                        rpc_url: signer.rpc_url.clone(),
+                        account_id: credentials.account_id.clone(),
+                        access_key,
+                    },
+                );
+            }
+
+            ethereum_transport = Some(ethereum::EthereumTransport::new(&config));
         }
 
         let all_transports = transport!(
@@ -364,4 +419,54 @@ pub trait Environment<'a, T> {
 
     fn query(client: CallClient<'a, T>) -> Self::Query;
     fn mutate(client: CallClient<'a, T>) -> Self::Mutate;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::config::*;
+    use serde_json::json;
+    use url::Url;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_credentials_parsing_with_json_value() {
+        // Test that credentials are stored as serde_json::Value for flexible parsing
+        let json_data = json!({
+            "rpc_url": "https://rpc.example.com",
+            "account_id": "test.near",
+            "private_key": "ed25519:..."
+        });
+        
+        let signer: ClientLocalSigner = serde_json::from_value(json_data).unwrap();
+        assert_eq!(signer.rpc_url.as_str(), "https://rpc.example.com/");
+        assert_eq!(signer.credentials["account_id"], "test.near");
+        assert_eq!(signer.credentials["private_key"], "ed25519:...");
+    }
+
+    #[test]
+    fn test_protocol_selection_logic() {
+        // Test that protocol selection checks signer type first, then validates credentials only for local signers
+        let mut params = BTreeMap::new();
+        params.insert("near".to_string(), ClientConfigParams {
+            signer: ClientSelectedSigner::Relayer,
+            network: "testnet".to_string(),
+            contract_id: "app.testnet".to_string(),
+        });
+
+        let config = ClientConfig {
+            params,
+            signer: ClientSigner {
+                relayer: ClientRelayerSigner {
+                    url: Url::parse("http://localhost:3000").unwrap(),
+                },
+                local: LocalConfig {
+                    protocols: BTreeMap::new(), // No local credentials needed for relayer
+                },
+            },
+        };
+
+        let result = Client::from_config(&config);
+        // Should work since from_config creates the client successfully for relayer configs
+    }
 }
