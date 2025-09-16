@@ -1,12 +1,10 @@
-use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     InstallDevApplicationRequest, UpdateContextApplicationRequest,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::{OptionExt, Result};
+use eyre::Result;
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
@@ -71,47 +69,26 @@ impl WatchCommand {
         let target_app_id = self.current_app_id.unwrap_or(initial_app_id);
 
         // Get all contexts that use this application
-        let contexts_response = client.list_contexts().await?;
-        let target_contexts: Vec<_> = contexts_response
-            .data
-            .contexts
-            .into_iter()
-            .filter(|context| context.application_id == target_app_id)
-            .map(|context| context.id)
-            .collect();
+        let target_contexts = get_contexts_using_application(&client, &target_app_id).await?;
 
         if target_contexts.is_empty() {
-            environment.output.write(&InfoLine(&format!(
-                "No contexts found using application {}. You may need to manually update contexts to use this application first.", 
-                target_app_id
-            )));
-            environment.output.write(&InfoLine(
-                "The command will still watch for file changes and install new versions.",
-            ));
-        } else {
-            environment.output.write(&InfoLine(&format!(
-                "Found {} context(s) using application {}: {:?}",
-                target_contexts.len(),
-                target_app_id,
-                target_contexts
-            )));
+            return handle_no_contexts_found(environment, &target_app_id);
         }
 
-        // Start watching the file
-        watch_app_and_update_contexts(
-            environment,
-            target_contexts,
+        environment.output.write(&InfoLine(&format!(
+            "Found {} context(s) using application {}: {:?}",
+            target_contexts.len(),
             target_app_id,
-            self.path,
-            metadata,
-        )
-        .await
+            target_contexts
+        )));
+
+        // Start watching the file
+        watch_app_and_update_contexts(environment, target_app_id, self.path, metadata).await
     }
 }
 
 async fn watch_app_and_update_contexts(
     environment: &mut Environment,
-    mut target_contexts: Vec<calimero_primitives::context::ContextId>,
     mut baseline_app_id: ApplicationId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
@@ -172,21 +149,14 @@ async fn watch_app_and_update_contexts(
         )));
 
         // Refresh context list to catch any new contexts using the baseline app
-        let contexts_response = client.list_contexts().await?;
-        target_contexts = contexts_response
-            .data
-            .contexts
-            .into_iter()
-            .filter(|context| context.application_id == baseline_app_id)
-            .map(|context| context.id)
-            .collect();
+        let target_contexts = get_contexts_using_application(&client, &baseline_app_id).await?;
 
         if target_contexts.is_empty() {
             environment.output.write(&InfoLine(&format!(
-                "No contexts currently use application {}. Skipping updates.",
+                "No contexts currently use application {}.",
                 baseline_app_id
             )));
-            continue;
+            return handle_no_contexts_found(environment, &baseline_app_id);
         }
 
         environment.output.write(&InfoLine(&format!(
@@ -262,8 +232,185 @@ async fn watch_app_and_update_contexts(
                 "🔄 Updated baseline tracking to application {}",
                 baseline_app_id
             )));
+        } else {
+            // If all updates failed, the contexts are still using the old app ID
+            // Continue tracking the old baseline for next iteration
+            environment.output.write(&InfoLine(&format!(
+                "All context updates failed. Continuing to track application {}",
+                baseline_app_id
+            )));
         }
     }
 
     Ok(())
+}
+
+/// Helper function to get all contexts that use a specific application
+async fn get_contexts_using_application(
+    client: &crate::client::Client,
+    app_id: &ApplicationId,
+) -> Result<Vec<calimero_primitives::context::ContextId>> {
+    let contexts_response = client.list_contexts().await?;
+    let target_contexts: Vec<_> = contexts_response
+        .data
+        .contexts
+        .into_iter()
+        .filter(|context| context.application_id == *app_id)
+        .map(|context| context.id)
+        .collect();
+    Ok(target_contexts)
+}
+
+/// Helper function to provide consistent messaging when no contexts are found
+fn handle_no_contexts_found(environment: &mut Environment, app_id: &ApplicationId) -> Result<()> {
+    environment.output.write(&ErrorLine(&format!(
+        "No contexts found using application {}.",
+        app_id
+    )));
+    environment.output.write(&InfoLine(
+        "To use this watch command, first create contexts with this application:",
+    ));
+    environment.output.write(&InfoLine(&format!(
+        "  meroctl context create --application-id {} --protocol <protocol_name>",
+        app_id
+    )));
+    environment
+        .output
+        .write(&InfoLine("Then run the watch command again."));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::output::{Format, Output};
+    use calimero_primitives::application::ApplicationId;
+
+    #[test]
+    fn test_handle_no_contexts_found_returns_ok() {
+        let output = Output::new(Format::Human);
+        let mut environment = Environment::new(output, None).unwrap();
+        let app_id = ApplicationId::from([1u8; 32]);
+
+        let result = handle_no_contexts_found(&mut environment, &app_id);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_watch_command_parsing_minimal() {
+        use clap::Parser;
+
+        let cmd = WatchCommand::try_parse_from(&["watch", "--path", "./test.wasm"]).unwrap();
+
+        assert_eq!(cmd.path.as_str(), "./test.wasm");
+        assert_eq!(cmd.metadata, None);
+        assert_eq!(cmd.current_app_id, None);
+    }
+
+    #[test]
+    fn test_watch_command_parsing_with_metadata() {
+        use clap::Parser;
+
+        let cmd = WatchCommand::try_parse_from(&[
+            "watch",
+            "--path",
+            "./test.wasm",
+            "--metadata",
+            r#"{"version": "1.0.0"}"#,
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.path.as_str(), "./test.wasm");
+        assert_eq!(cmd.metadata, Some(r#"{"version": "1.0.0"}"#.to_string()));
+        assert_eq!(cmd.current_app_id, None);
+    }
+
+    #[test]
+    fn test_watch_command_parsing_with_current_app_id() {
+        use clap::Parser;
+
+        let app_id = ApplicationId::from([42u8; 32]);
+        let cmd = WatchCommand::try_parse_from(&[
+            "watch",
+            "--path",
+            "./test.wasm",
+            "--current-app-id",
+            &app_id.to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.path.as_str(), "./test.wasm");
+        assert_eq!(cmd.metadata, None);
+        assert_eq!(cmd.current_app_id, Some(app_id));
+    }
+
+    #[test]
+    fn test_watch_command_parsing_all_options() {
+        use clap::Parser;
+
+        let app_id = ApplicationId::from([1u8; 32]);
+        let cmd = WatchCommand::try_parse_from(&[
+            "watch",
+            "--path",
+            "./test.wasm",
+            "--metadata",
+            "{}",
+            "--current-app-id",
+            &app_id.to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.path.as_str(), "./test.wasm");
+        assert_eq!(cmd.metadata, Some("{}".to_string()));
+        assert_eq!(cmd.current_app_id, Some(app_id));
+    }
+
+    #[test]
+    fn test_watch_command_parsing_short_flags() {
+        use clap::Parser;
+
+        let cmd = WatchCommand::try_parse_from(&["watch", "-p", "./test.wasm"]).unwrap();
+
+        assert_eq!(cmd.path.as_str(), "./test.wasm");
+    }
+
+    #[test]
+    fn test_watch_command_missing_path_fails() {
+        use clap::Parser;
+
+        let result = WatchCommand::try_parse_from(&["watch"]);
+        assert!(result.is_err(), "Command should fail when path is missing");
+    }
+
+    #[test]
+    fn test_watch_command_invalid_app_id_fails() {
+        use clap::Parser;
+
+        let result = WatchCommand::try_parse_from(&[
+            "watch",
+            "--path",
+            "./test.wasm",
+            "--current-app-id",
+            "invalid-app-id",
+        ]);
+        assert!(
+            result.is_err(),
+            "Command should fail with invalid application ID"
+        );
+    }
+
+    #[test]
+    fn test_application_id_from_bytes_consistency() {
+        // Test that we can consistently create and compare ApplicationIds
+        let bytes = [42u8; 32];
+        let app_id1 = ApplicationId::from(bytes);
+        let app_id2 = ApplicationId::from(bytes);
+
+        assert_eq!(app_id1, app_id2);
+        assert_eq!(app_id1.to_string(), app_id2.to_string());
+    }
+
+    // Note: get_contexts_using_application function would require mocking the client
+    // for proper unit testing, which is beyond the scope of current simple unit tests.
+    // This function is tested implicitly through the main functionality.
 }
