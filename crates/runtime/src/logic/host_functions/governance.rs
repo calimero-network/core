@@ -1,6 +1,6 @@
 use rand::RngCore;
 
-use crate::logic::{DIGEST_SIZE, sys, VMHostFunctions, VMLogicResult};
+use crate::logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE};
 
 impl VMHostFunctions<'_> {
     /// Creates a new governance proposal.
@@ -57,7 +57,8 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn approve_proposal(&mut self, src_approval_ptr: u64) -> VMLogicResult<()> {
-        let approval = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_approval_ptr)? };
+        let approval =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_approval_ptr)? };
         let approval = *self.read_guest_memory_sized::<DIGEST_SIZE>(&approval)?;
 
         let _ignored = self.with_logic_mut(|logic| logic.approvals.push(approval));
@@ -67,11 +68,11 @@ impl VMHostFunctions<'_> {
 
 #[cfg(test)]
 mod tests {
-    use wasmer::{AsStoreMut, Store};
     use crate::logic::{
-        DIGEST_SIZE, Cow, VMContext, VMLimits, VMLogic,
         tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
+        Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
     };
+    use wasmer::{AsStoreMut, Store};
 
     /// Tests the `send_proposal()` and `approve_proposal()` host functions.
     #[test]

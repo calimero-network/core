@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::{
     errors::{HostError, Location, PanicContext},
-    logic::{DIGEST_SIZE, sys, VMHostFunctions, VMLogicResult},
+    logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE},
 };
 
 /// Represents a structured event emitted during the execution.
@@ -31,7 +31,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::Panic` if the panic action was successfully executed.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn panic(&mut self, src_location_ptr: u64) -> VMLogicResult<()> {
-        let location = unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
+        let location =
+            unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
         let line = location.line();
@@ -66,8 +67,10 @@ impl VMHostFunctions<'_> {
         src_panic_msg_ptr: u64,
         src_location_ptr: u64,
     ) -> VMLogicResult<()> {
-        let panic_message_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
-        let location = unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
+        let panic_message_buf =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
+        let location =
+            unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
         let panic_message = self.read_guest_memory_str(&panic_message_buf)?.to_owned();
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
@@ -118,7 +121,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidRegisterId` if the register does not exist.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn read_register(&self, register_id: u64, dest_data_ptr: u64) -> VMLogicResult<u32> {
-        let dest_data = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
+        let dest_data =
+            unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
 
         let data = self.borrow_logic().registers.get(register_id)?;
 
@@ -201,7 +205,8 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn value_return(&mut self, src_value_ptr: u64) -> VMLogicResult<()> {
-        let result = unsafe { self.read_guest_memory_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
+        let result =
+            unsafe { self.read_guest_memory_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
 
         let result = match result {
             sys::ValueReturn::Ok(value) => Ok(self.read_guest_memory_slice(&value).to_vec()),
@@ -302,8 +307,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidMemoryAccess` if this function is called more than once or if memory
     /// access fails for descriptor buffers.
     pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
-        let root_hash = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
-        let artifact = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
+        let root_hash =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
+        let artifact =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
 
         let root_hash = *self.read_guest_memory_sized::<DIGEST_SIZE>(&root_hash)?;
         let artifact = self.read_guest_memory_slice(&artifact).to_vec();
@@ -329,8 +336,10 @@ mod tests {
 
     use crate::errors::{HostError, Location};
     use crate::logic::{
-        DIGEST_SIZE, Cow, VMContext, VMLimits, VMLogic, VMLogicError,
-        tests::{DESCRIPTOR_SIZE, prepare_guest_buf_descriptor, setup_vm, write_str, SimpleMockStorage},
+        tests::{
+            prepare_guest_buf_descriptor, setup_vm, write_str, SimpleMockStorage, DESCRIPTOR_SIZE,
+        },
+        Cow, VMContext, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE,
     };
 
     /// Tests the `input()`, `register_len()`, `read_register()` host functions.
@@ -384,7 +393,8 @@ mod tests {
         let mut logic = VMLogic::new(&mut storage, context, &limits, None);
 
         let mut store = Store::default();
-        let memory = wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+        let memory =
+            wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
         let _ = logic.with_memory(memory);
         let mut host = logic.host_functions(store.as_store_mut());
 

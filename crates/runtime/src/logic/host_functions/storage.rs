@@ -150,11 +150,11 @@ impl VMHostFunctions<'_> {
 
 #[cfg(test)]
 mod tests {
-    use wasmer::{AsStoreMut, Store};
     use crate::logic::{
-        DIGEST_SIZE, Cow, VMContext, VMLimits, VMLogic,
         tests::{prepare_guest_buf_descriptor, setup_vm, write_str, SimpleMockStorage},
+        Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
     };
+    use wasmer::{AsStoreMut, Store};
 
     /// Tests the basic `storage_write` and `storage_read` host functions.
     #[test]

@@ -131,7 +131,8 @@ impl VMHostFunctions<'_> {
         reason = "Effectively infallible here"
     )]
     pub fn time_now(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
-        let guest_time_ptr = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
+        let guest_time_ptr =
+            unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
         if guest_time_ptr.len() != 8 {
             return Err(HostError::InvalidMemoryAccess.into());
@@ -150,16 +151,15 @@ impl VMHostFunctions<'_> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use wasmer::{AsStoreMut, Store};
     use crate::logic::{
-        DIGEST_SIZE, Cow, VMContext, VMLimits, VMLogic,
         tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
+        Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
     };
+    use wasmer::{AsStoreMut, Store};
 
     #[test]
     fn test_random_bytes() {

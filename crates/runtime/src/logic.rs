@@ -19,9 +19,9 @@ use crate::store::Storage;
 use crate::Constraint;
 
 mod errors;
+mod host_functions;
 mod imports;
 mod registers;
-mod host_functions;
 
 pub use errors::VMLogicError;
 pub use host_functions::*;
@@ -500,7 +500,8 @@ mod tests {
             let context =
                 VMContext::new(Cow::Owned($input), [0u8; DIGEST_SIZE], [0u8; DIGEST_SIZE]);
             let mut store = Store::default();
-            let memory = wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
             let mut logic = VMLogic::new($storage, context, $limits, None);
             let _ = logic.with_memory(memory);
             (logic, store)
@@ -535,7 +536,12 @@ mod tests {
     /// forward-compatibility with `wasm64`. Therefore, this function writes both `ptr` and `len`
     /// as `u64`, creating a 16-byte descriptor in memory with the layout `{ ptr: u64, len: u64 }`.
     /// All values are little-endian, as required by the WebAssembly specification.
-    pub fn prepare_guest_buf_descriptor(host: &VMHostFunctions<'_>, offset: u64, ptr: u64, len: u64) {
+    pub fn prepare_guest_buf_descriptor(
+        host: &VMHostFunctions<'_>,
+        offset: u64,
+        ptr: u64,
+        len: u64,
+    ) {
         let data: Vec<u8> = [ptr.to_le_bytes(), len.to_le_bytes()].concat();
 
         host.borrow_memory()
@@ -630,7 +636,10 @@ mod tests {
 
         // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
         // just like public host functions do internally.
-        let buffer = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+        let buffer = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr)
+                .unwrap()
+        };
 
         // Guest: ask host to read str from the `buffer` located in guest memory.
         let result_str = host.read_guest_memory_str(&buffer).unwrap();
@@ -659,7 +668,10 @@ mod tests {
 
         // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
         // just like public host functions do internally.
-        let buffer = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+        let buffer = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr)
+                .unwrap()
+        };
 
         // Guest: ask host to read slice from the `buffer` located in guest memory.
         let result_slice = host.read_guest_memory_slice(&buffer);
@@ -695,7 +707,10 @@ mod tests {
 
         // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
         // just like public host functions do internally.
-        let buffer = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+        let buffer = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr)
+                .unwrap()
+        };
 
         // Test that `read_guest_memory_str` fails as expected.
         let err = host.read_guest_memory_str(&buffer).unwrap_err();
@@ -723,7 +738,10 @@ mod tests {
 
         // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
         // just like public host functions do internally.
-        let buffer_ok = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_ok).unwrap() };
+        let buffer_ok = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_ok)
+                .unwrap()
+        };
         let result_sized_ok = host
             .read_guest_memory_sized::<DIGEST_SIZE>(&buffer_ok)
             .unwrap();
@@ -747,7 +765,10 @@ mod tests {
 
         // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
         // just like public host functions do internally.
-        let buffer_err = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_err).unwrap() };
+        let buffer_err = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_err)
+                .unwrap()
+        };
         // Guest: ask host to read the guest memory sized.
         let err = host
             .read_guest_memory_sized::<DIGEST_SIZE>(&buffer_err)

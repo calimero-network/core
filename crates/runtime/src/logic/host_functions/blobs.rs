@@ -1,4 +1,3 @@
-
 use std::io::{Cursor, Error, Read};
 
 use calimero_primitives::{blobs::BlobId, context::ContextId};
@@ -9,7 +8,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::{
     errors::HostError,
-    logic::{sys, DIGEST_SIZE, VMHostFunctions, VMLogicResult, VMLogicError},
+    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult, DIGEST_SIZE},
 };
 
 /// An enum representing a handle to a blob, which can be for reading or writing.
@@ -43,7 +42,6 @@ pub struct BlobReadHandle {
     /// The current reading position within the blob.
     position: u64,
 }
-
 
 impl VMHostFunctions<'_> {
     /// Creates a new blob for writing.
@@ -207,7 +205,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid.
     /// * `HostError::BlobsNotSupported` if the node client is not supported or upload operation fails.
     pub fn blob_close(&mut self, fd: u64, dest_blob_id_ptr: u64) -> VMLogicResult<u32> {
-        let guest_blob_id_ptr = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_blob_id_ptr)? };
+        let guest_blob_id_ptr =
+            unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_blob_id_ptr)? };
 
         if guest_blob_id_ptr.len() != DIGEST_SIZE as u64 {
             return Err(HostError::InvalidMemoryAccess.into());
@@ -277,7 +276,8 @@ impl VMHostFunctions<'_> {
         };
 
         let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
-        let context_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
+        let context_id =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
 
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
         let context_id =
@@ -387,7 +387,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BlobBufferTooLarge` if the guest buffer exceeds `max_blob_chunk_size`.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn blob_read(&mut self, fd: u64, dest_data_ptr: u64) -> VMLogicResult<u64> {
-        let dest_data = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
+        let dest_data =
+            unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
         let data_len = dest_data.len();
 
         // Check if blob functionality is available
@@ -540,11 +541,11 @@ impl VMHostFunctions<'_> {
 mod tests {
     use super::*;
 
-    use wasmer::{AsStoreMut, Store};
     use crate::logic::{
-        Cow, VMContext, VMLimits, VMLogic,
         tests::{setup_vm, SimpleMockStorage},
+        Cow, VMContext, VMLimits, VMLogic,
     };
+    use wasmer::{AsStoreMut, Store};
 
     /// Verifies that `blob_create` host function correctly returns an error when
     /// the node client is not configured.
@@ -560,5 +561,4 @@ mod tests {
             VMLogicError::HostError(HostError::BlobsNotSupported)
         ));
     }
-
 }
