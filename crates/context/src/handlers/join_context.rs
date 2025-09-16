@@ -43,7 +43,7 @@ async fn join_context(
 
     if context_client
         .get_identity(&context_id, &invitee_id)?
-        .and_then(|i| i.private_key)
+        .and_then(|i| i.keypair_ref)
         .is_some()
     {
         return Ok((context_id, invitee_id));
@@ -54,7 +54,7 @@ async fn join_context(
         .ok_or_else(|| eyre!("missing identity for public key: {}", invitee_id))?;
 
     let identity_secret = stored_identity
-        .private_key
+        .private_key(&context_client)?
         .ok_or_else(|| eyre!("stored identity '{}' is missing private key", invitee_id))?;
 
     if identity_secret.public_key() != invitee_id {
@@ -100,7 +100,7 @@ async fn join_context(
         &context_id,
         &ContextIdentity {
             public_key: invitee_id,
-            private_key: Some(identity_secret),
+            keypair_ref: Some((*identity_secret.public_key()).into()),
             sender_key: Some(sender_key),
         },
     )?;

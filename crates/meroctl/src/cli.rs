@@ -11,6 +11,7 @@ use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
+use crate::cli::identity::IdentityCommand;
 use crate::client::Client;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
@@ -22,6 +23,7 @@ mod app;
 mod blob;
 mod call;
 mod context;
+mod identity;
 mod node;
 mod peers;
 
@@ -68,6 +70,7 @@ pub enum SubCommands {
     Context(ContextCommand),
     Call(CallCommand),
     Peers(PeersCommand),
+    Identity(IdentityCommand),
     #[command(subcommand)]
     Node(NodeCommand),
 }
@@ -139,6 +142,7 @@ impl RootCommand {
             SubCommands::Context(context) => context.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
+            SubCommands::Identity(identity) => identity.run(&mut environment).await,
             SubCommands::Node(node) => node.run(&environment).await,
         };
 

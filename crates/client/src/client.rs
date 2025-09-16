@@ -16,16 +16,17 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias,
     CreateContextIdAlias, CreateContextIdentityAlias, CreateContextRequest, CreateContextResponse,
-    DeleteAliasResponse, DeleteContextResponse, GenerateContextIdentityResponse,
-    GetApplicationResponse, GetContextClientKeysResponse, GetContextIdentitiesResponse,
-    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
+    DeleteAliasResponse, DeleteContextResponse, ExportIdentityResponse,
+    GenerateContextIdentityResponse, GenerateIdentityResponse, GetApplicationResponse,
+    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
+    GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
-    GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
-    InstallDevApplicationRequest, InviteToContextRequest, InviteToContextResponse,
-    JoinContextRequest, JoinContextResponse, ListAliasesResponse, ListApplicationsResponse,
-    LookupAliasResponse, RevokePermissionResponse, SyncContextResponse,
-    UninstallApplicationResponse, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    GrantPermissionResponse, ImportIdentityResponse, InstallApplicationRequest,
+    InstallApplicationResponse, InstallDevApplicationRequest, InviteToContextRequest,
+    InviteToContextResponse, JoinContextRequest, JoinContextResponse, ListAliasesResponse,
+    ListApplicationsResponse, ListIdentitiesResponse, LookupAliasResponse, RemoveIdentityResponse,
+    RevokePermissionResponse, SyncContextResponse, UninstallApplicationResponse,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
@@ -603,5 +604,51 @@ where
             .map(ResolveResponseValue::Parsed);
 
         Ok(ResolveResponse { alias, value })
+    }
+
+    pub async fn generate_identity(
+        &self,
+        alias: Option<String>,
+    ) -> Result<GenerateIdentityResponse> {
+        let response = self
+            .connection
+            .post(
+                "admin-api/identities/generate",
+                serde_json::json!({ "alias": alias }),
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn list_identities(&self) -> Result<ListIdentitiesResponse> {
+        let response = self.connection.get("admin-api/identities").await?;
+        Ok(response)
+    }
+
+    pub async fn remove_identity(&self, public_key: &PublicKey) -> Result<RemoveIdentityResponse> {
+        let response = self
+            .connection
+            .delete(&format!("admin-api/identities/{}", public_key))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn export_identity(&self, public_key: &PublicKey) -> Result<ExportIdentityResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/identities/{}/export", public_key))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn import_identity(&self, json_data: &str) -> Result<ImportIdentityResponse> {
+        let response = self
+            .connection
+            .post(
+                "admin-api/identities/import",
+                serde_json::json!({ "data": json_data }),
+            )
+            .await?;
+        Ok(response)
     }
 }

@@ -5,7 +5,7 @@ use eyre::Result as EyreResult;
 pub mod config;
 pub mod db;
 pub mod entry;
-mod handle;
+pub mod handle;
 pub mod iter;
 pub mod key;
 pub mod layer;

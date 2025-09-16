@@ -317,7 +317,7 @@ async fn create_context(
     handle.put(
         &key::ContextIdentity::new(context.id, identity),
         &types::ContextIdentity {
-            private_key: Some(*identity_secret),
+            keypair_ref: Some(*identity_secret.public_key()),
             sender_key: Some(*sender_key),
         },
     )?;

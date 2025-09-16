@@ -6,11 +6,13 @@ mod application;
 mod blobs;
 mod context;
 mod generic;
+mod keypair;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
 pub use context::{ContextConfig, ContextDelta, ContextIdentity, ContextMeta, ContextState};
 pub use generic::GenericData;
+pub use keypair::Keypair;
 
 pub trait PredefinedEntry: AsKeyParts {
     type Codec: for<'a> Codec<'a, Self::DataType<'a>>;

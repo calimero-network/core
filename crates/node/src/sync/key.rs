@@ -125,11 +125,22 @@ impl SyncManager {
             .get_identity(&context.id, &their_identity)?
             .ok_or_eyre("expected peer identity to exist")?;
 
-        let (private_key, sender_key) = self
-            .context_client
-            .get_identity(&context.id, &our_identity)?
-            .and_then(|i| Some((i.private_key?, i.sender_key?)))
-            .ok_or_eyre("expected own identity to have private & sender keys")?;
+        let (private_key, sender_key) = {
+            let identity = self
+                .context_client
+                .get_identity(&context.id, &our_identity)?
+                .ok_or_eyre("expected own identity to exist")?;
+
+            let private_key = identity
+                .private_key(&self.context_client)?
+                .ok_or_eyre("expected own identity to have private key")?;
+
+            let sender_key = identity
+                .sender_key
+                .ok_or_eyre("expected own identity to have sender key")?;
+
+            (private_key, sender_key)
+        };
 
         let shared_key = SharedKey::new(&private_key, &their_identity.public_key);
 
