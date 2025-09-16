@@ -31,7 +31,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::Panic` if the panic action was successfully executed.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn panic(&mut self, src_location_ptr: u64) -> VMLogicResult<()> {
-        let location = unsafe { self.read_typed::<sys::Location<'_>>(src_location_ptr)? };
+        let location = unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
         let line = location.line();
@@ -66,8 +66,8 @@ impl VMHostFunctions<'_> {
         src_panic_msg_ptr: u64,
         src_location_ptr: u64,
     ) -> VMLogicResult<()> {
-        let panic_message_buf = unsafe { self.read_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
-        let location = unsafe { self.read_typed::<sys::Location<'_>>(src_location_ptr)? };
+        let panic_message_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
+        let location = unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
         let panic_message = self.read_guest_memory_str(&panic_message_buf)?.to_owned();
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
@@ -118,7 +118,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidRegisterId` if the register does not exist.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn read_register(&self, register_id: u64, dest_data_ptr: u64) -> VMLogicResult<u32> {
-        let dest_data = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
+        let dest_data = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
 
         let data = self.borrow_logic().registers.get(register_id)?;
 
@@ -201,7 +201,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn value_return(&mut self, src_value_ptr: u64) -> VMLogicResult<()> {
-        let result = unsafe { self.read_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
+        let result = unsafe { self.read_guest_memory_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
 
         let result = match result {
             sys::ValueReturn::Ok(value) => Ok(self.read_guest_memory_slice(&value).to_vec()),
@@ -226,7 +226,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BadUTF8` if the message is not a valid UTF-8 string.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn log_utf8(&mut self, src_log_ptr: u64) -> VMLogicResult<()> {
-        let src_log_buf = unsafe { self.read_typed::<sys::Buffer<'_>>(src_log_ptr)? };
+        let src_log_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr)? };
 
         let logic = self.borrow_logic();
 
@@ -259,7 +259,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::EventsOverflow` if the maximum number of events has been reached.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn emit(&mut self, src_event_ptr: u64) -> VMLogicResult<()> {
-        let event = unsafe { self.read_typed::<sys::Event<'_>>(src_event_ptr)? };
+        let event = unsafe { self.read_guest_memory_typed::<sys::Event<'_>>(src_event_ptr)? };
 
         let kind_len = event.kind().len();
         let data_len = event.data().len();
@@ -302,8 +302,8 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidMemoryAccess` if this function is called more than once or if memory
     /// access fails for descriptor buffers.
     pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
-        let root_hash = unsafe { self.read_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
-        let artifact = unsafe { self.read_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
+        let root_hash = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
+        let artifact = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
 
         let root_hash = *self.read_guest_memory_sized::<DIGEST_SIZE>(&root_hash)?;
         let artifact = self.read_guest_memory_slice(&artifact).to_vec();

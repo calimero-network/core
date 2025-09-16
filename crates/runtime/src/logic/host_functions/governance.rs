@@ -28,8 +28,8 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn send_proposal(&mut self, src_actions_ptr: u64, dest_id_ptr: u64) -> VMLogicResult<()> {
-        let actions = unsafe { self.read_typed::<sys::Buffer<'_>>(src_actions_ptr)? };
-        let dest_id = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_id_ptr)? };
+        let actions = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_actions_ptr)? };
+        let dest_id = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_id_ptr)? };
 
         let mut proposal_id = [0u8; DIGEST_SIZE];
         rand::thread_rng().fill_bytes(&mut proposal_id);
@@ -57,7 +57,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn approve_proposal(&mut self, src_approval_ptr: u64) -> VMLogicResult<()> {
-        let approval = unsafe { self.read_typed::<sys::Buffer<'_>>(src_approval_ptr)? };
+        let approval = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_approval_ptr)? };
         let approval = *self.read_guest_memory_sized::<DIGEST_SIZE>(&approval)?;
 
         let _ignored = self.with_logic_mut(|logic| logic.approvals.push(approval));

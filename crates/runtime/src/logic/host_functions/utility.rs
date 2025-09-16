@@ -42,10 +42,10 @@ impl VMHostFunctions<'_> {
         src_body_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
-        let url = unsafe { self.read_typed::<sys::Buffer<'_>>(src_url_ptr)? };
-        let method = unsafe { self.read_typed::<sys::Buffer<'_>>(src_method_ptr)? };
-        let headers = unsafe { self.read_typed::<sys::Buffer<'_>>(src_headers_ptr)? };
-        let body = unsafe { self.read_typed::<sys::Buffer<'_>>(src_body_ptr)? };
+        let url = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_url_ptr)? };
+        let method = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_method_ptr)? };
+        let headers = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_headers_ptr)? };
+        let body = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_body_ptr)? };
 
         let url = self.read_guest_memory_str(&url)?;
         let method = self.read_guest_memory_str(&method)?;
@@ -97,7 +97,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn random_bytes(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
-        let dest_buf = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_ptr)? };
+        let dest_buf = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
         rand::thread_rng().fill_bytes(self.read_guest_memory_slice_mut(&dest_buf));
 
@@ -131,7 +131,7 @@ impl VMHostFunctions<'_> {
         reason = "Effectively infallible here"
     )]
     pub fn time_now(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
-        let guest_time_ptr = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_ptr)? };
+        let guest_time_ptr = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
         if guest_time_ptr.len() != 8 {
             return Err(HostError::InvalidMemoryAccess.into());

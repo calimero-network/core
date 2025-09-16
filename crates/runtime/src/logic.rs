@@ -432,7 +432,7 @@ impl VMHostFunctions<'_> {
     ///    must ensure that the bytes at `ptr` represent a valid instance of `T`.
     /// 2. It relies on `ptr` being a valid, aligned pointer within the guest memory.
     //TODO: refactor to use `sys::Buffer` instead of `ptr`.
-    unsafe fn read_typed<T>(&self, ptr: u64) -> VMLogicResult<T> {
+    unsafe fn read_guest_memory_typed<T>(&self, ptr: u64) -> VMLogicResult<T> {
         let mut value = MaybeUninit::<T>::uninit();
 
         let raw = slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>());
@@ -628,9 +628,9 @@ mod tests {
         // Guest: prepare the descriptor for the destination buffer so host can access it.
         prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, expected_str.len() as u64);
 
-        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
-        // do internally.
-        let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+        // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
+        // just like public host functions do internally.
+        let buffer = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
 
         // Guest: ask host to read str from the `buffer` located in guest memory.
         let result_str = host.read_guest_memory_str(&buffer).unwrap();
@@ -657,9 +657,9 @@ mod tests {
         // Guest: prepare the descriptor for the destination buffer so host can access it.
         prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, expected_str.len() as u64);
 
-        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
-        // do internally.
-        let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+        // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
+        // just like public host functions do internally.
+        let buffer = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
 
         // Guest: ask host to read slice from the `buffer` located in guest memory.
         let result_slice = host.read_guest_memory_slice(&buffer);
@@ -693,9 +693,9 @@ mod tests {
         // Guest: prepare the descriptor for the destination buffer so host can access it.
         prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, invalid_utf8.len() as u64);
 
-        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
-        // do internally.
-        let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+        // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
+        // just like public host functions do internally.
+        let buffer = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
 
         // Test that `read_guest_memory_str` fails as expected.
         let err = host.read_guest_memory_str(&buffer).unwrap_err();
@@ -721,9 +721,9 @@ mod tests {
         // Guest: prepare the descriptor for the destination buffer so host can access it.
         prepare_guest_buf_descriptor(&host, buf_ptr_ok, data_ptr_ok, correct_data.len() as u64);
 
-        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
-        // do internally.
-        let buffer_ok = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_ok).unwrap() };
+        // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
+        // just like public host functions do internally.
+        let buffer_ok = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_ok).unwrap() };
         let result_sized_ok = host
             .read_guest_memory_sized::<DIGEST_SIZE>(&buffer_ok)
             .unwrap();
@@ -745,9 +745,9 @@ mod tests {
             incorrect_data.len() as u64,
         );
 
-        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
-        // do internally.
-        let buffer_err = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_err).unwrap() };
+        // Use `read_guest_memory_typed` to get a `sys::Buffer` instance,
+        // just like public host functions do internally.
+        let buffer_err = unsafe { host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_err).unwrap() };
         // Guest: ask host to read the guest memory sized.
         let err = host
             .read_guest_memory_sized::<DIGEST_SIZE>(&buffer_err)

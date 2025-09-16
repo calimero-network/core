@@ -135,7 +135,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid or not a write handle.
     /// * `HostError::BlobWriteTooLarge` if the data chunk exceeds `max_blob_chunk_size`.
     pub fn blob_write(&mut self, fd: u64, src_data_ptr: u64) -> VMLogicResult<u64> {
-        let data = unsafe { self.read_typed::<sys::Buffer<'_>>(src_data_ptr)? };
+        let data = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_data_ptr)? };
         let data_len = data.len();
 
         if self.borrow_logic().node_client.is_none() {
@@ -207,7 +207,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid.
     /// * `HostError::BlobsNotSupported` if the node client is not supported or upload operation fails.
     pub fn blob_close(&mut self, fd: u64, dest_blob_id_ptr: u64) -> VMLogicResult<u32> {
-        let guest_blob_id_ptr = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_blob_id_ptr)? };
+        let guest_blob_id_ptr = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_blob_id_ptr)? };
 
         if guest_blob_id_ptr.len() != DIGEST_SIZE as u64 {
             return Err(HostError::InvalidMemoryAccess.into());
@@ -276,8 +276,8 @@ impl VMHostFunctions<'_> {
             None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
         };
 
-        let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
-        let context_id = unsafe { self.read_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
+        let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
+        let context_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
 
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
         let context_id =
@@ -319,7 +319,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::TooManyBlobHandles` if the maximum number of handles is exceeded.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn blob_open(&mut self, src_blob_id_ptr: u64) -> VMLogicResult<u64> {
-        let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
+        let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
 
         if self.borrow_logic().node_client.is_none() {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
@@ -387,7 +387,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BlobBufferTooLarge` if the guest buffer exceeds `max_blob_chunk_size`.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn blob_read(&mut self, fd: u64, dest_data_ptr: u64) -> VMLogicResult<u64> {
-        let dest_data = unsafe { self.read_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
+        let dest_data = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
         let data_len = dest_data.len();
 
         // Check if blob functionality is available

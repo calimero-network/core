@@ -24,7 +24,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::KeyLengthOverflow` if the key size exceeds the configured limit.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn storage_read(&mut self, src_key_ptr: u64, dest_register_id: u64) -> VMLogicResult<u32> {
-        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
 
@@ -68,7 +68,7 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
-        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
 
@@ -118,8 +118,8 @@ impl VMHostFunctions<'_> {
         src_value_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
-        let key = unsafe { self.read_typed::<sys::Buffer<'_>>(src_key_ptr)? };
-        let value = unsafe { self.read_typed::<sys::Buffer<'_>>(src_value_ptr)? };
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_value_ptr)? };
 
         let logic = self.borrow_logic();
 
