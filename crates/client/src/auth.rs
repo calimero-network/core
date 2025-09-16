@@ -25,6 +25,14 @@ pub struct CliAuthenticator {
     output: Box<dyn OutputHandler + Send + Sync>,
 }
 
+impl std::fmt::Debug for CliAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CliAuthenticator")
+            .field("output", &"<dyn OutputHandler>")
+            .finish()
+    }
+}
+
 impl Clone for CliAuthenticator {
     fn clone(&self) -> Self {
         // Create a new authenticator with console output
@@ -51,7 +59,7 @@ pub trait OutputHandler: Send + Sync {
 }
 
 /// Simple console output handler
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ConsoleOutputHandler;
 
 impl OutputHandler for ConsoleOutputHandler {
@@ -77,7 +85,7 @@ impl OutputHandler for ConsoleOutputHandler {
         io::stdout().flush()?;
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
+        let _ = io::stdin().read_line(&mut input)?;
 
         Ok(input.trim().to_owned())
     }
@@ -176,7 +184,7 @@ impl ClientAuthenticator for CliAuthenticator {
         // Wait for user to complete authentication
         self.output
             .display_message("Please complete authentication in your browser, then press Enter.");
-        self.output.wait_for_input("Press Enter when done: ")?;
+        drop(self.output.wait_for_input("Press Enter when done: ")?);
 
         // Try to authenticate again
         self.authenticate(api_url).await

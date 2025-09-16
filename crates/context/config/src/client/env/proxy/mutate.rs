@@ -118,8 +118,6 @@ mod icp;
 mod near;
 #[cfg(feature = "starknet_client")]
 mod starknet;
-#[cfg(feature = "stellar_client")]
-mod stellar;
 
 impl<'a, T: Transport> ContextProxyMutateRequest<'a, T> {
     /// Sends the mutation request with the provided signing key.

@@ -79,7 +79,7 @@ impl JwtToken {
 
     /// Add metadata to the token
     pub fn with_metadata(mut self, key: String, value: serde_json::Value) -> Self {
-        self.metadata.insert(key, value);
+        drop(self.metadata.insert(key, value));
         self
     }
 
@@ -137,7 +137,7 @@ impl SessionTokenCache {
     /// Store tokens for a specific URL
     pub async fn store_tokens(&self, url: &str, tokens: &JwtToken) {
         let mut cache = self.tokens.write().await;
-        cache.insert(url.to_owned(), tokens.clone());
+        drop(cache.insert(url.to_owned(), tokens.clone()));
     }
 
     /// Get tokens for a specific URL
@@ -149,7 +149,7 @@ impl SessionTokenCache {
     /// Remove tokens for a specific URL
     pub async fn remove_tokens(&self, url: &str) {
         let mut cache = self.tokens.write().await;
-        cache.remove(url);
+        drop(cache.remove(url));
     }
 
     /// Clear all cached tokens

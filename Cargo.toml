@@ -8,10 +8,11 @@ description = "Core Calimero infrastructure and tools"
 
 [workspace.metadata.workspaces]
 # Shared version of all public crates in the workspace.
-version = "0.2.4"
+# [IMPORTANT: do not remove comments from next line, used as search anchor]
+version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
-    "./apps/kv-store", 
+    "./apps/kv-store",
     "./crates/cargo-mero",
     "./e2e-tests",
     "./crates/merod",
@@ -138,8 +139,6 @@ serde = "1.0.196"
 serde_json = "1.0.113"
 serde_with = "3.9.0"
 sha2 = "0.10.8"
-soroban-client = "0.3.7"
-soroban-sdk = "22.0.5"
 starknet = "0.17.0"
 starknet-core = "0.16.0"
 starknet-core-derive = "0.1.0"

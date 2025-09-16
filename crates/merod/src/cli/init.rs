@@ -10,7 +10,7 @@ use calimero_config::{
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
+    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
     ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,
@@ -36,7 +36,6 @@ use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
-use soroban_client::keypair::{Keypair as StellarKeypair, KeypairBehavior};
 use starknet::signers::SigningKey;
 use tokio::fs::{self, create_dir, create_dir_all};
 use tracing::{info, warn};
@@ -98,17 +97,6 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
         protocol: ConfigProtocol::Icp,
     },
     ProtocolConfig {
-        name: "stellar",
-        default_network: "testnet",
-        default_contract: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY",
-        signer_type: ClientSelectedSigner::Relayer,
-        networks: &[
-            ("mainnet", "https://soroban.stellar.org"),
-            ("testnet", "https://soroban-testnet.stellar.org"),
-        ],
-        protocol: ConfigProtocol::Stellar,
-    },
-    ProtocolConfig {
         name: "ethereum",
         default_network: "sepolia",
         default_contract: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB",
@@ -123,7 +111,6 @@ pub enum ConfigProtocol {
     Near,
     Starknet,
     Icp,
-    Stellar,
     Ethereum,
 }
 
@@ -427,21 +414,6 @@ fn generate_local_signer(
                     account_id,
                     public_key: encode(&account_id),
                     secret_key: encode(&signing_key),
-                }),
-            })
-        }
-
-        ConfigProtocol::Stellar => {
-            let keypair = StellarKeypair::random().unwrap();
-            let public_key = keypair.public_key();
-            let secret_key = keypair.secret_key().unwrap();
-
-            Ok(ClientLocalSigner {
-                rpc_url,
-                credentials: Credentials::Raw(RawCredentials {
-                    account_id: None,
-                    public_key,
-                    secret_key,
                 }),
             })
         }

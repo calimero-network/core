@@ -115,11 +115,3 @@ pub mod ethereum;
 pub mod icp;
 pub mod near;
 pub mod starknet;
-pub mod stellar;
-
-// Re-export protocol-specific implementations
-pub use ethereum::*;
-pub use icp::*;
-pub use near::*;
-pub use starknet::*;
-pub use stellar::*;

@@ -11,7 +11,6 @@ publish = true
 [dependencies]
 alloy = { workspace = true, optional = true }
 alloy-sol-types = { workspace = true, optional = true }
-base64.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 candid = { workspace = true, optional = true }
@@ -29,15 +28,11 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-soroban-client = { workspace = true, optional = true }
-soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
-starknet-core = { workspace = true, optional = true }
-starknet-core-derive = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros"] }
+tokio = { workspace = true, features = ["sync", "macros"], optional = true }
 url = { workspace = true, optional = true }
 
 [lints]
@@ -50,7 +45,6 @@ client = [
   "near_client",
   "icp_client",
   "starknet_client",
-  "stellar_client",
   "ethereum_client",
   "dep:either",
   "dep:eyre",
@@ -64,18 +58,15 @@ icp = ["candid"]
 
 icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
-starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-core", "dep:starknet-core-derive", "dep:starknet-crypto", "dep:starknet-types-core"]
-
-stellar = ["dep:soroban-sdk"]
+starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starknet-types-core"]
 
 ethereum = [
   "alloy",
   "alloy-sol-types",
-  "ethabi"
+  "ethabi",
+  "dep:tokio"
 ]
 
 ethereum_client = [
   "ethereum"
 ]
-
-stellar_client = ["stellar", "dep:soroban-client"]
