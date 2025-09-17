@@ -1,32 +1,6 @@
 {
   "schema_version": "wasm-abi/1",
   "types": {
-    "AbiState": {
-      "kind": "record",
-      "fields": [
-        {
-          "name": "counters",
-          "type": {
-            "kind": "map",
-            "key": {
-              "kind": "string"
-            },
-            "value": {
-              "kind": "u32"
-            }
-          }
-        },
-        {
-          "name": "users",
-          "type": {
-            "kind": "list",
-            "items": {
-              "$ref": "UserId32"
-            }
-          }
-        }
-      ]
-    },
     "Action": {
       "kind": "variant",
       "variants": [
@@ -66,6 +40,23 @@
       "target": {
         "kind": "bytes"
       }
+    },
+    "InternalResult": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "original",
+          "type": {
+            "kind": "u32"
+          }
+        },
+        {
+          "name": "calculated",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ]
     },
     "Person": {
       "kind": "record",
@@ -142,7 +133,7 @@
       "name": "init",
       "params": [],
       "returns": {
-        "$ref": "AbiState"
+        "kind": "unit"
       }
     },
     {
@@ -602,6 +593,34 @@
       ],
       "returns": {
         "$ref": "Person"
+      }
+    },
+    {
+      "name": "public_with_private_helper",
+      "params": [
+        {
+          "name": "value",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "u32"
+      }
+    },
+    {
+      "name": "get_internal_result",
+      "params": [
+        {
+          "name": "value",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "InternalResult"
       }
     }
   ],

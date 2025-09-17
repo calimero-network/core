@@ -3,6 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use wasmer::{CompileError, DeserializeError, Instance, NativeEngineExt, SerializeError, Store};
 
+mod constants;
 mod constraint;
 pub mod errors;
 pub mod logic;
