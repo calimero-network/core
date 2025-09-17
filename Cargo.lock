@@ -18,6 +18,7 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-wasm-abi",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -5240,6 +5241,8 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

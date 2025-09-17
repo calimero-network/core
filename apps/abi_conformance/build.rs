@@ -15,6 +15,10 @@ fn main() {
     // Generate ABI manifest using the emitter
     let manifest = emit_manifest(&src_content).expect("Failed to emit ABI manifest");
 
+    // Write ABI to JSON file for testing
+    let abi_json = serde_json::to_string_pretty(&manifest).expect("Failed to serialize manifest");
+    fs::write("res/abi.json", abi_json).expect("Failed to write ABI JSON");
+
     // Generate the embed code
     let embed_code = generate_embed_code(&manifest);
 
