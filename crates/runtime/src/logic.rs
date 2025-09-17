@@ -357,6 +357,11 @@ impl VMHostFunctions<'_> {
     /// # Returns
     ///
     /// * Mutable slice of the guest memory contents.
+    #[allow(
+        clippy::mut_from_ref,
+        reason = "We are not modifying the self explicitly, only the underlying slice of the guest memory.\
+        Meantime we are required to have an immutable reference to self, hence the exception"
+    )]
     fn read_guest_memory_slice_mut(&self, slice: &sys::BufferMut<'_>) -> &mut [u8] {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
