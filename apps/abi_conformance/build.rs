@@ -3,7 +3,6 @@ use std::{env, fs};
 
 use calimero_wasm_abi::embed::generate_embed_code;
 use calimero_wasm_abi::emitter::emit_manifest;
-use syn::parse_file;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/lib.rs");
@@ -15,6 +14,14 @@ fn main() {
 
     // Generate ABI manifest using the emitter
     let manifest = emit_manifest(&src_content).expect("Failed to emit ABI manifest");
+
+    // Write ABI to JSON file for testing
+    let abi_json = serde_json::to_string_pretty(&manifest).expect("Failed to serialize manifest");
+    let res_dir = Path::new("res");
+    if !res_dir.exists() {
+        fs::create_dir_all(res_dir).expect("Failed to create res directory");
+    }
+    fs::write("res/abi.json", abi_json).expect("Failed to write ABI JSON");
 
     // Generate the embed code
     let embed_code = generate_embed_code(&manifest);

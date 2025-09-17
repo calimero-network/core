@@ -2,8 +2,6 @@
 
 //! NEAR Protocol specific implementations for context proxy queries.
 
-use serde::Serialize;
-
 use super::super::requests::{
     ActiveProposalRequest, ContextStorageEntriesRequest, ContextVariableRequest,
     ProposalApprovalsRequest, ProposalApproversRequest, ProposalRequest, ProposalsRequest,
@@ -12,7 +10,7 @@ use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::repr::Repr;
 use crate::types::{ContextIdentity, ContextStorageEntry};
-use crate::{Proposal, ProposalId, ProposalWithApprovals};
+use crate::{Proposal, ProposalWithApprovals};
 
 impl Method<Near> for ActiveProposalRequest {
     const METHOD: &'static str = "get_active_proposals_limit";

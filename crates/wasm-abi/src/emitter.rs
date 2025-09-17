@@ -18,7 +18,7 @@ pub struct AbiEmitter {
     events: Vec<Event>,
 }
 
-impl AbiEmitter {
+impl<'ast> AbiEmitter {
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -26,6 +26,102 @@ impl AbiEmitter {
             local_types: HashMap::new(),
             methods: Vec::new(),
             events: Vec::new(),
+        }
+    }
+
+    fn collect_referenced_types(
+        &self,
+        item_impl: &'ast ItemImpl,
+        referenced_types: &mut std::collections::HashSet<String>,
+    ) {
+        for item in &item_impl.items {
+            if let syn::ImplItem::Fn(method) = item {
+                // Only process public methods
+                if matches!(method.vis, syn::Visibility::Public(_)) {
+                    let method_name = method.sig.ident.to_string();
+
+                    // Skip init methods since they return void
+                    if method_name == "init" {
+                        continue;
+                    }
+
+                    // Process parameters
+                    for param in &method.sig.inputs {
+                        if let syn::FnArg::Typed(pat_type) = param {
+                            self.collect_types_from_type(&pat_type.ty, referenced_types);
+                        }
+                    }
+
+                    // Process return type
+                    if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                        self.collect_types_from_type(ty, referenced_types);
+                    }
+                }
+            }
+        }
+    }
+
+    fn collect_types_from_enum_variants(
+        &self,
+        item_enum: &'ast ItemEnum,
+        referenced_types: &mut std::collections::HashSet<String>,
+    ) {
+        for variant in &item_enum.variants {
+            for field in &variant.fields {
+                self.collect_types_from_type(&field.ty, referenced_types);
+            }
+        }
+    }
+
+    fn collect_types_from_struct_fields(
+        &self,
+        item_struct: &'ast ItemStruct,
+        referenced_types: &mut std::collections::HashSet<String>,
+    ) {
+        for field in &item_struct.fields {
+            self.collect_types_from_type(&field.ty, referenced_types);
+        }
+    }
+
+    fn collect_types_from_type(
+        &self,
+        ty: &Type,
+        referenced_types: &mut std::collections::HashSet<String>,
+    ) {
+        match ty {
+            Type::Path(type_path) => {
+                if let Some(segment) = type_path.path.segments.last() {
+                    let type_name = segment.ident.to_string();
+                    let _ = referenced_types.insert(type_name);
+
+                    // Also collect generic type arguments
+                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                        for arg in &args.args {
+                            if let syn::GenericArgument::Type(ty) = arg {
+                                self.collect_types_from_type(ty, referenced_types);
+                            }
+                        }
+                    }
+                }
+            }
+            Type::Reference(type_ref) => {
+                self.collect_types_from_type(&type_ref.elem, referenced_types);
+            }
+            Type::Ptr(type_ptr) => {
+                self.collect_types_from_type(&type_ptr.elem, referenced_types);
+            }
+            Type::Array(type_array) => {
+                self.collect_types_from_type(&type_array.elem, referenced_types);
+            }
+            Type::Slice(type_slice) => {
+                self.collect_types_from_type(&type_slice.elem, referenced_types);
+            }
+            Type::Tuple(type_tuple) => {
+                for elem in &type_tuple.elems {
+                    self.collect_types_from_type(elem, referenced_types);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -280,24 +376,26 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     }
 
                     // Process return type
-                    let (returns, returns_nullable) =
-                        if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                            let return_type = normalize_type(ty, true, self).unwrap();
-                            let return_type = post_process_type_ref(return_type, self);
+                    let (returns, returns_nullable) = if method_name == "init" {
+                        // Init methods should always return void
+                        (Some(TypeRef::Scalar(ScalarType::Unit)), None)
+                    } else if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                        let return_type = normalize_type(ty, true, self).unwrap();
+                        let return_type = post_process_type_ref(return_type, self);
 
-                            // Check if it's Option<T> to set nullable
-                            let returns_nullable = if let Type::Path(type_path) = &**ty {
-                                (type_path.path.segments.len() == 1
-                                    && type_path.path.segments[0].ident == "Option")
-                                    .then_some(true)
-                            } else {
-                                None
-                            };
-
-                            (Some(return_type), returns_nullable)
+                        // Check if it's Option<T> to set nullable
+                        let returns_nullable = if let Type::Path(type_path) = &**ty {
+                            (type_path.path.segments.len() == 1
+                                && type_path.path.segments[0].ident == "Option")
+                                .then_some(true)
                         } else {
-                            (Some(TypeRef::Scalar(ScalarType::Unit)), None)
+                            None
                         };
+
+                        (Some(return_type), returns_nullable)
+                    } else {
+                        (Some(TypeRef::Scalar(ScalarType::Unit)), None)
+                    };
 
                     // Create and store the method
                     let method = Method {
@@ -320,41 +418,87 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     let file = syn::parse_file(source)?;
     let mut emitter = AbiEmitter::new();
 
-    // First pass: process all newtypes to establish type definitions
+    // First pass: collect all referenced types from public methods
+    let mut referenced_types = std::collections::HashSet::new();
+    for item in &file.items {
+        if let Item::Impl(item_impl) = item {
+            emitter.collect_referenced_types(item_impl, &mut referenced_types);
+        }
+    }
+
+    // Second pass: iteratively collect all transitively referenced types
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let initial_size = referenced_types.len();
+
+        for item in &file.items {
+            match item {
+                Item::Enum(item_enum) => {
+                    let enum_name = item_enum.ident.to_string();
+                    if referenced_types.contains(&enum_name) {
+                        emitter.collect_types_from_enum_variants(item_enum, &mut referenced_types);
+                    }
+                }
+                Item::Struct(item_struct) => {
+                    if !is_newtype_pattern(item_struct) {
+                        let struct_name = item_struct.ident.to_string();
+                        if referenced_types.contains(&struct_name) {
+                            emitter.collect_types_from_struct_fields(
+                                item_struct,
+                                &mut referenced_types,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if referenced_types.len() > initial_size {
+            changed = true;
+        }
+    }
+
+    // Third pass: process types (newtypes first, then referenced types)
     for item in &file.items {
         if let Item::Struct(item_struct) = item {
             if is_newtype_pattern(item_struct) {
+                // Always process newtypes first
                 emitter.visit_item_struct(item_struct);
             }
         }
     }
 
-    // Second pass: process all other structs and enums
     for item in &file.items {
         match item {
             Item::Struct(item_struct) => {
                 if !is_newtype_pattern(item_struct) {
-                    emitter.visit_item_struct(item_struct);
+                    // Only process referenced structs
+                    let struct_name = item_struct.ident.to_string();
+                    if referenced_types.contains(&struct_name) {
+                        emitter.visit_item_struct(item_struct);
+                    }
                 }
             }
-            Item::Enum(item_enum) => emitter.visit_item_enum(item_enum),
+            Item::Enum(item_enum) => {
+                let enum_name = item_enum.ident.to_string();
+                if enum_name == "Event" {
+                    // Process events
+                    emitter.process_events(item_enum);
+                } else if referenced_types.contains(&enum_name) {
+                    // Process referenced enums
+                    emitter.visit_item_enum(item_enum);
+                }
+            }
             _ => {}
         }
     }
 
-    // Third pass: process impls (methods)
+    // Fourth pass: process methods (after all types are defined)
     for item in &file.items {
         if let Item::Impl(item_impl) = item {
             emitter.visit_item_impl(item_impl);
-        }
-    }
-
-    // Fourth pass: process events
-    for item in &file.items {
-        if let Item::Enum(item_enum) = item {
-            if item_enum.ident == "Event" {
-                emitter.process_events(item_enum);
-            }
         }
     }
 
@@ -367,8 +511,8 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     };
 
     // Remove any internal types that shouldn't be exposed
-    manifest.types.remove("AbiStateExposed");
-    manifest.types.remove("Event");
+    drop(manifest.types.remove("AbiStateExposed"));
+    drop(manifest.types.remove("Event"));
 
     Ok(manifest)
 }

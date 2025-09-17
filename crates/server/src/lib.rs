@@ -1,7 +1,10 @@
 use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use axum::body::{to_bytes, Body};
 use axum::http::Method;
+use axum::middleware::{from_fn, Next};
+use axum::response::Response;
 use axum::Router;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
@@ -13,7 +16,9 @@ use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 use tracing::warn;
+use tracing::Level;
 
 use crate::admin::service::{setup, site};
 
@@ -160,6 +165,51 @@ pub async fn start(
             .allow_private_network(true),
     );
 
+    // Middleware to log small JSON request bodies (without impacting handlers)
+    app = app.layer(from_fn(log_request_body));
+
+    // Global structured request/response tracing for all server routes
+    app = app.layer(
+        TraceLayer::new_for_http()
+            .make_span_with(|request: &axum::http::Request<_>| {
+                tracing::span!(
+                    Level::DEBUG,
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path()
+                )
+            })
+            .on_request(|request: &axum::http::Request<_>, _span: &tracing::Span| {
+                let content_type = request
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                tracing::debug!(
+                    target: "server::http",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                    content_type,
+                    "incoming request"
+                );
+            })
+            .on_response(
+                |response: &axum::http::Response<_>,
+                 latency: std::time::Duration,
+                 _span: &tracing::Span| {
+                    tracing::debug!(
+                        target: "server::http",
+                        status = %response.status(),
+                        elapsed_ms = latency.as_millis() as u64,
+                        "response sent"
+                    );
+                },
+            ),
+    );
+
+    // Log response bodies (capped) after handlers run
+    app = app.layer(from_fn(log_response_body));
+
     let mut set = JoinSet::new();
 
     for listener in listeners {
@@ -174,7 +224,59 @@ pub async fn start(
     Ok(())
 }
 
+// Log request body if it is small (cap to avoid huge payloads), then restore the body for downstream handlers
+async fn log_request_body(req: axum::http::Request<Body>, next: Next) -> Response {
+    const MAX_LOG_BYTES: usize = 4096;
+
+    // Read and buffer the body (with a size cap)
+    let (parts, body) = req.into_parts();
+    match to_bytes(body, MAX_LOG_BYTES).await {
+        Ok(bytes) => {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                let truncated = bytes.len() >= MAX_LOG_BYTES;
+                tracing::debug!(target: "server::http", truncated, body = %text, "request body");
+            } else {
+                tracing::debug!(target: "server::http", size = bytes.len(), "request body (non-utf8)");
+            }
+            // Reconstruct the request with the buffered body for downstream
+            let req_restored = axum::http::Request::from_parts(parts, Body::from(bytes));
+            next.run(req_restored).await
+        }
+        Err(err) => {
+            tracing::debug!(target: "server::http", error = %err, "failed to read request body");
+            // Fall through and pass the original request (with empty body) to downstream
+            let req_restored = axum::http::Request::from_parts(parts, Body::empty());
+            next.run(req_restored).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod integration_tests_package_usage {
     use {color_eyre as _, tracing_subscriber as _};
+}
+
+// Log response body if it is small (cap to avoid huge payloads) and then restore the body
+async fn log_response_body(req: axum::http::Request<Body>, next: Next) -> Response {
+    const MAX_LOG_BYTES: usize = 4096;
+
+    // Run the rest of the stack first
+    let res = next.run(req).await;
+
+    let (parts, body) = res.into_parts();
+    match to_bytes(body, MAX_LOG_BYTES).await {
+        Ok(bytes) => {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                let truncated = bytes.len() >= MAX_LOG_BYTES;
+                tracing::debug!(target: "server::http", truncated, body = %text, "response body");
+            } else {
+                tracing::debug!(target: "server::http", size = bytes.len(), "response body (non-utf8)");
+            }
+            Response::from_parts(parts, Body::from(bytes))
+        }
+        Err(err) => {
+            tracing::debug!(target: "server::http", error = %err, "failed to read response body");
+            Response::from_parts(parts, Body::empty())
+        }
+    }
 }

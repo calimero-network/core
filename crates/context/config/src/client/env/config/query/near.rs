@@ -1,15 +1,13 @@
 use core::mem;
 use std::collections::BTreeMap;
 
-use serde::Serialize;
-
 use crate::client::env::config::requests::{
     ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
-use crate::repr::{Repr, ReprTransmute};
+use crate::repr::Repr;
 use crate::types::{Application, Capability, ContextIdentity, Revision, SignerId};
 
 impl Method<Near> for ApplicationRequest {

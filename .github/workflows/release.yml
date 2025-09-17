@@ -32,6 +32,7 @@ jobs:
     outputs:
       version: ${{ steps.version_info.outputs.version }}
       binary_release: ${{ steps.version_info.outputs.binary_release }}
+      crate_release: ${{ steps.version_info.outputs.crate_release }}
       docker_release: ${{ steps.version_info.outputs.docker_release }}
       docker_push: ${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
@@ -39,6 +40,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Get version info
         id: version_info
@@ -51,6 +54,7 @@ jobs:
 
           prerelease=false
           binary_release=false
+          crate_release=false
           docker_release=false
 
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
@@ -60,6 +64,7 @@ jobs:
 
             if ! gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
               binary_release=true
+              crate_release=true
               docker_release=true
             fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
@@ -69,6 +74,7 @@ jobs:
           echo "version=$version" >> $GITHUB_OUTPUT
           echo "prerelease=$prerelease" >> $GITHUB_OUTPUT
           echo "binary_release=$binary_release" >> $GITHUB_OUTPUT
+          echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
 
   build-binaries:
@@ -95,6 +101,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
@@ -149,6 +157,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Download Artifact
         uses: actions/download-artifact@v4
@@ -167,6 +177,42 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
+  release-crates:
+    name: Release Crates
+    if: needs.prepare.outputs.crate_release == 'true'
+    runs-on: ubuntu-latest
+    needs: [prepare, build-binaries]
+
+    steps:
+      - name: Checkout core repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
+
+      - name: Publish calimero-workspaces on crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -x
+
+          sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
+
+          # Install the specific version of cargo-workspaces that we know works
+          cargo install --git https://github.com/miraclx/cargo-workspaces --tag v0.3.0 cargo-workspaces
+          # Publish all publishable crates from the workspace, skipping excluded packages
+          # Using --no-git flags to avoid git operations during publishing
+          cargo ws publish --yes --allow-dirty --force '*' \
+              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
+              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
+
   release-merod-container:
     name: Release Merod container
     needs: [prepare, build-binaries]
@@ -181,6 +227,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Release
         uses: ./.github/actions/container-release
@@ -208,6 +256,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Release
         uses: ./.github/actions/container-release

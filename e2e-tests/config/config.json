@@ -29,15 +29,6 @@
       }
     },
     {
-      "protocol": "stellar",
-      "config": {
-        "contextConfigContractId": "CCIZDIWGDVCMO2PIR6VFW63GZNUAA47UYG4VUDL3XXN3DYJ2HWLIWIGD",
-        "rpcUrl": "http://127.0.0.1:8000/soroban/rpc",
-        "publicKey": "GDIY6AQQ75WMD4W46EYB7O6UYMHOCGQHLAQGQTKHDX4J2DYQCHVCR4W4",
-        "secretKey": "SC36BWNUOCZAO7DMEJNNKFV6BOTPJP7IG5PSHLUOLT6DZFRU3D3XGIXW"
-      }
-    },
-    {
       "protocol": "ethereum",
       "config": {
         "contextConfigContractId": "0x5FbDB2315678afecb367f032d93F642f64180aa3",

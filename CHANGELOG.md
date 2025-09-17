@@ -67,7 +67,6 @@
 
 ## [0.4.0] - 2025-02-18
 
-- Added Stellar integration
 - Added support for aliases which can replace hash based IDs
 - Minor fixes on admin dashboard
 - Optimized e2e tests

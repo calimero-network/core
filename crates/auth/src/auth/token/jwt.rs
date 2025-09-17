@@ -7,6 +7,7 @@ use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use url::Url;
 use {base64, hex, rand, uuid};
 
 use crate::api::handlers::auth::ChallengeResponse;
@@ -95,6 +96,56 @@ impl TokenManager {
         }
     }
 
+    /// Validate that a token's node_url matches the request host
+    ///
+    /// This function compares the host from the token's node_url with the original
+    /// host from the request headers. It skips validation for internal auth service
+    /// requests.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_node_url` - The node URL from the JWT token
+    /// * `headers` - The request headers
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), String>` - Ok if validation passes, Err with error message if not
+    pub fn validate_node_host(
+        &self,
+        token_node_url: &str,
+        headers: &HeaderMap,
+    ) -> Result<(), String> {
+        let request_host = headers
+            .get("X-Forwarded-Host")
+            .or_else(|| headers.get("host"))
+            .and_then(|h| h.to_str().ok());
+
+        if let Some(request_host) = request_host {
+            // Skip validation if request is coming from internal auth service
+            if request_host.starts_with("auth:") {
+                return Ok(());
+            }
+
+            // Extract the host from the token's node URL
+            if let Ok(token_url) = Url::parse(token_node_url) {
+                if let Some(token_host) = token_url.host_str() {
+                    // Compare the hosts (handle both with and without port)
+                    let request_host_without_port =
+                        request_host.split(':').next().unwrap_or(request_host);
+                    if request_host_without_port != token_host && request_host != token_host {
+                        return Err(format!(
+                            "Token is not valid for this host. Token is for '{}' but request is to '{}'", 
+                            token_host,
+                            request_host
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Generate a JWT token
     async fn generate_token(
         &self,
@@ -130,6 +181,37 @@ impl TokenManager {
             &EncodingKey::from_secret(secret.as_bytes()),
         )
         .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
+    }
+
+    /// Generate mock tokens without requiring key storage (for CI/testing only)
+    ///
+    /// This method bypasses all key storage and validation for mock token generation.
+    /// Should only be used in development/testing environments.
+    pub async fn generate_mock_token_pair(
+        &self,
+        key_id: String,
+        permissions: Vec<String>,
+        node_url: Option<String>,
+        custom_expiry: Option<u64>,
+    ) -> Result<(String, String), AuthError> {
+        let access_expiry =
+            Duration::seconds(custom_expiry.unwrap_or(self.config.access_token_expiry) as i64);
+        let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
+
+        let access_token = self
+            .generate_token(
+                key_id.clone(),
+                permissions.clone(),
+                access_expiry,
+                node_url.clone(),
+            )
+            .await?;
+
+        let refresh_token = self
+            .generate_token(key_id, permissions, refresh_expiry, node_url)
+            .await?;
+
+        Ok((access_token, refresh_token))
     }
 
     /// Generate a pair of access and refresh tokens
@@ -270,16 +352,8 @@ impl TokenManager {
 
         // Check node URL if token has node information
         if let Some(token_node_url) = &claims.node_url {
-            // Get referrer URL from headers
-            if let Some(referrer) = headers.get("referer") {
-                if let Ok(referrer_str) = referrer.to_str() {
-                    // Compare if referrer starts with the token's node URL
-                    if !referrer_str.starts_with(token_node_url) {
-                        return Err(AuthError::InvalidToken(
-                            "Token is not valid for this node".to_string(),
-                        ));
-                    }
-                }
+            if let Err(error_msg) = self.validate_node_host(token_node_url, headers) {
+                return Err(AuthError::InvalidToken(error_msg));
             }
         }
 

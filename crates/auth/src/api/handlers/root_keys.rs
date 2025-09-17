@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Extension, Path};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};

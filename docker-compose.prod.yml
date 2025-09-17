@@ -125,6 +125,7 @@ services:
       - "--api.insecure=true"
       - "--providers.docker=true"
       - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.forwardedHeaders.insecure=true"
       - "--accesslog=true"
       - "--log.level=DEBUG"
       - "--providers.docker.exposedByDefault=false"

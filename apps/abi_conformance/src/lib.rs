@@ -9,7 +9,15 @@ include!(env!("GENERATED_ABI_PATH"));
 
 // Newtype bytes
 #[derive(
-    Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -43,7 +51,7 @@ pub struct Profile {
 }
 
 // Update payload type
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct UpdatePayload {
@@ -71,6 +79,7 @@ pub enum ConformanceError {
 }
 
 // Events - now just a regular enum, no macro
+#[derive(Debug)]
 pub enum Event {
     Ping,
     Named(String),
@@ -238,4 +247,52 @@ impl AbiState {
             })
         }
     }
+
+    // Test case: public method that calls a private method
+    pub fn public_with_private_helper(value: u32) -> u32 {
+        Self::private_helper(value)
+    }
+
+    // Test case: public method that returns a type using internal struct
+    pub fn get_internal_result(value: u32) -> InternalResult {
+        let internal_data = InternalData {
+            value,
+            multiplier: 3,
+        };
+        InternalResult {
+            original: value,
+            calculated: internal_data.calculate(),
+        }
+    }
+
+    // Private method - should NOT appear in ABI
+    fn private_helper(value: u32) -> u32 {
+        let internal_data = InternalData {
+            value,
+            multiplier: 2,
+        };
+        internal_data.calculate()
+    }
+}
+
+// Internal struct - should NOT appear in ABI since it's only used in private methods
+#[derive(Debug)]
+struct InternalData {
+    value: u32,
+    multiplier: u32,
+}
+
+impl InternalData {
+    fn calculate(&self) -> u32 {
+        self.value * self.multiplier
+    }
+}
+
+// Public struct that uses internal struct - SHOULD appear in ABI
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct InternalResult {
+    original: u32,
+    calculated: u32,
 }

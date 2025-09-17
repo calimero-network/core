@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -64,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        protocol: [near, icp, stellar, ethereum]
+        protocol: [near, icp, ethereum]
       fail-fast: false
     steps:
       - name: Checkout code
@@ -102,54 +104,6 @@ jobs:
 
           jq --arg icpPort "$ICP_PORT" \
             '.protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
-            e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
-
-      - name: Deploy Stellar Devnet
-        if: matrix.protocol == 'stellar'
-        env:
-          ICP_PORT: 4943
-        run: |
-          echo "Installing stellar CLI..."
-
-          # Detect OS and architecture
-          OS=$(uname -s)
-          ARCH=$(uname -m)
-
-          # Map OS and architecture to release file names
-          case "$OS-$ARCH" in
-              "Linux-x86_64")
-                  BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
-                  ;;
-              "Linux-aarch64"|"Linux-arm64")
-                  BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
-                  ;;
-              *)
-                  echo "Unsupported platform: $OS-$ARCH"
-                  exit 1
-                  ;;
-          esac
-
-          TMPDIR=$(mktemp -d)
-          wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
-          tar xzf "${TMPDIR}/${BINARY_NAME}" -C "$TMPDIR"
-
-          mkdir -p "$HOME/.local/bin"
-          chmod +x "$TMPDIR/stellar"
-          mv "$TMPDIR/stellar" "$HOME/.local/bin/"
-          rm -rf "$TMPDIR"
-
-          ./scripts/stellar/deploy-devnet.sh > env_output.txt
-
-          CONTRACT_ID=$(grep "Contract ID:" env_output.txt | awk '{print $3}')
-          ACCOUNT_ADDRESS=$(grep "Account address:" env_output.txt | awk '{print $3}')
-          SECRET_KEY=$(grep "Secret key:" env_output.txt | awk '{print $3}')
-
-          jq --arg contractId "$CONTRACT_ID" \
-             --arg publicKey "$ACCOUNT_ADDRESS" \
-             --arg secretKey "$SECRET_KEY" \
-            '.protocolSandboxes[2].config.contextConfigContractId = $contractId |
-             .protocolSandboxes[2].config.publicKey = $publicKey |
-             .protocolSandboxes[2].config.secretKey = $secretKey' \
             e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
       - name: Install Foundry
