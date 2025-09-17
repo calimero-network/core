@@ -418,16 +418,7 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     let file = syn::parse_file(source)?;
     let mut emitter = AbiEmitter::new();
 
-    // First pass: process all newtypes to establish type definitions
-    for item in &file.items {
-        if let Item::Struct(item_struct) = item {
-            if is_newtype_pattern(item_struct) {
-                emitter.visit_item_struct(item_struct);
-            }
-        }
-    }
-
-    // Second pass: process impls (methods) to collect referenced types
+    // First pass: collect all referenced types from public methods
     let mut referenced_types = std::collections::HashSet::new();
     for item in &file.items {
         if let Item::Impl(item_impl) = item {
@@ -435,7 +426,7 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
         }
     }
 
-    // Third pass: iteratively collect all referenced types from enums and structs
+    // Second pass: iteratively collect all transitively referenced types
     let mut changed = true;
     while changed {
         changed = false;
@@ -469,11 +460,21 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
         }
     }
 
-    // Fourth pass: process only the structs and enums that are actually referenced
+    // Third pass: process types (newtypes first, then referenced types)
+    for item in &file.items {
+        if let Item::Struct(item_struct) = item {
+            if is_newtype_pattern(item_struct) {
+                // Always process newtypes first
+                emitter.visit_item_struct(item_struct);
+            }
+        }
+    }
+
     for item in &file.items {
         match item {
             Item::Struct(item_struct) => {
                 if !is_newtype_pattern(item_struct) {
+                    // Only process referenced structs
                     let struct_name = item_struct.ident.to_string();
                     if referenced_types.contains(&struct_name) {
                         emitter.visit_item_struct(item_struct);
@@ -482,7 +483,11 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
             }
             Item::Enum(item_enum) => {
                 let enum_name = item_enum.ident.to_string();
-                if referenced_types.contains(&enum_name) {
+                if enum_name == "Event" {
+                    // Process events
+                    emitter.process_events(item_enum);
+                } else if referenced_types.contains(&enum_name) {
+                    // Process referenced enums
                     emitter.visit_item_enum(item_enum);
                 }
             }
@@ -490,19 +495,10 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
         }
     }
 
-    // Fifth pass: process impls (methods) again to generate the actual methods
+    // Fourth pass: process methods (after all types are defined)
     for item in &file.items {
         if let Item::Impl(item_impl) = item {
             emitter.visit_item_impl(item_impl);
-        }
-    }
-
-    // Sixth pass: process events
-    for item in &file.items {
-        if let Item::Enum(item_enum) = item {
-            if item_enum.ident == "Event" {
-                emitter.process_events(item_enum);
-            }
         }
     }
 
