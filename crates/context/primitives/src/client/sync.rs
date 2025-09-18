@@ -67,7 +67,7 @@ impl ContextClient {
                         handle.put(
                             &key,
                             &types::ContextIdentity {
-                                private_key: None,
+                                keypair_ref: None,
                                 sender_key: None,
                             },
                         )?;

@@ -100,7 +100,7 @@ impl AsRef<[u8]> for ContextState<'_> {
     reason = "This is not expected to have additional fields"
 )]
 pub struct ContextIdentity {
-    pub private_key: Option<[u8; 32]>,
+    pub keypair_ref: Option<[u8; 32]>, // Reference to global keypair instead of storing private key
     pub sender_key: Option<[u8; 32]>,
 }
 

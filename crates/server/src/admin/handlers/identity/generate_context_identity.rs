@@ -8,7 +8,7 @@ use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-    match state.ctx_client.new_identity() {
+    match state.ctx_client.new_identity(None) {
         Ok(public_key) => ApiResponse {
             payload: GenerateContextIdentityResponse::new(public_key),
         }
