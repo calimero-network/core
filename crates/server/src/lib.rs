@@ -165,7 +165,7 @@ pub async fn start(
             .allow_private_network(true),
     );
 
-    // Middleware to log small JSON request bodies (without impacting handlers)
+    // Middleware to log small JSON request bodies (without impacting handlers) - COMMENTED OUT
     app = app.layer(from_fn(log_request_body));
 
     // Global structured request/response tracing for all server routes
@@ -207,7 +207,7 @@ pub async fn start(
             ),
     );
 
-    // Log response bodies (capped) after handlers run
+    // Log response bodies (capped) after handlers run (skips static assets)
     app = app.layer(from_fn(log_response_body));
 
     let mut set = JoinSet::new();
@@ -259,6 +259,12 @@ mod integration_tests_package_usage {
 // Log response body if it is small (cap to avoid huge payloads) and then restore the body
 async fn log_response_body(req: axum::http::Request<Body>, next: Next) -> Response {
     const MAX_LOG_BYTES: usize = 4096;
+
+    // Skip logging for static asset routes to avoid Content-Length issues
+    let path = req.uri().path();
+    if path.starts_with("/admin-dashboard/") || path.contains("/assets/") {
+        return next.run(req).await;
+    }
 
     // Run the rest of the stack first
     let res = next.run(req).await;
