@@ -14,8 +14,23 @@ pub enum Command {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SubscribeRequest {
-    pub context_id: Vec<ContextId>,
+pub struct Request<P> {
+    pub id: ConnectionId,
+    #[serde(flatten)]
+    pub payload: P,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+pub enum RequestPayload {
+    Subscribe(ContextIds),
+    Unsubscribe(ContextIds),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextIds {
+    pub context_ids: Vec<ContextId>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -58,6 +73,7 @@ pub enum SseEvent {
     Message,
     Close,
     Error,
+    Connect,
 }
 
 impl SseEvent {
@@ -66,6 +82,7 @@ impl SseEvent {
             SseEvent::Message => "message",
             SseEvent::Close => "close",
             SseEvent::Error => "error",
+            SseEvent::Connect => "connect",
         }
     }
 }
