@@ -3,7 +3,9 @@ use std::process::Stdio;
 
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::sse::{Response, ResponseBody, SseEvent};
+use calimero_server_primitives::sse::{
+    ContextIds, Request as SubscriptionRequest, RequestPayload, Response, ResponseBody, SseEvent,
+};
 use clap::Parser;
 use eyre::{OptionExt, Result};
 use futures_util::StreamExt;
@@ -82,31 +84,30 @@ impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
         let client = environment.client()?;
 
-        let resolve_response = client.resolve_alias(self.context, None).await?;
-        let context_id = resolve_response
-            .value()
-            .copied()
-            .ok_or_eyre("unable to resolve")?;
+        // let resolve_response = client.resolve_alias(self.context, None).await?;
+        // let context_id = resolve_response
+        //     .value()
+        //     .copied()
+        //     .ok_or_eyre("unable to resolve")?;
+        //
+        //
+        let in_value = [0; 32];
 
+        let context_id = ContextId::from(in_value);
         let mut url = client.api_url().clone();
         url.set_path("sse");
-        url.set_query(Some(&format!("contextId={}", context_id)));
 
         environment
             .output
             .write(&InfoLine(&format!("Connecting to {url}")));
 
-        let response = client.stream_sse(context_id).await?;
+        let response = client.stream_sse().await?;
         let status = response.status();
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(eyre::eyre!("HTTP {}: {}", status, body));
         }
-
-        environment
-            .output
-            .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
 
         if let Some(cmd) = &self.exec {
             environment.output.write(&InfoLine(&format!(
@@ -140,6 +141,7 @@ impl WatchCommand {
                     }
                     if let Some(rest) = line.strip_prefix("event:") {
                         event_type = match rest.trim() {
+                            "connect" => SseEvent::Connect,
                             "message" => SseEvent::Message,
                             "close" => SseEvent::Close,
                             "error" => SseEvent::Error,
@@ -217,6 +219,24 @@ impl WatchCommand {
                         environment
                             .output
                             .write(&ErrorLine(&format!("SSE error: {data_str}")));
+                    }
+                    SseEvent::Connect => {
+                        let mut connection_id: u64 = serde_json::from_str(&data_str)?;
+                        connection_id = connection_id + 4;
+                        let request = SubscriptionRequest {
+                            id: connection_id,
+                            payload: RequestPayload::Subscribe(ContextIds {
+                                context_ids: vec![context_id],
+                            }),
+                        };
+                        let response = client.subscribe_context(request).await?;
+                        if !status.is_success() {
+                            return Err(eyre::eyre!("HTTP {}: {:?}", status, response.body));
+                        }
+
+                        environment
+                            .output
+                            .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
                     }
                 }
             }
