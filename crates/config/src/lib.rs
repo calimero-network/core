@@ -8,18 +8,21 @@ use calimero_server::ws::WsConfig;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read_to_string, write};
 
 pub const CONFIG_FILE: &str = "config.toml";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub struct ConfigFile {
     #[serde(
         with = "serde_identity",
         default = "libp2p_identity::Keypair::generate_ed25519"
     )]
+    #[schemars(skip)]
     pub identity: libp2p_identity::Keypair,
 
     #[serde(flatten)]
@@ -34,17 +37,18 @@ pub struct ConfigFile {
     pub context: ContextConfig,
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct SyncConfig {
-    #[serde(rename = "timeout_ms", with = "serde_duration")]
+    #[schemars(skip)]
     pub timeout: Duration,
-    #[serde(rename = "interval_ms", with = "serde_duration")]
+    #[schemars(skip)]
     pub interval: Duration,
-    #[serde(rename = "frequency_ms", with = "serde_duration")]
+    #[schemars(skip)]
     pub frequency: Duration,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub swarm: SwarmConfig,
@@ -75,9 +79,10 @@ impl NetworkConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct ServerConfig {
+    #[schemars(with = "Vec<String>")]
     pub listen: Vec<Multiaddr>,
 
     #[serde(default)]
@@ -107,9 +112,10 @@ impl ServerConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct DataStoreConfig {
+    #[schemars(with = "String")]
     pub path: Utf8PathBuf,
 }
 
@@ -120,9 +126,10 @@ impl DataStoreConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct BlobStoreConfig {
+    #[schemars(with = "String")]
     pub path: Utf8PathBuf,
 }
 

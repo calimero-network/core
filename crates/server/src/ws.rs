@@ -19,6 +19,7 @@ use eyre::Error as EyreError;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use rand::random;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{
     from_str as from_json_str, from_value as from_json_value, to_string as to_json_string,
@@ -31,7 +32,7 @@ use tracing::{debug, error, info};
 mod subscribe;
 mod unsubscribe;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct WsConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]

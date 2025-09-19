@@ -19,6 +19,7 @@ prometheus-client.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true

@@ -11,6 +11,7 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -40,7 +41,7 @@ use crate::config::ServerConfig;
 use crate::middleware::host::HostLayer;
 use crate::AdminState;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]

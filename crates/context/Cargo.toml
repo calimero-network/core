@@ -18,6 +18,7 @@ memchr.workspace = true
 ouroboros.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
+schemars = { workspace = true }
 serde.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true

@@ -4,6 +4,7 @@ use core::time::Duration;
 use libp2p::identity::Keypair;
 use libp2p::rendezvous::Namespace;
 use multiaddr::{Multiaddr, Protocol};
+use schemars::JsonSchema;
 use serde::de::{Error as SerdeError, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -51,9 +52,10 @@ impl NetworkConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct SwarmConfig {
+    #[schemars(with = "Vec<String>")]
     pub listen: Vec<Multiaddr>,
 }
 
@@ -64,7 +66,7 @@ impl SwarmConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct BootstrapConfig {
     #[serde(default)]
@@ -78,11 +80,12 @@ impl BootstrapConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(transparent)]
 #[non_exhaustive]
 pub struct BootstrapNodes {
     #[serde(deserialize_with = "deserialize_bootstrap")]
+    #[schemars(with = "Vec<String>")]
     pub list: Vec<Multiaddr>,
 }
 
@@ -113,7 +116,7 @@ impl BootstrapNodes {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
@@ -159,7 +162,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct RelayConfig {
     pub registrations_limit: usize,
@@ -182,7 +185,7 @@ impl Default for RelayConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct AutonatConfig {
     pub confidence_threshold: usize,
@@ -204,13 +207,14 @@ impl Default for AutonatConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct RendezvousConfig {
     #[serde(
         serialize_with = "serialize_rendezvous_namespace",
         deserialize_with = "deserialize_rendezvous_namespace"
     )]
+    #[schemars(with = "Vec<String>")]
     pub namespace: Namespace,
 
     pub discovery_rpm: f32,
