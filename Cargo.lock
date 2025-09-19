@@ -1788,6 +1788,7 @@ dependencies = [
  "eyre",
  "libp2p-identity",
  "multiaddr",
+ "schemars 0.9.0",
  "serde",
  "tokio",
  "toml 0.8.19",
@@ -1813,6 +1814,7 @@ dependencies = [
  "ouroboros",
  "prometheus-client",
  "rand 0.8.5",
+ "schemars 0.9.0",
  "serde",
  "tokio",
  "tracing",
@@ -1839,6 +1841,7 @@ dependencies = [
  "near-jsonrpc-primitives",
  "near-primitives",
  "reqwest 0.12.23",
+ "schemars 0.9.0",
  "serde",
  "serde_json",
  "starknet",
@@ -1919,6 +1922,7 @@ dependencies = [
  "futures-util",
  "libp2p",
  "multiaddr",
+ "schemars 0.9.0",
  "serde",
  "thiserror 1.0.69",
  "tokio",
@@ -2089,6 +2093,7 @@ dependencies = [
  "reqwest 0.11.27",
  "reqwest 0.12.23",
  "rust-embed",
+ "schemars 0.9.0",
  "serde",
  "serde_json",
  "tokio",
@@ -6141,10 +6146,13 @@ dependencies = [
  "near-crypto",
  "rand 0.8.5",
  "reqwest 0.12.23",
+ "schemars 0.9.0",
  "semver 1.0.23",
  "serde",
+ "serde_json",
  "starknet",
  "tokio",
+ "toml 0.8.19",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
@@ -6368,7 +6376,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c49593c9e94454a2368a4c0a511bf4bf1413aff4d23f16e1d8f4e64b5215351"
 dependencies = [
  "borsh",
- "schemars",
+ "schemars 0.8.21",
  "semver 1.0.23",
  "serde",
 ]
@@ -6399,7 +6407,7 @@ dependencies = [
  "near_schemafy_lib",
  "proc-macro2",
  "quote",
- "schemars",
+ "schemars 0.8.21",
  "serde_json",
 ]
 
@@ -6501,7 +6509,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180edcc7dc2fac41f93570d0c7b759c1b6d492f6ad093d749d644a40b4310a97"
 dependencies = [
  "borsh",
- "schemars",
+ "schemars 0.8.21",
  "serde",
 ]
 
@@ -8029,6 +8037,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a0ae411dbe946a674d89546582cea4ba2bb8defac896622d6496f14c23ba5cf"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1165225c21bff1f3bbce98f5a1f889949bc902d3575308cc7b0de30b4f6d27c7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "regalloc2"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8593,7 +8621,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09c024468a378b7e36765cd36702b7a90cc3cba11654f6685c8f233408e89e92"
 dependencies = [
  "dyn-clone",
- "schemars_derive",
+ "schemars_derive 0.8.21",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
+dependencies = [
+ "chrono",
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive 0.9.0",
  "serde",
  "serde_json",
 ]
@@ -8603,6 +8645,18 @@ name = "schemars_derive"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1eee588578aff73f856ab961cd2f79e36bc45d7ded33a7562adba4667aecc0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 2.0.100",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5016d94c77c6d32f0b8e08b781f7dc8a90c2007d4e77472cc2807bc10a8438fe"
 dependencies = [
  "proc-macro2",
  "quote",
