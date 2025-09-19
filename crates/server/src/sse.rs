@@ -1,24 +1,26 @@
-use core::convert::Infallible;
-use core::pin::pin;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::{get, MethodRouter};
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
 use axum::Extension;
-use axum_extra::extract::{Query, QueryRejection};
+use axum::Json;
+use axum::Router;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
 use calimero_server_primitives::sse::{
-    Command, ConnectionId, Response, ResponseBody, ResponseBodyError, ServerResponseError,
-    SseEvent, SubscribeRequest,
+    Command, ConnectionId, Request, RequestPayload, Response, ResponseBody, ResponseBodyError,
+    ServerResponseError, SseEvent,
 };
-use futures_util::stream::Stream;
+use core::convert::Infallible;
+use core::pin::pin;
+use futures_util::stream::{self as stream, Stream};
 use rand::random;
 use serde::{Deserialize, Serialize};
 use serde_json::{to_string as to_json_string, to_value as to_json_value};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -57,7 +59,7 @@ pub(crate) struct ServiceState {
 pub(crate) fn service(
     config: &ServerConfig,
     node_client: NodeClient,
-) -> Option<(&'static str, MethodRouter)> {
+) -> Option<(&'static str, Router)> {
     let _ = match &config.sse {
         Some(config) if config.enabled => config,
         _ => {
@@ -76,59 +78,156 @@ pub(crate) fn service(
         node_client,
         connections: RwLock::default(),
     });
+    let router = Router::new()
+        .route("/", get(sse_handler))
+        .route("/subscription", post(handle_subscription))
+        .layer(Extension(state));
 
-    Some((path, get(sse_handler).layer(Extension(state))))
+    Some((path, router))
+}
+
+async fn handle_subscription(
+    Extension(state): Extension<Arc<ServiceState>>,
+    Json(request): Json<Request<serde_json::Value>>,
+) -> impl IntoResponse {
+    match serde_json::from_value(request.payload) {
+        Ok(RequestPayload::Subscribe(ctxs)) => {
+            info!(
+                "Subscribe: connection_id = {:?}, context_ids = {:?}",
+                request.id, ctxs
+            );
+
+            let mut connections = state.connections.write().await;
+            if let Some(conn) = connections.get_mut(&request.id) {
+                let mut inner = conn.inner.write().await;
+                for ctx in &ctxs.context_ids {
+                    let _ = inner.subscriptions.insert(*ctx);
+                }
+
+                (
+                    StatusCode::OK,
+                    Json(Response {
+                        body: ResponseBody::Result(serde_json::json!({
+                            "status": "subscribed",
+                            "contexts": ctxs.context_ids,
+                        })),
+                    }),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(Response {
+                        body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                            "Invalid Connection Id".into(),
+                        )),
+                    }),
+                )
+            }
+        }
+        Ok(RequestPayload::Unsubscribe(ctxs)) => {
+            info!(
+                "Unsubscribe: connection_id = {:?}, context_ids = {:?}",
+                request.id, ctxs
+            );
+
+            let mut connections = state.connections.write().await;
+            if let Some(conn) = connections.get_mut(&request.id) {
+                let mut inner = conn.inner.write().await;
+                let mut invalid = Vec::new();
+
+                for ctx in &ctxs.context_ids {
+                    if !inner.subscriptions.remove(ctx) {
+                        invalid.push(*ctx);
+                    }
+                }
+
+                if !invalid.is_empty() {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(Response {
+                            body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                                "Invalid Context Id".into(),
+                            )),
+                        }),
+                    )
+                } else {
+                    (
+                        StatusCode::OK,
+                        Json(Response {
+                            body: ResponseBody::Result(serde_json::json!({
+                                "status": "unsubscribed",
+                                "contexts": ctxs.context_ids,
+                            })),
+                        }),
+                    )
+                }
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(Response {
+                        body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                            "Invalid Connection Id".into(),
+                        )),
+                    }),
+                )
+            }
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(Response {
+                body: ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::ParseError(err.to_string()),
+                )),
+            }),
+        ),
+    }
 }
 
 async fn sse_handler(
-    query: Result<Query<SubscribeRequest>, QueryRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let (commands_sender, commands_receiver) = mpsc::channel::<Command>(32);
-    
-    match query {
-        Ok(Query(q)) => {
-            let (connection_id, _) = loop {
-                let connection_id = random();
-                let context_ids: HashSet<ContextId> = q.context_id.clone().into_iter().collect();
-                let mut connections = state.connections.write().await;
-                match connections.entry(connection_id) {
-                    Entry::Occupied(_) => continue,
-                    Entry::Vacant(entry) => {
-                        let inner = Arc::new(RwLock::new(ConnectionStateInner {
-                            subscriptions: context_ids,
-                        }));
-                        let connection_state = ConnectionState {
-                            _commands: commands_sender.clone(),
-                            inner,
-                        };
-                        let _ = entry.insert(connection_state.clone());
-                        break (connection_id, connection_state);
-                    }
-                }
-            };
-            
-            debug!(%connection_id, "Client connection established");
-            drop(tokio::spawn(handle_node_events(
-                connection_id,
-                Arc::clone(&state),
-                commands_sender.clone(),
-            )));
 
-            drop(tokio::spawn(handle_connection_cleanups(
-                connection_id,
-                Arc::clone(&state),
-                commands_sender.clone(),
-            )));
+    let (connection_id, _) = loop {
+        let connection_id = random();
+        let mut connections = state.connections.write().await;
+        match connections.entry(connection_id) {
+            Entry::Occupied(_) => continue,
+            Entry::Vacant(entry) => {
+                let inner = Arc::new(RwLock::new(ConnectionStateInner {
+                    subscriptions: HashSet::new(),
+                }));
+                let connection_state = ConnectionState {
+                    _commands: commands_sender.clone(),
+                    inner,
+                };
+                let _ = entry.insert(connection_state.clone());
+                break (connection_id, connection_state);
+            }
         }
-        Err(e) => {
-            drop(commands_sender.send(Command::Close(e.to_string())).await);
-            drop(commands_sender)
-        }
-    }
+    };
+
+    debug!(%connection_id, "Client connection established");
+    drop(tokio::spawn(handle_node_events(
+        connection_id,
+        Arc::clone(&state),
+        commands_sender.clone(),
+    )));
+
+    drop(tokio::spawn(handle_connection_cleanups(
+        connection_id,
+        Arc::clone(&state),
+        commands_sender.clone(),
+    )));
+
+    // drop(tokio::spawn(send_ping(
+    //     connection_id,
+    //     Arc::clone(&state),
+    //     commands_sender.clone(),
+    // )));
 
     // converts commands from the nodes to tokio_stream
-    let stream = ReceiverStream::new(commands_receiver).map(move |command| match command {
+    let command_stream = ReceiverStream::new(commands_receiver).map(move |command| match command {
         Command::Close(reason) => Ok(Event::default()
             .event(SseEvent::Close.as_str())
             .data(reason)),
@@ -145,8 +244,37 @@ async fn sse_handler(
         },
     });
 
+    // inital connection command
+    let initial_event = Event::default()
+        .event(SseEvent::Connect.as_str())
+        .data(&connection_id.to_string());
+    let initial_stream = stream::once(async { Ok(initial_event) });
+
+    let stream = initial_stream.chain(command_stream);
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
+
+// async fn send_ping(
+//     connection_id: ConnectionId,
+//     state: Arc<ServiceState>,
+//     command_sender: mpsc::Sender<Command>,
+// ) {
+//     loop {
+//         let response = Response {
+//             body: ResponseBody::Result(json!({ "say": "hello" })),
+//         };
+//         info!("send the data");
+//         if let Err(err) = command_sender.send(Command::Send(response)).await {
+//             break;
+//             error!(
+//                 %connection_id,
+//                 %err,
+//                 "Failed to send SseCommand::Send",
+//             );
+//         }
+//         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+//     }
+// }
 
 async fn handle_node_events(
     connection_id: ConnectionId,
@@ -172,7 +300,7 @@ async fn handle_node_events(
         );
 
         let event = match event {
-            NodeEvent::Context(event) 
+            NodeEvent::Context(event)
                 if {
                     connection_state
                         .inner
