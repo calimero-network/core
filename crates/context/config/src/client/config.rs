@@ -54,13 +54,13 @@ pub struct ClientLocalConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ClientRelayerSigner {
-    #[schemars(with = "String")] 
+    #[schemars(with = "String")]
     pub url: Url,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ClientLocalSigner {
-    #[schemars(with = "String")] 
+    #[schemars(with = "String")]
     pub rpc_url: Url,
     #[serde(flatten)]
     #[schemars(skip)]
