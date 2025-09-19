@@ -311,7 +311,6 @@ impl ConfigCommand {
         let mut hints = Vec::new();
         let mut has_hints = false;
 
-        // Use a reference to avoid moving self.args
         for arg in &self.args {
             match ConfigArg::from_str(arg) {
                 Ok(ConfigArg::Mutation { key, value }) => {
@@ -339,7 +338,6 @@ impl ConfigCommand {
             return self.handle_hints(&hints).await;
         }
 
-        // Handle printing only (no mutations)
         if mutations.is_empty() {
             return self.print_config(&doc, &hints).await;
         }
@@ -378,7 +376,6 @@ impl ConfigCommand {
     }
 
     async fn handle_hints(&self, hints: &[String]) -> EyreResult<()> {
-        // For now, provide basic hints without complex schema traversal
         for hint_key in hints {
             println!(
                 "{}: <config value> # Use '?' suffix to get hints about config keys",
