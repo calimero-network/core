@@ -23,17 +23,23 @@ pub struct ConfigFile {
         default = "libp2p_identity::Keypair::generate_ed25519"
     )]
     #[schemars(skip)]
+    #[schemars(description = "Node identity configuration")]
     pub identity: libp2p_identity::Keypair,
 
     #[serde(flatten)]
+    #[schemars(description = "Network configuration")]
     pub network: NetworkConfig,
 
+    #[schemars(description = "Sync configuration")]
     pub sync: SyncConfig,
 
+    #[schemars(description = "Data store configuration")]
     pub datastore: DataStoreConfig,
 
+    #[schemars(description = "Blob store configuration")]
     pub blobstore: BlobStoreConfig,
 
+    #[schemars(description = "Context configuration")]
     pub context: ContextConfig,
 }
 

@@ -6,9 +6,10 @@ use std::str::FromStr;
 use calimero_config::{ConfigFile, CONFIG_FILE};
 use camino::Utf8PathBuf;
 use clap::Parser;
+use colored::*;
 use eyre::{bail, eyre, Result as EyreResult};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use schemars::schema_for;
+use similar::{ChangeTag, TextDiff};
 use tokio::fs::{read_to_string, write};
 use toml_edit::{DocumentMut, Item, Value};
 use tracing::info;
@@ -68,227 +69,6 @@ impl FromStr for ConfigArg {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct ConfigSchema {
-    identity: IdentitySchema,
-    network: NetworkSchema,
-    sync: SyncSchema,
-    datastore: DataStoreSchema,
-    blobstore: BlobStoreSchema,
-    context: ContextSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct IdentitySchema {
-    peer_id: String,
-    keypair: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct NetworkSchema {
-    swarm: SwarmSchema,
-    server: ServerSchema,
-    bootstrap: BootstrapSchema,
-    discovery: DiscoverySchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct SwarmSchema {
-    listen: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct ServerSchema {
-    listen: Vec<String>,
-    admin: Option<AdminSchema>,
-    jsonrpc: Option<JsonRpcSchema>,
-    websocket: Option<WsSchema>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct AdminSchema {
-    enabled: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct JsonRpcSchema {
-    enabled: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct WsSchema {
-    enabled: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct BootstrapSchema {
-    nodes: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct DiscoverySchema {
-    mdns: bool,
-    advertise_address: bool,
-    rendezvous: RendezvousSchema,
-    relay: RelaySchema,
-    autonat: AutonatSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct RendezvousSchema {
-    registrations_limit: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct RelaySchema {
-    registrations_limit: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct AutonatSchema {
-    confidence_threshold: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct SyncSchema {
-    timeout_ms: u64,
-    interval_ms: u64,
-    frequency_ms: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct DataStoreSchema {
-    path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct BlobStoreSchema {
-    path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct ContextSchema {
-    client: ClientSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct ClientSchema {
-    #[serde(flatten)]
-    params: std::collections::BTreeMap<String, ClientParamsSchema>,
-    signer: SignerSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct ClientParamsSchema {
-    signer: String,
-    network: String,
-    contract_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct SignerSchema {
-    relayer: RelayerSchema,
-    #[serde(rename = "self")]
-    local: LocalSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct RelayerSchema {
-    url: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct LocalSchema {
-    #[serde(flatten)]
-    protocols: std::collections::BTreeMap<String, ProtocolSchema>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct ProtocolSchema {
-    #[serde(flatten)]
-    signers: std::collections::BTreeMap<String, SignerConfigSchema>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct SignerConfigSchema {
-    rpc_url: String,
-    #[serde(flatten)]
-    credentials: CredentialsSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-enum CredentialsSchema {
-    Near(NearCredentialsSchema),
-    Starknet(StarknetCredentialsSchema),
-    Icp(IcpCredentialsSchema),
-    Ethereum(EthereumCredentialsSchema),
-    Raw(RawCredentialsSchema),
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct NearCredentialsSchema {
-    account_id: String,
-    public_key: String,
-    secret_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct StarknetCredentialsSchema {
-    account_id: String,
-    public_key: String,
-    secret_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct IcpCredentialsSchema {
-    account_id: String,
-    public_key: String,
-    secret_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct EthereumCredentialsSchema {
-    account_id: String,
-    secret_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-struct RawCredentialsSchema {
-    account_id: Option<String>,
-    public_key: String,
-    secret_key: String,
-}
-
 impl ConfigCommand {
     pub async fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
@@ -335,37 +115,47 @@ impl ConfigCommand {
 
         // Handle hints
         if has_hints {
+            if !mutations.is_empty() {
+                eprintln!("Warning: Mutations are ignored when hints are present");
+            }
             return self.handle_hints(&hints).await;
         }
 
         if mutations.is_empty() {
-            return self.print_config(&doc, &hints).await;
+            let filter_keys: Vec<String> = self
+                .args
+                .iter()
+                .filter(|arg| !arg.contains('=') && !arg.ends_with('?'))
+                .cloned()
+                .collect();
+
+            return self.print_config(&doc, &filter_keys).await;
         }
 
         // Handle mutations
         let original_doc = doc.clone();
 
-        for (key, value) in mutations {
-            let key_parts: Vec<&str> = key.split('.').collect();
-            let mut current = doc.as_item_mut();
-
-            for key in &key_parts[..key_parts.len() - 1] {
-                current = &mut current[key];
+        for (key, value) in &mutations {
+            if let Err(e) = self.apply_mutation(&mut doc, &key, value.clone()) {
+                bail!("Failed to apply mutation '{}': {}", key, e);
             }
-
-            current[key_parts[key_parts.len() - 1]] = Item::Value(value);
         }
 
         // Validate the modified config
-        self.validate_toml(&doc).await?;
+        self.validate_config(&doc).await?;
 
-        // Show diff
-        self.show_diff(&original_doc, &doc).await?;
+        // Show diff or modified config based on print format
+        self.show_result(&original_doc, &doc).await?;
 
         // Save if requested
         if self.save {
             write(&config_path, doc.to_string()).await?;
             info!("Node configuration has been updated");
+        } else if mutations.is_empty() {
+            // Only print warning if no changes were made but save was requested
+            if self.save {
+                eprintln!("Warning: No changes to save");
+            }
         } else {
             eprintln!(
                 "\nnote: if this looks right, use `-s, --save` to persist these modifications"
@@ -375,15 +165,89 @@ impl ConfigCommand {
         Ok(())
     }
 
+    fn apply_mutation(&self, doc: &mut DocumentMut, key: &str, value: Value) -> EyreResult<()> {
+        let key_parts: Vec<&str> = key.split('.').collect();
+        let mut current = doc.as_item_mut();
+
+        // Navigate to the parent of the target key
+        for key_part in &key_parts[..key_parts.len() - 1] {
+            if !current[*key_part].is_table() {
+                current[*key_part] = Item::Table(toml_edit::Table::new());
+            }
+            current = &mut current[*key_part];
+        }
+
+        let final_key = key_parts[key_parts.len() - 1];
+        current[final_key] = Item::Value(value);
+
+        Ok(())
+    }
+
     async fn handle_hints(&self, hints: &[String]) -> EyreResult<()> {
-        for hint_key in hints {
-            println!(
-                "{}: <config value> # Use '?' suffix to get hints about config keys",
-                hint_key
-            );
-            println!("  Available top-level keys: identity, network, sync, datastore, blobstore, context");
-            println!("  Example: merod config network?");
-            println!("  Example: merod config sync.interval_ms?");
+        match self.print {
+            PrintFormat::Default | PrintFormat::Human => {
+                for hint_key in hints {
+                    self.print_schema_hint(hint_key).await?;
+                }
+            }
+            PrintFormat::Toml => {
+                let mut doc = DocumentMut::new();
+                for hint_key in hints {
+                    doc[hint_key] = Item::Value(Value::from("<?>"));
+                }
+                println!("{}", doc.to_string());
+            }
+            PrintFormat::Json => {
+                let mut result = serde_json::Map::new();
+                for hint_key in hints {
+                    if let Some(schema) = self.get_schema_for_key(hint_key).await {
+                        result.insert(hint_key.clone(), schema);
+                    } else {
+                        result.insert(
+                            hint_key.clone(),
+                            serde_json::json!({
+                                "type": "unknown",
+                                "description": "Unknown config key"
+                            }),
+                        );
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_schema_for_key(&self, key: &str) -> Option<serde_json::Value> {
+        let schema = schema_for!(ConfigFile);
+        let schema_value = serde_json::to_value(schema).ok()?;
+
+        if let Some(properties) = schema_value.get("properties") {
+            if let Some(key_schema) = properties.get(key) {
+                return Some(key_schema.clone());
+            }
+        }
+
+        None
+    }
+
+    async fn print_schema_hint(&self, key: &str) -> EyreResult<()> {
+        // Basic schema-based hint system
+        if let Some(schema) = self.get_schema_for_key(key).await {
+            if let Some(description) = schema.get("description") {
+                if let Some(description_str) = description.as_str() {
+                    println!(
+                        "{}: {} # {}",
+                        key,
+                        get_type_from_schema(&schema),
+                        description_str
+                    );
+                    return Ok(());
+                }
+            }
+            println!("{}: {}", key, get_type_from_schema(&schema));
+        } else {
+            println!("{}: unknown config key", key);
         }
         Ok(())
     }
@@ -400,41 +264,89 @@ impl ConfigCommand {
                     println!("{}", serde_json::to_string_pretty(&value)?);
                 }
                 PrintFormat::Human => {
-                    // For human-readable format, fall back to TOML
-                    println!("{}", doc.to_string());
+                    self.print_human_readable(doc).await?;
                 }
             }
         } else {
+            // Print specific keys by building a filtered document
+            let mut result_doc = DocumentMut::new();
+
             for key in keys {
                 let key_parts: Vec<&str> = key.split('.').collect();
                 let mut current = doc.as_item();
+                let mut result_current = result_doc.as_item_mut();
 
-                for part in &key_parts {
-                    current = &current[*part];
-                }
-
-                if !current.is_none() {
-                    let mut result = DocumentMut::new();
-
-                    let last_part = key_parts.last().unwrap();
-                    result[last_part] = current.clone();
-
-                    match self.print {
-                        PrintFormat::Default | PrintFormat::Toml => {
-                            println!("{} = {}", key, result.to_string().trim());
-                        }
-                        PrintFormat::Json => {
-                            let value: serde_json::Value = toml::from_str(&result.to_string())?;
-                            println!("{}: {}", key, serde_json::to_string(&value[last_part])?);
-                        }
-                        PrintFormat::Human => {
-                            println!("{} = {}", key, result.to_string().trim());
-                        }
+                for (i, part) in key_parts.iter().enumerate() {
+                    if current[*part].is_none() {
+                        bail!("Config key not found: {}", key);
                     }
+
+                    if i < key_parts.len() - 1 {
+                        if !result_current[*part].is_table() {
+                            result_current[*part] = Item::Table(toml_edit::Table::new());
+                        }
+                        result_current = &mut result_current[*part];
+                        current = &current[*part];
+                    } else {
+                        result_current[*part] = current.clone();
+                    }
+                }
+            }
+
+            match self.print {
+                PrintFormat::Default | PrintFormat::Toml => {
+                    println!("{}", result_doc.to_string());
+                }
+                PrintFormat::Json => {
+                    let value: serde_json::Value = toml::from_str(&result_doc.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&value)?);
+                }
+                PrintFormat::Human => {
+                    self.print_human_readable(&result_doc).await?;
                 }
             }
         }
 
+        Ok(())
+    }
+
+    async fn print_human_readable(&self, doc: &DocumentMut) -> EyreResult<()> {
+        let toml_str = doc.to_string();
+        let lines: Vec<&str> = toml_str.lines().collect();
+
+        for line in lines {
+            if line.trim().is_empty() {
+                println!();
+                continue;
+            }
+
+            if line.starts_with('[') && line.ends_with(']') {
+                // Section header
+                println!("{}", line.blue().bold());
+            } else if let Some((key, value)) = line.split_once('=') {
+                // Key-value pair
+                println!("  {}{} {}", key.trim().green(), "=".dimmed(), value.trim());
+            } else {
+                println!("{}", line);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn show_result(&self, original: &DocumentMut, modified: &DocumentMut) -> EyreResult<()> {
+        match self.print {
+            PrintFormat::Default | PrintFormat::Human => {
+                self.show_diff(original, modified).await?;
+            }
+            PrintFormat::Toml => {
+                println!("{}", modified.to_string());
+            }
+            PrintFormat::Json => {
+                let value: serde_json::Value = toml::from_str(&modified.to_string())?;
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            }
+        }
         Ok(())
     }
 
@@ -442,49 +354,58 @@ impl ConfigCommand {
         let original_str = original.to_string();
         let modified_str = modified.to_string();
 
-        match self.print {
-            PrintFormat::Default | PrintFormat::Human => {
-                let original_lines: Vec<&str> = original_str.lines().collect();
-                let modified_lines: Vec<&str> = modified_str.lines().collect();
+        let diff = TextDiff::from_lines(&original_str, &modified_str);
 
-                for i in 0..std::cmp::max(original_lines.len(), modified_lines.len()) {
-                    let original_line = original_lines.get(i).unwrap_or(&"");
-                    let modified_line = modified_lines.get(i).unwrap_or(&"");
-
-                    if original_line != modified_line {
-                        if !original_line.is_empty() {
-                            println!("-{}", original_line);
-                        }
-                        if !modified_line.is_empty() {
-                            println!("+{}", modified_line);
-                        }
-                    } else {
-                        println!(" {}", original_line);
-                    }
+        for change in diff.iter_all_changes() {
+            match change.tag() {
+                ChangeTag::Delete => {
+                    print!("{}", format!("-{}", change).red());
                 }
-            }
-            PrintFormat::Toml => {
-                println!("{}", modified_str);
-            }
-            PrintFormat::Json => {
-                let value: serde_json::Value = toml::from_str(&modified_str)?;
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                ChangeTag::Insert => {
+                    print!("{}", format!("+{}", change).green());
+                }
+                ChangeTag::Equal => {
+                    print!(" {}", change);
+                }
             }
         }
 
         Ok(())
     }
 
-    pub async fn validate_toml(&self, doc: &DocumentMut) -> EyreResult<()> {
+    async fn validate_config(&self, doc: &DocumentMut) -> EyreResult<()> {
         let tmp_dir = temp_dir();
         let tmp_path = tmp_dir.join(CONFIG_FILE);
 
         write(&tmp_path, doc.to_string()).await?;
 
         let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
+        let config = ConfigFile::load(&tmp_path_utf8).await?;
 
-        drop(ConfigFile::load(&tmp_path_utf8).await?);
+        drop(config);
 
         Ok(())
     }
+}
+
+// Helper function to extract type from JSON schema
+fn get_type_from_schema(schema: &serde_json::Value) -> String {
+    if let Some(type_str) = schema.get("type").and_then(|t| t.as_str()) {
+        return type_str.to_string();
+    }
+
+    if let Some(any_of) = schema.get("anyOf") {
+        if let Some(array) = any_of.as_array() {
+            let types: Vec<String> = array
+                .iter()
+                .filter_map(|item| item.get("type").and_then(|t| t.as_str()))
+                .map(|s| s.to_string())
+                .collect();
+            if !types.is_empty() {
+                return types.join(" | ");
+            }
+        }
+    }
+
+    "unknown".to_string()
 }

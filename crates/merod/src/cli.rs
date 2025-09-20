@@ -36,14 +36,23 @@ pub const EXAMPLES: &str = r"
   # Print specific config keys
   $ merod --node-name node1 config sync server.admin
 
+  # Print specific keys in JSON format
+  $ merod --node-name node1 config sync server.admin --print json
+
   # Get schema information for a key
   $ merod --node-name node1 config discovery?
+
+  # Get schema information in JSON format
+  $ merod --node-name node1 config discovery? --print json
 
   # Modify config values (shows diff, doesn't save)
   $ merod --node-name node1 config discovery.mdns=false sync.interval_ms=50000
 
   # Modify and save config values
   $ merod --node-name node1 config discovery.mdns=false sync.interval_ms=50000 --save
+
+  # Modify config and output in JSON format
+  $ merod --node-name node1 config discovery.mdns=false --print json
 
   # Run a node
   $ merod --node-name node1 run
