@@ -116,7 +116,10 @@ impl ConfigCommand {
         // Handle hints
         if has_hints {
             if !mutations.is_empty() {
-                eprintln!("Warning: Mutations are ignored when hints are present");
+                eprintln!(
+                    "{}: Mutations are ignored when hints are present",
+                    "warning".yellow().bold()
+                );
             }
             return self.handle_hints(&hints).await;
         }
@@ -129,10 +132,14 @@ impl ConfigCommand {
                 .cloned()
                 .collect();
 
+            // Print warning if save was requested but no mutations
+            if self.save {
+                eprintln!("{}: No changes to save", "warning".yellow().bold());
+            }
+
             return self.print_config(&doc, &filter_keys).await;
         }
 
-        // Handle mutations
         let original_doc = doc.clone();
 
         for (key, value) in &mutations {
@@ -154,11 +161,12 @@ impl ConfigCommand {
         } else if mutations.is_empty() {
             // Only print warning if no changes were made but save was requested
             if self.save {
-                eprintln!("Warning: No changes to save");
+                eprintln!("{}: No changes to save", "warning".yellow().bold());
             }
         } else {
             eprintln!(
-                "\nnote: if this looks right, use `-s, --save` to persist these modifications"
+                "{}: if this looks right, use `-s, --save` to persist these modifications",
+                "note".yellow().bold()
             );
         }
 
@@ -222,32 +230,56 @@ impl ConfigCommand {
         let schema = schema_for!(ConfigFile);
         let schema_value = serde_json::to_value(schema).ok()?;
 
-        if let Some(properties) = schema_value.get("properties") {
-            if let Some(key_schema) = properties.get(key) {
-                return Some(key_schema.clone());
+        let key_parts: Vec<&str> = key.split('.').collect();
+        let mut current_schema = &schema_value;
+
+        for part in key_parts {
+            if let Some(properties) = current_schema.get("properties") {
+                if let Some(property_schema) = properties.get(part) {
+                    current_schema = property_schema;
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
             }
         }
 
-        None
+        Some(current_schema.clone())
     }
 
     async fn print_schema_hint(&self, key: &str) -> EyreResult<()> {
-        // Basic schema-based hint system
         if let Some(schema) = self.get_schema_for_key(key).await {
-            if let Some(description) = schema.get("description") {
-                if let Some(description_str) = description.as_str() {
-                    println!(
-                        "{}: {} # {}",
-                        key,
-                        get_type_from_schema(&schema),
-                        description_str
-                    );
-                    return Ok(());
+            let type_str = get_type_from_schema(&schema);
+            let description = schema
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("No description available");
+
+            println!("{}: {} # {}", key.cyan().bold(), type_str, description);
+
+            // If it's an object, show its properties
+            if let Some(properties) = schema.get("properties") {
+                if let Some(props_obj) = properties.as_object() {
+                    for (prop_name, prop_schema) in props_obj {
+                        let prop_type = get_type_from_schema(prop_schema);
+                        let prop_desc = prop_schema
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("");
+
+                        println!(
+                            "  {}.{}: {} # {}",
+                            key,
+                            prop_name.green(),
+                            prop_type,
+                            prop_desc.dimmed()
+                        );
+                    }
                 }
             }
-            println!("{}: {}", key, get_type_from_schema(&schema));
         } else {
-            println!("{}: unknown config key", key);
+            println!("{}: {}", key.red().bold(), "unknown config key".red());
         }
         Ok(())
     }
@@ -321,11 +353,19 @@ impl ConfigCommand {
             }
 
             if line.starts_with('[') && line.ends_with(']') {
-                // Section header
                 println!("{}", line.blue().bold());
             } else if let Some((key, value)) = line.split_once('=') {
-                // Key-value pair
-                println!("  {}{} {}", key.trim().green(), "=".dimmed(), value.trim());
+                if let Some((value_part, comment)) = value.split_once('#') {
+                    println!(
+                        "  {}{} {} {}",
+                        key.trim().green(),
+                        "=".dimmed(),
+                        value_part.trim(),
+                        format!("#{}", comment).dimmed()
+                    );
+                } else {
+                    println!("  {}{} {}", key.trim().green(), "=".dimmed(), value.trim());
+                }
             } else {
                 println!("{}", line);
             }
@@ -347,6 +387,14 @@ impl ConfigCommand {
                 println!("{}", serde_json::to_string_pretty(&value)?);
             }
         }
+
+        if !self.args.is_empty() && !self.save {
+            eprintln!(
+                "{}: if this looks right, use `-s, --save` to persist these modifications",
+                "note".yellow().bold()
+            );
+        }
+
         Ok(())
     }
 
@@ -390,10 +438,12 @@ impl ConfigCommand {
 
 // Helper function to extract type from JSON schema
 fn get_type_from_schema(schema: &serde_json::Value) -> String {
+    // Check for direct type
     if let Some(type_str) = schema.get("type").and_then(|t| t.as_str()) {
         return type_str.to_string();
     }
 
+    // Check for anyOf (union types)
     if let Some(any_of) = schema.get("anyOf") {
         if let Some(array) = any_of.as_array() {
             let types: Vec<String> = array
@@ -404,6 +454,21 @@ fn get_type_from_schema(schema: &serde_json::Value) -> String {
             if !types.is_empty() {
                 return types.join(" | ");
             }
+        }
+    }
+
+    // Check for object with properties
+    if let Some(properties) = schema.get("properties") {
+        if properties.is_object() && !properties.as_object().unwrap().is_empty() {
+            return "object".to_string();
+        }
+    }
+
+    // Check for array type
+    if let Some(items) = schema.get("items") {
+        if items.is_object() {
+            let item_type = get_type_from_schema(items);
+            return format!("array[{}]", item_type);
         }
     }
 
