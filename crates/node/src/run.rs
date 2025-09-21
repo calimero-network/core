@@ -97,8 +97,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         }
     };
 
-    let network_manager =
-        NetworkManager::new(&config.network, network_event_recipient.clone()).await?;
+    let network_manager = NetworkManager::new(
+        &config.network,
+        network_event_recipient.clone(),
+        datastore.clone(),
+    )
+    .await?;
 
     let network_client = NetworkClient::new(network_recipient.clone());
 

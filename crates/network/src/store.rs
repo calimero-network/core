@@ -18,6 +18,7 @@ use tracing::*;
 use calimero_store::{key, types, Store};
 
 /// DB implementation of a `RecordStore`.
+#[derive(Debug, Clone)]
 pub struct KadStore {
     /// Number of stored records.
     records_len: usize,
@@ -37,7 +38,7 @@ pub struct KadStore {
 }
 
 /// Configuration for a `RocksDB` store.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct KadStoreConfig {
     /// The maximum number of records.
     pub max_records: usize,
@@ -64,89 +65,86 @@ impl Default for KadStoreConfig {
 }
 
 impl KadStore {
-    pub fn new(local_id: PeerId, db: Store) -> KadStore {
+    pub fn new(local_id: PeerId, db: Store) -> eyre::Result<KadStore> {
         Self::with_config(local_id, db, KadStoreConfig::default())
     }
 
-    pub fn with_config(local_id: PeerId, db: Store, config: KadStoreConfig) -> KadStore {
-        let local_id = KBucketKey::from(local_id);
-
-        let valid_regular_record_count = Self::get_all_records(&db).len();
+    pub fn with_config(
+        local_id: PeerId,
+        db: Store,
+        config: KadStoreConfig,
+    ) -> eyre::Result<KadStore> {
+        let valid_regular_record_count = Self::get_all_records(&db)?.len();
 
         // TODO: We still need to re-announce the records to the DHT.
-        let providers = Self::get_all_providers(&db);
+        let providers = Self::get_all_providers(&db)?;
         let providers_len = providers.len();
 
         let provided_records = providers
             .into_iter()
-            .filter(|a| &a[0].provider == local_id.preimage())
             .flatten()
-            .flat_map(|a| {
-                if a.is_expired(Instant::now()) {
-                    return None;
-                } else {
-                    return Some(a);
-                }
-            })
+            .filter(|a| a.provider == local_id && a.is_expired(Instant::now()))
             .collect::<HashSet<_>>();
 
-        KadStore {
+        Ok(KadStore {
             db,
             providers_len,
             config,
             provided: provided_records,
             local_key: KBucketKey::from(local_id),
             records_len: valid_regular_record_count,
-        }
+        })
     }
 
-    fn get_all_records(db: &Store) -> Vec<Record> {
-        db.handle()
+    fn get_all_records(db: &Store) -> eyre::Result<Vec<Record>> {
+        Ok(db
+            .handle()
             .iter::<key::RecordMeta>()
-            .unwrap()
+            .map_err(|a| eyre::eyre!("{a:?}"))?
             .read()
             .into_iter()
             .flat_map(|a| {
                 let Ok(record) = a.record() else { return None };
-
                 Some(record)
             })
-            .collect()
+            .collect())
     }
 
-    fn get_all_providers(db: &Store) -> Vec<Vec<ProviderRecord>> {
+    fn get_all_providers(db: &Store) -> eyre::Result<Vec<Vec<ProviderRecord>>> {
         let a = db
             .handle()
             .iter::<key::ProviderRecordMeta>()
-            .unwrap()
+            .map_err(|a| eyre::eyre!("{a:?}"))?
             .read()
             .into_iter()
             .map(|a| a.provider_record())
             .collect::<Vec<_>>();
-        a
+        Ok(a)
     }
 
     fn get_provider(db: &Store, key: &RecordKey) -> Option<Vec<ProviderRecord>> {
-        db.handle()
-            .get(&key::ProviderRecordMeta::new(key))
-            .unwrap()
-            .map(|a| a.provider_record())
+        match db.handle().get(&key::ProviderRecordMeta::new(key)) {
+            Ok(opt) => opt.map(|a| a.provider_record()),
+            Err(err) => {
+                error!(%err, ?key, "Failed to read provider records from DB");
+                None
+            }
+        }
     }
 
-    fn delete_provider_record(db: &Store, key: &RecordKey) {
-        db.handle().delete(&key::ProviderRecordMeta::new(&key));
-    }
-
-    fn update_provider_record(db: &Store, record: Vec<ProviderRecord>) {
+    fn update_provider_record(db: &Store, record: Vec<ProviderRecord>) -> eyre::Result<()> {
         if record.is_empty() {
             warn!("an empty provider record was provided for DB update");
-            return;
+            return Ok(());
         }
 
-        db.handle().put(
-            &key::ProviderRecordMeta::new(&record[0].key),
-            &types::ProviderRecordsMeta::new(record.into_iter()),
-        );
+        // TODO: We should impl From/Into eyre::Result for easy error conversion.
+        db.handle()
+            .put(
+                &key::ProviderRecordMeta::new(&record[0].key),
+                &types::ProviderRecordsMeta::new(record.into_iter()),
+            )
+            .map_err(|a| eyre::eyre!("{a:?}"))
     }
 }
 
@@ -158,18 +156,22 @@ impl RecordStore for KadStore {
     >;
 
     fn get(&self, key: &RecordKey) -> Option<Cow<'_, Record>> {
-        let record = self.db.handle().get(&key::RecordMeta::new(key));
-
-        match record {
+        match self.db.handle().get(&key::RecordMeta::new(key)) {
             Ok(e) => e
                 .map(|a| match a.record() {
                     Ok(e) => Some(e),
-                    Err(e) => None,
+                    Err(err) => {
+                        error!(%err, ?key, "failed to deconstruct kad record data retrieved from store");
+                        None
+                    }
                 })
                 .flatten()
                 .map(|a| Cow::Owned(a)),
 
-            Err(e) => None,
+            Err(e) => {
+                error!("Failed to read from DB when retrieve kad record with key {key:?}: {e}");
+                None
+            },
         }
     }
 
@@ -178,70 +180,89 @@ impl RecordStore for KadStore {
             return Err(KadError::ValueTooLarge);
         }
 
-        match self.db.handle().get(&key::RecordMeta::new(&r.key)) {
-            Ok(Some(_)) => {
-                info!("Kad record updated for key {:?}", r.key);
-            }
+        let key = r.key.clone();
+        info!(?key, "Updating kad record");
+
+        match self.db.handle().get(&key::RecordMeta::new(&key)) {
             Ok(None) => {
                 if self.records_len >= self.config.max_records {
                     return Err(store::Error::MaxRecords);
                 }
 
-                info!("new kad record found with key {:?}", r.key);
+                info!(?key, "new kad record found");
                 self.records_len += 1;
             }
 
             Err(err) => {
-                error!(%err, "Failed to retrieve kad record from DB");
-                // TODO: Should we panic on DB error?
+                error!(%err, ?key, "Failed to retrieve kad record from DB");
             }
+
+            _ => {}
         }
 
         match self
             .db
             .handle()
-            .put(&key::RecordMeta::new(&r.key), &types::RecordMeta::new(r))
+            .put(&key::RecordMeta::new(&key), &types::RecordMeta::new(r))
         {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                info!(?key, "Kad record added to DB store");
+            }
             Err(err) => {
-                error!(%err, "Failed to update kad store");
-                Err(store::Error::ValueTooLarge)
+                error!(%err, ?key, "Failed to update kad store");
             }
         }
+
+        Ok(())
     }
 
     fn remove(&mut self, k: &RecordKey) {
-        if let Err(err) = self.db.handle().delete(&key::RecordMeta::new(&k)) {
-            error!(%err, "Failed to delete key for kad store");
+        match self.db.handle().delete(&key::RecordMeta::new(&k)) {
+            Ok(_) => {
+                self.records_len -= 1;
+            }
+            Err(err) => error!(%err, "Failed to delete key for kad store"),
         }
     }
 
     fn records(&self) -> Self::RecordsIter<'_> {
-        let a = Self::get_all_records(&self.db)
-            .into_iter()
-            .map(Cow::Owned)
-            .collect::<Vec<_>>();
+        let a = match Self::get_all_records(&self.db) {
+            Ok(e) => e.into_iter().map(Cow::Owned).collect::<Vec<_>>(),
+            Err(err) => {
+                error!("error getting all kad records: {err}");
+                vec![]
+            }
+        };
 
         a.into_iter()
     }
 
     fn add_provider(&mut self, record: ProviderRecord) -> Result<()> {
+        info!("Received kad provider record with key {:?}", record.key);
         let mut providers = Self::get_provider(&self.db, &record.key).unwrap_or_default();
 
         if providers.is_empty() && self.config.max_provided_keys == self.providers_len {
             return Err(KadError::MaxProvidedKeys);
         }
 
+        let key = record.key.clone();
+        let update_record_len = providers.is_empty();
+
         for p in providers.iter_mut() {
             if p.provider == record.provider {
                 // In-place update of an existing provider record.
                 if self.local_key.preimage() == &record.provider {
-                    self.provided.remove(p);
-                    self.provided.insert(record.clone());
+                    let _ = self.provided.remove(p);
+                    let _ = self.provided.insert(record.clone());
                 }
 
                 *p = record;
-                Self::update_provider_record(&self.db, providers);
+                match Self::update_provider_record(&self.db, providers) {
+                    Ok(_) => info!("Updated provider record for key {key:?}"),
+                    Err(err) => {
+                        error!("Failed to update provider record to store for key {key:?}: {err}")
+                    }
+                }
                 return Ok(());
             }
         }
@@ -255,16 +276,28 @@ impl RecordStore for KadStore {
 
         // Otherwise, insert the new provider record.
         if self.local_key.preimage() == &record.provider {
-            self.provided.insert(record.clone());
+            let _ = self.provided.insert(record.clone());
         }
 
         providers.push(record);
-        Self::update_provider_record(&self.db, providers);
+        match Self::update_provider_record(&self.db, providers) {
+            Ok(_) => info!("Saved key provider record with key {:?} to store", key),
+            Err(err) => {
+                error!("Failed to update kad provider record with key: {key:?}: {err}");
+                return Ok(());
+            }
+        }
+
+        if update_record_len {
+            self.providers_len += 1;
+        }
 
         Ok(())
     }
 
     fn remove_provider(&mut self, k: &RecordKey, peer_id: &PeerId) {
+        info!("Removed kad provider with key {k:?}");
+
         let Some(mut providers) = Self::get_provider(&self.db, k) else {
             return;
         };
@@ -272,15 +305,29 @@ impl RecordStore for KadStore {
         if let Some(i) = providers.iter().position(|p| &p.provider == peer_id) {
             let p = providers.remove(i);
             if &p.provider == self.local_key.preimage() {
-                self.provided.remove(&p);
+                let _ = self.provided.remove(&p);
             }
         }
+
         if providers.is_empty() {
-            Self::delete_provider_record(&self.db, k);
+            if let Err(err) = self.db.handle().delete(&key::ProviderRecordMeta::new(&k)) {
+                error!(
+                    "Failed to delete kad provider record with key {:?} from store: {}",
+                    k, err
+                );
+                return;
+            }
+
+            self.providers_len -= 1;
             return;
         }
 
-        Self::update_provider_record(&self.db, providers);
+        if let Err(err) = Self::update_provider_record(&self.db, providers) {
+            error!(
+                "Failed to update kad record provider on update of key {:?}: {}",
+                k, err
+            )
+        }
     }
 
     fn providers(&self, key: &RecordKey) -> Vec<ProviderRecord> {
@@ -290,4 +337,29 @@ impl RecordStore for KadStore {
     fn provided(&self) -> Self::ProvidedIter<'_> {
         self.provided.iter().map(Cow::Borrowed)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    // TODO: Do we have an in-memory db store for tests?
+    #[test]
+    fn put_get_remove_record() {}
+
+    #[test]
+    fn add_get_remove_provider() {}
+
+    #[test]
+    fn provided() {}
+
+    #[test]
+    fn update_provider() {}
+
+    #[test]
+    fn update_provided() {}
+
+    #[test]
+    fn max_providers_per_key() {}
+
+    #[test]
+    fn max_provided_keys() {}
 }
