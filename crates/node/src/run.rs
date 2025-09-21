@@ -101,6 +101,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         &config.network,
         network_event_recipient.clone(),
         &mut registry,
+        datastore.clone(),
     )
     .await?;
 
