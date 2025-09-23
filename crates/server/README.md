@@ -11,6 +11,7 @@
       - [Unsubscription Handling:](#unsubscription-handling)
     - [4. Server Sent Event (SSE)](#4-server-sent-event-sse)
       - [SSE Subscription Handling:](#sse-subscription-handling)
+      - [SSE Unsubscription Handling:](#sse-unsubscription-handling)
   - [Node Server Workflows](#node-server-workflows)
     - [Client Login Workflow](#client-login-workflow)
     - [JSON rpc Workflow](#json-rpc-workflow)
@@ -118,13 +119,19 @@ responses back to the client with the unsubscribed context IDs.
 The Server-Sent Events (SSE) endpoint allows clients to subscribe to real-time 
 updates for specific contexts running in the Node Server. Unlike WebSockets, which 
 support two-way communication, SSE provides a one-way channel where the server continuously 
-pushes updates to the client over a single long-lived HTTP connection.
+pushes updates to the client over a single long-lived HTTP connection. Subscriptions are 
+automatically cleaned up after closing the connection.
+
+The very first event received after opening the SSE stream is a `connect` event, which contains
+a `connection_id`. This `connection_id` is required when making subscription requests.
 
 #### SSE Subscription Handling:
+To subscribe, the client must send a `POST` request to the `/sse/subscription` endpoint with 
+one or more `contextIds`. 
 
-Subscriptions are created by making a GET request to the /sse endpoint with one or more 
-contextId query parameters. Each open connection corresponds to an active subscription.
-When the client disconnects, the server automatically cleans up the subscription.
+#### SSE Unsubscription Handling:
+To unsubscribe, the client must send a `POST` request to the `/sse/subscription` endpoint with 
+one or more `contextIds`.
 
 
 ## Node Server Workflows
@@ -209,11 +216,18 @@ sequenceDiagram
     participant Client
     participant SSE
     participant Node
+    participant WebSocket
 
-    Client->>SSE: Subsribe request 
-    SSE->>Node: Register subscription for contextId
-    Node-->>SSE: Stream events for contextId
+    Client->>SSE: Open SSE connection
+    SSE-->>Client: Send `connect` event with `connection_id`
+
+    Client->>SSE: POST /sse/subscription(subscribe) 
+    SSE->>Node: Register subscription for contextIds with connection_id
+    Node-->>SSE: Stream events for contextIds
     SSE-->>Client: Push events as text/event-stream
+
+    Client->>SSE: POST /sse/subscription(unsubscribe) 
+    SSE->>Node: Removes subscription for contextIds
 ```
 
 ## Admin API endpoints
@@ -377,16 +391,61 @@ Server.
 
 ## SSE endpoints
 
-The SSE endpoint, accessible at /sse, allows clients to subscribe to real-time updates
-about specific contexts within the Node Server.
+The SSE endpoint, accessible at `/sse`, allows clients to establish a real-time connection 
+to receive updates for specific contexts within the Node Server.
 
-**1. Handle SSE Request**
+**1. Establish SSE Connection**
 
-- **Path**: `/sse?contextId=<value>&contextId=<value>`
+- **Path**: `/sse`
 - **Method**: `GET`
-- **Description**: Subscribes to the specified context IDs provided via the URL. 
-    Subscriptions are automatically terminated when the client disconnects.
+- **Description**: Opens a long-lived HTTP connection for receiving server-sent events.  
+  The very first message received is a `connect` event containing a `connection_id`.  
+  This `connection_id` must be used for subsequent subscription requests.
+- **Example response (first event)**:
+    ```text
+    event: connect
+    data: "connection_id"
+    ```
 
+**2. Subscribe to Context**
+
+- **Path**: `/sse/subscription`
+- **Method**: `POST`
+- **Description**: Subscribes the active connection (identified by `connection_id`) to one or more `contextIds`.  
+  After subscribing, updates for those contexts are streamed over the open SSE connection.
+- **Example request**:
+    ```http
+    POST /sse/subscription
+    Content-Type: application/json
+
+    {
+        "id" : "connection_id received from the connect event from GET /sse"
+        "method": "subscribe",
+        "params": {
+        "contextIds": ["context_1"]
+        }
+    }
+    ```
+
+**3. Unsubscribe to Context**
+
+- **Path**: `/sse/subscription`
+- **Method**: `POST`
+- **Description**: To unsubscribe, clients send an `unsubscribe` request similar to subscription request
+  with one or more `contextIds`.  
+- **Example request**:
+    ```http
+    POST /sse/subscription
+    Content-Type: application/json
+
+    {
+        "id" : "connection_id received from the connect event from GET /sse"
+        "method": "unsubscribe",
+        "params": {
+        "contextIds": ["context_1"]
+        }
+    }
+    ```
 
 ## Examples
 
