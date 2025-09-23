@@ -90,15 +90,33 @@ async fn handle_subscription(
     Extension(state): Extension<Arc<ServiceState>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
+let request_id = match request.id.parse::<u64>() {
+    Ok(id) => id,
+    Err(_) => {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Response {
+                body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                    "Invalid Connection Id".into(),
+                )),
+            }),
+        );
+    }
+};
+
+    
     match serde_json::from_value(request.payload) {
         Ok(RequestPayload::Subscribe(ctxs)) => {
             info!(
                 "Subscribe: connection_id = {:?}, context_ids = {:?}",
-                request.id, ctxs
+                request_id, ctxs
             );
 
             let mut connections = state.connections.write().await;
-            if let Some(conn) = connections.get_mut(&request.id) {
+             
+
+
+            if let Some(conn) = connections.get_mut(&request_id) {
                 let mut inner = conn.inner.write().await;
                 for ctx in &ctxs.context_ids {
                     let _ = inner.subscriptions.insert(*ctx);
@@ -127,11 +145,11 @@ async fn handle_subscription(
         Ok(RequestPayload::Unsubscribe(ctxs)) => {
             info!(
                 "Unsubscribe: connection_id = {:?}, context_ids = {:?}",
-                request.id, ctxs
+                request_id, ctxs
             );
 
             let mut connections = state.connections.write().await;
-            if let Some(conn) = connections.get_mut(&request.id) {
+            if let Some(conn) = connections.get_mut(&request_id) {
                 let mut inner = conn.inner.write().await;
                 let mut invalid = Vec::new();
 
@@ -220,12 +238,6 @@ async fn sse_handler(
         commands_sender.clone(),
     )));
 
-    // drop(tokio::spawn(send_ping(
-    //     connection_id,
-    //     Arc::clone(&state),
-    //     commands_sender.clone(),
-    // )));
-
     // converts commands from the nodes to tokio_stream
     let command_stream = ReceiverStream::new(commands_receiver).map(move |command| match command {
         Command::Close(reason) => Ok(Event::default()
@@ -253,28 +265,6 @@ async fn sse_handler(
     let stream = initial_stream.chain(command_stream);
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
-
-// async fn send_ping(
-//     connection_id: ConnectionId,
-//     state: Arc<ServiceState>,
-//     command_sender: mpsc::Sender<Command>,
-// ) {
-//     loop {
-//         let response = Response {
-//             body: ResponseBody::Result(json!({ "say": "hello" })),
-//         };
-//         info!("send the data");
-//         if let Err(err) = command_sender.send(Command::Send(response)).await {
-//             break;
-//             error!(
-//                 %connection_id,
-//                 %err,
-//                 "Failed to send SseCommand::Send",
-//             );
-//         }
-//         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-//     }
-// }
 
 async fn handle_node_events(
     connection_id: ConnectionId,

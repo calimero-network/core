@@ -15,7 +15,7 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request<P> {
-    pub id: ConnectionId,
+    pub id: String,
     #[serde(flatten)]
     pub payload: P,
 }
