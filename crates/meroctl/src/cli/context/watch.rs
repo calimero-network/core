@@ -7,7 +7,7 @@ use calimero_server_primitives::sse::{
     ContextIds, Request as SubscriptionRequest, RequestPayload, Response, ResponseBody, SseEvent,
 };
 use clap::Parser;
-use eyre::{OptionExt, Result};
+use eyre::Result;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -221,10 +221,8 @@ impl WatchCommand {
                             .write(&ErrorLine(&format!("SSE error: {data_str}")));
                     }
                     SseEvent::Connect => {
-                        let mut connection_id: u64 = serde_json::from_str(&data_str)?;
-                        connection_id = connection_id + 4;
                         let request = SubscriptionRequest {
-                            id: connection_id,
+                            id: data_str,
                             payload: RequestPayload::Subscribe(ContextIds {
                                 context_ids: vec![context_id],
                             }),

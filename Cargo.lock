@@ -1278,30 +1278,6 @@ dependencies = [
 
 [[package]]
 name = "axum-extra"
-version = "0.9.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c794b30c904f0a1c2fb7740f7df7f7972dfaa14ef6f57cb6178dc63e5dca2f04"
-dependencies = [
- "axum 0.7.9",
- "axum-core 0.4.5",
- "bytes",
- "fastrand",
- "futures-util",
- "http 1.1.0",
- "http-body 1.0.1",
- "http-body-util",
- "mime",
- "multer",
- "pin-project-lite",
- "serde",
- "serde_html_form",
- "tower 0.5.2",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "axum-extra"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "45bf463831f5131b7d3c756525b305d40f1185b688565648a92e1392ca35713d"
@@ -2094,7 +2070,6 @@ name = "calimero-server"
 version = "0.0.0"
 dependencies = [
  "axum 0.7.9",
- "axum-extra 0.9.6",
  "bytes",
  "cached-path",
  "calimero-context-config",
@@ -6050,7 +6025,7 @@ dependencies = [
  "aes-gcm",
  "async-trait",
  "axum 0.7.9",
- "axum-extra 0.10.1",
+ "axum-extra",
  "base64 0.22.1",
  "borsh",
  "bs58 0.5.1",
@@ -8851,19 +8826,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.100",
-]
-
-[[package]]
-name = "serde_html_form"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d2de91cf02bbc07cde38891769ccd5d4f073d22a40683aa4bc7a95781aaa2c4"
-dependencies = [
- "form_urlencoded",
- "indexmap 2.11.0",
- "itoa",
- "ryu",
- "serde",
 ]
 
 [[package]]
