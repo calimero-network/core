@@ -6,6 +6,7 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod providers;
+pub mod relayer;
 pub mod secrets;
 pub mod server;
 pub mod storage;

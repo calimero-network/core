@@ -40,6 +40,10 @@ pub struct AuthConfig {
     /// Development/testing configuration
     #[serde(default)]
     pub development: DevelopmentConfig,
+
+    /// Relayer integration configuration
+    #[serde(default)]
+    pub relayer: RelayerIntegrationConfig,
 }
 
 fn default_listen_addr() -> SocketAddr {
@@ -383,6 +387,49 @@ impl Default for DevelopmentConfig {
             mock_auth_header_value: None,
         }
     }
+}
+
+/// Relayer integration configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayerIntegrationConfig {
+    /// Whether to use the relayer for NEAR wallet verification
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// URL of the relayer service
+    #[serde(default = "default_relayer_url")]
+    pub url: String,
+
+    /// Request timeout in seconds
+    #[serde(default = "default_relayer_timeout")]
+    pub timeout_seconds: u64,
+
+    /// Maximum number of retries
+    #[serde(default = "default_relayer_max_retries")]
+    pub max_retries: u32,
+}
+
+impl Default for RelayerIntegrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_relayer_url(),
+            timeout_seconds: default_relayer_timeout(),
+            max_retries: default_relayer_max_retries(),
+        }
+    }
+}
+
+fn default_relayer_url() -> String {
+    "http://3.125.79.112:63529".to_string()
+}
+
+fn default_relayer_timeout() -> u64 {
+    30 // 30 seconds
+}
+
+fn default_relayer_max_retries() -> u32 {
+    3
 }
 
 /// Load the configuration from a file

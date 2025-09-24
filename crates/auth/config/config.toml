@@ -72,4 +72,19 @@ enable_mock_auth = true
 # Require authorization header for mock endpoint
 mock_auth_require_header = true
 # Authorization header value required for mock endpoint (set to enable)
-mock_auth_header_value = "Bearer test-auth-token" 
+mock_auth_header_value = "Bearer test-auth-token"
+
+# Relayer integration configuration
+[relayer]
+# Enable relayer for NEAR wallet verification (helps avoid rate limiting)
+enabled = true
+# URL of the relayer service (defaults to Calimero's managed relayer)
+url = "http://3.125.79.112:63529"
+# For self-hosted relayer, uncomment and modify:
+# url = "http://localhost:63529"        # Local development
+# url = "http://relayer:63529"          # Docker Compose
+
+# Request timeout in seconds
+timeout_seconds = 30
+# Maximum number of retries
+max_retries = 3 

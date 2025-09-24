@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
+use crate::relayer::RelayerClient;
 use crate::storage::{KeyManager, Storage};
 
 // Export modules
@@ -64,7 +65,20 @@ impl ProviderFactory {
 
         for registration in self.registrations.values() {
             if registration.is_enabled(config) {
-                let provider = registration.create_provider(context.clone())?;
+                let mut provider = registration.create_provider(context.clone())?;
+                
+                // Configure relayer client for NEAR wallet provider if enabled
+                if provider.name() == "near_wallet" && config.relayer.enabled {
+                    let relayer_url = config.relayer.url.parse()
+                        .map_err(|e| eyre::eyre!("Invalid relayer URL '{}': {}", config.relayer.url, e))?;
+                    let relayer_client = RelayerClient::with_url(relayer_url);
+                    
+                    // Downcast to NearWalletProvider and add relayer client
+                    if let Some(near_provider) = provider.as_any().downcast_ref::<impls::near_wallet::NearWalletProvider>() {
+                        provider = Box::new(near_provider.clone().with_relayer_client(relayer_client));
+                    }
+                }
+                
                 providers.push(provider);
             }
         }

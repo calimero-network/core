@@ -33,10 +33,12 @@ use tracing_subscriber::{registry, EnvFilter};
 mod config;
 mod constants;
 mod credentials;
+mod near;
 
 use config::RelayerConfig;
 use constants::{DEFAULT_ADDR, DEFAULT_RELAYER_URL};
 use credentials::{convert_to_client_credentials, CredentialBuilder, RelayerCredentials};
+use near::near_wallet_verification_handler;
 
 /// Relayer service that handles incoming requests
 #[derive(Debug)]
@@ -157,7 +159,9 @@ impl RelayerService {
         let app = Router::new()
             .route("/", post(handler))
             .route("/health", get(health_check))
-            .with_state(tx);
+            .route("/near/verify-wallet", post(near_wallet_verification_handler))
+            .with_state(tx)
+            .with_state(self.config.clone());
 
         let listener = TcpListener::bind(self.config.listen).await?;
 
