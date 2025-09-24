@@ -79,8 +79,9 @@ pub mod dummy {
     /// Dummy credentials for protocols without explicit credentials
     pub mod near {
         pub const ACCOUNT_ID: &str = "dummy.testnet";
-        pub const PUBLIC_KEY: &str = "ed25519:dummy";
-        pub const SECRET_KEY: &str = "ed25519:dummy";
+        // Valid dummy ED25519 keys (32 bytes each)
+        pub const PUBLIC_KEY: &str = "ed25519:11111111111111111111111111111111";
+        pub const SECRET_KEY: &str = "ed25519:1111111111111111111111111111111111111111111111111111111111111111";
     }
 
     pub mod starknet {

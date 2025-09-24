@@ -25,6 +25,7 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
+use crate::relayer::RelayerClient;
 use crate::storage::models::{Key, KeyType};
 use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthResponse};
@@ -94,6 +95,7 @@ pub struct NearWalletProvider {
     key_manager: KeyManager,
     token_manager: TokenManager,
     config: NearWalletConfig,
+    relayer_client: Option<RelayerClient>,
 }
 
 impl NearWalletProvider {
@@ -104,7 +106,14 @@ impl NearWalletProvider {
             key_manager: context.key_manager,
             token_manager: context.token_manager,
             config,
+            relayer_client: None, // Will be configured later
         }
+    }
+
+    /// Set the relayer client for this provider
+    pub fn with_relayer_client(mut self, relayer_client: RelayerClient) -> Self {
+        self.relayer_client = Some(relayer_client);
+        self
     }
 
     /// Verify a NEAR signature
@@ -190,6 +199,24 @@ impl NearWalletProvider {
         if public_key.is_empty() {
             return Err(eyre::eyre!("Public key cannot be empty"));
         }
+
+        // Try using the relayer client first if available
+        if let Some(relayer_client) = &self.relayer_client {
+            debug!("Using relayer for NEAR wallet verification");
+            
+            match relayer_client.verify_near_wallet(account_id, public_key, Some(&self.config.network)).await {
+                Ok(owns_key) => {
+                    debug!("Relayer verification successful: owns_key={}", owns_key);
+                    return Ok(owns_key);
+                }
+                Err(err) => {
+                    error!("Relayer verification failed, falling back to direct RPC: {}", err);
+                    // Fall through to direct RPC as fallback
+                }
+            }
+        }
+
+        debug!("Using direct NEAR RPC for wallet verification");
 
         // Parse the account ID
         let account_id: AccountId = account_id
@@ -491,6 +518,7 @@ impl Clone for NearWalletProvider {
             key_manager: self.key_manager.clone(),
             token_manager: self.token_manager.clone(),
             config: self.config.clone(),
+            relayer_client: self.relayer_client.clone(),
         }
     }
 }

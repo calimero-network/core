@@ -1,0 +1,43 @@
+# Self-hosted relayer setup for local development or custom deployment
+# Use this when you want to run your own relayer instead of using Calimero's managed relayer
+
+services:
+  # Self-hosted relayer service
+  relayer:
+    build:
+      context: .
+      dockerfile: Dockerfile.relayer
+      target: runtime
+      secrets:
+        - gh-token
+    environment:
+      - RUST_LOG=debug
+      - NEAR_API_KEY=${NEAR_API_KEY}  # Your NEAR RPC API key
+    ports:
+      - "63529:63529"  # Expose relayer port
+    networks:
+      - internal  # So auth service can reach it
+      - web       # For external access if needed
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:63529/health"]
+      interval: 30s
+      timeout: 10s
+
+networks:
+  web:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-calimero}_web
+  internal:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-calimero}_internal
+
+secrets:
+  gh-token:
+    environment: GH_TOKEN
+
