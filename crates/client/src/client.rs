@@ -318,9 +318,7 @@ where
         }
 
         let parsed = response.json::<SubscriptionResponse>().await?;
-        eprintln!(
-            "Event Subscription Response  {:?}", parsed
-        );
+        eprintln!("Event Subscription Response  {:?}", parsed);
 
         Ok(parsed)
     }

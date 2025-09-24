@@ -90,21 +90,20 @@ async fn handle_subscription(
     Extension(state): Extension<Arc<ServiceState>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
-let request_id = match request.id.parse::<u64>() {
-    Ok(id) => id,
-    Err(_) => {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(Response {
-                body: ResponseBody::Error(ResponseBodyError::HandlerError(
-                    "Invalid Connection Id".into(),
-                )),
-            }),
-        );
-    }
-};
+    let request_id = match request.id.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Response {
+                    body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                        "Invalid Connection Id".into(),
+                    )),
+                }),
+            );
+        }
+    };
 
-    
     match serde_json::from_value(request.payload) {
         Ok(RequestPayload::Subscribe(ctxs)) => {
             info!(
@@ -113,8 +112,6 @@ let request_id = match request.id.parse::<u64>() {
             );
 
             let mut connections = state.connections.write().await;
-             
-
 
             if let Some(conn) = connections.get_mut(&request_id) {
                 let mut inner = conn.inner.write().await;
