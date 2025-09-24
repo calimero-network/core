@@ -175,7 +175,7 @@ impl NearWalletVerifier {
 
 /// Handler for NEAR wallet verification requests
 pub async fn near_wallet_verification_handler(
-    State(config): State<RelayerConfig>,
+    State(state): State<crate::AppState>,
     Json(request): Json<NearWalletVerificationRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     debug!("Received NEAR wallet verification request: {:?}", request);
@@ -198,7 +198,7 @@ pub async fn near_wallet_verification_handler(
     }
 
     // Create verifier and perform verification
-    let verifier = NearWalletVerifier::new(config);
+    let verifier = NearWalletVerifier::new(state.config);
 
     match verifier
         .verify_account_owns_key(
@@ -263,7 +263,7 @@ mod tests {
 
     fn create_test_config() -> RelayerConfig {
         let mut protocols = BTreeMap::new();
-        protocols.insert(
+        drop(protocols.insert(
             "near".to_string(),
             ProtocolConfig {
                 enabled: true,
@@ -272,7 +272,7 @@ mod tests {
                 contract_id: "test.testnet".to_string(),
                 credentials: None,
             },
-        );
+        ));
 
         RelayerConfig {
             listen: SocketAddr::from(([127, 0, 0, 1], 8080)),

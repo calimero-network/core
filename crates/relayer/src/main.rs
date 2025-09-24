@@ -156,12 +156,16 @@ impl RelayerService {
             }
         };
 
+        let app_state = AppState {
+            request_sender: tx,
+            config: self.config.clone(),
+        };
+
         let app = Router::new()
             .route("/", post(handler))
             .route("/health", get(health_check))
             .route("/near/verify-wallet", post(near_wallet_verification_handler))
-            .with_state(tx)
-            .with_state(self.config.clone());
+            .with_state(app_state);
 
         let listener = TcpListener::bind(self.config.listen).await?;
 
@@ -178,9 +182,15 @@ impl RelayerService {
     }
 }
 
-type AppState = mpsc::Sender<RequestPayload>;
 type RequestPayload = (RelayRequest<'static>, HandlerSender);
 type HandlerSender = oneshot::Sender<Result<EyreResult<Vec<u8>>, ServerError>>;
+
+/// Combined application state for the relayer
+#[derive(Clone)]
+struct AppState {
+    request_sender: mpsc::Sender<RequestPayload>,
+    config: RelayerConfig,
+}
 
 /// Health check endpoint
 async fn health_check() -> impl IntoResponse {
@@ -192,12 +202,12 @@ async fn health_check() -> impl IntoResponse {
 }
 
 async fn handler(
-    State(req_tx): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<RelayRequest<'static>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let (res_tx, res_rx) = oneshot::channel();
 
-    req_tx
+    state.request_sender
         .send((request, res_tx))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
