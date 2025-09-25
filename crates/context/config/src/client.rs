@@ -188,47 +188,6 @@ impl Client<AnyTransport> {
             icp_transport = Some(icp::IcpTransport::new(&config));
         }
 
-        let mut stellar_transport = None;
-
-        'skipped: {
-            let Some(protocol_config) = config.params.get("stellar") else {
-                break 'skipped;
-            };
-
-            if !matches!(protocol_config.signer, ClientSelectedSigner::Local) {
-                break 'skipped;
-            }
-
-            let Some(stellar_config) = config.signer.local.protocols.get("stellar") else {
-                eyre::bail!("Stellar signer is set to 'local' but no local Stellar credentials found");
-            };
-
-            if stellar_config.signers.is_empty() {
-                eyre::bail!("Stellar signer is set to 'local' but no Stellar credentials provided");
-            }
-
-            let mut config = stellar::StellarConfig {
-                networks: Default::default(),
-            };
-
-            for (network, signer) in &stellar_config.signers {
-                let credentials: stellar::Credentials = serde_json::from_value(signer.credentials.clone())
-                    .map_err(|e| eyre::eyre!("Failed to parse Stellar credentials: {}", e))?;
-
-                let _ignored = config.networks.insert(
-                    network.clone().into(),
-                    stellar::NetworkConfig {
-                        network: network.clone().into(),
-                        rpc_url: signer.rpc_url.clone(),
-                        public_key: credentials.public_key.clone(),
-                        secret_key: credentials.secret_key.clone(),
-                    },
-                );
-            }
-
-            stellar_transport = Some(stellar::StellarTransport::new(&config));
-        }
-
         let mut ethereum_transport = None;
 
         'skipped: {
@@ -437,7 +396,7 @@ mod tests {
             "account_id": "test.near",
             "private_key": "ed25519:..."
         });
-        
+
         let signer: ClientLocalSigner = serde_json::from_value(json_data).unwrap();
         assert_eq!(signer.rpc_url.as_str(), "https://rpc.example.com/");
         assert_eq!(signer.credentials["account_id"], "test.near");
