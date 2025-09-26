@@ -1,5 +1,6 @@
-use std::convert::Infallible;
-use std::ops::Deref;
+use core::convert::Infallible;
+use core::ops::Deref;
+use core::str::from_utf8;
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -8,7 +9,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use generic_array::sequence::Concat;
-use generic_array::typenum::{U1, U32, U50};
+use generic_array::typenum::{Unsigned, U1, U32, U50};
 use generic_array::GenericArray;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,10 @@ impl KeyComponent for Name {
     type LEN = U50;
 }
 
+const KIND_SIZE: usize = <Kind as KeyComponent>::LEN::USIZE;
+const SCOPE_SIZE: usize = <Scope as KeyComponent>::LEN::USIZE;
+const NAME_SIZE: usize = <Name as KeyComponent>::LEN::USIZE;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct Alias(Key<(Kind, Scope, Name)>);
@@ -49,8 +54,8 @@ pub trait Aliasable: ScopedAlias {
 
 #[doc(hidden)]
 pub trait ScopeIsh {
-    fn as_scope(&self) -> [u8; 32];
-    fn from_scope(scope: [u8; 32]) -> Self;
+    fn as_scope(&self) -> [u8; SCOPE_SIZE];
+    fn from_scope(scope: [u8; SCOPE_SIZE]) -> Self;
     fn is_default() -> bool {
         false
     }
@@ -58,13 +63,13 @@ pub trait ScopeIsh {
 
 impl<T> ScopeIsh for T
 where
-    T: From<[u8; 32]> + Deref<Target = [u8; 32]>,
+    T: From<[u8; 32]> + Deref<Target = [u8; SCOPE_SIZE]>,
 {
-    fn as_scope(&self) -> [u8; 32] {
+    fn as_scope(&self) -> [u8; SCOPE_SIZE] {
         **self
     }
 
-    fn from_scope(scope: [u8; 32]) -> Self {
+    fn from_scope(scope: [u8; SCOPE_SIZE]) -> Self {
         scope.into()
     }
 }
@@ -74,11 +79,11 @@ where
 pub struct DefaultScope;
 
 impl ScopeIsh for DefaultScope {
-    fn as_scope(&self) -> [u8; 32] {
-        [0; 32]
+    fn as_scope(&self) -> [u8; SCOPE_SIZE] {
+        [0; SCOPE_SIZE]
     }
 
-    fn from_scope(_: [u8; 32]) -> Self {
+    fn from_scope(_: [u8; SCOPE_SIZE]) -> Self {
         Self
     }
 
@@ -113,9 +118,7 @@ impl StoreScopeCompat for () {
         DefaultScope
     }
 
-    fn into_primitives_scope(_: DefaultScope) -> () {
-        ()
-    }
+    fn into_primitives_scope(_: DefaultScope) {}
 }
 
 impl Aliasable for ContextId {
@@ -131,7 +134,7 @@ impl Aliasable for ApplicationId {
 }
 
 impl Alias {
-    fn create_key<T: Aliasable>(scope: [u8; 32], alias: [u8; 50]) -> Self {
+    fn create_key<T: Aliasable>(scope: [u8; SCOPE_SIZE], alias: [u8; NAME_SIZE]) -> Self {
         let scope = GenericArray::from(scope);
         let alias = GenericArray::from(alias);
 
@@ -143,7 +146,7 @@ impl Alias {
     fn scoped<T: Aliasable<Scope: StoreScopeCompat>>(
         scope: Option<T::Scope>,
         strict: bool,
-    ) -> Option<[u8; 32]> {
+    ) -> Option<[u8; SCOPE_SIZE]> {
         match scope {
             Some(scope) => Some(scope.from_primitives_scope().as_scope()),
             None if <T::Scope as StoreScopeCompat>::Scope::is_default() || !strict => {
@@ -160,7 +163,7 @@ impl Alias {
         let scope = Self::scoped::<T>(scope, true)?;
 
         let alias_str = alias.as_str();
-        let mut alias = [0; 50];
+        let mut alias = [0; NAME_SIZE];
         alias[..alias_str.len()].copy_from_slice(alias_str.as_bytes());
 
         Some(Self::create_key::<T>(scope, alias))
@@ -169,20 +172,29 @@ impl Alias {
     #[doc(hidden)]
     pub fn new_unchecked<T: Aliasable<Scope: StoreScopeCompat>>(
         scope: Option<T::Scope>,
-        alias: [u8; 50],
+        alias: [u8; NAME_SIZE],
     ) -> Self {
         let scope = Self::scoped::<T>(scope, false).expect("unreachable");
 
         Self::create_key::<T>(scope, alias)
     }
 
+    #[must_use]
     pub fn scope<T: Aliasable<Scope: StoreScopeCompat>>(&self) -> Option<T::Scope> {
         let bytes = self.0.as_bytes();
 
         (bytes[0] == PublicKey::KIND).then_some(())?;
 
-        let mut scope = [0; 32];
-        scope.copy_from_slice(&bytes[1..33]);
+        let mut scope = [0; SCOPE_SIZE];
+
+        // This is more readable with using consts.
+        // Even though the `KIND_SIZE` is equal to 1, inclusive range (`KIND_SIZE..=SCOPE_SIZE`)
+        // would be very confusing for comprehension (and would require knowing that KIND_SIZE==1.
+        #[expect(
+            clippy::range_plus_one,
+            reason = "It's more readable with using constants"
+        )]
+        scope.copy_from_slice(&bytes[KIND_SIZE..KIND_SIZE + SCOPE_SIZE]);
 
         let scope = <T::Scope as StoreScopeCompat>::Scope::from_scope(scope);
 
@@ -192,16 +204,28 @@ impl Alias {
     /// Returns the alias if the kind matches the expected kind.
     ///
     /// This also returns `None` if the alias is not valid.
+    #[must_use]
     pub fn alias<T: Aliasable>(&self) -> Option<AliasPrimitive<T>> {
+        // TODO: refactor this function and add unit tests for the whole module.
+
         let bytes = self.0.as_bytes();
+
+        // Early exit to prevent potentially indexing out-of-bounds.
+        if bytes.len() <= KIND_SIZE + SCOPE_SIZE {
+            return None;
+        }
 
         (bytes[0] == T::KIND).then_some(())?;
 
-        let bytes = &bytes[33..];
+        let bytes = &bytes[KIND_SIZE + SCOPE_SIZE..];
 
+        // TODO: possible refactor: ensure that the alias size is KIND_SIZE + SCOPE_SIZE +
+        // NAME_SIZE, then extract the name directly from [KIND_SIZE+SCOPE_SIZE..]. Ensure that the
+        // name is truncated by the zero that is present there (if indeed we use that specification
+        // for truncating names). Before refactoring, it's required to implement regression tests.
         let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
 
-        let name = std::str::from_utf8(&bytes[..len]).ok()?;
+        let name = from_utf8(&bytes[..len]).ok()?;
 
         name.parse().ok()
     }

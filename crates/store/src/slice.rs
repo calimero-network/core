@@ -26,9 +26,9 @@ trait BufRef: Reflect + Send + Sync {
     fn buf(&self) -> &[u8];
 }
 
-impl<'a, T> BufRef for T
+impl<T> BufRef for T
 where
-    T: AsRef<[u8]> + Send + Sync + 'a,
+    T: AsRef<[u8]> + Send + Sync,
 {
     fn buf(&self) -> &[u8] {
         self.as_ref()
@@ -53,6 +53,7 @@ impl<'a> Slice<'a> {
         }
     }
 
+    #[must_use]
     pub fn into_boxed(self) -> Box<[u8]> {
         let ref_boxed = match self.inner {
             SliceInner::Ref(inner) => return inner.into(),
@@ -85,7 +86,7 @@ impl<'a> Slice<'a> {
                     inner: SliceInner::Any(inner),
                 }),
             };
-        };
+        }
 
         Err(self)
     }
