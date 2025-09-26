@@ -77,7 +77,8 @@ impl SyncManager {
         let private_key = self
             .context_client
             .get_identity(&context.id, &our_identity)?
-            .and_then(|i| i.private_key)
+            .and_then(|i| i.private_key(&self.context_client).transpose())
+            .transpose()?
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
@@ -168,7 +169,8 @@ impl SyncManager {
         let private_key = self
             .context_client
             .get_identity(&context.id, &our_identity)?
-            .and_then(|i| i.private_key)
+            .and_then(|i| i.private_key(&self.context_client).transpose())
+            .transpose()?
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
