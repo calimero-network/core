@@ -27,6 +27,33 @@ pub const EXAMPLES: &str = r"
   # Configure an existing node
   $ merod --node-name node1 config --server-host 143.34.182.202 --server-port 3000
 
+  # Print full config
+  $ merod --node-name node1 config
+
+  # Print config in JSON format
+  $ merod --node-name node1 config --print json
+
+  # Print specific config keys
+  $ merod --node-name node1 config sync server.admin
+
+  # Print specific keys in JSON format
+  $ merod --node-name node1 config sync server.admin --print json
+
+  # Get schema information for a key
+  $ merod --node-name node1 config discovery?
+
+  # Get schema information in JSON format
+  $ merod --node-name node1 config discovery? --print json
+
+  # Modify config values (shows diff, doesn't save)
+  $ merod --node-name node1 config discovery.mdns=false sync.interval_ms=50000
+
+  # Modify and save config values
+  $ merod --node-name node1 config discovery.mdns=false sync.interval_ms=50000 --save
+
+  # Modify config and output in JSON format
+  $ merod --node-name node1 config discovery.mdns=false --print json
+
   # Run a node
   $ merod --node-name node1 run
 ";
