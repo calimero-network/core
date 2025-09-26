@@ -3,6 +3,8 @@
 ARG RUST_VERSION=1.88.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
+ARG RELAYER_PORT=63529
+
 ################################################################################
 FROM rust:${RUST_VERSION}-slim-bookworm AS build
 
@@ -59,7 +61,7 @@ WORKDIR /data
 ENV CALIMERO_HOME=/data
 
 # Default relayer configuration
-ENV RELAYER_LISTEN="0.0.0.0:63529"
+ENV RELAYER_LISTEN="0.0.0.0:${RELAYER_PORT}"
 ENV RUST_LOG="info"
 
 # Enable/disable blockchain protocols
@@ -71,32 +73,32 @@ ENV ENABLE_ETHEREUM=false
 # NEAR configuration
 ENV NEAR_NETWORK="testnet"
 ENV NEAR_RPC_URL="https://rpc.testnet.near.org"
-ENV NEAR_CONTRACT_ID="calimero-context-config.testnet"
+ENV NEAR_CONTRACT_ID=""
 
 # Starknet configuration  
 ENV STARKNET_NETWORK="sepolia"
 ENV STARKNET_RPC_URL="https://free-rpc.nethermind.io/sepolia-juno/"
-ENV STARKNET_CONTRACT_ID="0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
+ENV STARKNET_CONTRACT_ID=""
 
 # ICP configuration
 ENV ICP_NETWORK="local"
 ENV ICP_RPC_URL="http://127.0.0.1:4943"
-ENV ICP_CONTRACT_ID="bkyz2-fmaaa-aaaaa-qaaaq-cai"
+ENV ICP_CONTRACT_ID=""
 
 # Ethereum configuration
 ENV ETHEREUM_NETWORK="sepolia"
 ENV ETHEREUM_RPC_URL="https://sepolia.drpc.org"
-ENV ETHEREUM_CONTRACT_ID="0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB"
+ENV ETHEREUM_CONTRACT_ID=""
 
-# Default relayer URL for client configuration
-ENV DEFAULT_RELAYER_URL="http://3.125.79.112:63529"
+# Default relayer URL for client configuration (can be overridden via environment)
+ENV DEFAULT_RELAYER_URL=""
 
 VOLUME /data
-EXPOSE 63529
+EXPOSE ${RELAYER_PORT}
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:63529/health || exit 1
+    CMD curl -f http://localhost:${RELAYER_PORT}/health || exit 1
 
 ENTRYPOINT ["calimero-relayer"]
 CMD []
