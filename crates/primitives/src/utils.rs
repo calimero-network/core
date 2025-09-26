@@ -32,7 +32,9 @@ pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
 
         // TODO: refactor the function to improve the readability.
         loop {
-            let idx = path.find(PATH_SEPARATOR).map_or(path.len(), |idx| idx + PATH_SEPARATOR.len());
+            let idx = path
+                .find(PATH_SEPARATOR)
+                .map_or(path.len(), |idx| idx + PATH_SEPARATOR.len());
             let (segment, rest) = path.split_at(idx);
 
             path = rest;

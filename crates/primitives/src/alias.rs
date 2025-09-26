@@ -2,11 +2,11 @@
 #[path = "tests/alias.rs"]
 mod tests;
 
-use std::fmt;
 use core::cmp::Ordering as CmpOrdering;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use core::str::{from_utf8, from_utf8_unchecked, FromStr};
+use std::fmt;
 
 use serde::{de, ser, Deserialize, Serialize};
 use thiserror::Error;
