@@ -18,6 +18,7 @@ pub enum Operation<'a> {
 }
 
 impl<'a> Transaction<'a> {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.cols.is_empty()
     }
@@ -61,6 +62,7 @@ impl<'a> Transaction<'a> {
         }
     }
 
+    #[must_use]
     pub fn iter(&self) -> Iter<'_, 'a> {
         Iter {
             iter: self.cols.iter(),
@@ -100,10 +102,12 @@ pub struct Entry<'a> {
 }
 
 impl<'a> Entry<'a> {
+    #[must_use]
     pub const fn key(&self) -> &'a [u8] {
         self.key
     }
 
+    #[must_use]
     pub const fn column(&self) -> Column {
         self.column
     }
