@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  relayer:
+    environment:
+      # Override with development settings
+      - RUST_LOG=${RUST_LOG:-debug}
+      
+      # Ethereum devnet settings
+      - ETHEREUM_NETWORK=local
+      - ETHEREUM_RPC_URL=http://anvil:8545
+      - ETHEREUM_ACCOUNT_ID=${ETHEREUM_ACCOUNT_ID}
+      - ETHEREUM_SECRET_KEY=${ETHEREUM_SECRET_KEY}
+
+  # Ethereum devnet
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    command: anvil --host 0.0.0.0
+    ports:
+      - "${ANVIL_PORT:-8545}:8545"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped

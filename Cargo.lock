@@ -2006,6 +2006,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "calimero-context-config",
+ "chrono",
  "clap",
  "color-eyre",
  "eyre",
