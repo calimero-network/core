@@ -36,7 +36,6 @@ mod credentials;
 
 use config::RelayerConfig;
 use constants::{DEFAULT_ADDR, DEFAULT_RELAYER_URL};
-use credentials::{convert_to_client_credentials, CredentialBuilder, RelayerCredentials};
 
 /// Relayer service that handles incoming requests
 #[derive(Debug)]
@@ -76,14 +75,13 @@ impl RelayerService {
             // Add protocol signer configuration
             let mut signers = BTreeMap::new();
 
-            // Create credentials based on protocol and what's available
-            let credentials = match protocol_config.credentials.as_ref() {
-                Some(creds) => self.convert_credentials(creds)?,
-                None => {
-                    // Generate dummy credentials for relayer-only mode
-                    // The relayer typically doesn't need real credentials for many operations
-                    self.generate_dummy_credentials(protocol_name)?
-                }
+            // Create credentials only if explicitly provided
+            let credentials = if let Some(creds) = protocol_config.credentials.as_ref() {
+                self.convert_credentials(creds)?
+            } else {
+                // Skip this protocol if no credentials are provided
+                // The relayer typically doesn't need real credentials for many operations
+                continue;
             };
 
             drop(signers.insert(
@@ -113,13 +111,11 @@ impl RelayerService {
     }
 
     /// Convert relayer credentials to client credentials
-    fn convert_credentials(&self, creds: &config::ProtocolCredentials) -> EyreResult<Credentials> {
-        convert_to_client_credentials(creds)
-    }
-
-    /// Generate minimal dummy credentials for protocols without explicit credentials
-    fn generate_dummy_credentials(&self, protocol: &str) -> EyreResult<Credentials> {
-        RelayerCredentials::dummy_credentials(protocol)
+    fn convert_credentials(
+        &self,
+        creds: &credentials::ProtocolCredentials,
+    ) -> EyreResult<Credentials> {
+        Ok(creds.clone().into())
     }
 
     /// Start the relayer service
@@ -286,18 +282,17 @@ fn setup() -> EyreResult<()> {
 fn addr_from_str(s: &str) -> Result<SocketAddr, AddrParseError> {
     let mut addr = DEFAULT_ADDR;
 
-    let env_port = 'port: {
-        if let Ok(env_port) = var("PORT") {
-            if let Ok(env_port) = env_port.parse() {
-                break 'port Some(env_port);
-            }
+    // Check for PORT environment variable first
+    let env_port = var("PORT").ok().and_then(|p| match p.parse() {
+        Ok(port) => Some(port),
+        Err(_) => {
             eprintln!(
                 "warning: invalid 'PORT' environment variable: '{}', ignoring..",
-                env_port
+                p
             );
+            None
         }
-        None
-    };
+    });
 
     if let Ok(port) = s.parse() {
         addr.set_port(port);

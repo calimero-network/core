@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::constants::{protocols, DEFAULT_ADDR};
-use crate::credentials::{CredentialBuilder, RelayerCredentials};
+use crate::credentials::{from_env, ProtocolCredentials};
 
 /// Standalone relayer configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,31 +33,6 @@ pub struct ProtocolConfig {
     pub credentials: Option<ProtocolCredentials>,
 }
 
-/// Protocol-specific signing credentials
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum ProtocolCredentials {
-    Near {
-        account_id: String,
-        public_key: String,
-        secret_key: String,
-    },
-    Starknet {
-        account_id: String,
-        public_key: String,
-        secret_key: String,
-    },
-    Icp {
-        account_id: String,
-        public_key: String,
-        secret_key: String,
-    },
-    Ethereum {
-        account_id: String,
-        secret_key: String,
-    },
-}
-
 impl Default for RelayerConfig {
     fn default() -> Self {
         let mut protocols = BTreeMap::new();
@@ -70,7 +45,7 @@ impl Default for RelayerConfig {
                 network: protocols::near::DEFAULT_NETWORK.to_owned(),
                 rpc_url: protocols::near::DEFAULT_RPC_URL.parse().unwrap(),
                 contract_id: protocols::near::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: RelayerCredentials::default_credentials(protocols::near::NAME),
+                credentials: None,
             },
         ));
 
@@ -82,7 +57,7 @@ impl Default for RelayerConfig {
                 network: protocols::starknet::DEFAULT_NETWORK.to_owned(),
                 rpc_url: protocols::starknet::DEFAULT_RPC_URL.parse().unwrap(),
                 contract_id: protocols::starknet::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: RelayerCredentials::default_credentials(protocols::starknet::NAME),
+                credentials: None,
             },
         ));
 
@@ -94,7 +69,7 @@ impl Default for RelayerConfig {
                 network: protocols::icp::DEFAULT_NETWORK.to_owned(),
                 rpc_url: protocols::icp::DEFAULT_RPC_URL.parse().unwrap(),
                 contract_id: protocols::icp::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: RelayerCredentials::default_credentials(protocols::icp::NAME),
+                credentials: None,
             },
         ));
 
@@ -106,7 +81,7 @@ impl Default for RelayerConfig {
                 network: protocols::ethereum::DEFAULT_NETWORK.to_owned(),
                 rpc_url: protocols::ethereum::DEFAULT_RPC_URL.parse().unwrap(),
                 contract_id: protocols::ethereum::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: RelayerCredentials::default_credentials(protocols::ethereum::NAME),
+                credentials: None,
             },
         ));
 
@@ -123,7 +98,7 @@ impl RelayerConfig {
         let mut config = Self::default();
 
         // Override listen address from environment
-        if let Ok(listen) = std::env::var("RELAYER_LISTEN") {
+        if let Ok(listen) = std::env::var("RELAYER_LISTEN_URL") {
             if let Ok(addr) = listen.parse() {
                 config.listen = addr;
             }
@@ -156,7 +131,7 @@ impl RelayerConfig {
             }
 
             // Override credentials from environment variables if available
-            if let Some(env_credentials) = RelayerCredentials::from_env(protocol_name) {
+            if let Some(env_credentials) = from_env(protocol_name) {
                 protocol_config.credentials = Some(env_credentials);
             }
         }

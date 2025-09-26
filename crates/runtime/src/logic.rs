@@ -1007,3 +1007,999 @@ impl VMHostFunctions<'_> {
         Ok(bytes_read)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Key, Value};
+    use core::ops::Deref;
+    use wasmer::{AsStoreMut, Memory, MemoryType, Store};
+
+    // The descriptor has the size of 16-bytes with the layout `{ ptr: u64, len: u64 }`
+    // See below: [`prepare_guest_buf_descriptor`]
+    const DESCRIPTOR_SIZE: usize = u64::BITS as usize / 8 * 2;
+
+    // This implementation is more suitable for testing host-side components
+    // in comparison to `store::MockedStorage` which is a better for guest-side
+    // tests - e.g. testing Calimero application contracts.
+    // This version minimally satisfies the `Storage` trait without introducing
+    // the global state, guaranteed having a proper test isolation and not having a risk
+    // to collide with other tests due to developer error, too (i.e. developer accidentally
+    // used the same scope for the global state of `store::MockedStorage` in two different
+    // tests).
+    struct SimpleMockStorage {
+        data: HashMap<Vec<u8>, Vec<u8>>,
+    }
+
+    impl SimpleMockStorage {
+        fn new() -> Self {
+            Self {
+                data: HashMap::new(),
+            }
+        }
+    }
+
+    impl Storage for SimpleMockStorage {
+        fn get(&self, key: &Key) -> Option<Value> {
+            self.data.get(key).cloned()
+        }
+
+        fn set(&mut self, key: Key, value: Value) -> Option<Value> {
+            self.data.insert(key, value)
+        }
+
+        fn remove(&mut self, key: &Key) -> Option<Value> {
+            self.data.remove(key)
+        }
+
+        fn has(&self, key: &Key) -> bool {
+            self.data.contains_key(key)
+        }
+    }
+
+    // A macro to set up the VM environment within a test.
+    // It takes references to storage and limits, which are owned by the test function,
+    // ensuring that all lifetimes are valid.
+    macro_rules! setup_vm {
+        ($storage:expr, $limits:expr, $input:expr) => {{
+            let context = VMContext::new(Cow::Owned($input), [0u8; 32], [0u8; 32]);
+            let mut store = Store::default();
+            let memory = Memory::new(&mut store, MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new($storage, context, $limits, None);
+            let _ = logic.with_memory(memory);
+            (logic, store)
+        }};
+    }
+
+    /// Helper to write a similar to `sys::Buffer` struct representation to memory.
+    /// Simulates a WASM guest preparing a memory descriptor for a host call.
+    ///
+    /// # Why this is necessary
+    /// When a WASM guest needs the host to read/write a slice of its memory, it cannot
+    /// pass a slice directly. Instead, it must pass a pointer to a "descriptor" structure
+    /// that exists within guest's memory. This descriptor tells the host where the
+    /// actual data is (`ptr`) and how long it is (`len`). This function simulates the guest
+    /// writing that descriptor into the mock memory.
+    ///
+    /// # Parameters
+    /// - `host`: A reference to the `VMHostFunctions` to get access to the guest memory view.
+    /// - `offset`: The address of the descriptor struct itself in the guest memory.
+    ///   This is the pointer that the guest would pass to the host function.
+    /// - `ptr`: The address of the actual data payload (e.g., a string or byte array) in the
+    ///   guest memory. This value is written inside the descriptor structure.
+    /// - `len`: The length of the data payload. This value is also written inside the
+    ///   descriptor structure.
+    ///
+    /// # ABI and Memory Layout
+    /// Although the guest is `wasm32` and uses `u32` pointers internally, the host-guest
+    /// ABI often standardizes on `u64` for all pointers and lengths for consistency and
+    /// forward-compatibility with `wasm64`. Therefore, this function writes both `ptr` and `len`
+    /// as `u64`, creating a 16-byte descriptor in memory with the layout `{ ptr: u64, len: u64 }`.
+    /// All values are little-endian, as required by the WebAssembly specification.
+    fn prepare_guest_buf_descriptor(host: &VMHostFunctions<'_>, offset: u64, ptr: u64, len: u64) {
+        let data: Vec<u8> = [ptr.to_le_bytes(), len.to_le_bytes()].concat();
+
+        host.borrow_memory()
+            .write(offset, &data)
+            .expect("Failed to write buffer");
+    }
+
+    /// A test helper to write a string slice directly into the guest's mock memory.
+    ///
+    /// This simulates the guest having string data (e.g., a log message, a storage key)
+    /// in its linear memory, making it available for the host to read.
+    ///
+    /// # Parameters
+    /// - `host`: A reference to the `VMHostFunctions` to get access to the guest memory view.
+    /// - `offset`: The memory address where the string's byte data will be written.
+    /// - `s`: The string slice to write into the guest's memory.
+    fn write_str(host: &VMHostFunctions<'_>, offset: u64, s: &str) {
+        host.borrow_memory()
+            .write(offset, s.as_bytes())
+            .expect("Failed to write string");
+    }
+
+    /// A simple sanity check to ensure the default `VMLimits` are configured as expected.
+    /// This test helps prevent accidental changes to the default limits.
+    #[test]
+    fn test_default_limits() {
+        let limits = VMLimits::default();
+        assert_eq!(limits.max_memory_pages, 1 << 10);
+        assert_eq!(limits.max_stack_size, 200 << 10);
+        assert_eq!(limits.max_registers, 100);
+        assert_eq!(*limits.max_register_size.deref(), 100 << 20);
+        assert_eq!(limits.max_registers_capacity, 1 << 30); // 1 GiB
+        assert_eq!(limits.max_logs, 100);
+        assert_eq!(limits.max_log_size, 16 << 10); // 16 KiB
+        assert_eq!(limits.max_events, 100);
+        assert_eq!(limits.max_event_kind_size, 100);
+        assert_eq!(limits.max_event_data_size, 16 << 10); // 16 KiB
+        assert_eq!(limits.max_storage_key_size.get(), 1 << 20); // 1 MiB
+        assert_eq!(limits.max_storage_value_size.get(), 10 << 20); // 10 MiB
+        assert_eq!(limits.max_blob_handles, 100);
+        assert_eq!(limits.max_blob_chunk_size, 10 << 20); // 10 MiB
+    }
+
+    /// Tests the `input()`, `register_len()`, `read_register()` host functions.
+    #[test]
+    fn test_input_and_basic_registers_api() {
+        let input = vec![1u8, 2, 3];
+        let input_len = input.len() as u64;
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, input.clone());
+
+        {
+            let mut host = logic.host_functions(store.as_store_mut());
+            let register_id = 1u64;
+
+            // Guest: load the context data into a host-side register.
+            host.input(register_id).expect("Input call failed");
+            // Guest: verify the byte length of the host-side register's data matches the input length.
+            assert_eq!(host.register_len(register_id).unwrap(), input_len);
+
+            let buf_ptr = 100u64;
+            let data_output_ptr = 200u64;
+            // Guest: prepare the descriptor for the destination buffer so host can write there.
+            prepare_guest_buf_descriptor(&host, buf_ptr, data_output_ptr, input_len);
+
+            // Guest: read the register from the host into `buf_ptr`.
+            let res = host.read_register(register_id, buf_ptr).unwrap();
+            // Guest: assert the host successfully wrote the data from its register to our `buf_ptr`.
+            assert_eq!(res, 1);
+
+            let mut mem_buffer = vec![0u8; input_len as usize];
+            // Host: perform a priveleged read of the contents of guest's memory to verify it
+            // matches the `input`.
+            host.borrow_memory()
+                .read(data_output_ptr, &mut mem_buffer)
+                .unwrap();
+            assert_eq!(mem_buffer, input);
+        }
+    }
+
+    /// Tests the `context_id()` and `executor_id()` host functions.
+    ///
+    /// This test verifies that the guest can request and receive context and executor IDs.
+    #[test]
+    fn test_context_and_executor_id() {
+        let context_id = [3u8; 32];
+        let executor_id = [5u8; 32];
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
+        let mut logic = VMLogic::new(&mut storage, context, &limits, None);
+
+        let mut store = Store::default();
+        let memory = Memory::new(&mut store, MemoryType::new(1, None, false)).unwrap();
+        let _ = logic.with_memory(memory);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let context_id_register = 1;
+        // Guest: ask the host to put the context ID into host register
+        // that has a value `context_id_register`.
+        host.context_id(context_id_register).unwrap();
+        // Very the `context_id` is correctly written into its host-side register.
+        let requested_context_id = host
+            .borrow_logic()
+            .registers
+            .get(context_id_register)
+            .unwrap();
+        assert_eq!(requested_context_id, context_id);
+
+        let executor_id_register = 2;
+        // Guest: ask the host to put the executor ID into host register
+        // that has a value `executor_id_register`.
+        host.executor_id(executor_id_register).unwrap();
+        // Verify the `executor_id` is correctly written into its host-side register.
+        let requested_executor_id = host
+            .borrow_logic()
+            .registers
+            .get(executor_id_register)
+            .unwrap();
+        assert_eq!(requested_executor_id, executor_id);
+    }
+
+    /// Tests the `value_return()` host function for both `Ok` and `Err` variants.
+    ///
+    /// This test verifies the primary mechanism for a guest to finish its execution
+    /// and return a final value to the host. It checks that both successful (`Ok`) and
+    /// unsuccessful (`Err`) return values are correctly stored in the `VMLogic` state.
+    #[test]
+    fn test_value_return() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Test returning an Ok value
+        let ok_value = "this is Ok value";
+        let ok_value_ptr = 200u64;
+        // Guest: write ok
+        write_str(&host, ok_value_ptr, ok_value);
+
+        // Write a `sys::ValueReturn::Ok` enum representation (0) to memory.
+        // The value then is followed by the buffer.
+        let ok_discriminant = 0u8;
+        let ok_return_ptr = 32u64;
+        host.borrow_memory()
+            .write(ok_return_ptr, &[ok_discriminant])
+            .unwrap();
+        // Guest: prepare the descriptor for the buffer so host can access it.
+        prepare_guest_buf_descriptor(
+            &host,
+            ok_return_ptr + 8,
+            ok_value_ptr,
+            ok_value.len() as u64,
+        );
+
+        // Guest: ask host to read the return value.
+        host.value_return(ok_return_ptr).unwrap();
+        let returned_ok_value = host.borrow_logic().returns.clone().unwrap().unwrap();
+        let returned_ok_value_str = std::str::from_utf8(&returned_ok_value).unwrap();
+        // Verify the returned value matches the one from the guest.
+        assert_eq!(returned_ok_value_str, ok_value);
+
+        // Test returning an Err value
+        let err_value = "this is Err value";
+        let err_value_ptr = 400u64;
+        write_str(&host, err_value_ptr, err_value);
+
+        // Write a `sys::ValueReturn::Ok` enum representation (1) to memory.
+        // The value then is followed by the buffer.
+        let err_discriminant = 1u8;
+        let err_return_ptr = 64u64;
+        host.borrow_memory()
+            .write(err_return_ptr, &[err_discriminant])
+            .unwrap();
+        // Guest: prepare the descriptor for the buffer so host can access it.
+        prepare_guest_buf_descriptor(
+            &host,
+            err_return_ptr + 8,
+            err_value_ptr,
+            err_value.len() as u64,
+        );
+
+        // Guest: ask host to read the return value.
+        host.value_return(err_return_ptr).unwrap();
+        let returned_err_value = host.borrow_logic().returns.clone().unwrap().unwrap_err();
+        let returned_err_value_str = std::str::from_utf8(&returned_err_value).unwrap();
+        // Verify the returned value matches the one from the guest.
+        assert_eq!(returned_err_value_str, err_value);
+    }
+
+    /// Tests the `log_utf8()` host function for a successful log operation.
+    #[test]
+    fn test_log_utf8() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "test log";
+        let msg_ptr = 200u64;
+        // Guest: write msg to its memory.
+        write_str(&host, msg_ptr, msg);
+
+        let buf_ptr = 10u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, buf_ptr, msg_ptr, msg.len() as u64);
+        // Guest: ask the host to log the contents of `buf_ptr`'s descriptor.
+        host.log_utf8(buf_ptr).expect("Log failed");
+
+        // Guest: verify the host successfully logged the message
+        assert_eq!(host.borrow_logic().logs.len(), 1);
+        assert_eq!(host.borrow_logic().logs[0], "test log");
+    }
+
+    /// Tests that the `log_utf8()` host function correctly handles the log limit and properly returns
+    /// an error `HostError::LogOverflow` when the logs limit is exceeded.
+    #[test]
+    fn test_log_utf8_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        limits.max_logs = 5;
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "log";
+        let msg_ptr = 200u64;
+        // Guest: write msg to its memory.
+        write_str(&host, msg_ptr, msg);
+        let buf_ptr = 10u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, buf_ptr, msg_ptr, msg.len() as u64);
+
+        // Guest: ask the host to log for a max limit of logs
+        for _ in 0..limits.max_logs {
+            host.log_utf8(buf_ptr).expect("Log failed");
+        }
+
+        // Guest: verify the host successfully logged `limits.max_logs` msgs.
+        assert_eq!(host.borrow_logic().logs.len(), limits.max_logs as usize);
+        // Guest: do over-the limit log
+        let err = host.log_utf8(buf_ptr).unwrap_err();
+        // Guest: verify the host didn't log over the limit and returned an error.
+        assert_eq!(host.borrow_logic().logs.len(), limits.max_logs as usize);
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogsOverflow)
+        ));
+    }
+
+    /// Tests that the `log_utf8()` host function correctly handles the bad UTF8 and properly returns
+    /// an error `HostError::BadUTF8` when the incorrect string is provided (the failure occurs
+    /// because of the verification happening inside the private `read_str` function).
+    #[test]
+    fn test_log_utf8_with_bad_utf8() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare invalid UTF-8 bytes in guest memory.
+        let invalid_utf8: &[u8] = &[0, 159, 146, 150];
+        let data_ptr = 200u64;
+        host.borrow_memory().write(data_ptr, invalid_utf8).unwrap();
+
+        let buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, invalid_utf8.len() as u64);
+
+        // `log_utf8` calls `read_str` internally. We expect it to fail.
+        let err = host.log_utf8(buf_ptr).unwrap_err();
+        assert!(matches!(err, VMLogicError::HostError(HostError::BadUTF8)));
+    }
+
+    /// Tests the `panic()` host function (without a custom message).
+    #[test]
+    fn test_panic() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let expected_file_name = "simple_panic.rs";
+        let file_ptr = 400u64;
+        // Guest: write file name to its memory.
+        write_str(&host, file_ptr, expected_file_name);
+
+        let loc_data_ptr = 300u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(
+            &host,
+            loc_data_ptr,
+            file_ptr,
+            expected_file_name.len() as u64,
+        );
+
+        let expected_line: u32 = 10;
+        let expected_column: u32 = 5;
+        let u32_size: u64 = (u32::BITS / 8).into();
+        // Host: perform a priveleged write to the contents of guest's memory with a line and column
+        // of the expected panic message. We write the `line` after the descriptor, and the `column` -
+        // after the `line`.
+        host.borrow_memory()
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64,
+                &expected_line.to_le_bytes(),
+            )
+            .unwrap();
+        host.borrow_memory()
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64 + u32_size,
+                &expected_column.to_le_bytes(),
+            )
+            .unwrap();
+
+        // Guest: ask the host to panic with the given location data.
+        let err = host.panic(loc_data_ptr).unwrap_err();
+        // Guest: assert the host panics with a "explicit panic" message, and `Location` (consisting
+        // of file name, line, and column).
+        match err {
+            VMLogicError::HostError(HostError::Panic {
+                message, location, ..
+            }) => {
+                assert_eq!(message, "explicit panic");
+                match location {
+                    Location::At { file, line, column } => {
+                        assert_eq!(file, expected_file_name);
+                        assert_eq!(line, expected_line);
+                        assert_eq!(column, expected_column);
+                    }
+                    _ => panic!("Unexpected location variant"),
+                }
+            }
+            _ => panic!("Unexpected error variant"),
+        }
+    }
+
+    /// Tests the `panic_utf8()` host function.
+    #[test]
+    fn test_panic_utf8() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let expected_msg = "panic message";
+        let msg_ptr = 200u64;
+        // Guest: write msg to its memory.
+        write_str(&host, msg_ptr, expected_msg);
+        let msg_buf_ptr = 16u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, msg_buf_ptr, msg_ptr, expected_msg.len() as u64);
+
+        let expected_file_name = "file.rs";
+        let file_ptr = 400u64;
+        // Guest: write file name to its memory.
+        write_str(&host, file_ptr, expected_file_name);
+
+        let loc_data_ptr = 300u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(
+            &host,
+            loc_data_ptr,
+            file_ptr,
+            expected_file_name.len() as u64,
+        );
+
+        let expected_line: u32 = 10;
+        let expected_column: u32 = 5;
+        let u32_size: u64 = (u32::BITS / 8).into();
+        // Host: perform a priveleged write to the contents of guest's memory with a line and column
+        // of the expected panic message. We write the `line` after the descriptor, and the `column` -
+        // after the `line`.
+        host.borrow_memory()
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64,
+                &expected_line.to_le_bytes(),
+            )
+            .unwrap();
+        host.borrow_memory()
+            .write(
+                loc_data_ptr + DESCRIPTOR_SIZE as u64 + u32_size,
+                &expected_column.to_le_bytes(),
+            )
+            .unwrap();
+
+        // Guest: ask the host to panic with the given msg and location.
+        let err = host.panic_utf8(msg_buf_ptr, loc_data_ptr).unwrap_err();
+        // Guest: assert the host panics with a specified panic message, and `Location` (consisting
+        // of file name, line, and column).
+        match err {
+            VMLogicError::HostError(HostError::Panic {
+                message, location, ..
+            }) => {
+                assert_eq!(message, expected_msg);
+                match location {
+                    Location::At { file, line, column } => {
+                        assert_eq!(file, expected_file_name);
+                        assert_eq!(line, expected_line);
+                        assert_eq!(column, expected_column);
+                    }
+                    _ => panic!("Unexpected location variant"),
+                }
+            }
+            _ => panic!("Unexpected error variant"),
+        }
+    }
+
+    /// Tests the `emit()` host function for event creation and events overflow.
+    #[test]
+    fn test_emit_and_events_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare a valid event
+        let kind = "my-event";
+        let data = vec![1, 2, 3];
+        let kind_ptr = 200u64;
+        let data_ptr = 300u64;
+        // Guest: write msg to its memory.
+        write_str(&host, kind_ptr, kind);
+        host.borrow_memory().write(data_ptr, &data).unwrap();
+
+        // Prepare the sys::Event struct in memory.
+        let event_struct_ptr = 48u64;
+        let kind_buf_ptr = event_struct_ptr;
+        let data_buf_ptr = event_struct_ptr + DESCRIPTOR_SIZE as u64;
+        prepare_guest_buf_descriptor(&host, kind_buf_ptr, kind_ptr, kind.len() as u64);
+        prepare_guest_buf_descriptor(&host, data_buf_ptr, data_ptr, data.len() as u64);
+
+        // Guest: ask host to emit the event located at `event_struct_ptr`.
+        host.emit(event_struct_ptr).unwrap();
+        // Test successful event emission
+        assert_eq!(host.borrow_logic().events.len(), 1);
+        assert_eq!(host.borrow_logic().events[0].kind, kind);
+        assert_eq!(host.borrow_logic().events[0].data, data);
+
+        // Test events overflow
+        for _ in 1..limits.max_events {
+            host.emit(event_struct_ptr).unwrap();
+        }
+        assert_eq!(host.borrow_logic().events.len() as u64, limits.max_events);
+        // Guest: ask the host to do over the limit event emission.
+        let err = host.emit(event_struct_ptr).unwrap_err();
+        // Guest: verify the host didn't emit over the limit and returned an error.
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::EventsOverflow)
+        ));
+    }
+
+    /// Tests the `commit()` host function.
+    #[test]
+    fn test_commit() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let root_hash = [1u8; 32];
+        let artifact = vec![1, 2, 3];
+        let root_hash_ptr = 200u64;
+        let artifact_ptr = 300u64;
+        host.borrow_memory()
+            .write(root_hash_ptr, &root_hash)
+            .unwrap();
+        host.borrow_memory().write(artifact_ptr, &artifact).unwrap();
+
+        let root_hash_buf_ptr = 16u64;
+        let artifact_buf_ptr = 32u64;
+        // Guest: prepare the descriptor for the root_hash and artifact buffers so host can access them.
+        prepare_guest_buf_descriptor(
+            &host,
+            root_hash_buf_ptr,
+            root_hash_ptr,
+            root_hash.len() as u64,
+        );
+        prepare_guest_buf_descriptor(&host, artifact_buf_ptr, artifact_ptr, artifact.len() as u64);
+
+        // Guest: ask host to commit with the given root hash and artifact.
+        host.commit(root_hash_buf_ptr, artifact_buf_ptr).unwrap();
+        // Verify the host successfully stored the root hash and artifact in the `VMLogic` state.
+        assert_eq!(host.borrow_logic().root_hash, Some(root_hash));
+        assert_eq!(host.borrow_logic().artifact, artifact);
+    }
+
+    /// Tests the basic `storage_write` and `storage_read` host functions.
+    #[test]
+    fn test_storage_write_read() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "key";
+        let key_ptr = 200u64;
+        // Guest: write `key` to its memory.
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 10u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let value = "value";
+        let value_ptr = 300u64;
+        // Guest: write `value` to its memory.
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let register_id = 1u64;
+        // Guest: as host to write key-value pair to host storage.
+        let res = host
+            .storage_write(key_buf_ptr, value_buf_ptr, register_id)
+            .unwrap();
+        // Guest: verify the storage writing was successful.
+        assert_eq!(res, 0);
+
+        // Guest: ask the host to read from it's storage with a key located at `key_buf_ptr` and
+        // put the result into `register_id`.
+        let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+        // Ensure, the storage read was successful
+        assert_eq!(res, 1);
+        // Verify that the register length has the proper size
+        assert_eq!(host.register_len(register_id).unwrap(), value.len() as u64);
+
+        // Guest: ask the host to read the register and verify that the register has the proper
+        // content after the `storage_read()` successfully exectued.
+        let buf_ptr = 400u64;
+        let data_output_ptr = 500u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_output_ptr, value.len() as u64);
+
+        // Guest: read the register from the host into `buf_ptr`.
+        let res = host.read_register(register_id, buf_ptr).unwrap();
+        // Guest: assert the host successfully wrote the data from its register to our `buf_ptr`.
+        assert_eq!(res, 1);
+
+        let mut mem_buffer = vec![0u8; value.len()];
+        // Host: perform a priveleged read of the contents of guest's memory to verify it
+        // matches the `value`.
+        host.borrow_memory()
+            .read(data_output_ptr, &mut mem_buffer)
+            .unwrap();
+        let mem_buffer_str = std::str::from_utf8(&mem_buffer).unwrap();
+        // Verify that the value from the register, after the successfull `storage_read()`
+        // operation matches the same `value` when we initially wrote to the storage.
+        assert_eq!(mem_buffer_str, value);
+    }
+
+    /// Tests the `storage_remove()` host function.
+    #[test]
+    fn test_storage_remove() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "to_remove";
+        let value = "old_value";
+        // Manually write into host storage for simplicity reasons.
+        let _unused = host.with_logic_mut(|logic| {
+            logic
+                .storage
+                .set(key.as_bytes().to_vec(), value.as_bytes().to_vec())
+        });
+
+        let key_ptr = 100u64;
+        // Guest: write key to its memory
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let register_id = 1u64;
+        // Guest: ask host to remove from storage the value with the given key.
+        let res = host.storage_remove(key_buf_ptr, register_id).unwrap();
+        // Verify the storage removal was successful.
+        assert_eq!(res, 1);
+        // Verify the storage doesn't have a specified key anymore.
+        assert_eq!(
+            host.borrow_logic().storage.has(&key.as_bytes().to_vec()),
+            false
+        );
+        // Verify the removed value was put into the host register.
+        assert_eq!(
+            host.borrow_logic().registers.get(register_id).unwrap(),
+            value.as_bytes()
+        );
+
+        // Verify the host register contains the removed value.
+        let buf_ptr = 200u64;
+        let data_output_ptr = 300u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_output_ptr, value.len() as u64);
+
+        // Guest: read the register from the host into `buf_ptr`.
+        let res = host.read_register(register_id, buf_ptr).unwrap();
+        // Guest: assert the host successfully wrote the data from its register to our `buf_ptr`.
+        assert_eq!(res, 1);
+
+        let mut mem_buffer = vec![0u8; value.len()];
+        // Host: perform a priveleged read of the contents of guest's memory to verify it
+        // matches the `value`.
+        host.borrow_memory()
+            .read(data_output_ptr, &mut mem_buffer)
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&mem_buffer).unwrap(), value);
+    }
+
+    #[test]
+    fn test_random_bytes() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let buf_ptr = 10u64;
+        let data_ptr = 200u64;
+        let data_len = 32u64;
+
+        // Explicitly fill the memory with some pattern before the host call.
+        // This makes the test deterministic (for CI) and ensures it fails
+        // correctly if the function under this test does not write to the buffer.
+        let initial_pattern = vec![0xAB; data_len as usize];
+        host.borrow_memory()
+            .write(data_ptr, &initial_pattern)
+            .unwrap();
+
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
+
+        // Guest: ask host to fill the buffer with random bytes
+        host.random_bytes(buf_ptr).unwrap();
+
+        // Host: perform a priveleged read of the contents of guest's memory to extract the buffer
+        // back.
+        let mut random_data = vec![0u8; data_len as usize];
+        host.borrow_memory()
+            .read(data_ptr, &mut random_data)
+            .unwrap();
+
+        // Assert that the memory content has changed from our initial pattern.
+        assert_ne!(
+            random_data, initial_pattern,
+            "The data buffer should have been overwritten with random bytes, but it was not."
+        );
+    }
+
+    /// Tests the `time_now()` host function.
+    #[test]
+    fn test_time_now() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let buf_ptr = 16u64;
+        let time_data_ptr = 200u64;
+        // The `time_now()` function expects an 8-byte buffer to write the u64 timestamp.
+        let time_data_len = u64::BITS as u64 / 8;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, buf_ptr, time_data_ptr, time_data_len);
+
+        // Record the host's system time before the host-function call.
+        let time_before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Guest: ask the host to provide the current timestamp and write it to the buffer.
+        host.time_now(buf_ptr).unwrap();
+
+        // Record the host's system time after the host-function call.
+        let time_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Host: read the timestamp back from guest memory.
+        let mut time_buffer = [0u8; 8];
+        host.borrow_memory()
+            .read(time_data_ptr, &mut time_buffer)
+            .unwrap();
+        let timestamp_from_host = u64::from_le_bytes(time_buffer);
+
+        // Verify the timestamp is current and valid (within the before-after range).
+        assert!(timestamp_from_host >= time_before);
+        assert!(timestamp_from_host <= time_after);
+    }
+
+    /// Tests the `send_proposal()` and `approve_proposal()` host functions.
+    #[test]
+    fn test_proposals_send_approve() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Test sending a proposal.
+        let actions = vec![1, 2, 3, 4, 5, 6];
+        let actions_ptr = 100u64;
+        // Write actions to guest memory.
+        host.borrow_memory().write(actions_ptr, &actions).unwrap();
+        let actions_buf_ptr = 16u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(&host, actions_buf_ptr, actions_ptr, actions.len() as u64);
+
+        let id_out_ptr = 300u64;
+        let id_buf_ptr = 32u64;
+        // Guest: prepare the descriptor for the destination buffer so host can write there.
+        prepare_guest_buf_descriptor(&host, id_buf_ptr, id_out_ptr, 32);
+        // Guest: send proposal to host with actions `actions_buf_ptr` and get back the proposal ID
+        // in `id_buf_ptr`.
+        host.send_proposal(actions_buf_ptr, id_buf_ptr).unwrap();
+
+        // Verify the proposal with the given actions were successfully added.
+        assert_eq!(host.borrow_logic().proposals.len(), 1);
+        assert_eq!(
+            host.borrow_logic().proposals.values().next().unwrap(),
+            &actions
+        );
+        // Verify there are no approvals yet.
+        assert_eq!(host.borrow_logic().approvals.len(), 0);
+
+        // Test approving a proposal.
+        // Approval ID is the Answer to the Ultimate Question of Life, the Universe, and Everything.
+        let approval_id = [42u8; 32];
+        let approval_ptr = 500u64;
+        // Write approval to guest memory.
+        host.borrow_memory()
+            .write(approval_ptr, &approval_id)
+            .unwrap();
+
+        let approval_buf_ptr = 48u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(
+            &host,
+            approval_buf_ptr,
+            approval_ptr,
+            approval_id.len() as u64,
+        );
+
+        // Guest: send a proposal approval to host.
+        host.approve_proposal(approval_buf_ptr).unwrap();
+
+        // Verify the host successfully stored the approval and its ID matches the one we sent.
+        assert_eq!(host.borrow_logic().approvals.len(), 1);
+        assert_eq!(host.borrow_logic().approvals[0], approval_id);
+    }
+
+    /// Verifies that `blob_create` host function correctly returns an error when
+    /// the node client is not configured.
+    #[test]
+    fn test_blob_create_without_client_returns_an_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        let err = host.blob_create().unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    /// A smoke test for the successful path of the `finish` method.
+    ///
+    /// This test simulates a VM execution that successfully finished by
+    /// calling `finish(None)` and asserts that the `returns` field in
+    /// the final `Outcome` is an `Ok`, ensuring the error is propagated correctly.
+    #[test]
+    fn test_smoke_finish() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (logic, _) = setup_vm!(&mut storage, &limits, vec![1, 2, 3]);
+        let outcome = logic.finish(None);
+
+        assert!(outcome.returns.is_ok());
+    }
+
+    /// A smoke test for the error-handling path of the `finish` method.
+    ///
+    /// This test simulates a VM execution that failed by calling `finish(Some(Error))`
+    /// and asserts that the `returns` field in the final `Outcome` is an `Err`,
+    /// ensuring the error is propagated correctly.
+    #[test]
+    fn test_smoke_finish_with_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (logic, _) = setup_vm!(&mut storage, &limits, vec![]);
+        let outcome = logic.finish(Some(FunctionCallError::ExecutionError(vec![])));
+        assert!(outcome.returns.is_err());
+    }
+
+    // ===========================================================================
+    // Tests for private functions
+    // ===========================================================================
+
+    /// Verifies the success path of the private `read_slice` and `read_str` functions.
+    #[test]
+    fn test_private_read_slice_and_str_success() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        let expected_str = "hello world";
+        let data_ptr = 100u64;
+        // Write msg to guest memory.
+        write_str(&host, data_ptr, expected_str);
+        let buf_ptr = 16u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, expected_str.len() as u64);
+
+        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
+        // do internally.
+        let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+
+        // Guest: ask host to read str from the `buffer` located in guest memory.
+        let result_str = host.read_str(&buffer).unwrap();
+        assert_eq!(result_str, expected_str);
+
+        // Guest: ask host to read slice from the `buffer` located in guest memory.
+        let result_slice = host.read_slice(&buffer);
+        assert_eq!(result_slice, expected_str.as_bytes());
+    }
+
+    /// Verifies the error handling of the private `read_str` function for invalid UTF-8.
+    #[test]
+    fn test_private_read_str_invalid_utf8() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        let invalid_utf8: &[u8] = &[0, 159, 146, 150];
+        let data_ptr = 100u64;
+        // Write invalid utf8 buffer to the guest memory
+        host.borrow_memory().write(data_ptr, invalid_utf8).unwrap();
+        let buf_ptr = 16u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, invalid_utf8.len() as u64);
+
+        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
+        // do internally.
+        let buffer = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr).unwrap() };
+
+        // Test that `read_str` fails as expected.
+        let err = host.read_str(&buffer).unwrap_err();
+        assert!(matches!(err, VMLogicError::HostError(HostError::BadUTF8)));
+    }
+
+    /// Verifies the success and failure paths of the private `read_guest_memory_sized` function.
+    #[test]
+    fn test_private_read_guest_memory_sized() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        // Test success case.
+        let correct_data = [42u8; 32];
+        let data_ptr_ok = 100u64;
+        // Write correct data to guest memory.
+        host.borrow_memory()
+            .write(data_ptr_ok, &correct_data)
+            .unwrap();
+        let buf_ptr_ok = 16u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(&host, buf_ptr_ok, data_ptr_ok, correct_data.len() as u64);
+
+        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
+        // do internally.
+        let buffer_ok = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_ok).unwrap() };
+        let result_sized_ok = host.read_sized::<32>(&buffer_ok).unwrap();
+        assert_eq!(result_sized_ok, &correct_data);
+
+        // Test failure case (incorrect length).
+        let incorrect_data = [1u8; 31];
+        let data_ptr_err = 300u64;
+        // Write incorrect data to guest memory.
+        host.borrow_memory()
+            .write(data_ptr_err, &incorrect_data)
+            .unwrap();
+        let buf_ptr_err = 32u64;
+        // Guest: prepare the descriptor for the destination buffer so host can access it.
+        prepare_guest_buf_descriptor(
+            &host,
+            buf_ptr_err,
+            data_ptr_err,
+            incorrect_data.len() as u64,
+        );
+
+        // Use `read_typed` to get a `sys::Buffer` instance, just like public host functions
+        // do internally.
+        let buffer_err = unsafe { host.read_typed::<sys::Buffer<'_>>(buf_ptr_err).unwrap() };
+        // Guest: ask host to read the guest memory sized.
+        let err = host.read_sized::<32>(&buffer_err).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+    }
+}
