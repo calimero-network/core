@@ -35,8 +35,14 @@ impl Default for Secrets {
 
 #[app::event]
 pub enum Event<'a> {
-    SecretSet { game_id: &'a str },
-    Guessed { game_id: &'a str, success: bool, by: &'a str },
+    SecretSet {
+        game_id: &'a str,
+    },
+    Guessed {
+        game_id: &'a str,
+        success: bool,
+        by: &'a str,
+    },
 }
 
 #[derive(Debug, Error, Serialize)]
@@ -83,7 +89,11 @@ impl SecretGame {
         let guess_hash = Sha256::digest(guess.as_bytes());
         let guess_hash_hex = hex::encode(guess_hash);
         let success = guess_hash_hex == public_hash_hex;
-        app::emit!(Event::Guessed { game_id, success, by: &who });
+        app::emit!(Event::Guessed {
+            game_id,
+            success,
+            by: &who
+        });
         Ok(success)
     }
 
@@ -99,5 +109,3 @@ impl SecretGame {
         Ok(self.games.entries()?.collect())
     }
 }
-
-
