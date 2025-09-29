@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use bs58;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -82,12 +83,15 @@ impl SecretGame {
     }
 
     /// Allow a user to guess the secret; returns true if the guess matches the stored hash.
-    pub fn add_guess(&self, game_id: &str, guess: String, who: String) -> app::Result<bool> {
+    /// `who` is derived from the executor identity rather than passed as an argument.
+    pub fn add_guess(&self, game_id: &str, guess: String) -> app::Result<bool> {
         let Some(public_hash_hex) = self.games.get(game_id)? else {
             app::bail!(Error::NoHash);
         };
         let guess_hash = Sha256::digest(guess.as_bytes());
         let guess_hash_hex = hex::encode(guess_hash);
+        let who_b = calimero_sdk::env::executor_id();
+        let who = bs58::encode(who_b).into_string();
         let success = guess_hash_hex == public_hash_hex;
         app::emit!(Event::Guessed {
             game_id,

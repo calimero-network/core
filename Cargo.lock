@@ -7614,6 +7614,7 @@ dependencies = [
 name = "private-data"
 version = "0.0.0"
 dependencies = [
+ "bs58 0.5.1",
  "calimero-sdk",
  "calimero-storage",
  "calimero-wasm-abi",

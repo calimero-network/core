@@ -125,7 +125,7 @@ steps:
       - 'json_subset({{games_result}}, {"output": {"game-1": "4e738ca5563c06cfd0018299933d58db1dd8bf97f6973dc99bf6cdc64b5550bd"}})'
 
   # Step 10: Execute a view call to retrieve caller-local secrets
-  - name: Execute View Call - My Secrets
+  - name: Execute View Call - My Secrets (node-2)
     type: call
     node: calimero-node-2
     context_id: '{{context_id}}'
@@ -149,7 +149,6 @@ steps:
     args:
       game_id: game-1
       guess: s3cr3t
-      who: alice
     outputs:
       guess_ok_result: result
 
@@ -168,7 +167,6 @@ steps:
     args:
       game_id: game-1
       guess: wrong
-      who: bob
     outputs:
       guess_bad_result: result
 
