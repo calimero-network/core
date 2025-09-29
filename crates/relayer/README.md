@@ -123,7 +123,7 @@ secret_key = "<PUT_YOUR_SECRET_KEY_HERE>"
 [protocols.starknet]
 network = "sepolia"
 rpc_url = "https://free-rpc.nethermind.io/sepolia-juno/"
-contract_id = "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
+contract_id = "<PUT_CONTRACT_ID_HERE>"
 # ... credentials
 ```
 
