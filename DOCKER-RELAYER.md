@@ -127,9 +127,9 @@ docker-compose -f docker-compose.prod.yml up -d
 ### 3. Testing Environment
 
 ```bash
-# Start with testnet credentials
-export NEAR_DEFAULT_SECRET_KEY="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af7e2dWgNPEaiQfdJnZq1CNPp5im4Rg5b2rKtXFv"
-export STARKNET_DEFAULT_SECRET_KEY="0x0178eb2a625c0a8d85b0a5fd69fc879f9884f5205ad9d1ba41db0d7d1a77950a"
+# Start with testnet credentials (set your own secret keys)
+export NEAR_DEFAULT_SECRET_KEY="your-near-secret-key-here"
+export STARKNET_DEFAULT_SECRET_KEY="your-starknet-secret-key-here"
 
 docker-compose -f docker-compose.relayer.yml up -d
 ```
@@ -148,6 +148,8 @@ curl http://localhost:63529/health
   "service": "calimero-relayer", 
   "timestamp": "2025-09-15T11:26:22.601119003+00:00"
 }
+
+**Note**: The timestamp is returned in RFC-3339 format (ISO 8601 with timezone information).
 ```
 
 ### Docker Health Check
