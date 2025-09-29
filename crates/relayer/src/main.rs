@@ -10,7 +10,7 @@ use std::net::{AddrParseError, SocketAddr};
 use axum::extract::State;
 use axum::http::status::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
@@ -150,7 +150,10 @@ impl RelayerService {
             }
         };
 
-        let app = Router::new().route("/", post(handler)).with_state(tx);
+        let app = Router::new()
+            .route("/", post(handler))
+            .route("/health", get(health_check))
+            .with_state(tx);
 
         let listener = TcpListener::bind(self.config.listen).await?;
 
@@ -170,6 +173,15 @@ impl RelayerService {
 type AppState = mpsc::Sender<RequestPayload>;
 type RequestPayload = (RelayRequest<'static>, HandlerSender);
 type HandlerSender = oneshot::Sender<Result<EyreResult<Vec<u8>>, ServerError>>;
+
+/// Health check endpoint
+async fn health_check() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "healthy",
+        "service": "calimero-relayer",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }))
+}
 
 async fn handler(
     State(req_tx): State<AppState>,
