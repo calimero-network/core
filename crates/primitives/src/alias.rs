@@ -2,10 +2,11 @@
 #[path = "tests/alias.rs"]
 mod tests;
 
+use core::cmp::Ordering as CmpOrdering;
+use core::hash::{Hash, Hasher};
+use core::marker::PhantomData;
+use core::str::{from_utf8, from_utf8_unchecked, FromStr};
 use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
-use std::str::FromStr;
 
 use serde::{de, ser, Deserialize, Serialize};
 use thiserror::Error;
@@ -14,10 +15,16 @@ use crate::application::ApplicationId;
 use crate::context::ContextId;
 use crate::identity::PublicKey;
 
-const MAX_LENGTH: usize = 50;
-const _: [(); { (usize::BITS - MAX_LENGTH.leading_zeros()) > 8 } as usize] = [
-    /* MAX_LENGTH must be a 8-bit number */
-];
+const MAX_ALIAS_LEN: usize = 50;
+
+// Compile time assertion to ensure that the `MAX_ALIAS_LEN` fits within `u8`.
+const _: () = {
+    // Assert that MAX_ALIAS_LEN can fit within an 8-bit unsigned integer (0-255).
+    if MAX_ALIAS_LEN > u8::MAX as usize {
+        // This panic will trigger a compilation error with the provided message.
+        panic!("MAX_ALIAS_LEN must be a value that fits in 8 bits.");
+    }
+};
 
 pub trait ScopedAlias {
     type Scope;
@@ -36,7 +43,7 @@ impl ScopedAlias for ApplicationId {
 }
 
 pub struct Alias<T> {
-    str: [u8; MAX_LENGTH],
+    str: [u8; MAX_ALIAS_LEN],
     len: u8,
     _pd: PhantomData<T>,
 }
@@ -51,7 +58,7 @@ impl<T> Clone for Alias<T> {
 #[derive(Copy, Clone, Debug, Error)]
 #[error("invalid alias: {}")]
 pub enum InvalidAlias {
-    #[error("exceeds maximum length of {} characters", MAX_LENGTH)]
+    #[error("exceeds maximum length of {} characters", MAX_ALIAS_LEN)]
     TooLong,
 }
 
@@ -59,7 +66,7 @@ impl<T> Alias<T> {
     #[must_use]
     pub fn as_str(&self) -> &str {
         let bytes = &self.str[..self.len as usize];
-        unsafe { std::str::from_utf8_unchecked(bytes) }
+        unsafe { from_utf8_unchecked(bytes) }
     }
 }
 
@@ -73,17 +80,20 @@ impl<T> FromStr for Alias<T> {
     type Err = InvalidAlias;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len() > MAX_LENGTH {
+        if s.len() > MAX_ALIAS_LEN {
             return Err(InvalidAlias::TooLong);
         }
 
-        let mut str = [0; MAX_LENGTH];
+        let mut str = [0; MAX_ALIAS_LEN];
         str[..s.len()].copy_from_slice(s.as_bytes());
+
+        // NOTE: This conversion should never return an error because the assert above
+        // ensures `s.len()` is less than `MAX_ALIAS_LEN` (50), which always fits in a u8.
+        let len_u8 = u8::try_from(s.len()).map_err(|_| InvalidAlias::TooLong)?;
 
         Ok(Self {
             str,
-            // safety: we guarantee this is 8-bit, where MAX_LENGTH is defined
-            len: s.len() as u8,
+            len: len_u8,
             _pd: PhantomData,
         })
     }
@@ -110,13 +120,13 @@ impl<T> PartialEq for Alias<T> {
 }
 
 impl<T> Ord for Alias<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
         self.str.cmp(&other.str)
     }
 }
 
 impl<T> PartialOrd for Alias<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
         Some(self.cmp(other))
     }
 }
@@ -141,7 +151,7 @@ impl<'de, T> Deserialize<'de> for Alias<T> {
             type Value = Alias<T>;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "an alias of at most {} characters", MAX_LENGTH)
+                write!(f, "an alias of at most {MAX_ALIAS_LEN} characters")
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
@@ -155,7 +165,7 @@ impl<'de, T> Deserialize<'de> for Alias<T> {
             where
                 E: de::Error,
             {
-                let Ok(s) = std::str::from_utf8(v) else {
+                let Ok(s) = from_utf8(v) else {
                     return Err(de::Error::invalid_value(de::Unexpected::Bytes(v), &self));
                 };
 

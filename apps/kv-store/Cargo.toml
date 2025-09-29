@@ -15,5 +15,9 @@ thiserror.workspace = true
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
 
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true
+
 [package.metadata.workspaces]
 independent = true
