@@ -1,7 +1,8 @@
 [package]
 name = "mero-abi"
 description = "CLI tool for extracting Calimero WASM ABI"
-version.workspace = true
+# Note: workspace versioning doesn't work for tools if published to crates.io, must be independently managed
+version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -13,15 +14,6 @@ clap = { workspace = true, features = ["derive"] }
 wasmparser = "0.118"
 serde_json.workspace = true
 eyre.workspace = true
-calimero-version.workspace = true
-reqwest = { workspace = true, features = ["json"] }
-semver = { workspace = true, features = ["serde"] }
-serde = { workspace = true, features = ["derive"] }
-rand.workspace = true
-tokio.workspace = true
-
-[package.metadata.workspaces]
-independent = true
 
 [lints]
 workspace = true 
