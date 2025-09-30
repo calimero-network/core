@@ -103,6 +103,7 @@ pub trait ReflectExt: Reflect {
         self.type_id() == non_static_type_id::<T>()
     }
 
+    #[must_use]
     fn type_id() -> TypeId {
         non_static_type_id::<Self>()
     }
@@ -124,7 +125,7 @@ pub trait ReflectExt: Reflect {
     }
 
     fn downcast_box<T: Reflect>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
-        if (&*self).is::<T>() {
+        if (*self).is::<T>() {
             return Ok(unsafe { Box::from_raw(Box::into_raw(self).cast()) });
         }
 
@@ -132,7 +133,7 @@ pub trait ReflectExt: Reflect {
     }
 
     fn downcast_rc<T: Reflect>(self: Rc<Self>) -> Result<Rc<T>, Rc<Self>> {
-        if (&*self).is::<T>() {
+        if (*self).is::<T>() {
             return Ok(unsafe { Rc::from_raw(Rc::into_raw(self).cast()) });
         }
 
@@ -140,7 +141,7 @@ pub trait ReflectExt: Reflect {
     }
 
     fn downcast_arc<T: Reflect>(self: Arc<Self>) -> Result<Arc<T>, Arc<Self>> {
-        if (&*self).is::<T>() {
+        if (*self).is::<T>() {
             return Ok(unsafe { Arc::from_raw(Arc::into_raw(self).cast()) });
         }
 

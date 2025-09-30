@@ -112,6 +112,22 @@ fn normalize_path_type(
         // Handle scalar types
         eprintln!("No angle-bracketed arguments, treating as scalar");
         return normalize_scalar_type(path, wasm32, resolver);
+    } else if path.segments.len() == 2 {
+        // Handle qualified paths like app::Result
+        let first_segment = &path.segments[0];
+        let second_segment = &path.segments[1];
+
+        eprintln!(
+            "Processing qualified path: {}::{}",
+            first_segment.ident, second_segment.ident
+        );
+
+        // Handle app::Result -> Result
+        if first_segment.ident == "app" && second_segment.ident == "Result" {
+            if let syn::PathArguments::AngleBracketed(args) = &second_segment.arguments {
+                return normalize_generic_type(&second_segment.ident, args, wasm32, resolver);
+            }
+        }
     }
 
     Err(NormalizeError::TypePathError(
@@ -149,84 +165,120 @@ fn normalize_generic_type(
             };
             normalize_type(ty, wasm32, resolver)
         }
-        "Vec" => {
-            // Vec<T> -> list<T> or bytes for Vec<u8>
+        // List/Vector types - normalize to semantic list type
+        "Vec" | "VecDeque" | "LinkedList" => {
+            // All list types -> list<T> or bytes for Vec<u8>
             if args.args.len() != 1 {
-                return Err(NormalizeError::TypePathError("invalid Vec type".to_owned()));
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {} type - expected 1 type argument",
+                    ident_str
+                )));
             }
             let item_arg = &args.args[0];
             let GenericArgument::Type(item_ty) = item_arg else {
-                return Err(NormalizeError::TypePathError(
-                    "invalid Vec item type".to_owned(),
-                ));
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {} item type",
+                    ident_str
+                )));
             };
 
-            // Check if it's Vec<u8> -> bytes
-            if let Type::Path(TypePath { path, .. }) = item_ty {
-                if is_u8_type(path) {
-                    return Ok(TypeRef::Scalar(ScalarType::Bytes {
-                        size: None,
-                        encoding: None,
-                    }));
+            // Special case: Vec<u8> -> bytes (only for Vec, not other list types)
+            if ident_str == "Vec" {
+                if let Type::Path(TypePath { path, .. }) = item_ty {
+                    if is_u8_type(path) {
+                        return Ok(TypeRef::Scalar(ScalarType::Bytes {
+                            size: None,
+                            encoding: None,
+                        }));
+                    }
                 }
             }
 
             let item_type = normalize_type(item_ty, wasm32, resolver)?;
             Ok(TypeRef::list(item_type))
         }
-        "BTreeMap" => {
-            // BTreeMap<K, V> -> map<string, V> (K must be String)
+        // Collection types - normalize to semantic ABI types
+        "BTreeMap" | "HashMap" | "UnorderedMap" | "IndexMap" => {
+            // All map types -> map<K, V> (normalize to semantic type)
             if args.args.len() != 2 {
-                return Err(NormalizeError::TypePathError(
-                    "invalid BTreeMap type".to_owned(),
-                ));
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {} type - expected 2 type arguments",
+                    ident_str
+                )));
             }
 
             let key_arg = &args.args[0];
             let value_arg = &args.args[1];
 
             let GenericArgument::Type(key_ty) = key_arg else {
-                return Err(NormalizeError::TypePathError(
-                    "invalid BTreeMap key".to_owned(),
-                ));
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {} key type",
+                    ident_str
+                )));
             };
 
             let GenericArgument::Type(value_ty) = value_arg else {
-                return Err(NormalizeError::TypePathError(
-                    "invalid BTreeMap value".to_owned(),
-                ));
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {} value type",
+                    ident_str
+                )));
             };
 
-            // Check that key is String
-            if let Type::Path(TypePath { path, .. }) = key_ty {
-                if !is_string_type(path) {
-                    return Err(NormalizeError::UnsupportedMapKey(
-                        "non-string key type".to_owned(),
-                    ));
-                }
-            } else {
-                return Err(NormalizeError::UnsupportedMapKey(
-                    "non-string key type".to_owned(),
-                ));
+            // Normalize key and value types
+            let _key_type = normalize_type(key_ty, wasm32, resolver)?;
+            let value_type = normalize_type(value_ty, wasm32, resolver)?;
+
+            // For now, we'll create a simple map type
+            // TODO: We might want to support different key types in the future
+            Ok(TypeRef::map(value_type))
+        }
+        // Set types - normalize to semantic list type (sets are just lists without duplicates)
+        "HashSet" | "BTreeSet" | "IndexSet" => {
+            // All set types -> list<T> (normalize to semantic type)
+            if args.args.len() != 1 {
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {} type - expected 1 type argument",
+                    ident_str
+                )));
             }
 
-            let value_type = normalize_type(value_ty, wasm32, resolver)?;
-            Ok(TypeRef::map(value_type))
+            let arg = &args.args[0];
+            let GenericArgument::Type(item_ty) = arg else {
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {} argument",
+                    ident_str
+                )));
+            };
+
+            let item_type = normalize_type(item_ty, wasm32, resolver)?;
+            Ok(TypeRef::list(item_type))
         }
         "Result" => {
             // Result<T, E> -> T (error handling separate)
-            if args.args.len() != 2 {
+            // Handle both Result<T, E> and Result<T> (where E has a default)
+            if args.args.len() == 1 {
+                // Result<T> - single argument, error type has default
+                let arg = &args.args[0];
+                let GenericArgument::Type(ty) = arg else {
+                    return Err(NormalizeError::TypePathError(
+                        "invalid Result argument".to_owned(),
+                    ));
+                };
+                normalize_type(ty, wasm32, resolver)
+            } else if args.args.len() == 2 {
+                // Result<T, E> - two arguments
+                let arg = &args.args[0];
+                let GenericArgument::Type(ty) = arg else {
+                    return Err(NormalizeError::TypePathError(
+                        "invalid Result argument".to_owned(),
+                    ));
+                };
+                normalize_type(ty, wasm32, resolver)
+            } else {
                 return Err(NormalizeError::TypePathError(
                     "invalid Result type".to_owned(),
                 ));
             }
-            let arg = &args.args[0];
-            let GenericArgument::Type(ty) = arg else {
-                return Err(NormalizeError::TypePathError(
-                    "invalid Result argument".to_owned(),
-                ));
-            };
-            normalize_type(ty, wasm32, resolver)
         }
         _ => Err(NormalizeError::TypePathError(format!(
             "unknown generic type: {ident}"
@@ -237,11 +289,6 @@ fn normalize_generic_type(
 /// Check if a path represents a u8 type
 fn is_u8_type(path: &syn::Path) -> bool {
     path.segments.len() == 1 && path.segments[0].ident == "u8"
-}
-
-/// Check if a path represents a string type
-fn is_string_type(path: &syn::Path) -> bool {
-    path.segments.len() == 1 && path.segments[0].ident == "String"
 }
 
 /// Extract array length from [T; N]
