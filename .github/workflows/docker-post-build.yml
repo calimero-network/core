@@ -17,7 +17,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: main
 
       - name: Get version info
         id: version_info
@@ -28,15 +28,10 @@ jobs:
           # Get short commit SHA for Docker tag
           commit_sha=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
           echo "commit_sha=$commit_sha" >> $GITHUB_OUTPUT
-          
-          # Get branch name for display
-          branch_name="${{ github.event.workflow_run.head_branch }}"
-          echo "branch_name=$branch_name" >> $GITHUB_OUTPUT
 
       - name: Echo Docker build finished
         run: |
           echo "Docker build finished for version: ${{ steps.version_info.outputs.version }}"
-          echo "Branch: ${{ steps.version_info.outputs.branch_name }}"
           echo "Commit SHA: ${{ steps.version_info.outputs.commit_sha }}"
           echo "Successfully built and pushed Docker images for merod and mero-auth containers"
 
