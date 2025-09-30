@@ -17,8 +17,6 @@ exclude = [
     "./e2e-tests",
     "./crates/merod",
     "./crates/version",
-    "./tools/calimero-abi",
-    "./tools/cargo-mero",
     "./crates/meroctl",
     "./crates/auth"
 ]
@@ -27,7 +25,6 @@ exclude = [
 resolver = "2"
 members = [
     "./crates/auth",
-    # moved to tools/cargo-mero
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
