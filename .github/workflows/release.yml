@@ -208,10 +208,17 @@ jobs:
         run: |
           set -x
 
+          echo "Setting version to: ${VERSION}"
+          # Update both workspace package version and workspace metadata version
+          sed -i 's/^version = ".*"/version = "'${VERSION}'"/' Cargo.toml
           sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
+          
+          echo "Updated Cargo.toml versions:"
+          grep -E "version.*=" Cargo.toml | head -5
 
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/miraclx/cargo-workspaces --tag v0.3.0 cargo-workspaces
+          
           # Publish all publishable crates from the workspace, skipping excluded packages
           # Using --no-git flags to avoid git operations during publishing
           cargo ws publish --yes --allow-dirty --force '*' \
