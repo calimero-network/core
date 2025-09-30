@@ -18,7 +18,9 @@ exclude = [
     "./crates/merod",
     "./crates/version",
     "./crates/meroctl",
-    "./crates/auth"
+    "./crates/auth",
+    "./tools/calimero-abi",
+    "./tools/cargo-mero"
 ]
 
 [workspace]

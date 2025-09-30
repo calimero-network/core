@@ -1,6 +1,7 @@
 [package]
 name = "cargo-mero"
-version.workspace = true
+# Note: workspace versioning doesn't work for tools if published to crates.io, must be independently managed
+version = "0.1.0"
 description = "CLI tool for building applications on the Calimero network"
 categories = ["command-line-utilities"]
 keywords = ["cli", "cargo", "subcommand"]
@@ -8,7 +9,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish = true
+publish = false
 
 [dependencies]
 cargo_metadata.workspace = true
@@ -17,14 +18,6 @@ const_format.workspace = true
 eyre.workspace = true
 rust-embed.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
-calimero-version.workspace = true
-reqwest = { workspace = true, features = ["json"] }
-semver = { workspace = true, features = ["serde"] }
-serde = { workspace = true, features = ["derive"] }
-rand.workspace = true
-
-[package.metadata.workspaces]
-independent = true
 
 [lints]
 workspace = true

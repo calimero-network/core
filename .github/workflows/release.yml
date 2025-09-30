@@ -248,7 +248,7 @@ jobs:
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
-          github-token: ${{ secrets.GITHUB_TOKEN }}t 
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-mero-auth-container:
     name: Release Mero Auth container
