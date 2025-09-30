@@ -316,12 +316,16 @@ impl<T: BorshSerialize> DerefMut for EntryMut<'_, T> {
 
 impl<T: BorshSerialize> Drop for EntryMut<'_, T> {
     fn drop(&mut self) {
-        let data = match borsh::to_vec(self.data) {
-            Ok(data) => data,
-            Err(_) => return, // Ignore serialization errors on drop
-        };
+        let data = borsh::to_vec(self.data).unwrap_or_else(|err| {
+            env::panic_str(&format!(
+                "Failed to serialize private storage state on drop: {err}"
+            ));
+        });
 
-        let _ = env::storage_write(self.key, &data);
+        let wrote = env::storage_write(self.key, &data);
+        if !wrote {
+            env::panic_str("Failed to write private storage state on drop");
+        }
     }
 }
 
