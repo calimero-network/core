@@ -22,7 +22,6 @@ env:
     merod
     meroctl
     mero-abi
-    cargo-mero
   AUTH_BINARIES: |-
     mero-auth
 
