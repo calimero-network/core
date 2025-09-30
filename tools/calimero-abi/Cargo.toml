@@ -8,10 +8,6 @@ repository.workspace = true
 license.workspace = true
 publish = true
 
-[[bin]]
-name = "mero-abi"
-path = "src/main.rs"
-
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 wasmparser = "0.118"
