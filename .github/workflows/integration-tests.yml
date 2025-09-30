@@ -3,18 +3,12 @@ name: Docker Post-Build
 on:
   repository_dispatch:
     types: [merod_container_released]
-  pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "crates/**"
-      - ".github/workflows/integration-tests.yml"
 
 jobs:
   docker-post-build:
     name: Docker Post-Build
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'repository_dispatch' || github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'repository_dispatch' }}
     permissions:
       contents: read
       packages: read
@@ -22,7 +16,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.client_payload.head_sha || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.client_payload.head_sha || github.sha }}
 
       - name: Install pipx
         run: |
@@ -45,9 +39,9 @@ jobs:
           merobox run \
             --count 1 \
             --prefix calimero-node \
-            --image ghcr.io/${{ github.repository_owner }}/merod:${{ github.event.client_payload.head_sha || github.event.pull_request.head.sha || github.sha }} \
+            --image ghcr.io/${{ github.repository_owner }}/merod:${{ github.event.client_payload.head_sha || github.sha }} \
             --auth-service \
-            --auth-image ghcr.io/${{ github.repository_owner }}/mero-auth:${{ github.event.client_payload.head_sha || github.event.pull_request.head.sha || github.sha }} \
+            --auth-image ghcr.io/${{ github.repository_owner }}/mero-auth:${{ github.event.client_payload.head_sha || github.sha }} \
           echo "Successfully started Calimero node with auth service"
 
       - name: List running services

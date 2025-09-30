@@ -248,7 +248,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Trigger Integration Tests
-        if: ${{ success() }}
+        if: ${{ success() && (github.event_name == 'push' || github.event_name == 'pull_request') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
