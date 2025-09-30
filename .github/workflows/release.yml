@@ -247,25 +247,6 @@ jobs:
           container_name: merod
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Trigger Integration Tests
-        if: ${{ success() && (github.event_name == 'push' || github.event_name == 'pull_request') }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          owner_repo=${{ github.repository }}
-          api_url="https://api.github.com/repos/${owner_repo}/dispatches"
-          payload=$(jq -n \
-            --arg event "merod_container_released" \
-            --arg sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --arg version "${{ needs.prepare.outputs.version }}" \
-            '{event_type: $event, client_payload: { head_sha: $sha, version: $version }}')
-
-          echo "Dispatching integration tests trigger: $payload"
-          curl -sS -X POST "$api_url" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$payload"
 
   release-mero-auth-container:
     name: Release Mero Auth container
@@ -295,6 +276,33 @@ jobs:
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  trigger-integration-tests:
+    name: Trigger Integration Tests
+    needs: [prepare, release-merod-container, release-mero-auth-container]
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Trigger Integration Tests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          owner_repo=${{ github.repository }}
+          api_url="https://api.github.com/repos/${owner_repo}/dispatches"
+          payload=$(jq -n \
+            --arg event "merod_container_released" \
+            --arg sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --arg version "${{ needs.prepare.outputs.version }}" \
+            '{event_type: $event, client_payload: { head_sha: $sha, version: $version }}')
+
+          echo "Dispatching integration tests trigger: $payload"
+          curl -sS -X POST "$api_url" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$payload"
 
   brew-update:
     name: Update Homebrew Tap
