@@ -2002,6 +2002,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-relayer"
+version = "0.1.0"
+dependencies = [
+ "axum 0.7.9",
+ "calimero-context-config",
+ "chrono",
+ "clap",
+ "color-eyre",
+ "eyre",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.19",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "calimero-runtime"
 version = "0.0.0"
 dependencies = [
@@ -6114,7 +6134,6 @@ name = "merod"
 version = "0.1.0"
 dependencies = [
  "alloy",
- "axum 0.7.9",
  "calimero-blobstore",
  "calimero-config",
  "calimero-context",
@@ -6133,7 +6152,6 @@ dependencies = [
  "dirs",
  "ed25519-consensus",
  "eyre",
- "futures-util",
  "hex",
  "ic-agent",
  "libp2p",
