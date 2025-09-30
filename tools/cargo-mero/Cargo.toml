@@ -18,9 +18,9 @@ eyre.workspace = true
 rust-embed.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
 calimero-version.workspace = true
-reqwest.workspace = true
-semver.workspace = true
-serde.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+semver = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
 rand.workspace = true
 
 [package.metadata.workspaces]
