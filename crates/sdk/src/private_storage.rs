@@ -215,6 +215,28 @@ impl<T> EntryHandle<T> {
     {
         self.get_or_init_with(T::default)
     }
+
+    /// Modify the state in place using a closure and persist the changes.
+    ///
+    /// Loads the current state (or initializes with `Default`), provides a mutable
+    /// reference to it to the provided closure, then saves the updated state.
+    ///
+    /// This is equivalent to calling `get_or_default()`, then `as_mut()` to obtain
+    /// an `EntryMut`, mutating the state, and letting it drop to persist.
+    pub fn modify<F>(&self, f: F) -> crate::app::Result<()>
+    where
+        T: BorshDeserialize + BorshSerialize + Default,
+        F: FnOnce(&mut T),
+    {
+        let mut entry = self.get_or_default()?;
+        {
+            let mut entry_mut = entry.as_mut();
+            f(&mut entry_mut);
+        }
+        // Drop of EntryMut writes; explicit save keeps semantics clear.
+        let _ = entry.save()?;
+        Ok(())
+    }
 }
 
 /// A read-only reference to private storage state.
