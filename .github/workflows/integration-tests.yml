@@ -2,7 +2,8 @@ name: Docker Post-Build
 
 on:
   repository_dispatch:
-    types: [merod_container_released]
+    types:
+    - merod_container_released
 
 jobs:
   docker-post-build:
