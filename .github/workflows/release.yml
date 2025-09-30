@@ -204,15 +204,21 @@ jobs:
         run: |
           set -x
 
+          echo "Setting version to: ${VERSION}"
           sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
+          
+          echo "Updated Cargo.toml version:"
+          grep "version.*crates_version" Cargo.toml
 
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/miraclx/cargo-workspaces --tag v0.3.0 cargo-workspaces
+          
           # Publish all publishable crates from the workspace, skipping excluded packages
           # Using --no-git flags to avoid git operations during publishing
           cargo ws publish --yes --allow-dirty --force '*' \
               --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
-              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
+              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}' \
+              --no-interactive
 
   release-merod-container:
     name: Release Merod container
@@ -241,7 +247,7 @@ jobs:
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}t 
 
   release-mero-auth-container:
     name: Release Mero Auth container
