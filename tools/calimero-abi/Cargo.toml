@@ -1,16 +1,12 @@
 [package]
-name = "calimero-abi"
+name = "mero-abi"
 description = "CLI tool for extracting Calimero WASM ABI"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish = false
-
-[[bin]]
-name = "calimero-abi"
-path = "src/main.rs"
+publish = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
