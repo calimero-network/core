@@ -21,7 +21,8 @@ env:
   BINARIES: |-
     merod
     meroctl
-    calimero-abi
+    mero-abi
+    cargo-mero
   AUTH_BINARIES: |-
     mero-auth
 
