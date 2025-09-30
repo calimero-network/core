@@ -1,0 +1,104 @@
+# syntax=docker/dockerfile:1
+
+ARG RUST_VERSION=1.88.0
+# ^~~ keep this in sync with rust-toolchain.toml
+
+ARG RELAYER_PORT=63529
+
+################################################################################
+FROM rust:${RUST_VERSION}-slim-bookworm AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    make \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY apps ./apps
+COPY tools ./tools
+COPY e2e-tests ./e2e-tests
+
+# Build standalone calimero-relayer
+RUN --mount=type=cache,target=/app/target/ \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/cargo/registry/ \
+    cargo build --locked --release --bin calimero-relayer && \
+    cp /app/target/release/calimero-relayer /usr/local/bin/
+
+################################################################################
+FROM debian:bookworm-slim AS runtime
+
+LABEL org.opencontainers.image.description="Calimero Standalone Relayer Service" \
+    org.opencontainers.image.licenses="MIT OR Apache-2.0" \
+    org.opencontainers.image.authors="Calimero Limited <info@calimero.network>" \
+    org.opencontainers.image.source="https://github.com/calimero-network/core" \
+    org.opencontainers.image.url="https://calimero.network"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    jq \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/user" \
+    --shell "/sbin/nologin" \
+    --uid "${UID}" \
+    user
+
+COPY --from=build /usr/local/bin/calimero-relayer /usr/local/bin/
+
+USER user
+WORKDIR /data
+ENV CALIMERO_HOME=/data
+
+# Default relayer configuration
+ENV RELAYER_LISTEN="0.0.0.0:${RELAYER_PORT}"
+ENV RUST_LOG="info"
+
+# Enable/disable blockchain protocols
+ENV ENABLE_NEAR=true
+ENV ENABLE_STARKNET=false
+ENV ENABLE_ICP=false
+ENV ENABLE_ETHEREUM=false
+
+# NEAR configuration
+ENV NEAR_NETWORK="testnet"
+ENV NEAR_RPC_URL="https://rpc.testnet.near.org"
+ENV NEAR_CONTRACT_ID=""
+
+# Starknet configuration  
+ENV STARKNET_NETWORK="sepolia"
+ENV STARKNET_RPC_URL="https://free-rpc.nethermind.io/sepolia-juno/"
+ENV STARKNET_CONTRACT_ID=""
+
+# ICP configuration
+ENV ICP_NETWORK="local"
+ENV ICP_RPC_URL="http://127.0.0.1:4943"
+ENV ICP_CONTRACT_ID=""
+
+# Ethereum configuration
+ENV ETHEREUM_NETWORK="sepolia"
+ENV ETHEREUM_RPC_URL="https://sepolia.drpc.org"
+ENV ETHEREUM_CONTRACT_ID=""
+
+# Default relayer URL for client configuration (can be overridden via environment)
+ENV DEFAULT_RELAYER_URL=""
+
+VOLUME /data
+EXPOSE ${RELAYER_PORT}
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:${RELAYER_PORT}/health || exit 1
+
+ENTRYPOINT ["calimero-relayer"]
+CMD []
