@@ -205,10 +205,12 @@ jobs:
           set -x
 
           echo "Setting version to: ${VERSION}"
+          # Update both workspace package version and workspace metadata version
+          sed -i 's/^version = ".*"/version = "'${VERSION}'"/' Cargo.toml
           sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
           
-          echo "Updated Cargo.toml version:"
-          grep "version.*crates_version" Cargo.toml
+          echo "Updated Cargo.toml versions:"
+          grep -E "version.*=" Cargo.toml | head -5
 
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/miraclx/cargo-workspaces --tag v0.3.0 cargo-workspaces
@@ -217,8 +219,7 @@ jobs:
           # Using --no-git flags to avoid git operations during publishing
           cargo ws publish --yes --allow-dirty --force '*' \
               --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
-              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}' \
-              --no-interactive
+              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
 
   release-merod-container:
     name: Release Merod container
