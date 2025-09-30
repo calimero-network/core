@@ -1,16 +1,14 @@
 name: Docker Post-Build
 
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
-  workflow_dispatch:
+  repository_dispatch:
+    types: [merod_container_released]
 
 jobs:
   docker-post-build:
     name: Docker Post-Build
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'repository_dispatch' }}
     permissions:
       contents: read
       packages: read
@@ -18,7 +16,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.client_payload.head_sha || github.sha }}
 
       - name: Install pipx
         run: |
@@ -41,9 +39,9 @@ jobs:
           merobox run \
             --count 1 \
             --prefix calimero-node \
-            --image ghcr.io/${{ github.repository_owner }}/merod:${{ github.event.workflow_run.head_sha || github.sha }} \
+            --image ghcr.io/${{ github.repository_owner }}/merod:${{ github.event.client_payload.head_sha || github.sha }} \
             --auth-service \
-            --auth-image ghcr.io/${{ github.repository_owner }}/mero-auth:${{ github.event.workflow_run.head_sha || github.sha }} \
+            --auth-image ghcr.io/${{ github.repository_owner }}/mero-auth:${{ github.event.client_payload.head_sha || github.sha }} \
           echo "Successfully started Calimero node with auth service"
 
       - name: List running services
