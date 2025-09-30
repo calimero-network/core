@@ -2113,6 +2113,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+ "tower 0.4.13",
  "tower-http 0.5.2",
  "tower-sessions",
  "tracing",
