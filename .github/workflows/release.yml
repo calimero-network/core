@@ -283,26 +283,17 @@ jobs:
     if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
-      - name: Trigger Integration Tests
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          owner_repo=${{ github.repository }}
-          api_url="https://api.github.com/repos/${owner_repo}/dispatches"
-          payload=$(jq -n \
-            --arg event "merod_container_released" \
-            --arg sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --arg version "${{ github.event.pull_request.head.sha || github.sha }}" \
-            '{event_type: $event, client_payload: { head_sha: $sha, version: $version }}')
-
-          echo "Dispatching integration tests trigger: $payload"
-          curl -sS -X POST "$api_url" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$payload"
+      - name: Repository Dispatch
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          event-type: merod_container_released
+          client-payload: |
+            {
+              "head_sha": "${{ github.event.pull_request.head.sha || github.sha }}",
+              "version": "${{ github.event.pull_request.head.sha || github.sha }}"
+            }
 
   brew-update:
     name: Update Homebrew Tap
