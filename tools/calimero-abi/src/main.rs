@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use wasmparser::{Parser as WasmParser, Payload};
 
+mod version;
+
 #[derive(Parser)]
 #[command(name = "calimero-abi")]
 #[command(author, version = env!("CARGO_PKG_VERSION"), about = "Extract Calimero WASM ABI from compiled applications")]
@@ -31,6 +33,7 @@ enum Commands {
 }
 
 fn main() -> eyre::Result<()> {
+    version::check_for_update();
     let cli = Cli::parse();
 
     match cli.command {

@@ -13,6 +13,12 @@ clap = { workspace = true, features = ["derive"] }
 wasmparser = "0.118"
 serde_json.workspace = true
 eyre.workspace = true
+calimero-version.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+rand.workspace = true
+tokio.workspace = true
 
 [package.metadata.workspaces]
 independent = true
