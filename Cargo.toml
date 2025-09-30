@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.8.0-rc.12"
+version = "0.0.0"
 authors = ["Calimero Limited <info@calimero.network>"]
 edition = "2021"
 repository = "https://github.com/calimero-network/core"
@@ -10,7 +10,7 @@ description = "Core Calimero infrastructure and tools"
 [workspace.metadata.workspaces]
 # Shared version of all public crates in the workspace.
 # [IMPORTANT: do not remove comments from next line, used as search anchor]
-version = "0.8.0-rc.12" # crates_version
+version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
     "./apps/kv-store",

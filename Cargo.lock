@@ -2270,11 +2270,16 @@ dependencies = [
 name = "cargo-mero"
 version = "0.8.0-rc.12"
 dependencies = [
+ "calimero-version",
  "cargo_metadata",
  "clap",
  "const_format",
  "eyre",
+ "rand 0.8.5",
+ "reqwest 0.12.23",
  "rust-embed",
+ "semver 1.0.23",
+ "serde",
  "tokio",
 ]
 
@@ -6032,9 +6037,15 @@ dependencies = [
 name = "mero-abi"
 version = "0.8.0-rc.12"
 dependencies = [
+ "calimero-version",
  "clap",
  "eyre",
+ "rand 0.8.5",
+ "reqwest 0.12.23",
+ "semver 1.0.23",
+ "serde",
  "serde_json",
+ "tokio",
  "wasmparser 0.118.2",
 ]
 
