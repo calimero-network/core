@@ -7,11 +7,15 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - .github/workflows/integration-tests.yml
+      - .github/workflows/release.yml
       - "crates/**"
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - .github/workflows/integration-tests.yml
+      - .github/workflows/release.yml
       - "crates/**"
 
 permissions:

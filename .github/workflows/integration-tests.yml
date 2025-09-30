@@ -4,11 +4,12 @@ on:
   workflow_run:
     workflows: ["Release"]
     types: [completed]
+  workflow_dispatch:
 
 jobs:
   docker-post-build:
     name: Docker Post-Build
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
@@ -17,7 +18,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Install pipx
         run: |
@@ -34,37 +35,19 @@ jobs:
         run: |
           pipx install merobox
 
-      - name: Get version info
-        id: version_info
+      - name: Run Calimero node with merobox
         run: |
-          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
-          echo "version=$version" >> $GITHUB_OUTPUT
-          
-          # Get short commit SHA for Docker tag
-          commit_sha=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
-          echo "commit_sha=$commit_sha" >> $GITHUB_OUTPUT
+          echo "Starting Calimero node with merobox..."
+          merobox run \
+            --count 1 \
+            --prefix calimero-node \
+            --image ghcr.io/${{ github.repository_owner }}/merod:${{ github.event.workflow_run.head_sha || github.sha }} \
+            --auth-service \
+            --auth-image ghcr.io/${{ github.repository_owner }}/mero-auth:${{ github.event.workflow_run.head_sha || github.sha }} \
+          echo "Successfully started Calimero node with auth service"
 
-      - name: Echo Docker build finished
+      - name: List running services
         run: |
-          echo "Docker build finished for version: ${{ steps.version_info.outputs.version }}"
-          echo "Commit SHA: ${{ steps.version_info.outputs.commit_sha }}"
-          echo "Successfully built and pushed Docker images for merod and mero-auth containers"
-
-      - name: Pull merod image
-        run: |
-          echo "Pulling merod image..."
-          docker pull ghcr.io/${{ github.repository_owner }}/merod:${{ steps.version_info.outputs.commit_sha }}
-          echo "Successfully pulled merod:${{ steps.version_info.outputs.commit_sha }}"
-
-      - name: Pull mero-auth image
-        run: |
-          echo "Pulling mero-auth image..."
-          docker pull ghcr.io/${{ github.repository_owner }}/mero-auth:${{ steps.version_info.outputs.commit_sha }}
-          echo "Successfully pulled mero-auth:${{ steps.version_info.outputs.commit_sha }}"
-
-      - name: List pulled images
-        run: |
-          echo "Docker images pulled:"
-          docker images | grep -E "(merod|mero-auth)" | grep "${{ steps.version_info.outputs.commit_sha }}"
-
+          echo "Running merobox containers:"
+          merobox list
 
