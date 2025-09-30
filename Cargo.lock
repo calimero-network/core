@@ -2068,6 +2068,7 @@ dependencies = [
  "prettyplease 0.2.25",
  "proc-macro2",
  "quote",
+ "sha2 0.10.8",
  "syn 2.0.100",
  "thiserror 1.0.69",
 ]
@@ -7627,6 +7628,20 @@ dependencies = [
  "impl-rlp",
  "impl-serde",
  "uint 0.9.5",
+]
+
+[[package]]
+name = "private-data"
+version = "0.0.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "hex",
+ "serde_json",
+ "sha2 0.10.8",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

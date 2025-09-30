@@ -59,6 +59,7 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/kv-store",
+    "./apps/private_data",
     "./apps/abi_conformance",
 
     "./e2e-tests",
