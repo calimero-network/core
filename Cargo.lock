@@ -1728,16 +1728,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-abi"
-version = "0.0.0"
-dependencies = [
- "clap",
- "eyre",
- "serde_json",
- "wasmparser 0.118.2",
-]
-
-[[package]]
 name = "calimero-blobstore"
 version = "0.0.0"
 dependencies = [
@@ -6036,6 +6026,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mero-abi"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "eyre",
+ "serde_json",
+ "wasmparser 0.118.2",
 ]
 
 [[package]]

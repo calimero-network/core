@@ -225,7 +225,7 @@ jobs:
       group: ${{ github.workflow }}-${{ github.job }}-merod-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
-      contents: read
+      contents: write
       packages: write
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 120
