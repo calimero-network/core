@@ -19,6 +19,21 @@ jobs:
         with:
           ref: main
 
+      - name: Install pipx
+        run: |
+          python -m pip install --user pipx
+          python -m pipx ensurepath
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install maturin
+        run: |
+          pipx install maturin
+
+      - name: Install merobox
+        run: |
+          pipx install merobox
+
       - name: Get version info
         id: version_info
         run: |
