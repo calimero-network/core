@@ -279,7 +279,7 @@ jobs:
 
   trigger-integration-tests:
     name: Trigger Integration Tests
-    needs: [prepare, release-merod-container, release-mero-auth-container]
+    needs: [release-merod-container, release-mero-auth-container]
     if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
@@ -294,7 +294,7 @@ jobs:
           payload=$(jq -n \
             --arg event "merod_container_released" \
             --arg sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --arg version "${{ needs.prepare.outputs.version }}" \
+            --arg version "${{ github.event.pull_request.head.sha || github.sha }}" \
             '{event_type: $event, client_payload: { head_sha: $sha, version: $version }}')
 
           echo "Dispatching integration tests trigger: $payload"
