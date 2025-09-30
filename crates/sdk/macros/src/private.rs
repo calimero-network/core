@@ -4,6 +4,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Error as SynError, Ident, Result as SynResult, Token};
 
 use crate::errors::{Errors, ParseError};
+use sha2::{Digest, Sha256};
 use crate::items::StructOrEnumItem;
 use crate::reserved::idents;
 
@@ -143,12 +144,12 @@ impl<'a> TryFrom<PrivateImplInput<'a>> for PrivateImpl<'a> {
             errors.subsume(SynError::new_spanned(ident, ParseError::UseOfReservedIdent));
         }
 
-        // Generate a default key if none provided
-        let key_bytes = input.args.key.clone().unwrap_or_else(|| {
-            let mut key = ident.to_string().as_bytes().to_vec();
-            key.truncate(32); // Ensure it fits in our key storage
-            key
-        });
+        // Generate a default key if none provided (hash ident to avoid collisions)
+        let key_bytes = input
+            .args
+            .key
+            .clone()
+            .unwrap_or_else(|| compute_default_key(ident));
 
         // Generate key name
         let key_name = format!("{}_KEY", ident.to_string().to_uppercase());
@@ -161,5 +162,30 @@ impl<'a> TryFrom<PrivateImplInput<'a>> for PrivateImpl<'a> {
             key_bytes,
             orig: input.item,
         })
+    }
+}
+
+fn compute_default_key(ident: &Ident) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(ident.to_string().as_bytes());
+    let digest = hasher.finalize();
+    digest[..32].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_default_key;
+    use syn::parse_str;
+
+    #[test]
+    fn default_key_uses_hash_no_prefix_collision() {
+        let a: syn::Ident = parse_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX").unwrap();
+        let b: syn::Ident = parse_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY").unwrap();
+        // Both share a long common prefix; hashing should still yield different keys
+        let ka = compute_default_key(&a);
+        let kb = compute_default_key(&b);
+        assert_ne!(ka, kb);
+        assert_eq!(ka.len(), 32);
+        assert_eq!(kb.len(), 32);
     }
 }

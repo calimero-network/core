@@ -2048,6 +2048,7 @@ dependencies = [
  "prettyplease 0.2.25",
  "proc-macro2",
  "quote",
+ "sha2 0.10.8",
  "syn 2.0.100",
  "thiserror 1.0.69",
 ]
