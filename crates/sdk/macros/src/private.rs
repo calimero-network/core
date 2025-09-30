@@ -4,9 +4,9 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Error as SynError, Ident, Result as SynResult, Token};
 
 use crate::errors::{Errors, ParseError};
-use sha2::{Digest, Sha256};
 use crate::items::StructOrEnumItem;
 use crate::reserved::idents;
+use sha2::{Digest, Sha256};
 
 pub struct PrivateImpl<'a> {
     ident: &'a Ident,
@@ -179,8 +179,10 @@ mod tests {
 
     #[test]
     fn default_key_uses_hash_no_prefix_collision() {
-        let a: syn::Ident = parse_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX").unwrap();
-        let b: syn::Ident = parse_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY").unwrap();
+        let a: syn::Ident =
+            parse_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX").unwrap();
+        let b: syn::Ident =
+            parse_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY").unwrap();
         // Both share a long common prefix; hashing should still yield different keys
         let ka = compute_default_key(&a);
         let kb = compute_default_key(&b);
