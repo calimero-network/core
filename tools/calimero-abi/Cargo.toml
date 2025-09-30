@@ -1,5 +1,5 @@
 [package]
-name = "calimero-abi"
+name = "mero-abi"
 description = "CLI tool for extracting Calimero WASM ABI"
 version.workspace = true
 authors.workspace = true
