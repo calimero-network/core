@@ -1,6 +1,8 @@
 use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use tower as _;
+
 use axum::body::{to_bytes, Body};
 use axum::http::Method;
 use axum::middleware::{from_fn, Next};
