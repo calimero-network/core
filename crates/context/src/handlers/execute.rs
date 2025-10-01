@@ -107,7 +107,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let sender_key = match self.context_client.get_identity(&context_id, &executor) {
             Ok(Some(ContextIdentity {
-                private_key: Some(_),
+                keypair_ref: Some(_),
                 sender_key: Some(sender_key),
                 ..
             })) => sender_key,
