@@ -17,6 +17,7 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn = { workspace = true, features = ["extra-traits"] }
 thiserror.workspace = true
+sha2.workspace = true
 
 [features]
 nightly = []

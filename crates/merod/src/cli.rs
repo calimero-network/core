@@ -8,12 +8,10 @@ use crate::defaults;
 
 mod config;
 mod init;
-mod relay;
 mod run;
 
 use config::ConfigCommand;
 use init::InitCommand;
-use relay::RelayCommand;
 use run::RunCommand;
 
 pub const EXAMPLES: &str = r"
@@ -81,8 +79,6 @@ pub enum SubCommands {
     Init(InitCommand),
     #[command(alias = "up")]
     Run(RunCommand),
-    #[command(alias = "call")]
-    Relay(RelayCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -103,7 +99,6 @@ impl RootCommand {
             SubCommands::Config(config) => config.run(&self.args).await,
             SubCommands::Init(init) => init.run(self.args).await,
             SubCommands::Run(run) => run.run(self.args).await,
-            SubCommands::Relay(relay) => relay.run(self.args).await,
         }
     }
 }

@@ -5,6 +5,7 @@ pub use {borsh, serde, serde_json};
 pub mod env;
 pub mod event;
 mod macros;
+pub mod private_storage;
 mod returns;
 pub mod state;
 pub mod types;
@@ -14,7 +15,9 @@ pub mod app {
 
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
-    pub use calimero_sdk_macros::{bail, destroy, emit, err, event, init, log, logic, state};
+    pub use calimero_sdk_macros::{
+        bail, destroy, emit, err, event, init, log, logic, private, state,
+    };
 }
 
 #[doc(hidden)]
