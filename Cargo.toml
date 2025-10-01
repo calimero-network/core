@@ -19,8 +19,7 @@ exclude = [
     "./crates/version",
     "./crates/meroctl",
     "./crates/auth",
-    "./tools/calimero-abi",
-    "./tools/cargo-mero"
+    "./tools/calimero-abi"
 ]
 
 [workspace]
@@ -64,7 +63,6 @@ members = [
 
     "./e2e-tests",
     "./tools/calimero-abi",
-    "./tools/cargo-mero",
 ]
 
 [workspace.dependencies]

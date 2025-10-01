@@ -29,7 +29,7 @@ fn test_invariant_variant_payload_structure() {
     };
 
     // Add a variant type with payload
-    manifest.types.insert(
+    let _ = manifest.types.insert(
         "TestVariant".to_string(),
         TypeDef::Variant {
             variants: vec![Variant {
@@ -131,7 +131,7 @@ fn test_invariant_no_dangling_refs() {
     };
 
     // Add a type definition
-    manifest
+    let _ = manifest
         .types
         .insert("TestType".to_string(), TypeDef::Record { fields: vec![] });
 

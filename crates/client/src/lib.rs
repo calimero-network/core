@@ -34,3 +34,6 @@ pub use url::Url;
 
 /// Current version of the client library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(test)]
+use tokio_test as _;
