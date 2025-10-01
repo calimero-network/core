@@ -278,7 +278,7 @@ mod tests {
         let mut manifest = Manifest::new();
 
         // Add a test type
-        manifest
+        let _ = manifest
             .types
             .insert("TestType".to_owned(), TypeDef::Record { fields: vec![] });
 

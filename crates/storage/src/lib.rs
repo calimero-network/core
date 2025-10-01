@@ -78,6 +78,7 @@ pub use calimero_storage_macros::{AtomicUnit, Collection};
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
+    /// Common test utilities and data structures.
     pub mod common;
 }
 
