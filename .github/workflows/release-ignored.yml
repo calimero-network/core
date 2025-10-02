@@ -7,6 +7,8 @@ on:
     paths-ignore:
       - Cargo.toml
       - Cargo.lock
+      - .github/workflows/release.yml
+      - .github/workflows/integration-tests.yml
       - "crates/**"
 
 jobs:

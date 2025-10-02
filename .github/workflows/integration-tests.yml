@@ -1,0 +1,52 @@
+name: Docker Post-Build
+
+on:
+  repository_dispatch:
+    types:
+    - merod_container_released
+
+jobs:
+  docker-post-build:
+    name: Docker Post-Build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'repository_dispatch' }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.head_sha || github.sha }}
+
+      - name: Install pipx
+        run: |
+          python -m pip install --user pipx
+          python -m pipx ensurepath
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install maturin
+        run: |
+          pipx install maturin
+
+      - name: Install merobox
+        run: |
+          pipx install merobox
+
+      - name: Run Calimero node with merobox
+        run: |
+          echo "Starting Calimero node with merobox..."
+          merobox run \
+            --count 1 \
+            --prefix calimero-node \
+            --image ghcr.io/${{ github.repository_owner }}/merod:${{ github.event.client_payload.head_sha || github.sha }} \
+            --auth-service \
+            --auth-image ghcr.io/${{ github.repository_owner }}/mero-auth:${{ github.event.client_payload.head_sha || github.sha }} \
+          echo "Successfully started Calimero node with auth service"
+
+      - name: List running services
+        run: |
+          echo "Running merobox containers:"
+          merobox list
+
