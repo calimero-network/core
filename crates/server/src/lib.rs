@@ -24,15 +24,11 @@ use tracing::Level;
 
 use crate::admin::service::{setup, site};
 
-#[cfg(feature = "admin")]
 pub mod admin;
 pub mod config;
-#[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
 mod metrics;
-#[cfg(feature = "admin")]
 mod middleware;
-#[cfg(feature = "websocket")]
 pub mod ws;
 
 #[derive(Debug)]
@@ -110,41 +106,29 @@ pub async fn start(
         node_client.clone(),
     ));
 
-    #[cfg(feature = "jsonrpc")]
-    {
-        if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
-            app = app.nest(&path, router);
-            serviced = true;
-        }
+    if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
+        app = app.nest(&path, router);
+        serviced = true;
     }
 
-    #[cfg(feature = "websocket")]
-    {
-        if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
-            app = app.route(&path, handler);
+    if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
+        app = app.route(&path, handler);
 
-            serviced = true;
-        }
+        serviced = true;
     }
 
-    #[cfg(feature = "admin")]
-    {
-        if let Some((api_path, router)) = setup(&config, shared_state) {
-            if let Some((site_path, serve_dir)) = site(&config) {
-                app = app.nest_service(site_path.as_str(), serve_dir);
-            }
-
-            app = app.nest(&api_path, router);
-            serviced = true;
+    if let Some((api_path, router)) = setup(&config, shared_state) {
+        if let Some((site_path, serve_dir)) = site(&config) {
+            app = app.nest_service(site_path.as_str(), serve_dir);
         }
+
+        app = app.nest(&api_path, router);
+        serviced = true;
     }
 
-    #[cfg(feature = "metrics")]
-    {
-        if let Some((path, router)) = metrics::service(&config, prom_registry) {
-            app = app.nest(path, router);
-            serviced = true;
-        }
+    if let Some((path, router)) = metrics::service(&config, prom_registry) {
+        app = app.nest(path, router);
+        serviced = true;
     }
 
     if !serviced {
