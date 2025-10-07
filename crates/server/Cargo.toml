@@ -52,7 +52,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [features]
-default=["admin", "jsonrpc", "metrics", "websocket", "host_layer", "sse"]
 admin = ["dep:tower-sessions"]
 jsonrpc = []
 metrics = []
