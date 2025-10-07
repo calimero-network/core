@@ -21,16 +21,12 @@ pub struct ServerConfig {
 
     pub identity: Keypair,
 
-    #[cfg(feature = "admin")]
     pub admin: Option<AdminConfig>,
 
-    #[cfg(feature = "jsonrpc")]
     pub jsonrpc: Option<JsonRpcConfig>,
 
-    #[cfg(feature = "websocket")]
     pub websocket: Option<WsConfig>,
 
-    #[cfg(feature = "sse")]
     pub sse: Option<SseConfig>,
 }
 

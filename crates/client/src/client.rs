@@ -30,7 +30,7 @@ use calimero_server_primitives::admin::{
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
 use calimero_server_primitives::sse::{
-     Request as SubscriptionRequest, Response as SubscriptionResponse,
+    Request as SubscriptionRequest, Response as SubscriptionResponse,
 };
 use eyre::Result;
 use reqwest::header::{ACCEPT, CACHE_CONTROL};
@@ -277,7 +277,7 @@ where
         Ok(response)
     }
     pub async fn stream_sse(&self) -> Result<reqwest::Response> {
-        let  url = self.api_url().join("sse")?;
+        let url = self.api_url().join("sse")?;
 
         let response = self
             .connection

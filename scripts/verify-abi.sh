@@ -9,7 +9,7 @@ echo "Building abi_conformance..."
 cargo build -p abi_conformance --target wasm32-unknown-unknown
 
 # Build the extractor if not present
-EXTRACTOR="${ROOT:-$(git rev-parse --show-toplevel)}/target/debug/calimero-abi"
+EXTRACTOR="${ROOT:-$(git rev-parse --show-toplevel)}/target/debug/mero-abi"
 if [ ! -x "$EXTRACTOR" ]; then
     echo "Building calimero-abi extractor..."
     cargo build --manifest-path tools/calimero-abi/Cargo.toml

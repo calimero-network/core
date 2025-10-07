@@ -12,6 +12,7 @@ use crate::{
 };
 
 /// An enum representing a handle to a blob, which can be for reading or writing.
+#[derive(Debug)]
 pub enum BlobHandle {
     /// A handle for writing data to a blob.
     Write(BlobWriteHandle),
@@ -41,6 +42,17 @@ pub struct BlobReadHandle {
     current_chunk_cursor: Option<Cursor<Vec<u8>>>,
     /// The current reading position within the blob.
     position: u64,
+}
+
+impl std::fmt::Debug for BlobReadHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlobReadHandle")
+            .field("blob_id", &self.blob_id)
+            .field("stream", &"<stream>")
+            .field("current_chunk_cursor", &self.current_chunk_cursor)
+            .field("position", &self.position)
+            .finish()
+    }
 }
 
 impl VMHostFunctions<'_> {
