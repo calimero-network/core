@@ -29,7 +29,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs", "net", "rt-multi-thread", "process"] }
-tokio-tungstenite.workspace = true
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 webbrowser.workspace = true

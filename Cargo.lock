@@ -6125,7 +6125,6 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "tokio-tungstenite",
  "toml 0.8.19",
  "url",
  "webbrowser",
