@@ -236,6 +236,19 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                     if !(is_state_op || outcome.artifact.is_empty()) {
                         if let Some(height) = delta_height {
+                            // Serialize events if any were emitted
+                            let events_data = if outcome.events.is_empty() {
+                                None
+                            } else {
+                                let events_payload = ExecutionEventPayload {
+                                    events: outcome.events.iter().map(|e| ExecutionEvent {
+                                        kind: e.kind.clone(),
+                                        data: e.data.clone(),
+                                    }).collect(),
+                                };
+                                Some(serde_json::to_vec(&events_payload)?)
+                            };
+
                             node_client
                                 .broadcast(
                                     &context,
@@ -243,6 +256,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     &sender_key,
                                     outcome.artifact.clone(),
                                     height,
+                                    events_data,
                                 )
                                 .await?;
                         }
@@ -290,7 +304,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                 })
             })
             .map_ok(
-                move |(guard, root_hash, outcome), _act, _ctx| ExecuteResponse {
+                move |(guard, root_hash, outcome), _act, _ctx| {
+                    ExecuteResponse {
                     returns: outcome.returns.map_err(Into::into),
                     logs: outcome.logs,
                     events: outcome
@@ -304,6 +319,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     root_hash,
                     artifact: outcome.artifact,
                     atomic: is_atomic.then_some(ContextAtomicKey(guard)),
+                    }
                 },
             );
 

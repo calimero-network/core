@@ -10,6 +10,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{ContextEvent, ContextEventPayload, ExecutionEventPayload, NodeEvent};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
@@ -297,6 +298,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         artifact,
                         height,
                         nonce,
+                        events,
                     } => {
                         let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
@@ -313,6 +315,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     artifact.into_owned(),
                                     height,
                                     nonce,
+                                    events.map(|e| e.into_owned()),
                                 )
                                 .await
                                 {
@@ -457,6 +460,7 @@ async fn handle_state_delta(
     artifact: Vec<u8>,
     height: NonZeroUsize,
     nonce: Nonce,
+    events: Option<Vec<u8>>,
 ) -> eyre::Result<()> {
     let Some(context) = context_client.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
@@ -546,5 +550,17 @@ async fn handle_state_delta(
         //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
     }
 
+    // Process execution events if they were included
+    if let Some(events_data) = events {
+        let events_payload: ExecutionEventPayload = serde_json::from_slice(&events_data)?;
+        
+        // Re-emit as local NodeEvent so WS subscribers receive them
+        node_client.send_event(NodeEvent::Context(ContextEvent {
+            context_id,
+            payload: ContextEventPayload::ExecutionEvent(events_payload),
+        }))?;
+    }
+
     Ok(())
 }
+
