@@ -10,7 +10,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::events::{ContextEvent, ContextEventPayload, ExecutionEventPayload, NodeEvent};
+use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent, ExecutionEvent, StateMutationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
@@ -550,14 +550,17 @@ async fn handle_state_delta(
         //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
     }
 
-    // Process execution events if they were included
+    // Process execution events if they were included: re-emit as unified StateMutation
     if let Some(events_data) = events {
-        let events_payload: ExecutionEventPayload = serde_json::from_slice(&events_data)?;
-        
-        // Re-emit as local NodeEvent so WS subscribers receive them
+        let events_payload: Vec<ExecutionEvent> = serde_json::from_slice(&events_data)
+            .unwrap_or_else(|_| Vec::new());
+
         node_client.send_event(NodeEvent::Context(ContextEvent {
             context_id,
-            payload: ContextEventPayload::ExecutionEvent(events_payload),
+            payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
+                None,
+                events_payload,
+            )),
         }))?;
     }
 

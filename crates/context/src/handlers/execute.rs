@@ -18,8 +18,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
-    StateMutationPayload,
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
@@ -240,13 +239,15 @@ impl Handler<ExecuteRequest> for ContextManager {
                             let events_data = if outcome.events.is_empty() {
                                 None
                             } else {
-                                let events_payload = ExecutionEventPayload {
-                                    events: outcome.events.iter().map(|e| ExecutionEvent {
+                                let events_vec: Vec<ExecutionEvent> = outcome
+                                    .events
+                                    .iter()
+                                    .map(|e| ExecutionEvent {
                                         kind: e.kind.clone(),
                                         data: e.data.clone(),
-                                    }).collect(),
-                                };
-                                Some(serde_json::to_vec(&events_payload)?)
+                                    })
+                                    .collect();
+                                Some(serde_json::to_vec(&events_vec)?)
                             };
 
                             node_client
@@ -486,27 +487,27 @@ async fn internal_execute(
                 ),
             )?;
 
-            node_client.send_event(NodeEvent::Context(ContextEvent {
-                context_id: context.id,
-                payload: ContextEventPayload::StateMutation(StateMutationPayload {
-                    new_root: context.root_hash,
-                }),
-            }))?;
+            // Send unified StateMutation with new_root and (initially empty) events; we'll send final below
         }
     }
 
+    // Build unified StateMutation payload with optional new_root and events
+    let new_root_opt = outcome.root_hash.map(|h| h.into());
+    let events_vec = outcome
+        .events
+        .iter()
+        .map(|e| ExecutionEvent {
+            kind: e.kind.clone(),
+            data: e.data.clone(),
+        })
+        .collect();
+
     node_client.send_event(NodeEvent::Context(ContextEvent {
         context_id: context.id,
-        payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
-            events: outcome
-                .events
-                .iter()
-                .map(|e| ExecutionEvent {
-                    kind: e.kind.clone(),
-                    data: e.data.clone(),
-                })
-                .collect(),
-        }),
+        payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
+            new_root_opt,
+            events_vec,
+        )),
     }))?;
 
     Ok((outcome, height))
