@@ -305,8 +305,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 })
             })
             .map_ok(
-                move |(guard, root_hash, outcome), _act, _ctx| {
-                    ExecuteResponse {
+                move |(guard, root_hash, outcome), _act, _ctx| ExecuteResponse {
                     returns: outcome.returns.map_err(Into::into),
                     logs: outcome.logs,
                     events: outcome
@@ -320,7 +319,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                     root_hash,
                     artifact: outcome.artifact,
                     atomic: is_atomic.then_some(ContextAtomicKey(guard)),
-                    }
                 },
             );
 
@@ -507,10 +505,9 @@ async fn internal_execute(
 
         node_client.send_event(NodeEvent::Context(ContextEvent {
             context_id: context.id,
-            payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
-                new_root,
-                events_vec,
-            )),
+            payload: ContextEventPayload::StateMutation(
+                StateMutationPayload::with_root_and_events(new_root, events_vec),
+            ),
         }))?;
     }
 

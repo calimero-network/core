@@ -10,7 +10,9 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent, ExecutionEvent, StateMutationPayload};
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
@@ -549,18 +551,17 @@ async fn handle_state_delta(
     );
     if let Some(events_data) = events {
         debug!(%context_id, raw_events_len = events_data.len(), "Raw events bytes received");
-        let events_payload: Vec<ExecutionEvent> = serde_json::from_slice(&events_data)
-            .unwrap_or_else(|_| Vec::new());
+        let events_payload: Vec<ExecutionEvent> =
+            serde_json::from_slice(&events_data).unwrap_or_else(|_| Vec::new());
 
         // Only re-emit if there are actual events
         if !events_payload.is_empty() {
             debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
             node_client.send_event(NodeEvent::Context(ContextEvent {
                 context_id,
-                payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
-                    root_hash,
-                    events_payload,
-                )),
+                payload: ContextEventPayload::StateMutation(
+                    StateMutationPayload::with_root_and_events(root_hash, events_payload),
+                ),
             }))?;
         } else {
             debug!(%context_id, "No events after deserialization; skipping WS emit");
@@ -569,4 +570,3 @@ async fn handle_state_delta(
 
     Ok(())
 }
-
