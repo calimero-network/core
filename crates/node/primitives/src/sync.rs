@@ -22,6 +22,9 @@ pub enum BroadcastMessage<'a> {
         artifact: Cow<'a, [u8]>,
         height: NonZeroUsize, // todo! shouldn't be cleartext
         nonce: Nonce,
+        /// Execution events that were emitted during the state change.
+        /// This field is encrypted along with the artifact.
+        events: Option<Cow<'a, [u8]>>,
     },
 }
 
