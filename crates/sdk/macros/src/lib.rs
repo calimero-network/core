@@ -9,12 +9,14 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
 use syn::{Expr, ItemImpl};
 
+use crate::callback::{CallbackImpl, CallbackImplInput};
 use crate::event::{EventImpl, EventImplInput};
 use crate::items::{Empty, StructOrEnumItem};
 use crate::logic::{LogicImpl, LogicImplInput};
 use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
+mod callback;
 mod errors;
 mod event;
 mod items;
@@ -128,4 +130,18 @@ pub fn log(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as TokenStream2);
 
     quote!(::calimero_sdk::__log__!(#input)).into()
+}
+
+#[proc_macro_attribute]
+pub fn callback(args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+    let _args = parse_macro_input!({ input } => args as Empty);
+    let item = parse_macro_input!(input as ItemImpl);
+
+    let tokens = match CallbackImpl::try_from(CallbackImplInput { item: &item }) {
+        Ok(data) => data.to_token_stream(),
+        Err(err) => err.to_compile_error(),
+    };
+
+    tokens.into()
 }

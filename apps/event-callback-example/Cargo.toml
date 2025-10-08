@@ -1,0 +1,14 @@
+[package]
+name = "event-callback-example"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Example application demonstrating event callbacks between nodes"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true

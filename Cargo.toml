@@ -60,6 +60,7 @@ members = [
     "./apps/kv-store",
     "./apps/private_data",
     "./apps/abi_conformance",
+    "./apps/event-callback-example",
 
     "./e2e-tests",
     "./tools/calimero-abi",

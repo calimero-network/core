@@ -557,6 +557,14 @@ async fn handle_state_delta(
         // Only re-emit if there are actual events
         if !events_payload.is_empty() {
             debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
+            
+            // Process callbacks for incoming events
+            for event in &events_payload {
+                debug!(%context_id, event_kind = %event.kind, "Processing event for callbacks");
+                // TODO: Integrate with callback system when runtime is available
+                // For now, events are just re-emitted to WebSocket
+            }
+            
             node_client.send_event(NodeEvent::Context(ContextEvent {
                 context_id,
                 payload: ContextEventPayload::StateMutation(
