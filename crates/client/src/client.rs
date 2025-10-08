@@ -29,11 +29,7 @@ use calimero_server_primitives::admin::{
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
-use calimero_server_primitives::sse::{
-    Request as SubscriptionRequest, Response as SubscriptionResponse,
-};
 use eyre::Result;
-use reqwest::header::{ACCEPT, CACHE_CONTROL};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
@@ -275,52 +271,6 @@ where
         );
 
         Ok(response)
-    }
-    pub async fn stream_sse(&self) -> Result<reqwest::Response> {
-        let url = self.api_url().join("sse")?;
-
-        let response = self
-            .connection
-            .client
-            .get(url.as_str())
-            .header(ACCEPT, "text/event-stream")
-            .header(CACHE_CONTROL, "no-cache")
-            .send()
-            .await?;
-
-        Ok(response)
-    }
-
-    pub async fn subscribe_context<P>(
-        &self,
-        request: SubscriptionRequest<P>,
-    ) -> Result<SubscriptionResponse>
-    where
-        P: Serialize,
-    {
-        // Debug: Print the request being sent
-        eprintln!(
-            "Event Subscription Request to {}: {}",
-            self.connection.api_url.join("sse/subscription")?,
-            serde_json::to_string_pretty(&request)?
-        );
-
-        let response = self
-            .connection
-            .client
-            .post(self.connection.api_url.join("sse/subscription")?)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(eyre::eyre!("HTTP {}", response.status()));
-        }
-
-        let parsed = response.json::<SubscriptionResponse>().await?;
-        eprintln!("Event Subscription Response  {:?}", parsed);
-
-        Ok(parsed)
     }
 
     pub async fn grant_permissions(
