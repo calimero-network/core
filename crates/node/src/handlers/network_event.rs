@@ -560,7 +560,7 @@ async fn handle_state_delta(
             node_client.send_event(NodeEvent::Context(ContextEvent {
                 context_id,
                 payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
-                    None,
+                    root_hash,
                     events_payload,
                 )),
             }))?;

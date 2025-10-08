@@ -491,7 +491,11 @@ async fn internal_execute(
 
     // Only send StateMutation to WebSocket if there are events or state changes
     if !outcome.events.is_empty() || outcome.root_hash.is_some() {
-        let new_root_opt = outcome.root_hash.map(|h| h.into());
+        // Use the updated root if present, otherwise the current context root
+        let new_root = outcome
+            .root_hash
+            .map(|h| h.into())
+            .unwrap_or((*context.root_hash).into());
         let events_vec = outcome
             .events
             .iter()
@@ -504,7 +508,7 @@ async fn internal_execute(
         node_client.send_event(NodeEvent::Context(ContextEvent {
             context_id: context.id,
             payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
-                new_root_opt,
+                new_root,
                 events_vec,
             )),
         }))?;
