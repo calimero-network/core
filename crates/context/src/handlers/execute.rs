@@ -18,8 +18,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
-    StateMutationPayload,
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
@@ -236,6 +235,21 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                     if !(is_state_op || outcome.artifact.is_empty()) {
                         if let Some(height) = delta_height {
+                            // Serialize events if any were emitted
+                            let events_data = if outcome.events.is_empty() {
+                                None
+                            } else {
+                                let events_vec: Vec<ExecutionEvent> = outcome
+                                    .events
+                                    .iter()
+                                    .map(|e| ExecutionEvent {
+                                        kind: e.kind.clone(),
+                                        data: e.data.clone(),
+                                    })
+                                    .collect();
+                                Some(serde_json::to_vec(&events_vec)?)
+                            };
+
                             node_client
                                 .broadcast(
                                     &context,
@@ -243,6 +257,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     &sender_key,
                                     outcome.artifact.clone(),
                                     height,
+                                    events_data,
                                 )
                                 .await?;
                         }
@@ -469,29 +484,32 @@ async fn internal_execute(
                     *context.root_hash,
                 ),
             )?;
-
-            node_client.send_event(NodeEvent::Context(ContextEvent {
-                context_id: context.id,
-                payload: ContextEventPayload::StateMutation(StateMutationPayload {
-                    new_root: context.root_hash,
-                }),
-            }))?;
         }
     }
 
-    node_client.send_event(NodeEvent::Context(ContextEvent {
-        context_id: context.id,
-        payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
-            events: outcome
-                .events
-                .iter()
-                .map(|e| ExecutionEvent {
-                    kind: e.kind.clone(),
-                    data: e.data.clone(),
-                })
-                .collect(),
-        }),
-    }))?;
+    // Only send StateMutation to WebSocket if there are events or state changes
+    if !outcome.events.is_empty() || outcome.root_hash.is_some() {
+        // Use the updated root if present, otherwise the current context root
+        let new_root = outcome
+            .root_hash
+            .map(|h| h.into())
+            .unwrap_or((*context.root_hash).into());
+        let events_vec = outcome
+            .events
+            .iter()
+            .map(|e| ExecutionEvent {
+                kind: e.kind.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
+
+        node_client.send_event(NodeEvent::Context(ContextEvent {
+            context_id: context.id,
+            payload: ContextEventPayload::StateMutation(
+                StateMutationPayload::with_root_and_events(new_root, events_vec),
+            ),
+        }))?;
+    }
 
     Ok((outcome, height))
 }
