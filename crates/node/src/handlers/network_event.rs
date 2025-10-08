@@ -538,16 +538,6 @@ async fn handle_state_delta(
             current_root_hash = %outcome.root_hash,
             "State delta application led to root hash mismatch, ignoring for now"
         );
-
-        //     debug!(
-        //         %context_id,
-        //         %author_id,
-        //         expected_root_hash = %root_hash,
-        //         current_root_hash = %outcome.root_hash,
-        //         "State delta application led to root hash mismatch, initiating sync"
-        //     );
-
-        //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
     }
 
     // Process execution events if they were included: re-emit as unified StateMutation
