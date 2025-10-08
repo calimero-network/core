@@ -486,29 +486,29 @@ async fn internal_execute(
                     *context.root_hash,
                 ),
             )?;
-
-            // Send unified StateMutation with new_root and (initially empty) events; we'll send final below
         }
     }
 
-    // Build unified StateMutation payload with optional new_root and events
-    let new_root_opt = outcome.root_hash.map(|h| h.into());
-    let events_vec = outcome
-        .events
-        .iter()
-        .map(|e| ExecutionEvent {
-            kind: e.kind.clone(),
-            data: e.data.clone(),
-        })
-        .collect();
+    // Only send StateMutation to WebSocket if there are events or state changes
+    if !outcome.events.is_empty() || outcome.root_hash.is_some() {
+        let new_root_opt = outcome.root_hash.map(|h| h.into());
+        let events_vec = outcome
+            .events
+            .iter()
+            .map(|e| ExecutionEvent {
+                kind: e.kind.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
 
-    node_client.send_event(NodeEvent::Context(ContextEvent {
-        context_id: context.id,
-        payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
-            new_root_opt,
-            events_vec,
-        )),
-    }))?;
+        node_client.send_event(NodeEvent::Context(ContextEvent {
+            context_id: context.id,
+            payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
+                new_root_opt,
+                events_vec,
+            )),
+        }))?;
+    }
 
     Ok((outcome, height))
 }

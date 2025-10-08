@@ -555,13 +555,16 @@ async fn handle_state_delta(
         let events_payload: Vec<ExecutionEvent> = serde_json::from_slice(&events_data)
             .unwrap_or_else(|_| Vec::new());
 
-        node_client.send_event(NodeEvent::Context(ContextEvent {
-            context_id,
-            payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
-                None,
-                events_payload,
-            )),
-        }))?;
+        // Only re-emit if there are actual events
+        if !events_payload.is_empty() {
+            node_client.send_event(NodeEvent::Context(ContextEvent {
+                context_id,
+                payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
+                    None,
+                    events_payload,
+                )),
+            }))?;
+        }
     }
 
     Ok(())

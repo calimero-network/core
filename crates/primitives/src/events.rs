@@ -27,13 +27,13 @@ pub enum ContextEventPayload {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateMutationPayload {
-    pub new_root: Option<Hash>,
+    pub new_root: Hash,
     pub events: Vec<ExecutionEvent>,
 }
 
 impl StateMutationPayload {
     #[must_use]
-    pub const fn with_root_and_events(new_root: Option<Hash>, events: Vec<ExecutionEvent>) -> Self {
+    pub const fn with_root_and_events(new_root: Hash, events: Vec<ExecutionEvent>) -> Self {
         Self { new_root, events }
     }
 }
@@ -43,5 +43,3 @@ pub struct ExecutionEvent {
     pub kind: String,
     pub data: Vec<u8>,
 }
-
-// ExecutionEventPayload removed; events are now embedded in StateMutationPayload
