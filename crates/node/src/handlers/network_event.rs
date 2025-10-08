@@ -551,12 +551,20 @@ async fn handle_state_delta(
     }
 
     // Process execution events if they were included: re-emit as unified StateMutation
+    debug!(
+        %context_id,
+        %author_id,
+        has_events = events.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
+        "Received StateDelta; checking for bundled events"
+    );
     if let Some(events_data) = events {
+        debug!(%context_id, raw_events_len = events_data.len(), "Raw events bytes received");
         let events_payload: Vec<ExecutionEvent> = serde_json::from_slice(&events_data)
             .unwrap_or_else(|_| Vec::new());
 
         // Only re-emit if there are actual events
         if !events_payload.is_empty() {
+            debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
             node_client.send_event(NodeEvent::Context(ContextEvent {
                 context_id,
                 payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
@@ -564,6 +572,8 @@ async fn handle_state_delta(
                     events_payload,
                 )),
             }))?;
+        } else {
+            debug!(%context_id, "No events after deserialization; skipping WS emit");
         }
     }
 
