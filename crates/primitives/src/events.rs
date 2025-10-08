@@ -28,13 +28,16 @@ pub enum ContextEventPayload {
 #[serde(rename_all = "camelCase")]
 pub struct StateMutationPayload {
     pub new_root: Hash,
-    pub events: Vec<ExecutionEvent>,
+    pub events: Option<Vec<ExecutionEvent>>,
 }
 
 impl StateMutationPayload {
     #[must_use]
     pub const fn with_root_and_events(new_root: Hash, events: Vec<ExecutionEvent>) -> Self {
-        Self { new_root, events }
+        Self {
+            new_root,
+            events: Some(events),
+        }
     }
 }
 
