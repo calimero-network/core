@@ -1,0 +1,249 @@
+t description: A workflow that demonstrates cross-node event callbacks with state mutation
+name: Event Callback Test Workflow
+
+# Force pull Docker images even if they exist locally
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:5113a6a
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install the event-callback application on both nodes
+  - name: Install Event Callback App on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: res/event_callback.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create a context using the installed application
+  - name: Create Context on Node 1
+    type: create_context
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{member_public_key}})"
+
+  # Step 3: Generate an identity on the second node
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      public_key: publicKey
+
+  # Step 4: Wait for identity creation to complete
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 5
+
+  # Step 5: Invite the second node to join the context
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    grantee_id: '{{public_key}}'
+    granter_id: '{{member_public_key}}'
+    capability: member
+    outputs:
+      invitation: invitation
+
+  # Step 6: Join the context from the second node
+  - name: Join Context from Node 2
+    type: join_context
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    invitee_id: '{{public_key}}'
+    invitation: '{{invitation}}'
+
+  # Step 7: Register a user on Node 1 (this will emit a UserRegistered event)
+  - name: Register User on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: register_user
+    args:
+      user_id: user123
+      email: user123@example.com
+    outputs:
+      register_result: result
+
+  - name: Assert user registration succeeded
+    type: assert
+    statements:
+      - "is_set({{register_result}})"
+
+  # Step 8: Wait for the event to propagate and callbacks to execute
+  - name: Wait for Event Propagation and Callback Execution
+    type: wait
+    seconds: 5
+
+  # Step 9: Verify that Node 1 has the user registered
+  - name: Verify User on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_user_email
+    args:
+      user_id: user123
+    outputs:
+      user_email_node1: result
+
+  - name: Assert Node 1 has correct user email
+    type: json_assert
+    statements:
+      - 'json_equal({{user_email_node1}}, {"output": "user123@example.com"})'
+
+  # Step 10: Verify that Node 2 received the callback and mutated its state
+  - name: Check Callback Execution on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key}}'
+    method: get_user_email
+    args:
+      user_id: callback_user123
+    outputs:
+      callback_marker_node2: result
+
+  - name: Assert Node 2 received callback and mutated state
+    type: json_assert
+    statements:
+      - 'json_equal({{callback_marker_node2}}, {"output": "callback_executed"})'
+
+  # Step 11: Create an order on Node 1 (this will emit an OrderCreated event)
+  - name: Create Order on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: create_order
+    args:
+      order_id: order456
+      user_id: user123
+      amount: 1000
+    outputs:
+      create_order_result: result
+
+  - name: Assert order creation succeeded
+    type: assert
+    statements:
+      - "is_set({{create_order_result}})"
+
+  # Step 12: Wait for the order event to propagate
+  - name: Wait for Order Event Propagation
+    type: wait
+    seconds: 3
+
+  # Step 13: Verify order on Node 1
+  - name: Verify Order on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_order_user
+    args:
+      order_id: order456
+    outputs:
+      order_user_node1: result
+
+  - name: Assert Node 1 has correct order
+    type: json_assert
+    statements:
+      - 'json_equal({{order_user_node1}}, {"output": "user123"})'
+
+  # Step 14: User login on Node 1 (this will emit a UserLoggedIn event)
+  - name: User Login on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: user_login
+    args:
+      user_id: user123
+    outputs:
+      login_result: result
+
+  - name: Assert login succeeded
+    type: assert
+    statements:
+      - "is_set({{login_result}})"
+
+  # Step 15: Wait for login event to propagate
+  - name: Wait for Login Event Propagation
+    type: wait
+    seconds: 3
+
+  # Step 16: Verify that both nodes still have the user data
+  - name: Verify User Still Exists on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_user_email
+    args:
+      user_id: user123
+    outputs:
+      user_email_final_node1: result
+
+  - name: Assert Node 1 still has user after login
+    type: json_assert
+    statements:
+      - 'json_equal({{user_email_final_node1}}, {"output": "user123@example.com"})'
+
+  - name: Verify User Still Exists on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key}}'
+    method: get_user_email
+    args:
+      user_id: user123
+    outputs:
+      user_email_final_node2: result
+
+  - name: Assert Node 2 still has user after login
+    type: json_assert
+    statements:
+      - 'json_equal({{user_email_final_node2}}, {"output": "user123@example.com"})'
+
+  # Step 17: Check user counts to verify state consistency
+  - name: Check User Count on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_user_count
+    outputs:
+      user_count_node1: result
+
+  - name: Check User Count on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key}}'
+    method: get_user_count
+    outputs:
+      user_count_node2: result
+
+  - name: Assert both nodes have same user count (including callback markers)
+    type: json_assert
+    statements:
+      - 'json_equal({{user_count_node1}}, {{user_count_node2}})'
+
+# Configuration options
+stop_all_nodes: false   # Keep nodes running for inspection
+restart: false          # Don't restart nodes at the beginning of workflow
+wait_timeout: 60

@@ -44,6 +44,78 @@ impl ToTokens for StateImpl<'_> {
             };
         }
 
+        let on_events_impl = if emits.is_some() {
+            quote! {
+                #[cfg(target_arch = "wasm32")]
+                #[no_mangle]
+                pub extern "C" fn __calimero_on_events() {
+                    ::calimero_sdk::env::setup_panic_hook();
+
+                    // Ensure event registration for emit() path types
+                    ::calimero_sdk::event::register::<#ident>();
+
+                    // Read input as JSON-serialized Vec<ExecutionEvent>
+                    let Some(input) = ::calimero_sdk::env::input() else {
+                        ::calimero_sdk::env::panic_str("Expected events payload");
+                    };
+
+                    let events: ::std::vec::Vec<::calimero_sdk::primitives::events::ExecutionEvent> = match ::calimero_sdk::serde_json::from_slice::<::std::vec::Vec<::calimero_sdk::primitives::events::ExecutionEvent>>(&input) {
+                        Ok(list) => list,
+                        Err(err) => ::calimero_sdk::env::panic_str(&::std::format!("Failed to deserialize events: {:?}", err)),
+                    };
+
+                    // Access app state mutably to allow callbacks to mutate
+                    let Some(mut app) = ::calimero_storage::collections::Root::<#ident>::fetch() else {
+                        ::calimero_sdk::env::panic_str("Failed to read app state for callbacks");
+                    };
+
+                    // Expose mutable app for callback dispatch scope
+                    ::calimero_sdk::callback::set_current_app_mut(&mut app);
+
+                    // Reconstruct concrete event enum from kind/data and dispatch to callback registry
+                    for ev in events {
+                        // Build tagged JSON using serde_json::json! then stringify; we will borrow from this string buffer
+                        let data_json = match ::calimero_sdk::serde_json::from_slice::<::calimero_sdk::serde_json::Value>(&ev.data) {
+                            Ok(v) => v,
+                            Err(err) => {
+                                ::calimero_sdk::app::log!("Failed to parse event data JSON: {:?}", err);
+                                continue;
+                            }
+                        };
+
+                        let event_value = ::calimero_sdk::serde_json::json!({
+                            "kind": ev.kind,
+                            "data": data_json,
+                        });
+
+                        let buf = match ::calimero_sdk::serde_json::to_string(&event_value) {
+                            Ok(s) => s,
+                            Err(err) => {
+                                ::calimero_sdk::app::log!("Failed to stringify event JSON: {:?}", err);
+                                continue;
+                            }
+                        };
+
+                        // Deserialize the event for callback dispatch
+                        // Pass the JSON value to the registry to let callbacks decode.
+                        let value_ref = match ::calimero_sdk::serde_json::from_str::<::calimero_sdk::serde_json::Value>(&buf) {
+                            Ok(v) => v,
+                            Err(err) => {
+                                ::calimero_sdk::app::log!("Failed to reparse event JSON: {:?}", err);
+                                continue;
+                            }
+                        };
+                        ::calimero_sdk::callback::handle_incoming_event_value(&value_ref);
+                    }
+
+                    // Commit any state changes performed by callbacks
+                    app.commit();
+                }
+            }
+        } else {
+            quote! {}
+        };
+
         quote! {
             #orig
 
@@ -56,6 +128,9 @@ impl ToTokens for StateImpl<'_> {
                     ::calimero_sdk::env::ext::External {}
                 }
             }
+
+
+            #on_events_impl
         }
         .to_tokens(tokens);
     }

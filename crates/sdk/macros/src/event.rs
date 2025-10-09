@@ -32,7 +32,7 @@ impl ToTokens for EventImpl<'_> {
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         quote! {
-            #[derive(::calimero_sdk::serde::Serialize)]
+            #[derive(::calimero_sdk::serde::Serialize, ::calimero_sdk::serde::Deserialize)]
             #[serde(crate = "::calimero_sdk::serde")]
             #[serde(tag = "kind", content = "data")]
             #orig

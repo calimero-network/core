@@ -1,7 +1,10 @@
 // Re-export the embed_abi macro from wasm-abi
 pub use calimero_wasm_abi::embed_abi;
 pub use {borsh, serde, serde_json};
+// Re-export primitives so macro-generated code can reference via this crate
+pub use calimero_primitives as primitives;
 
+pub mod callback;
 pub mod env;
 pub mod event;
 mod macros;
@@ -16,7 +19,7 @@ pub mod app {
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
     pub use calimero_sdk_macros::{
-        bail, destroy, emit, err, event, init, log, logic, private, state,
+        bail, callback, destroy, emit, err, event, init, log, logic, private, state,
     };
 }
 

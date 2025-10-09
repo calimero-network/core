@@ -16,6 +16,7 @@ serde_json.workspace = true
 calimero-sdk-macros.workspace = true
 calimero-sys.workspace = true
 calimero-wasm-abi.workspace = true
+calimero-primitives.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true

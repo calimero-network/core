@@ -2044,6 +2044,7 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
+ "calimero-primitives",
  "calimero-sdk-macros",
  "calimero-sys",
  "calimero-wasm-abi",
@@ -3506,6 +3507,16 @@ dependencies = [
  "impl-serde",
  "primitive-types 0.12.2",
  "uint 0.9.5",
+]
+
+[[package]]
+name = "event-callback"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
 ]
 
 [[package]]

@@ -10,11 +10,50 @@ use crate::reserved::{idents, lifetimes};
 
 pub enum LogicMethod<'a> {
     Public(PublicLogicMethod<'a>),
+    Callback(CallbackMethod<'a>),
     Private,
 }
 
 pub enum Modifer {
     Init,
+}
+
+pub struct CallbackMethod<'a> {
+    name: &'a Ident,
+    event_type: syn::Type,
+}
+
+impl ToTokens for CallbackMethod<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let name = &self.name;
+        let event_type = &self.event_type;
+
+        quote! {
+            // Register a universal callback that handles all event types
+            // The callback method will receive the full Event enum and match internally
+            ::calimero_sdk::callback::register_callback_borrowed(
+                "__all_events__", // Use a special key for universal callbacks
+                |event_value| {
+                    // Deserialize the event from JSON with the appropriate lifetime
+                    match ::calimero_sdk::serde_json::from_value::<#event_type>(event_value.clone()) {
+                        Ok(event) => {
+                            ::calimero_sdk::callback::with_current_app_mut(|app| {
+                                app.#name(event);
+                            }).expect("Failed to get mutable app reference for callback");
+                        }
+                        Err(err) => {
+                            ::calimero_sdk::env::log(&format!(
+                                "Failed to deserialize event for callback {}: {:?}",
+                                stringify!(#name),
+                                err
+                            ));
+                        }
+                    }
+                }
+            );
+        }
+        .to_tokens(tokens);
+    }
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -34,6 +73,7 @@ impl ToTokens for LogicMethod<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             LogicMethod::Public(method) => method.to_tokens(tokens),
+            LogicMethod::Callback(method) => method.to_tokens(tokens),
             LogicMethod::Private => {}
         }
     }
@@ -222,15 +262,79 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
         let mut modifiers = vec![];
         let mut is_init = false;
+        let mut is_callback = false;
 
         for attr in &input.item.attrs {
             if attr.path().segments.len() == 2
                 && attr.path().segments[0].ident == "app"
-                && attr.path().segments[1].ident == "init"
             {
-                modifiers.push(Modifer::Init);
-                is_init = true;
+                match attr.path().segments[1].ident.to_string().as_str() {
+                    "init" => {
+                        modifiers.push(Modifer::Init);
+                        is_init = true;
+                    }
+                    "callback" => {
+                        is_callback = true;
+                    }
+                    _ => {}
+                }
             }
+        }
+
+        if is_callback {
+            // Callback methods must be public and have exactly 2 parameters (&mut self, event)
+            if !matches!(input.item.vis, Visibility::Public(_)) {
+                errors.subsume(SynError::new_spanned(
+                    &input.item.vis,
+                    ParseError::NoPrivateInit, // Reuse this error for now
+                ));
+            }
+            
+            if input.item.sig.inputs.len() != 2 {
+                errors.subsume(SynError::new_spanned(
+                    &input.item.sig,
+                    ParseError::CallbackMethodSignature,
+                ));
+            }
+            
+            // Validate that the second parameter is Event (with or without lifetime)
+            let event_type = if input.item.sig.inputs.len() >= 2 {
+                if let syn::FnArg::Typed(pat_type) = &input.item.sig.inputs[1] {
+                    // Check if it's Event type
+                    let is_valid_event_type = if let syn::Type::Path(type_path) = pat_type.ty.as_ref() {
+                        // Check if it's Event (with or without lifetime/generic parameters)
+                        type_path.path.segments.last().map_or(false, |seg| seg.ident == "Event")
+                    } else {
+                        false
+                    };
+                    
+                    if !is_valid_event_type {
+                        errors.subsume(SynError::new_spanned(
+                            &pat_type.ty,
+                            ParseError::CallbackMethodSignature,
+                        ));
+                    }
+                    
+                    pat_type.ty.clone()
+                } else {
+                    return Err(errors.finish(SynError::new_spanned(
+                        &input.item.sig.inputs[1],
+                        ParseError::CallbackMethodSignature,
+                    )));
+                }
+            } else {
+                return Err(errors.finish(SynError::new_spanned(
+                    &input.item.sig,
+                    ParseError::CallbackMethodSignature,
+                )));
+            };
+            
+            errors.check()?;
+            
+            return Ok(Self::Callback(CallbackMethod {
+                name: &input.item.sig.ident,
+                event_type: *event_type,
+            }));
         }
 
         match (&input.item.vis, is_init) {

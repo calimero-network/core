@@ -86,6 +86,8 @@ pub enum ParseError<'a> {
     InitMethodWithoutInitAttribute,
     #[error("method annotated with `#[app::init]` must be named `init`")]
     AppInitMethodNotNamedInit,
+    #[error("callback method must have exactly 2 parameters: &self and the event type")]
+    CallbackMethodSignature,
 }
 
 impl AsRef<Self> for ParseError<'_> {

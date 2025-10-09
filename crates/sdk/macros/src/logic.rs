@@ -3,7 +3,7 @@ use quote::{quote, ToTokens};
 use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
 
 use crate::errors::{Errors, ParseError};
-use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
+use crate::logic::method::{CallbackMethod, LogicMethod, LogicMethodImplInput, PublicLogicMethod};
 use crate::logic::utils::typed_path;
 use crate::macros::infallible;
 use crate::reserved::{idents, lifetimes};
@@ -15,18 +15,65 @@ mod ty;
 mod utils;
 
 pub struct LogicImpl<'a> {
-    #[expect(dead_code, reason = "This will be used in future")]
     type_: Path,
     methods: Vec<PublicLogicMethod<'a>>,
+    callbacks: Vec<CallbackMethod<'a>>,
     orig: &'a ItemImpl,
 }
 
 impl ToTokens for LogicImpl<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let LogicImpl { orig, methods, .. } = self;
+        let LogicImpl { orig, methods, callbacks: _, type_: _ } = self;
+
+        // Process callback methods
+        let mut filtered_items = Vec::new();
+        
+        for item in &orig.items {
+            match item {
+                ImplItem::Fn(method) => {
+                    // Check if this is a callback method
+                    let callback_attr = method.attrs.iter().find(|attr| {
+                        if let Some(ident) = attr.path().get_ident() {
+                            return ident == "callback";
+                        }
+                        let segments: Vec<String> = attr
+                            .path()
+                            .segments
+                            .iter()
+                            .map(|s| s.ident.to_string())
+                            .collect();
+                        segments.as_slice() == ["app", "callback"]
+                    });
+                    
+                    if let Some(_attr) = callback_attr {
+                        // Include callback methods in the main impl block
+                        // The #[app::callback] attribute handles its own registration
+                        filtered_items.push(ImplItem::Fn(method.clone()));
+                    } else {
+                        filtered_items.push(ImplItem::Fn(method.clone()));
+                    }
+                }
+                other => filtered_items.push(other.clone()),
+            }
+        }
+        
+        let filtered_impl = ItemImpl {
+            attrs: orig.attrs.clone(),
+            defaultness: orig.defaultness,
+            unsafety: orig.unsafety,
+            impl_token: orig.impl_token,
+            generics: orig.generics.clone(),
+            trait_: orig.trait_.clone(),
+            self_ty: orig.self_ty.clone(),
+            brace_token: orig.brace_token,
+            items: filtered_items,
+        };
+
+        // Callbacks are now included in the main impl block, no separate impl needed
+
 
         quote! {
-            #orig
+            #filtered_impl
 
             #(#methods)*
         }
@@ -110,6 +157,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         let type_ = infallible!({ parse2(sanitizer.to_token_stream()) });
 
         let mut methods = vec![];
+        let mut callbacks = vec![];
 
         for item in &input.item.items {
             if let ImplItem::Fn(method) = item {
@@ -118,6 +166,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                     item: method,
                 }) {
                     Ok(LogicMethod::Public(method)) => methods.push(method),
+                    Ok(LogicMethod::Callback(callback)) => callbacks.push(callback),
                     Ok(LogicMethod::Private) => {}
                     Err(err) => errors.combine(&err),
                 }
@@ -129,6 +178,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         Ok(Self {
             type_,
             methods,
+            callbacks,
             orig: input.item,
         })
     }

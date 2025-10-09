@@ -19,7 +19,7 @@ pub struct ContextEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "PascalCase")]
-#[expect(variant_size_differences, reason = "fine for now")]
+#[allow(variant_size_differences)]
 pub enum ContextEventPayload {
     StateMutation(StateMutationPayload),
 }

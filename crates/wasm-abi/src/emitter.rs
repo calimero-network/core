@@ -34,8 +34,47 @@ impl<'ast> AbiEmitter {
         item_impl: &'ast ItemImpl,
         referenced_types: &mut std::collections::HashSet<String>,
     ) {
+        // Check if the entire impl block is a callback impl
+        let is_callback_impl = item_impl.attrs.iter().any(|attr| {
+            if let Some(ident) = attr.path().get_ident() {
+                return ident == "callback";
+            }
+            let segments: Vec<String> = attr
+                .path()
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            segments.as_slice() == ["app", "callback"]
+        });
+
+        // If this is a callback impl block, skip all methods in it
+        if is_callback_impl {
+            return;
+        }
+
         for item in &item_impl.items {
             if let syn::ImplItem::Fn(method) = item {
+                // Skip callback methods annotated with #[app::callback]
+                let is_callback = method.attrs.iter().any(|attr| {
+                    if let Some(ident) = attr.path().get_ident() {
+                        // Simple path like #[callback] (defensive)
+                        return ident == "callback";
+                    }
+                    // Full path like #[app::callback]
+                    let segments: Vec<String> = attr
+                        .path()
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect();
+                    segments.as_slice() == ["app", "callback"]
+                });
+
+                if is_callback {
+                    continue; // skip callbacks from ABI methods
+                }
+
                 // Only process public methods
                 if matches!(method.vis, syn::Visibility::Public(_)) {
                     let method_name = method.sig.ident.to_string();
@@ -145,6 +184,7 @@ impl<'ast> AbiEmitter {
         }
     }
 
+    #[allow(dead_code)]
     fn process_events(&mut self, item_enum: &ItemEnum) {
         for variant in &item_enum.variants {
             let event_name = variant.ident.to_string();
@@ -342,8 +382,55 @@ impl<'ast> Visit<'ast> for AbiEmitter {
     }
 
     fn visit_item_impl(&mut self, item_impl: &'ast ItemImpl) {
+        // Check if the entire impl block is a callback impl
+        let is_callback_impl = item_impl.attrs.iter().any(|attr| {
+            if let Some(ident) = attr.path().get_ident() {
+                return ident == "callback";
+            }
+            let segments: Vec<String> = attr
+                .path()
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            segments.as_slice() == ["app", "callback"]
+        });
+
+        // If this is a callback impl block, skip all methods in it
+        if is_callback_impl {
+            return;
+        }
+
         for item in &item_impl.items {
             if let syn::ImplItem::Fn(method) = item {
+                // Skip callback methods annotated with #[app::callback]
+                let is_callback_attr = method.attrs.iter().any(|attr| {
+                    if let Some(ident) = attr.path().get_ident() {
+                        return ident == "callback";
+                    }
+                    let segments: Vec<String> = attr
+                        .path()
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect();
+                    segments.as_slice() == ["app", "callback"]
+                });
+
+                // Also skip methods with callback signature: &mut self, Event<'_>
+                let is_callback_signature = method.sig.inputs.len() == 2
+                    && if let syn::FnArg::Typed(pat_type) = &method.sig.inputs[1] {
+                        matches!(pat_type.ty.as_ref(), Type::Path(type_path) 
+                            if type_path.path.segments.len() == 1 
+                            && type_path.path.segments[0].ident == "Event"
+                            && !type_path.path.segments[0].arguments.is_empty())
+                    } else {
+                        false
+                    };
+
+                if is_callback_attr || is_callback_signature {
+                    continue;
+                }
                 // Only process public methods
                 if matches!(method.vis, syn::Visibility::Public(_)) {
                     let method_name = method.sig.ident.to_string();

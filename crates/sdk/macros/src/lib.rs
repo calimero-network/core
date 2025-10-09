@@ -15,6 +15,7 @@ use crate::logic::{LogicImpl, LogicImplInput};
 use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
+mod callback;
 mod errors;
 mod event;
 mod items;
@@ -129,3 +130,15 @@ pub fn log(input: TokenStream) -> TokenStream {
 
     quote!(::calimero_sdk::__log__!(#input)).into()
 }
+
+// #[app::callback] is a marker attribute that is detected by the #[app::logic] macro.
+// Since proc_macro attributes are consumed during processing, we re-add a marker
+// that the logic macro can detect.
+#[proc_macro_attribute]
+pub fn callback(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // This is a marker attribute - the actual registration happens in the logic macro
+    input
+}
+
+
+

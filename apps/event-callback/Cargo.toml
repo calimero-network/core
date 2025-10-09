@@ -1,0 +1,19 @@
+[package]
+name = "event-callback"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Example application demonstrating event callbacks between nodes"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true

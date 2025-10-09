@@ -557,6 +557,33 @@ async fn handle_state_delta(
         // Only re-emit if there are actual events
         if !events_payload.is_empty() {
             debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
+
+            // Best-effort: invoke app callback entrypoint with received events
+            // This allows apps that expose `__calimero_on_events` to react to cross-node events.
+            match serde_json::to_vec(&events_payload) {
+                Ok(events_json) => {
+                    debug!(%context_id, payload_len = events_json.len(), "Invoking app __calimero_on_events callback");
+                    // Ignore failures: app may not implement the optional entrypoint
+                    let _ = context_client
+                        .execute(
+                            &context_id,
+                            &our_identity,
+                            "__calimero_on_events".to_owned(),
+                            events_json,
+                            vec![],
+                            None,
+                        )
+                        .await
+                        .map_err(|err| {
+                            debug!(%context_id, %err, "App did not handle __calimero_on_events or failed");
+                            err
+                        });
+                }
+                Err(err) => {
+                    debug!(%context_id, %err, "Failed to serialize events for app callback");
+                }
+            }
+
             node_client.send_event(NodeEvent::Context(ContextEvent {
                 context_id,
                 payload: ContextEventPayload::StateMutation(
