@@ -195,8 +195,7 @@ impl EventCallbackApp {
         
         let event_kind = payload_json.get("event_kind")
             .and_then(|v| v.as_str())
-            .unwrap_or("Unknown")
-            .to_string();
+            .unwrap_or("Unknown");
         let event_data = payload_json.get("event_data")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_u64()).map(|n| n as u8).collect::<Vec<u8>>())
@@ -204,26 +203,65 @@ impl EventCallbackApp {
 
         app::log!("Processing remote event: {} with data length: {}", event_kind, event_data.len());
 
-        // Parse the event data to extract relevant information
-        // For UserRegistered events, the data would contain user information
-        match event_kind.as_str() {
-            "UserRegistered" => {
-                // For now, we'll use a default user_id since parsing the actual event data
-                // would require knowing the exact structure of the event payload
-                let user_id = "user123".to_string();
-                app::log!("Received UserRegistered event from remote node, triggering callback");
-                self.handle_automatic_callback("UserRegistered".to_string(), user_id)?;
+        // Try to deserialize the event data using JSON (events are JSON-serialized in Calimero)
+        if let Ok(event_json) = calimero_sdk::serde_json::from_slice::<calimero_sdk::serde_json::Value>(&event_data) {
+            app::log!("Successfully deserialized event data: {:?}", event_json);
+            
+            // Parse the event based on the kind
+            match event_kind {
+                "UserRegistered" => {
+                    if let (Some(user_id), Some(email)) = (
+                        event_json.get("user_id").and_then(|v| v.as_str()),
+                        event_json.get("email").and_then(|v| v.as_str())
+                    ) {
+                        app::log!("Received UserRegistered event from remote node: user_id={}, email={}", user_id, email);
+                        self.handle_automatic_callback("UserRegistered".to_string(), user_id.to_string())?;
+                    } else {
+                        app::log!("Failed to parse UserRegistered event data");
+                    }
+                }
+                "OrderCreated" => {
+                    if let (Some(order_id), Some(user_id), Some(amount)) = (
+                        event_json.get("order_id").and_then(|v| v.as_str()),
+                        event_json.get("user_id").and_then(|v| v.as_str()),
+                        event_json.get("amount").and_then(|v| v.as_u64())
+                    ) {
+                        app::log!("Received OrderCreated event from remote node: order_id={}, user_id={}, amount={}", order_id, user_id, amount);
+                        self.handle_automatic_callback("OrderCreated".to_string(), order_id.to_string())?;
+                    } else {
+                        app::log!("Failed to parse OrderCreated event data");
+                    }
+                }
+                "UserLoggedIn" => {
+                    if let Some(user_id) = event_json.get("user_id").and_then(|v| v.as_str()) {
+                        app::log!("Received UserLoggedIn event from remote node: user_id={}", user_id);
+                        self.handle_automatic_callback("UserLoggedIn".to_string(), user_id.to_string())?;
+                    } else {
+                        app::log!("Failed to parse UserLoggedIn event data");
+                    }
+                }
+                _ => {
+                    app::log!("Unknown remote event type: {}", event_kind);
+                }
             }
-            "OrderCreated" => {
-                // Extract order information from event data
-                app::log!("Received OrderCreated event from remote node");
-            }
-            "UserLoggedIn" => {
-                // Extract user information from event data
-                app::log!("Received UserLoggedIn event from remote node");
-            }
-            _ => {
-                app::log!("Unknown remote event type: {}", event_kind);
+        } else {
+            // Fallback to string-based matching if deserialization fails
+            app::log!("Failed to deserialize event data as JSON, falling back to string matching");
+            match event_kind {
+                "UserRegistered" => {
+                    let user_id = "user123".to_string();
+                    app::log!("Received UserRegistered event from remote node, triggering callback");
+                    self.handle_automatic_callback("UserRegistered".to_string(), user_id)?;
+                }
+                "OrderCreated" => {
+                    app::log!("Received OrderCreated event from remote node");
+                }
+                "UserLoggedIn" => {
+                    app::log!("Received UserLoggedIn event from remote node");
+                }
+                _ => {
+                    app::log!("Unknown remote event type: {}", event_kind);
+                }
             }
         }
 
