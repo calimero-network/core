@@ -9,6 +9,7 @@ use crate::interface::MainInterface;
 /// For tests against empty data structs.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct EmptyData {
+    /// Storage element for this data structure.
     pub storage: Element,
 }
 
@@ -29,8 +30,11 @@ impl Data for EmptyData {
 /// A simple page with a title, and paragraphs as children.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Page {
+    /// The title of the page.
     pub title: String,
+    /// Collection of paragraphs in this page.
     pub paragraphs: Paragraphs,
+    /// Storage element for this data structure.
     pub storage: Element,
 }
 
@@ -66,7 +70,9 @@ impl Data for Page {
 /// A simple paragraph with text. No children. Belongs to a page.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Paragraph {
+    /// The text content of the paragraph.
     pub text: String,
+    /// Storage element for this data structure.
     pub storage: Element,
 }
 
@@ -118,8 +124,11 @@ impl Collection for Paragraphs {
 /// A simple person example struct. No children.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Person {
+    /// The name of the person.
     pub name: String,
+    /// The age of the person.
     pub age: u8,
+    /// Storage element for this data structure.
     pub storage: Element,
 }
 

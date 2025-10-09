@@ -15,16 +15,17 @@ impl MockResolver {
     }
 
     fn add_newtype_bytes(&mut self, name: &str, size: usize) {
-        self.locals
+        let _ = self
+            .locals
             .insert(name.to_string(), ResolvedLocal::NewtypeBytes { size });
     }
 
     fn add_record(&mut self, name: &str) {
-        self.locals.insert(name.to_string(), ResolvedLocal::Record);
+        let _ = self.locals.insert(name.to_string(), ResolvedLocal::Record);
     }
 
     fn add_variant(&mut self, name: &str) {
-        self.locals.insert(name.to_string(), ResolvedLocal::Variant);
+        let _ = self.locals.insert(name.to_string(), ResolvedLocal::Variant);
     }
 }
 

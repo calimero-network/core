@@ -12,6 +12,7 @@ use syn::{Expr, ItemImpl};
 use crate::event::{EventImpl, EventImplInput};
 use crate::items::{Empty, StructOrEnumItem};
 use crate::logic::{LogicImpl, LogicImplInput};
+use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
 mod errors;
@@ -19,6 +20,7 @@ mod event;
 mod items;
 mod logic;
 mod macros;
+mod private;
 mod reserved;
 mod sanitizer;
 mod state;
@@ -48,6 +50,24 @@ pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as StructOrEnumItem);
 
     let tokens = match StateImpl::try_from(StateImplInput {
+        item: &item,
+        args: &args,
+    }) {
+        Ok(data) => data.to_token_stream(),
+        Err(err) => err.to_compile_error(),
+    };
+
+    tokens.into()
+}
+
+#[proc_macro_attribute]
+pub fn private(args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+
+    let args = parse_macro_input!({ input } => args as PrivateArgs);
+    let item = parse_macro_input!(input as StructOrEnumItem);
+
+    let tokens = match PrivateImpl::try_from(PrivateImplInput {
         item: &item,
         args: &args,
     }) {

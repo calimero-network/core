@@ -6,6 +6,7 @@ repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
 description = "Core Calimero infrastructure and tools"
 
+# Update workspace metadata
 [workspace.metadata.workspaces]
 # Shared version of all public crates in the workspace.
 # [IMPORTANT: do not remove comments from next line, used as search anchor]
@@ -13,20 +14,18 @@ version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
     "./apps/kv-store",
-    "./crates/cargo-mero",
     "./e2e-tests",
     "./crates/merod",
     "./crates/version",
-    "./tools/calimero-abi",
     "./crates/meroctl",
-    "./crates/auth"
+    "./crates/auth",
+    "./tools/calimero-abi"
 ]
 
 [workspace]
 resolver = "2"
 members = [
     "./crates/auth",
-    "./crates/cargo-mero",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
@@ -35,6 +34,7 @@ members = [
     "./crates/meroctl",
     "./crates/client",
     "./crates/merod",
+    "./crates/relayer",
     "./crates/network",
     "./crates/network/primitives",
     "./crates/node",
@@ -58,6 +58,7 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/kv-store",
+    "./apps/private_data",
     "./apps/abi_conformance",
 
     "./e2e-tests",
@@ -183,6 +184,7 @@ calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
 calimero-primitives = { path = "./crates/primitives" }
+calimero-relayer = { path = "./crates/relayer" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }

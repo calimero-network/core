@@ -1,5 +1,6 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
+use std::borrow::Cow;
 use std::num::NonZeroUsize;
 
 use async_stream::stream;
@@ -92,6 +93,7 @@ impl NodeClient {
         sender_key: &PrivateKey,
         artifact: Vec<u8>,
         height: NonZeroUsize,
+        events: Option<Vec<u8>>,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -118,6 +120,7 @@ impl NodeClient {
             artifact: encrypted.into(),
             height,
             nonce,
+            events: events.map(Cow::from),
         };
 
         let payload = borsh::to_vec(&payload)?;

@@ -11,7 +11,6 @@ publish = false
 
 [dependencies]
 alloy.workspace = true
-axum.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
@@ -20,7 +19,6 @@ ic-agent.workspace = true
 dirs.workspace = true
 ed25519-consensus.workspace = true
 eyre.workspace = true
-futures-util.workspace = true
 hex.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
@@ -42,7 +40,7 @@ calimero-context.workspace = true
 calimero-context-config = { workspace = true, features = ["client"] }
 calimero-node.workspace = true
 calimero-network-primitives.workspace = true
-calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
+calimero-server.workspace = true
 calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true
