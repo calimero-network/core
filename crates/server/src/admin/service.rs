@@ -36,8 +36,6 @@ use crate::admin::handlers::context::{
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::peers::get_peers_count_handler;
 use crate::config::ServerConfig;
-#[cfg(feature = "host_layer")]
-use crate::middleware::host::HostLayer;
 use crate::AdminState;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -85,10 +83,7 @@ pub(crate) fn setup(
     };
 
     for listen in &config.listen {
-        info!(
-            "Admin API server listening on {}/http{{{}}}",
-            listen, admin_path
-        );
+        info!("Admin API listening on {}/http{{{}}}", listen, admin_path);
     }
 
     let session_store = MemoryStore::default();
@@ -207,9 +202,6 @@ pub(crate) fn setup(
         .merge(router)
         .layer(Extension(shared_state))
         .layer(session_layer);
-
-    #[cfg(feature = "host_layer")]
-    let admin_router = admin_router.layer(HostLayer::new(config.listen.clone()));
 
     Some((admin_path, admin_router))
 }

@@ -18,7 +18,7 @@ use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::messages::NodeMessage;
 use crate::sync::BroadcastMessage;
@@ -95,7 +95,7 @@ impl NodeClient {
         height: NonZeroUsize,
         events: Option<Vec<u8>>,
     ) -> eyre::Result<()> {
-        debug!(
+        info!(
             context_id=%context.id,
             %sender,
             root_hash=%context.root_hash,
