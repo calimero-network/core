@@ -196,6 +196,11 @@ jobs:
       - name: Verify Rust installation
         run: rustc --version
 
+      - name: Setup rust cache (publish)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
       - name: Publish calimero-workspaces on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
