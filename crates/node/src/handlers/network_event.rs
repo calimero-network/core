@@ -560,9 +560,51 @@ async fn handle_state_delta(
             node_client.send_event(NodeEvent::Context(ContextEvent {
                 context_id,
                 payload: ContextEventPayload::StateMutation(
-                    StateMutationPayload::with_root_and_events(root_hash, events_payload),
+                    StateMutationPayload::with_root_and_events(root_hash, events_payload.clone()),
                 ),
             }))?;
+
+            // Process events for automatic callbacks
+            debug!(%context_id, "Processing events for automatic callbacks");
+            for event in events_payload {
+                debug!(
+                    %context_id,
+                    event_kind = %event.kind,
+                    event_data_len = event.data.len(),
+                    "Processing event for automatic callback"
+                );
+
+                // Call the application's event processing method
+                // Combine event kind and data into a single payload
+                let combined_payload = serde_json::to_vec(&serde_json::json!({
+                    "event_kind": event.kind,
+                    "event_data": event.data
+                })).unwrap_or_default();
+
+                if let Err(err) = context_client
+                    .execute(
+                        &context_id,
+                        &our_identity,
+                        "process_remote_events".to_owned(),
+                        combined_payload,
+                        vec![], // No aliases needed
+                        None,
+                    )
+                    .await
+                {
+                    debug!(
+                        %context_id,
+                        error = %err,
+                        "Failed to process event for automatic callback"
+                    );
+                } else {
+                    debug!(
+                        %context_id,
+                        event_kind = %event.kind,
+                        "Successfully processed event for automatic callback"
+                    );
+                }
+            }
         } else {
             debug!(%context_id, "No events after deserialization; skipping WS emit");
         }

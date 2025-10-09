@@ -3509,6 +3509,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "event-callback"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
