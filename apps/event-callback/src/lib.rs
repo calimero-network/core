@@ -17,6 +17,7 @@ pub struct EventCallbackApp {
 }
 
 #[app::event]
+#[derive(Debug, calimero_sdk::serde::Deserialize)]
 pub enum Event<'a> {
     UserRegistered { user_id: &'a str, email: &'a str },
     OrderCreated { order_id: &'a str, user_id: &'a str, amount: u64 },
@@ -56,10 +57,15 @@ impl EventCallbackApp {
         self.users.insert(user_id.clone(), email.clone())?;
 
         // Emit the UserRegistered event
+        // This event will be captured by the execution system and broadcast to other nodes
+        // via state delta synchronization. Other nodes will then process this event
+        // through their process_remote_events method to execute callbacks.
+        app::log!("About to emit UserRegistered event");
         app::emit!(Event::UserRegistered {
             user_id: &user_id,
             email: &email,
         });
+        app::log!("UserRegistered event emitted");
 
         Ok(())
     }
@@ -120,6 +126,25 @@ impl EventCallbackApp {
         app::log!("Getting order count");
 
         Ok(self.orders.len()? as u32)
+    }
+
+    // Warm-up method: perform a benign state mutation without emitting events.
+    // Rationale:
+    // - The first cross-node delta after context setup can cause a sync fallback
+    //   on peers (e.g., missing sender key). During such fallbacks, bundled events
+    //   are intentionally skipped to avoid double processing.
+    // - Applying a benign mutation first seeds an initial artifact/delta and height,
+    //   reducing the chance that the next event-emitting call is skipped on peers.
+    // - Any first method call could serve this purpose, but then the initial callback
+    //   might be skipped implicitly. Providing an explicit `warmup` makes this pattern
+    //   clear and intentional to users reading the workflow or app.
+    pub fn warmup(&mut self) -> app::Result<()> {
+        // Write a dummy marker to guarantee a non-empty artifact with no events
+        let _ = self
+            .callback_markers
+            .insert("_warmup".to_string(), "1".to_string())?;
+        app::log!("Warmup mutation applied");
+        Ok(())
     }
 
     // This method handles cross-node event callbacks
@@ -185,83 +210,54 @@ impl EventCallbackApp {
         self.callback_markers.get(&callback_user_id).map_err(Into::into)
     }
 
-    // This method is called automatically by the Calimero runtime when events are received
-    // from other nodes during state synchronization. The runtime will call this method
-    // with the event data after applying the state delta.
-    pub fn process_remote_events(&mut self, payload: Vec<u8>) -> app::Result<()> {
-        // Parse the combined JSON payload from the node
-        let payload_json: calimero_sdk::serde_json::Value = calimero_sdk::serde_json::from_slice(&payload)
-            .unwrap_or_else(|_| calimero_sdk::serde_json::Value::Null);
-        
-        let event_kind = payload_json.get("event_kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown");
-        let event_data = payload_json.get("event_data")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_u64()).map(|n| n as u8).collect::<Vec<u8>>())
-            .unwrap_or_default();
+    /// Process remote events for automatic callbacks
+    ///
+    /// Called by the node when applying a remote state delta that included events.
+    /// Matches the JSON payload sent by the node, which provides `event_kind` and
+    /// raw `event_data` bytes for the specific event.
+    pub fn process_remote_events(&mut self, event_kind: String, event_data: Vec<u8>) -> app::Result<()> {
+        app::log!(
+            "Processing remote event: kind={} data_len={}",
+            event_kind,
+            event_data.len()
+        );
 
-        app::log!("Processing remote event: {} with data length: {}", event_kind, event_data.len());
+        match event_kind.as_str() {
+            "UserRegistered" => {
+                // Try to parse JSON payload for { user_id, email }
+                let v: calimero_sdk::serde_json::Value = calimero_sdk::serde_json::from_slice(&event_data)
+                    .unwrap_or(calimero_sdk::serde_json::Value::Null);
+                let user_id = v
+                    .get("user_id")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
-        // Try to deserialize the event data using JSON (events are JSON-serialized in Calimero)
-        if let Ok(event_json) = calimero_sdk::serde_json::from_slice::<calimero_sdk::serde_json::Value>(&event_data) {
-            app::log!("Successfully deserialized event data: {:?}", event_json);
-            
-            // Parse the event based on the kind
-            match event_kind {
-                "UserRegistered" => {
-                    if let (Some(user_id), Some(email)) = (
-                        event_json.get("user_id").and_then(|v| v.as_str()),
-                        event_json.get("email").and_then(|v| v.as_str())
-                    ) {
-                        app::log!("Received UserRegistered event from remote node: user_id={}, email={}", user_id, email);
+                if !user_id.is_empty() {
+                    self.handle_automatic_callback("UserRegistered".to_string(), user_id)?;
+                } else if let Ok(event) = calimero_sdk::serde_json::from_slice::<Event>(&event_data) {
+                    if let Event::UserRegistered { user_id, .. } = event {
                         self.handle_automatic_callback("UserRegistered".to_string(), user_id.to_string())?;
-                    } else {
-                        app::log!("Failed to parse UserRegistered event data");
                     }
-                }
-                "OrderCreated" => {
-                    if let (Some(order_id), Some(user_id), Some(amount)) = (
-                        event_json.get("order_id").and_then(|v| v.as_str()),
-                        event_json.get("user_id").and_then(|v| v.as_str()),
-                        event_json.get("amount").and_then(|v| v.as_u64())
-                    ) {
-                        app::log!("Received OrderCreated event from remote node: order_id={}, user_id={}, amount={}", order_id, user_id, amount);
-                        self.handle_automatic_callback("OrderCreated".to_string(), order_id.to_string())?;
-                    } else {
-                        app::log!("Failed to parse OrderCreated event data");
-                    }
-                }
-                "UserLoggedIn" => {
-                    if let Some(user_id) = event_json.get("user_id").and_then(|v| v.as_str()) {
-                        app::log!("Received UserLoggedIn event from remote node: user_id={}", user_id);
-                        self.handle_automatic_callback("UserLoggedIn".to_string(), user_id.to_string())?;
-                    } else {
-                        app::log!("Failed to parse UserLoggedIn event data");
-                    }
-                }
-                _ => {
-                    app::log!("Unknown remote event type: {}", event_kind);
+                } else {
+                    app::log!("UserRegistered event_data could not be parsed; skipping callback");
                 }
             }
-        } else {
-            // Fallback to string-based matching if deserialization fails
-            app::log!("Failed to deserialize event data as JSON, falling back to string matching");
-            match event_kind {
-                "UserRegistered" => {
-                    let user_id = "user123".to_string();
-                    app::log!("Received UserRegistered event from remote node, triggering callback");
-                    self.handle_automatic_callback("UserRegistered".to_string(), user_id)?;
+            "OrderCreated" => {
+                app::log!("Received OrderCreated event from remote node");
+            }
+            "UserLoggedIn" => {
+                // Try to parse { user_id }
+                let v: calimero_sdk::serde_json::Value = calimero_sdk::serde_json::from_slice(&event_data)
+                    .unwrap_or(calimero_sdk::serde_json::Value::Null);
+                if let Some(uid) = v.get("user_id").and_then(|s| s.as_str()) {
+                    self.handle_automatic_callback("UserLoggedIn".to_string(), uid.to_string())?;
+                } else {
+                    app::log!("UserLoggedIn event_data could not be parsed; skipping callback");
                 }
-                "OrderCreated" => {
-                    app::log!("Received OrderCreated event from remote node");
-                }
-                "UserLoggedIn" => {
-                    app::log!("Received UserLoggedIn event from remote node");
-                }
-                _ => {
-                    app::log!("Unknown remote event type: {}", event_kind);
-                }
+            }
+            other => {
+                app::log!("Unknown remote event type: {}", other);
             }
         }
 

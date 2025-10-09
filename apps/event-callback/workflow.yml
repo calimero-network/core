@@ -2,12 +2,12 @@ description: A workflow that demonstrates cross-node event callbacks with state 
 name: Event Callback Test Workflow
 
 # Force pull Docker images even if they exist locally
-force_pull_image: false
+force_pull_image: true
 
 nodes:
   chain_id: testnet-1
   count: 2
-  image: node
+  image: ghcr.io/calimero-network/merod:9d15a21
   prefix: calimero-node
 
 steps:
@@ -65,6 +65,34 @@ steps:
     context_id: '{{context_id}}'
     invitee_id: '{{public_key}}'
     invitation: '{{invitation}}'
+
+  # Why warmup?
+  # - The first cross-node delta may trigger a sync fallback (e.g., missing sender key
+  #   on the receiving node). During such fallbacks, bundled events are intentionally
+  #   skipped. Note that this means the first event-emitting call after context setup
+  #   (any method) could have its callback skipped on peers.
+  #   A benign state change first ensures a clean
+  #   baseline delta height for peers and exchanged keys, reducing the chance 
+  # of event-skipping on the subsequent event-emitting call. We include an explicit
+  #   "warmup" step to make this behavior obvious and intentional to readers.
+  - name: Warm up context on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: warmup
+    args: {}
+    outputs:
+      warmup_result: result
+
+  - name: Assert warmup succeeded
+    type: assert
+    statements:
+      - "is_set({{warmup_result}})"
+
+  - name: Wait for Warmup Propagation
+    type: wait
+    seconds: 2
 
   # Step 7: Register a user on Node 1 (this will emit a UserRegistered event)
   - name: Register User on Node 1

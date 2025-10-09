@@ -423,6 +423,11 @@ impl SyncManager {
                             .ok_or_eyre("expected an exclusive lock on the context")?,
                     );
 
+                    // Update the context root hash after successful state delta application
+                    // Note: We do NOT process events for callbacks here because:
+                    // 1. Delta sync should only apply state changes, not generate new state mutations
+                    // 2. Event callbacks should be instant and handled by network_event.rs when receiving broadcasts
+                    // 3. Processing callbacks during delta sync would cause double processing and violate separation of concerns
                     context.root_hash = outcome.root_hash;
 
                     continue 'recv;

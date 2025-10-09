@@ -233,7 +233,24 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
-                    if !(is_state_op || outcome.artifact.is_empty()) {
+                    debug!(
+                        %context_id,
+                        %executor,
+                        is_state_op,
+                        artifact_empty = outcome.artifact.is_empty(),
+                        events_count = outcome.events.len(),
+                        "Execution outcome details"
+                    );
+
+                    // Broadcast state deltas and events to other nodes when:
+                    // 1. It's not a state synchronization operation (is_state_op = false)
+                    // 2. AND there's a state change artifact (events are only broadcast with state changes)
+                    // 
+                    // This ensures that:
+                    // - Events are only broadcast when there's an actual state change
+                    // - State synchronization operations don't trigger broadcasts (prevents loops)
+                    // - Events are propagated as part of state delta synchronization
+                    if !is_state_op && !outcome.artifact.is_empty() {
                         if let Some(height) = delta_height {
                             // Serialize events if any were emitted
                             let events_data = if outcome.events.is_empty() {
@@ -250,16 +267,19 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 Some(serde_json::to_vec(&events_vec)?)
                             };
 
-                            node_client
-                                .broadcast(
-                                    &context,
-                                    &executor,
-                                    &sender_key,
-                                    outcome.artifact.clone(),
-                                    height,
-                                    events_data,
-                                )
-                                .await?;
+                            // Only broadcast if we have either an artifact or events
+                            if !outcome.artifact.is_empty() || !outcome.events.is_empty() {
+                                node_client
+                                    .broadcast(
+                                        &context,
+                                        &executor,
+                                        &sender_key,
+                                        outcome.artifact.clone(),
+                                        height,
+                                        events_data,
+                                    )
+                                    .await?;
+                            }
                         }
                     }
 

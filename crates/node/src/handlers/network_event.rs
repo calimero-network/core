@@ -1,3 +1,17 @@
+//! Network Event Handler
+//!
+//! This module handles incoming network events from other nodes in the Calimero network.
+//! It processes various types of network messages including state deltas, blob requests,
+//! and peer subscription events.
+//!
+//! Key responsibilities:
+//! - Processing state delta broadcasts and applying them to local contexts
+//! - Handling blob requests and serving blob data over streams
+//! - Managing peer subscriptions and unsubscriptions to contexts
+//! - Processing events for automatic callbacks when state deltas are received
+//!
+//! The main entry point is the `Handler<NetworkEvent>` implementation for `NodeManager`.
+
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -15,7 +29,7 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
+use eyre::{bail, OptionExt};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
@@ -30,27 +44,49 @@ const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes tota
 const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 const FLOW_CONTROL_DELAY: Duration = Duration::from_millis(10); // Small delay between chunks
 
+/// Request structure for blob retrieval over network streams
 #[derive(Debug, Serialize, Deserialize)]
 struct BlobRequest {
+    /// The unique identifier of the blob to retrieve
     blob_id: BlobId,
+    /// The context ID that owns this blob
     context_id: ContextId,
 }
 
+/// Response structure for blob requests
 #[derive(Debug, Serialize, Deserialize)]
 struct BlobResponse {
+    /// Whether the blob was found in local storage
     found: bool,
-    size: Option<u64>, // Total size if found
+    /// Total size of the blob if found (for progress tracking)
+    size: Option<u64>,
 }
 
 // Use binary format for efficient chunk transfer
 use borsh::{BorshDeserialize, BorshSerialize};
 
+/// Binary chunk structure for streaming blob data
+/// This allows efficient transfer of large blobs by breaking them into manageable chunks
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 struct BlobChunk {
+    /// Raw binary data for this chunk
     data: Vec<u8>,
 }
 
-/// Handle blob requests that come over streams
+/// Handle blob requests that come over network streams
+///
+/// This function processes blob requests from other nodes and serves the requested blob data
+/// in chunks over a network stream. It implements a robust streaming protocol with:
+/// - Timeout handling for long-running transfers
+/// - Flow control to prevent overwhelming the network
+/// - Binary serialization for efficient data transfer
+/// - Error handling and recovery
+///
+/// # Arguments
+/// * `node_client` - Client for accessing local blob storage
+/// * `peer_id` - ID of the peer requesting the blob
+/// * `blob_request` - Details of the blob being requested
+/// * `stream` - Network stream for sending data to the requesting peer
 async fn handle_blob_request_stream(
     node_client: NodeClient,
     peer_id: PeerId,
@@ -242,17 +278,32 @@ async fn handle_blob_protocol_stream(
     handle_blob_request_stream(node_client, peer_id, blob_request, stream).await
 }
 
+/// Network Event Handler Implementation
+///
+/// This handler processes various types of network events from other nodes in the Calimero network.
+/// It's the main entry point for handling incoming network messages and coordinating responses.
 impl Handler<NetworkEvent> for NodeManager {
     type Result = <NetworkEvent as Message>::Result;
 
+    /// Handle incoming network events
+    ///
+    /// This method dispatches different types of network events to appropriate handlers:
+    /// - `ListeningOn`: Logs when the node starts listening on a network address
+    /// - `Subscribed`/`Unsubscribed`: Manages peer subscriptions to contexts
+    /// - `Message`: Processes broadcast messages (primarily state deltas)
+    /// - `StreamOpened`: Handles blob request streams
     fn handle(&mut self, msg: NetworkEvent, ctx: &mut Self::Context) -> Self::Result {
         match msg {
             NetworkEvent::ListeningOn { address, .. } => info!("Listening on: {}", address),
+            // Handle peer subscriptions to contexts
+            // When a peer subscribes to a context, they will receive state delta broadcasts
+            // for that context. We only acknowledge subscriptions to contexts we know about.
             NetworkEvent::Subscribed { peer_id, topic } => {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
                     return;
                 };
 
+                // Only acknowledge subscriptions to contexts we have locally
                 if !self
                     .context_client
                     .has_context(&context_id)
@@ -268,6 +319,8 @@ impl Handler<NetworkEvent> for NodeManager {
 
                 info!("Peer '{}' subscribed to context '{}'", peer_id, context_id);
             }
+            // Handle peer unsubscriptions from contexts
+            // This is mainly for logging purposes as the network layer handles the cleanup
             NetworkEvent::Unsubscribed { peer_id, topic } => {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
                     return;
@@ -278,12 +331,15 @@ impl Handler<NetworkEvent> for NodeManager {
                     peer_id, context_id
                 );
             }
+            // Handle incoming network messages
+            // Messages are deserialized and dispatched to appropriate handlers
             NetworkEvent::Message { message, .. } => {
                 let Some(source) = message.source else {
                     warn!(?message, "Received message without source");
                     return;
                 };
 
+                // Deserialize the message using Borsh for efficient binary serialization
                 let message = match borsh::from_slice(&message.data) {
                     Ok(message) => message,
                     Err(err) => {
@@ -292,7 +348,10 @@ impl Handler<NetworkEvent> for NodeManager {
                     }
                 };
 
+                // Dispatch the message to the appropriate handler
                 match message {
+                    // Handle state delta broadcasts - the most common message type
+                    // State deltas contain state changes and events from other nodes
                     BroadcastMessage::StateDelta {
                         context_id,
                         author_id,
@@ -305,6 +364,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
 
+                        // Process the state delta asynchronously to avoid blocking the main handler
                         let _ignored = ctx.spawn(
                             async move {
                                 if let Err(err) = handle_state_delta(
@@ -332,13 +392,16 @@ impl Handler<NetworkEvent> for NodeManager {
                     }
                 }
             }
+            // Handle incoming network streams
+            // Streams are used for efficient data transfer, particularly for large blobs
             NetworkEvent::StreamOpened {
                 peer_id,
                 stream,
                 protocol,
             } => {
-                // Route streams based on protocol
+                // Route streams based on protocol type
                 if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
+                    // Handle blob request streams for serving large binary data
                     info!(%peer_id, "Handling blob protocol stream - STREAM OPENED");
                     let node_client = self.node_client.clone();
                     let _ignored = ctx.spawn(
@@ -350,6 +413,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         .into_actor(self),
                     );
                 } else {
+                    // Handle synchronization streams for state delta synchronization
                     debug!(%peer_id, "Handling sync protocol stream");
                     let sync_manager = self.sync_manager.clone();
                     let _ignored = ctx.spawn(
@@ -360,6 +424,8 @@ impl Handler<NetworkEvent> for NodeManager {
                     );
                 }
             }
+            // Handle blob request events
+            // These events are generated when other nodes request blobs from this node
             NetworkEvent::BlobRequested {
                 blob_id,
                 context_id,
@@ -374,6 +440,8 @@ impl Handler<NetworkEvent> for NodeManager {
                 // For now, just log the request. Applications can listen to this event
                 // to implement custom logic when blobs are requested.
             }
+            // Handle blob provider discovery events
+            // These events are generated when the DHT finds providers for requested blobs
             NetworkEvent::BlobProvidersFound {
                 blob_id,
                 context_id,
@@ -388,6 +456,8 @@ impl Handler<NetworkEvent> for NodeManager {
                 // For now, just log the discovery. Applications can listen to this event
                 // to implement custom logic when providers are found.
             }
+            // Handle blob download completion events
+            // These events are generated when blobs are successfully downloaded from other nodes
             NetworkEvent::BlobDownloaded {
                 blob_id,
                 context_id,
@@ -402,7 +472,8 @@ impl Handler<NetworkEvent> for NodeManager {
                     "Blob downloaded successfully from peer, storing to blobstore"
                 );
 
-                // Store the downloaded blob data to blobstore
+                // Store the downloaded blob data to the local blobstore
+                // This ensures the blob is available for future requests
                 let blobstore = self.blobstore.clone();
                 let blob_data = data.clone();
 
@@ -452,6 +523,27 @@ impl Handler<NetworkEvent> for NodeManager {
     }
 }
 
+/// Handle incoming state delta broadcasts from other nodes
+///
+/// This function processes state delta messages that contain state changes and events
+/// from other nodes. It performs several critical operations:
+///
+/// 1. **State Synchronization**: Applies the state delta to the local context using `__calimero_sync_next`
+/// 2. **Event Processing**: Processes any events contained in the delta for automatic callbacks
+/// 3. **Height Management**: Tracks and validates the height progression to prevent out-of-order updates
+/// 4. **Conflict Resolution**: Handles cases where the delta is ahead of the current state
+///
+/// # Arguments
+/// * `node_client` - Client for node operations
+/// * `context_client` - Client for context operations
+/// * `source` - Peer ID of the node that sent the delta
+/// * `context_id` - ID of the context being updated
+/// * `author_id` - Public key of the node that authored the changes
+/// * `root_hash` - New root hash after applying the delta
+/// * `artifact` - State change artifact data
+/// * `height` - Height of this delta in the author's sequence
+/// * `nonce` - Nonce for this delta
+/// * `events` - Optional events data for callback processing
 async fn handle_state_delta(
     node_client: NodeClient,
     context_client: ContextClient,
@@ -483,6 +575,14 @@ async fn handle_state_delta(
     if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
         if known_height >= height || height.get() - known_height.get() > 1 {
             debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
+            // Note: when falling back to sync, any bundled events in this broadcast
+            // are intentionally skipped to avoid double processing.
+            debug!(
+                %context_id,
+                %author_id,
+                has_bundled_events = events.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
+                "Skipping bundled events due to sync fallback (height gap)"
+            );
 
             node_client.sync(Some(&context_id), Some(&source)).await?;
             return Ok(());
@@ -494,6 +594,14 @@ async fn handle_state_delta(
         .and_then(|i| i.sender_key)
     else {
         debug!(%author_id, %context_id, "Missing sender key, initiating sync");
+        // Note: when falling back to sync, any bundled events in this broadcast
+        // are intentionally skipped to avoid double processing.
+        debug!(
+            %context_id,
+            %author_id,
+            has_bundled_events = events.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
+            "Skipping bundled events due to sync fallback (missing sender key)"
+        );
 
         node_client.sync(Some(&context_id), Some(&source)).await?;
         return Ok(());
@@ -503,6 +611,14 @@ async fn handle_state_delta(
 
     let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
         debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
+        // Note: when falling back to sync, any bundled events in this broadcast
+        // are intentionally skipped to avoid double processing.
+        debug!(
+            %context_id,
+            %author_id,
+            has_bundled_events = events.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
+            "Skipping bundled events due to sync fallback (decrypt failure)"
+        );
 
         node_client.sync(Some(&context_id), Some(&source)).await?;
         return Ok(());
@@ -517,8 +633,11 @@ async fn handle_state_delta(
         bail!("no owned identities found for context: {}", context_id);
     };
 
+    // Store the state delta for future reference
     context_client.put_state_delta(&context_id, &author_id, &height, &artifact)?;
 
+    // Apply the state delta to the local context using the special sync method
+    // This method only applies state changes and does not emit new events
     let outcome = context_client
         .execute(
             &context_id,
@@ -530,6 +649,7 @@ async fn handle_state_delta(
         )
         .await?;
 
+    // Update the tracked height for this author to prevent out-of-order processing
     context_client.set_delta_height(&context_id, &author_id, height)?;
 
     if outcome.root_hash != root_hash {
@@ -542,7 +662,9 @@ async fn handle_state_delta(
         );
     }
 
-    // Process execution events if they were included: re-emit as unified StateMutation
+    // Process execution events if they were included in the state delta
+    // Events are bundled with state deltas to ensure they're processed atomically
+    // with the state changes that triggered them
     debug!(
         %context_id,
         %author_id,
@@ -556,6 +678,8 @@ async fn handle_state_delta(
 
         // Only re-emit if there are actual events
         if !events_payload.is_empty() {
+            // Re-emit events to WebSocket clients as StateMutation events
+            // This allows clients to receive real-time notifications about state changes
             debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
             node_client.send_event(NodeEvent::Context(ContextEvent {
                 context_id,
@@ -565,6 +689,11 @@ async fn handle_state_delta(
             }))?;
 
             // Process events for automatic callbacks
+            // This is the correct place to handle event callbacks because:
+            // 1. We're processing events received from other nodes via state delta broadcasts
+            // 2. Callbacks should be instant and happen immediately when events are received
+            // 3. This separates event processing from state delta synchronization logic
+            // 4. It prevents double processing that would occur if callbacks were handled in delta.rs
             debug!(%context_id, "Processing events for automatic callbacks");
             for event in events_payload {
                 debug!(
@@ -581,7 +710,8 @@ async fn handle_state_delta(
                     "event_data": event.data
                 })).unwrap_or_default();
 
-                if let Err(err) = context_client
+                // Execute the callback and commit the state changes
+                match context_client
                     .execute(
                         &context_id,
                         &our_identity,
@@ -592,17 +722,64 @@ async fn handle_state_delta(
                     )
                     .await
                 {
-                    debug!(
-                        %context_id,
-                        error = %err,
-                        "Failed to process event for automatic callback"
-                    );
-                } else {
-                    debug!(
-                        %context_id,
-                        event_kind = %event.kind,
-                        "Successfully processed event for automatic callback"
-                    );
+                    Ok(callback_outcome) => {
+                        debug!(
+                            %context_id,
+                            event_kind = %event.kind,
+                            "Successfully processed event for automatic callback"
+                        );
+                        
+                        // Commit the callback state changes by creating a new state delta
+                        if !callback_outcome.artifact.is_empty() {
+                            debug!(
+                                %context_id,
+                                artifact_len = callback_outcome.artifact.len(),
+                                "Committing callback state changes"
+                            );
+                            
+                            // Create a new state delta for the callback changes
+                            let callback_height = height.get() + 1;
+                            let callback_height = NonZeroUsize::new(callback_height)
+                                .ok_or_eyre("callback height overflow")?;
+                            
+                            // Store the callback state delta
+                            context_client.put_state_delta(
+                                &context_id,
+                                &our_identity,
+                                &callback_height,
+                                &callback_outcome.artifact,
+                            )?;
+                            
+                            // Apply the callback state delta
+                            let final_outcome = context_client
+                                .execute(
+                                    &context_id,
+                                    &our_identity,
+                                    "__calimero_sync_next".to_owned(),
+                                    callback_outcome.artifact,
+                                    vec![],
+                                    None,
+                                )
+                                .await?;
+                            
+                            // Update the delta height
+                            context_client.set_delta_height(&context_id, &our_identity, callback_height)?;
+                            
+                            debug!(
+                                %context_id,
+                                callback_height = callback_height.get(),
+                                final_root_hash = %final_outcome.root_hash,
+                                "Callback state changes committed"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        debug!(
+                            %context_id,
+                            error = %err,
+                            "Failed to process event for automatic callback"
+                        );
+                    }
                 }
             }
         } else {
