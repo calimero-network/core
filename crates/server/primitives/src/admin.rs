@@ -916,3 +916,64 @@ impl SyncContextResponse {
         Self { data: Empty {} }
     }
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateIdentityResponse {
+    pub data: GenerateIdentityResponseData,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateIdentityResponseData {
+    pub public_key: PublicKey,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListIdentitiesResponse {
+    pub data: ListIdentitiesResponseData,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListIdentitiesResponseData {
+    pub identities: Vec<IdentityInfo>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityInfo {
+    pub public_key: PublicKey,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveIdentityResponse {
+    pub data: Empty,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportIdentityResponse {
+    pub data: ExportIdentityResponseData,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportIdentityResponseData {
+    pub json: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportIdentityResponse {
+    pub data: ImportIdentityResponseData,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportIdentityResponseData {
+    pub public_key: PublicKey,
+}

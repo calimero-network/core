@@ -126,7 +126,9 @@ impl ExternalConfigClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         self.with_nonce(public_key, async |nonce| {
             let client = self.client.mutate::<ContextConfig>(
@@ -152,7 +154,7 @@ impl ExternalConfigClient<'_> {
                         )),
                     ),
                 )
-                .send(**private_key, nonce)
+                .send(*private_key, nonce)
                 .await
         })
         .await?;
@@ -171,7 +173,9 @@ impl ExternalConfigClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         let identities = identities
             .iter()
@@ -191,7 +195,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &identities,
                 )
-                .send(**private_key, nonce)
+                .send(*private_key, nonce)
                 .await
         })
         .await?;
@@ -210,7 +214,9 @@ impl ExternalConfigClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         let identities = identities
             .iter()
@@ -230,7 +236,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &identities,
                 )
-                .send(**private_key, nonce)
+                .send(*private_key, nonce)
                 .await
         })
         .await?;
@@ -249,7 +255,9 @@ impl ExternalConfigClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         let capabilities = capabilities
             .iter()
@@ -269,7 +277,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &capabilities,
                 )
-                .send(**private_key, nonce)
+                .send(*private_key, nonce)
                 .await
         })
         .await?;
@@ -288,7 +296,9 @@ impl ExternalConfigClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         let capabilities = capabilities
             .iter()
@@ -308,7 +318,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &capabilities,
                 )
-                .send(**private_key, nonce)
+                .send(*private_key, nonce)
                 .await
         })
         .await?;
@@ -323,7 +333,9 @@ impl ExternalConfigClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         self.with_nonce(public_key, async |nonce| {
             let client = self.client.mutate::<ContextConfig>(
@@ -334,7 +346,7 @@ impl ExternalConfigClient<'_> {
 
             client
                 .update_proxy_contract(self.client.context_id.rt().expect("infallible conversion"))
-                .send(**private_key, nonce)
+                .send(*private_key, nonce)
                 .await
         })
         .await?;

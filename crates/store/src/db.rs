@@ -24,6 +24,7 @@ pub enum Column {
     Application,
     Alias,
     Generic,
+    Keypairs,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {
