@@ -45,8 +45,8 @@ pub enum Error<'a> {
     UserAlreadyExists(&'a str),
 }
 
-#[app::logic]
 #[app::callbacks]
+#[app::logic]
 impl EventCallbackApp {
     #[app::init]
     pub fn init() -> EventCallbackApp {

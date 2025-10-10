@@ -47,6 +47,7 @@ jobs:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./apps/kv-store/build.sh
+          ./apps/event-callback/build.sh
           cargo build -p meroctl -p merod -p e2e-tests
 
       - name: Upload Build Artifacts (Binaries)
@@ -58,6 +59,7 @@ jobs:
             target/debug/merod
             target/debug/e2e-tests
             apps/kv-store/res/kv_store.wasm
+            apps/event-callback/res/event_callback.wasm
           retention-days: 2
 
   test:

@@ -697,11 +697,10 @@ async fn handle_state_delta(
             for event in events_payload {
                 // Call the application's event processing method
                 // Encode arguments as JSON to match WASM ABI (event_kind: String, event_data: Vec<u8>)
-                // Note: Vec<u8> parameters must be base58-encoded strings in JSON
-                let event_data_base58 = bs58::encode(&event.data).into_string();
+                // Note: Vec<u8> parameters must be passed as JSON arrays
                 let combined_payload = serde_json::to_vec(&serde_json::json!({
                     "event_kind": event.kind,
-                    "event_data": event_data_base58
+                    "event_data": event.data
                 }))
                 .unwrap_or_default();
 

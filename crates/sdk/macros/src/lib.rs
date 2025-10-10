@@ -145,9 +145,7 @@ pub fn callbacks(args: TokenStream, input: TokenStream) -> TokenStream {
     let _args = parse_macro_input!({ input } => args as Empty);
     let block = parse_macro_input!(input as ItemImpl);
 
-    // Extract the type name from the impl block
-    let type_name = &block.self_ty;
-    let (impl_generics, ty_generics, where_clause) = block.generics.split_for_impl();
+    // We don't need to extract generics since we're modifying the existing impl block
 
     let process_remote_events_method = quote! {
         /// Process remote events for automatic callbacks
@@ -155,23 +153,26 @@ pub fn callbacks(args: TokenStream, input: TokenStream) -> TokenStream {
         /// Uses the `#[derive(CallbackHandlers)]` dispatcher generated from the `Event` enum
         /// to decode and call the appropriate per-variant handler implemented on `self`.
         /// This method is generated when `#[app::callbacks]` is used.
-        pub fn process_remote_events(&mut self, event_kind: ::std::string::String, event_data: ::std::string::String) -> ::calimero_sdk::app::Result<()> {
-            // The event_data comes as base58-encoded string, so we need to decode it
-            let decoded_event_data = ::bs58::decode(&event_data)
-                .into_vec()
-                .map_err(|_| ::calimero_sdk::types::Error::msg("invalid base58 event data"))?;
-
-            // Use the event type from the AppState trait to dispatch events
-            <#type_name as ::calimero_sdk::state::AppState>::Event::dispatch(self, &event_kind, &decoded_event_data)
+        pub fn process_remote_events(&mut self, event_kind: ::std::string::String, event_data: ::std::vec::Vec<u8>) -> ::calimero_sdk::app::Result<()> {
+            // Use the Event type directly to dispatch events
+            // We need to use the concrete Event type, not the associated type from AppState
+            // The Event type should be accessible in the same scope
+            crate::Event::dispatch(self, &event_kind, &event_data)
         }
     };
 
+    // Instead of creating a new impl block, we need to add the method to the existing block
+    // Parse the impl block and add the method to it
+    let mut new_block = block.clone();
+    
+    // Parse the method as an ImplItem
+    let method_item: syn::ImplItem = syn::parse2(process_remote_events_method).unwrap();
+    
+    // Add the method to the impl block
+    new_block.items.push(method_item);
+    
     quote! {
-        #block
-
-        impl #impl_generics #type_name #ty_generics #where_clause {
-            #process_remote_events_method
-        }
+        #new_block
     }
     .into()
 }

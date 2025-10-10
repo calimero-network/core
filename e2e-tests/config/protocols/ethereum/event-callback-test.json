@@ -1,0 +1,75 @@
+{
+  "steps": [
+    {
+      "applicationInstall": {
+        "application": {
+          "localFile": "./apps/event-callback/res/event_callback.wasm"
+        },
+        "target": "allMembers"
+      }
+    },
+    {
+      "contextCreate": null
+    },
+    {
+      "contextCreateAlias": {
+        "aliasName": "my_context"
+      }
+    },
+    {
+      "contextInviteJoin": null
+    },
+    {
+      "call": {
+        "methodName": "warmup",
+        "argsJson": {},
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 2000,
+        "description": [
+          "Wait for warmup to propagate"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "register_user",
+        "argsJson": {
+          "user_id": "user123",
+          "email": "user123@example.com"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 10000,
+        "description": [
+          "Wait for event to be broadcast and callback to execute"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_callback_marker",
+        "argsJson": {
+          "callback_user_id": "callback_user123"
+        },
+        "expectedResultJson": "callback_executed",
+        "target": "allMembers",
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": [
+          "Check that the callback was executed on all nodes"
+        ]
+      }
+    }
+  ]
+}
