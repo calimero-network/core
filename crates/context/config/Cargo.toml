@@ -26,6 +26,7 @@ near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
 near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 starknet = { workspace = true, optional = true }
