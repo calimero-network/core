@@ -7,6 +7,7 @@ use calimero_primitives::alias::Alias;
 use calimero_server_primitives::admin::DeleteAliasResponse;
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use reqwest::StatusCode;
+use tracing::{error, info};
 
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
@@ -23,12 +24,18 @@ where
         .map(|Path(alias)| (alias, None))
         .or_else(|| scoped_alias.map(|Path((scope, alias))| (alias, Some(scope))))
     else {
+        error!("Invalid path params for delete alias");
         return (StatusCode::BAD_REQUEST, "invalid path params").into_response();
     };
 
+    info!(alias=%alias, "Deleting alias");
+
     if let Err(err) = state.node_client.delete_alias(alias, scope) {
+        error!(alias=%alias, error=?err, "Failed to delete alias");
         return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
     }
+
+    info!(alias=%alias, "Alias deleted successfully");
 
     ApiResponse {
         payload: DeleteAliasResponse::new(),

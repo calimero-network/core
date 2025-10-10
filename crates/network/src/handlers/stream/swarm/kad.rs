@@ -5,7 +5,7 @@ use libp2p::kad::{Event, GetRecordError, GetRecordOk, QueryResult};
 use libp2p::PeerId;
 use libp2p_metrics::Recorder;
 use owo_colors::OwoColorize;
-use tracing::{debug, info};
+use tracing::debug;
 
 use super::{EventHandler, NetworkManager};
 
@@ -30,8 +30,8 @@ impl EventHandler<Event> for NetworkManager {
                 ..
             } => {
                 // Handle blob query results
-                info!("DHT GetRecord result for query_id={:?}: {:?}", id, result);
-                info!(
+                debug!("DHT GetRecord result for query_id={:?}: {:?}", id, result);
+                debug!(
                     "Found {} pending blob queries, looking for query_id={:?}",
                     self.pending_blob_queries.len(),
                     id
@@ -56,12 +56,12 @@ impl EventHandler<Event> for NetworkManager {
                                     PeerId::from_bytes(&record.record.value[..size_start])
                                 {
                                     peers.push(peer_id);
-                                    info!("Extracted peer_id {} from DHT record", peer_id);
+                                    debug!("Extracted peer_id {} from DHT record", peer_id);
                                 } else {
-                                    info!("Failed to parse peer_id from DHT record value");
+                                    debug!("Failed to parse peer_id from DHT record value");
                                 }
                             }
-                            info!("Found {} peers with blob", peers.len());
+                            debug!("Found {} peers with blob", peers.len());
 
                             // Extract blob_id and context_id from record key
                             if record.record.key.as_ref().len() >= 64 {
@@ -91,9 +91,9 @@ impl EventHandler<Event> for NetworkManager {
                             Ok(Vec::new())
                         }
                         Err(e) => {
-                            info!("DHT query failed with error: {:?}", e);
+                            debug!("DHT query failed with error: {:?}", e);
                             if let GetRecordError::NotFound { key, closest_peers } = e {
-                                info!(
+                                debug!(
                                     "DHT query NotFound - key_hex={}, closest_peers={:?}",
                                     hex::encode(key.as_ref()),
                                     closest_peers

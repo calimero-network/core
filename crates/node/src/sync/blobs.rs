@@ -9,7 +9,7 @@ use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
 use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use super::{Sequencer, SyncManager};
 
@@ -22,7 +22,7 @@ impl SyncManager {
         size: u64,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             blob_id=%blob_id,
@@ -133,7 +133,7 @@ impl SyncManager {
             );
         }
 
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             their_identity=%their_identity,
@@ -152,7 +152,7 @@ impl SyncManager {
         blob_id: BlobId,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             their_identity=%their_identity,
@@ -219,7 +219,7 @@ impl SyncManager {
         )
         .await?;
 
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             their_identity=%their_identity,

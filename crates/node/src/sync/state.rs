@@ -10,7 +10,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::{Sequencer, SyncManager};
 
@@ -22,7 +22,7 @@ impl SyncManager {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             our_root_hash=%context.root_hash,
@@ -365,7 +365,7 @@ impl SyncManager {
 
         // todo! eventually compare that both nodes arrive at the same state
 
-        debug!(
+        info!(
             context_id=%context.id,
             our_root_hash=%context.root_hash,
             our_identity=%our_identity,

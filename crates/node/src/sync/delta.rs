@@ -12,7 +12,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use futures_util::TryStreamExt;
 use rand::{thread_rng, Rng};
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::{Sequencer, SyncManager};
 
@@ -23,7 +23,7 @@ impl SyncManager {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             our_root_hash=%context.root_hash,
@@ -576,7 +576,7 @@ impl SyncManager {
             our_nonce = our_new_nonce;
         }
 
-        debug!(
+        info!(
             context_id=%context.id,
             our_root_hash=%context.root_hash,
             our_identity=%our_identity,

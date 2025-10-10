@@ -3,10 +3,7 @@ use std::sync::Arc;
 
 use tower as _;
 
-use axum::body::{to_bytes, Body};
 use axum::http::Method;
-use axum::middleware::{from_fn, Next};
-use axum::response::Response;
 use axum::Router;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
@@ -18,9 +15,7 @@ use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
 use tracing::warn;
-use tracing::Level;
 
 use crate::admin::service::{setup, site};
 
@@ -28,7 +23,6 @@ pub mod admin;
 pub mod config;
 pub mod jsonrpc;
 mod metrics;
-mod middleware;
 pub mod ws;
 
 #[derive(Debug)]
@@ -151,55 +145,6 @@ pub async fn start(
             .allow_private_network(true),
     );
 
-    // Log request bodies when small (uses Content-Length guard)
-    app = app.layer(from_fn(log_request_body));
-
-    // Global structured request/response tracing for all server routes
-    app = app.layer(
-        TraceLayer::new_for_http()
-            .make_span_with(|request: &axum::http::Request<_>| {
-                tracing::span!(
-                    Level::DEBUG,
-                    "http_request",
-                    method = %request.method(),
-                    path = %request.uri().path()
-                )
-            })
-            .on_request(|request: &axum::http::Request<_>, _span: &tracing::Span| {
-                let content_type = request
-                    .headers()
-                    .get(axum::http::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                tracing::debug!(
-                    target: "server::http",
-                    method = %request.method(),
-                    path = %request.uri().path(),
-                    content_type,
-                    "incoming request"
-                );
-            })
-            .on_body_chunk(|chunk: &axum::body::Bytes, _latency: std::time::Duration, _span: &tracing::Span| {
-                // Log response body chunk sizes without modifying the payload
-                tracing::debug!(target: "server::http", chunk_size = chunk.len(), "response body chunk");
-            })
-            .on_response(
-                |response: &axum::http::Response<_>,
-                 latency: std::time::Duration,
-                 _span: &tracing::Span| {
-                    tracing::debug!(
-                        target: "server::http",
-                        status = %response.status(),
-                        elapsed_ms = latency.as_millis() as u64,
-                        "response sent"
-                    );
-                },
-            ),
-    );
-
-    // Log response bodies when small (uses Content-Length guard)
-    app = app.layer(from_fn(log_response_body));
-
     let mut set = JoinSet::new();
 
     for listener in listeners {
@@ -212,89 +157,6 @@ pub async fn start(
     }
 
     Ok(())
-}
-
-// Log request body if it is small (cap to avoid huge payloads), then restore the body for downstream handlers
-async fn log_request_body(req: axum::http::Request<Body>, next: Next) -> Response {
-    const MAX_LOG_BYTES: usize = 4096;
-
-    // Read and buffer the body (with a size cap)
-    let (parts, body) = req.into_parts();
-    let content_length = parts
-        .headers
-        .get(axum::http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<usize>().ok());
-
-    if matches!(content_length, Some(len) if len <= MAX_LOG_BYTES) {
-        match to_bytes(body, MAX_LOG_BYTES).await {
-            Ok(bytes) => {
-                if let Ok(text) = std::str::from_utf8(&bytes) {
-                    let truncated = bytes.len() >= MAX_LOG_BYTES;
-                    tracing::debug!(target: "server::http", truncated, body = %text, "request body");
-                } else {
-                    tracing::debug!(target: "server::http", size = bytes.len(), "request body (non-utf8)");
-                }
-                // Reconstruct the request with the buffered body for downstream
-                let req_restored = axum::http::Request::from_parts(parts, Body::from(bytes));
-                next.run(req_restored).await
-            }
-            Err(err) => {
-                tracing::debug!(target: "server::http", error = %err, "failed to read request body");
-                // Best-effort: forward empty body on error (should be rare given small content-length)
-                let req_restored = axum::http::Request::from_parts(parts, Body::empty());
-                next.run(req_restored).await
-            }
-        }
-    } else {
-        // Skip logging for large or unknown-sized bodies; forward as-is
-        tracing::debug!(target: "server::http", "skipping request body logging (large or unknown size)");
-        let req_restored = axum::http::Request::from_parts(parts, body);
-        next.run(req_restored).await
-    }
-}
-
-// Log response body if it is small (cap to avoid huge payloads) and then restore the body
-async fn log_response_body(req: axum::http::Request<Body>, next: Next) -> Response {
-    const MAX_LOG_BYTES: usize = 4096;
-
-    // Skip logging for static asset routes to avoid Content-Length issues
-    let path = req.uri().path();
-    if path.starts_with("/admin-dashboard/") || path.contains("/assets/") {
-        return next.run(req).await;
-    }
-
-    // Run the rest of the stack first
-    let res = next.run(req).await;
-
-    let (parts, body) = res.into_parts();
-    let content_length = parts
-        .headers
-        .get(axum::http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<usize>().ok());
-
-    if matches!(content_length, Some(len) if len <= MAX_LOG_BYTES) {
-        match to_bytes(body, MAX_LOG_BYTES).await {
-            Ok(bytes) => {
-                if let Ok(text) = std::str::from_utf8(&bytes) {
-                    let truncated = bytes.len() >= MAX_LOG_BYTES;
-                    tracing::debug!(target: "server::http", truncated, body = %text, "response body");
-                } else {
-                    tracing::debug!(target: "server::http", size = bytes.len(), "response body (non-utf8)");
-                }
-                Response::from_parts(parts, Body::from(bytes))
-            }
-            Err(err) => {
-                tracing::debug!(target: "server::http", error = %err, "failed to read response body");
-                Response::from_parts(parts, Body::empty())
-            }
-        }
-    } else {
-        // Skip logging for large or unknown-sized bodies; forward as-is
-        tracing::debug!(target: "server::http", "skipping response body logging (large or unknown size)");
-        Response::from_parts(parts, body)
-    }
 }
 
 #[cfg(test)]

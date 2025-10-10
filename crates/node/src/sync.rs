@@ -16,7 +16,7 @@ use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio::time::{self, timeout, timeout_at, Instant, MissedTickBehavior};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::utils::choose_stream;
 
@@ -129,7 +129,7 @@ impl SyncManager {
             let took = Instant::saturating_duration_since(&now, start);
 
             if let Ok(_) = result {
-                debug!(%context_id, ?took, "Sync finished");
+                info!(%context_id, ?took, "Sync finished");
             } else {
                 error!(%context_id, ?took, "Sync timed out");
             }
@@ -155,7 +155,7 @@ impl SyncManager {
                     loop { advance(&mut futs, &mut state).await? }
                 } => {},
                 Some((ctx, peer)) = ctx_sync_rx.recv() => {
-                    debug!(?ctx, ?peer, "Received an explicit sync request");
+                    info!(?ctx, ?peer, "Received sync request");
 
                     requested_ctx = ctx;
                     requested_peer = peer;
@@ -213,7 +213,7 @@ impl SyncManager {
                         let _ignored = state.last_sync.take();
                     }
                     hash_map::Entry::Vacant(state) => {
-                        debug!(
+                        info!(
                             %context_id,
                             "Syncing for the first time"
                         );
@@ -222,7 +222,7 @@ impl SyncManager {
                     }
                 };
 
-                debug!(%context_id, "Scheduled sync");
+                info!(%context_id, "Scheduled sync");
 
                 let start = Instant::now();
                 let Some(deadline) = start.checked_add(self.sync_config.timeout) else {
@@ -278,14 +278,14 @@ impl SyncManager {
     async fn initiate_sync(&self, context_id: ContextId, peer_id: PeerId) -> bool {
         let start = Instant::now();
 
-        debug!(%context_id, %peer_id, "Attempting to sync with peer");
+        info!(%context_id, %peer_id, "Attempting to sync with peer");
 
         let res = self.initiate_sync_inner(context_id, peer_id).await;
 
         let took = start.elapsed();
 
         let Err(err) = res else {
-            debug!(%context_id, %peer_id, ?took, "Sync with peer successfully finished");
+            info!(%context_id, %peer_id, ?took, "Sync with peer completed successfully");
 
             return true;
         };

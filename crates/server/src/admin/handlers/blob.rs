@@ -11,6 +11,7 @@ use futures_util::{AsyncRead, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::StreamReader;
+use tracing::{debug, error, info};
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -82,7 +83,8 @@ pub async fn upload_handler(
         None
     };
 
-    tracing::info!("Starting streaming raw blob upload");
+    info!("Uploading blob");
+    debug!(has_expected_hash=%expected_hash.is_some(), "Blob upload request");
 
     let reader = body_to_async_read(body);
 
@@ -92,11 +94,12 @@ pub async fn upload_handler(
         .await
     {
         Ok((blob_id, size)) => {
-            tracing::info!(
-                "Successfully uploaded streaming blob {} with size {} bytes ({:.1} MiB)",
-                blob_id,
-                size,
-                size as f64 / (1024.0 * 1024.0)
+            info!(blob_id=%blob_id, "Blob uploaded successfully");
+            debug!(
+                blob_id=%blob_id,
+                size_bytes=%size,
+                size_mib=%(size as f64 / (1024.0 * 1024.0)),
+                "Blob upload details"
             );
             ApiResponse {
                 payload: BlobUploadResponse {
@@ -106,7 +109,7 @@ pub async fn upload_handler(
             .into_response()
         }
         Err(err) => {
-            tracing::error!("Failed to upload streaming blob: {:?}", err);
+            error!(error=?err, "Failed to upload blob");
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
                 message: format!("Failed to store blob: {}", err),
@@ -123,14 +126,23 @@ pub async fn upload_handler(
 /// - Standalone blobs that aren't referenced as chunks by other blobs
 /// This excludes individual chunk blobs to provide a cleaner user experience.
 pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
+    info!("Listing blobs");
+
     match state.node_client.list_blobs() {
-        Ok(blobs) => ApiResponse {
-            payload: BlobListResponse {
-                data: BlobListResponseData { blobs },
-            },
+        Ok(blobs) => {
+            info!(count=%blobs.len(), "Blobs listed successfully");
+            debug!(blob_ids=?blobs.iter().map(|b| b.blob_id).collect::<Vec<_>>(), "Blob list");
+            ApiResponse {
+                payload: BlobListResponse {
+                    data: BlobListResponseData { blobs },
+                },
+            }
+            .into_response()
         }
-        .into_response(),
-        Err(err) => parse_api_error(err).into_response(),
+        Err(err) => {
+            error!(error=?err, "Failed to list blobs");
+            parse_api_error(err).into_response()
+        }
     }
 }
 
@@ -164,7 +176,8 @@ pub async fn download_handler(
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
-        Err(_) => {
+        Err(err) => {
+            error!(blob_id=%blob_id, error=?err, "Invalid blob ID format");
             return ApiError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: "Invalid blob ID format".to_owned(),
@@ -178,14 +191,12 @@ pub async fn download_handler(
         // Parse context_id
         match context_id_str.parse() {
             Ok(context_id) => {
-                tracing::debug!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    "Attempting blob download with network discovery"
-                );
+                info!(blob_id=%blob_id, context_id=%context_id, "Downloading blob with network discovery");
+                debug!(blob_id=%blob_id, context_id=%context_id, "Blob download request");
                 Some(context_id)
             }
-            Err(_) => {
+            Err(err) => {
+                error!(context_id=%context_id_str, error=?err, "Invalid context ID format");
                 return ApiError {
                     status_code: StatusCode::BAD_REQUEST,
                     message: "Invalid context ID format".to_owned(),
@@ -194,6 +205,8 @@ pub async fn download_handler(
             }
         }
     } else {
+        info!(blob_id=%blob_id, "Downloading blob");
+        debug!(blob_id=%blob_id, "Blob download request");
         None
     };
 

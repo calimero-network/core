@@ -30,7 +30,7 @@ use futures_util::future::TryFutureExt;
 use futures_util::io::Cursor;
 use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -54,6 +54,11 @@ impl Handler<ExecuteRequest> for ContextManager {
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        info!(
+            %context_id,
+            method,
+            "Executing method in context"
+        );
         debug!(
             %context_id,
             %executor,
@@ -65,7 +70,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 Some(ContextAtomic::Lock) => "acquire",
                 Some(ContextAtomic::Held(_)) => "yes",
             },
-            "execution requested"
+            "Execution request details"
         );
 
         let context = match self.get_or_fetch_context(&context_id) {
@@ -197,21 +202,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                 let _ignored = execution_duration
                     .get_or_create(&ExecutionLabels {
                         context_id: context_id.to_string(),
-                        method: method,
+                        method: method.clone(),
                         status: status.to_owned(),
                     })
                     .observe(duration);
 
+                info!(
+                    %context_id,
+                    method,
+                    status,
+                    "Method execution completed"
+                );
                 debug!(
                     %context_id,
                     %executor,
-                    status = status,
+                    method,
+                    status,
                     %old_root_hash,
                     new_root_hash=%context.root_hash,
                     artifact_len = outcome.artifact.len(),
                     logs_count = outcome.logs.len(),
                     events_count = outcome.events.len(),
-                    "executed request"
+                    "Execution outcome details"
                 );
 
                 Ok((guard, context, outcome, delta_height))
