@@ -2037,6 +2037,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
+ "tracing",
  "ureq",
  "wasmer",
  "wasmer-types",
@@ -2210,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.8.0"
+version = "0.9.0-rc.3"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",

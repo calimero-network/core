@@ -21,6 +21,7 @@ serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 tokio-stream.workspace = true
+tracing.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
