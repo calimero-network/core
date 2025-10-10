@@ -1,7 +1,11 @@
 [package]
 name = "event-callback"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
