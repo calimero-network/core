@@ -30,7 +30,7 @@ use futures_util::future::TryFutureExt;
 use futures_util::io::Cursor;
 use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -202,7 +202,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     })
                     .observe(duration);
 
-                debug!(
+                info!(
                     %context_id,
                     %executor,
                     status = status,
@@ -233,7 +233,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
-                    debug!(
+                    info!(
                         %context_id,
                         %executor,
                         is_state_op,

@@ -54,17 +54,20 @@ pub fn derive_app_event_handlers(input: DeriveInput) -> TokenStream2 {
 
                 match_arms.push(quote! {
                     stringify!(#v_ident) => {
-                        // The event_data contains only the serialized fields, not the full enum
-                        // So we deserialize directly into the field structure
-                        ::calimero_sdk::app::log!("Attempting to deserialize event data for {}", stringify!(#v_ident));
-                        let fields: (#( #param_types ),*) = ::calimero_sdk::serde_json::from_slice(data)
-                            .map_err(|e| {
-                                ::calimero_sdk::app::log!("Failed to deserialize event data: {:?}", e);
-                                ::calimero_sdk::types::Error::msg("event decode failed")
-                            })?;
-                        let (#( #binds ),*) = fields;
-                        ::calimero_sdk::app::log!("Successfully deserialized event data for {}", stringify!(#v_ident));
-                        target.#handler_name( #( #call_args ),* )
+                        // Deserialize the event data directly - it's already the inner data object
+                        let json_value: ::calimero_sdk::serde_json::Value = ::calimero_sdk::serde_json::from_slice(data)
+                            .map_err(|_| ::calimero_sdk::types::Error::msg("event decode failed"))?;
+                        
+                        // Extract fields from JSON - the data is already the inner object
+                        #( 
+                            let #binds = ::calimero_sdk::serde_json::from_value(
+                                json_value.get(stringify!(#binds))
+                                    .ok_or_else(|| ::calimero_sdk::types::Error::msg("missing field"))?
+                                    .clone()
+                            ).map_err(|_| ::calimero_sdk::types::Error::msg("field decode failed"))?;
+                        )*
+                        
+                        target.#handler_name( #( #binds ),* )
                     }
                 });
             }

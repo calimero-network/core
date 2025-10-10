@@ -11,6 +11,7 @@ publish = true
 [dependencies]
 actix.workspace = true
 borsh.workspace = true
+bs58.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 either.workspace = true
 eyre.workspace = true

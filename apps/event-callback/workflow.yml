@@ -2,12 +2,12 @@ description: A workflow that demonstrates cross-node event callbacks with state 
 name: Event Callback Test Workflow
 
 # Force pull Docker images even if they exist locally
-force_pull_image: true
+force_pull_image: false
 
 nodes:
   chain_id: testnet-1
   count: 2
-  image: ghcr.io/calimero-network/merod:1631b87
+  image: node
   prefix: calimero-node
 
 steps:

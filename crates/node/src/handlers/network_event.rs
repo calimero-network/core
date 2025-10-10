@@ -694,21 +694,16 @@ async fn handle_state_delta(
             // 2. Callbacks should be instant and happen immediately when events are received
             // 3. This separates event processing from state delta synchronization logic
             // 4. It prevents double processing that would occur if callbacks were handled in delta.rs
-            debug!(%context_id, "Processing events for automatic callbacks");
             for event in events_payload {
-                debug!(
-                    %context_id,
-                    event_kind = %event.kind,
-                    event_data_len = event.data.len(),
-                    "Processing event for automatic callback"
-                );
-
                 // Call the application's event processing method
-                // Encode arguments with Borsh to match WASM ABI (event_kind: String, event_data: Vec<u8>)
-                let combined_payload = borsh::to_vec(&(event.kind.clone(), event.data.clone()))
-                    .unwrap_or_default();
-
-                // Execute the callback and commit the state changes
+                // Encode arguments as JSON to match WASM ABI (event_kind: String, event_data: Vec<u8>)
+                // Note: Vec<u8> parameters must be base58-encoded strings in JSON
+                let event_data_base58 = bs58::encode(&event.data).into_string();
+                let combined_payload = serde_json::to_vec(&serde_json::json!({
+                    "event_kind": event.kind,
+                    "event_data": event_data_base58
+                })).unwrap_or_default();
+                
                 match context_client
                     .execute(
                         &context_id,
@@ -721,17 +716,39 @@ async fn handle_state_delta(
                     .await
                 {
                     Ok(callback_outcome) => {
-                        // Check if the execution actually succeeded
-                        if callback_outcome.returns.is_err() {
-                            debug!(
+                        info!(
+                            %context_id,
+                            event_kind = %event.kind,
+                            returns_ok = callback_outcome.returns.is_ok(),
+                            returns_err = ?callback_outcome.returns.as_ref().err(),
+                            artifact_len = callback_outcome.artifact.len(),
+                            logs_count = callback_outcome.logs.len(),
+                            "Callback execution completed"
+                        );
+                        
+                        // Log all the logs from the execution
+                        for (i, log) in callback_outcome.logs.iter().enumerate() {
+                            info!(
                                 %context_id,
                                 event_kind = %event.kind,
+                                log_index = i,
+                                log_content = %log,
+                                "Callback execution log"
+                            );
+                        }
+                        
+                        // Check if the execution actually succeeded
+                        if callback_outcome.returns.is_err() {
+                            info!(
+                                %context_id,
+                                event_kind = %event.kind,
+                                error = ?callback_outcome.returns.as_ref().err(),
                                 "Event callback execution failed, skipping state changes"
                             );
                             continue;
                         }
                         
-                        debug!(
+                        info!(
                             %context_id,
                             event_kind = %event.kind,
                             "Successfully processed event for automatic callback"

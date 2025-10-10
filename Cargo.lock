@@ -1923,6 +1923,7 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "borsh",
+ "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-config",
@@ -3512,6 +3513,7 @@ dependencies = [
 name = "event-callback"
 version = "0.1.0"
 dependencies = [
+ "bs58 0.5.1",
  "calimero-sdk",
  "calimero-storage",
  "calimero-wasm-abi",

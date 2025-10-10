@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 calimero-sdk = { path = "../../crates/sdk" }
 calimero-storage = { path = "../../crates/storage" }
 thiserror = "2.0"
+bs58 = "0.5"
 
 [build-dependencies]
 calimero-wasm-abi = { path = "../../crates/wasm-abi" }
