@@ -2,7 +2,8 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{CompileError, DeserializeError, Instance, NativeEngineExt, SerializeError, Store};
+use wasmer::sys::NativeEngineExt;
+use wasmer::{CompileError, DeserializeError, Instance, SerializeError, Store};
 
 mod constants;
 mod constraint;

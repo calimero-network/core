@@ -25,6 +25,7 @@ tracing.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
+wasmer-vm.workspace = true
 
 calimero-primitives.workspace = true
 calimero-node-primitives.workspace = true
