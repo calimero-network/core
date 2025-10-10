@@ -30,6 +30,7 @@ use crate::handlers::stream::incoming::FromIncoming;
 mod behaviour;
 mod discovery;
 mod handlers;
+mod store;
 
 use behaviour::Behaviour;
 use discovery::Discovery;
@@ -55,8 +56,9 @@ impl NetworkManager {
         config: &NetworkConfig,
         event_recipient: LazyRecipient<NetworkEvent>,
         prom_registry: &mut Registry,
+        db: calimero_store::Store,
     ) -> eyre::Result<Self> {
-        let swarm = Behaviour::build_swarm(config)?;
+        let swarm = Behaviour::build_swarm(config, db)?;
 
         let discovery = Discovery::new(
             &config.discovery.rendezvous,
