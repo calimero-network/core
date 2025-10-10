@@ -34,7 +34,7 @@ use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::utils::choose_stream;
 use crate::NodeManager;
@@ -464,12 +464,12 @@ impl Handler<NetworkEvent> for NodeManager {
                 data,
                 from_peer,
             } => {
-                debug!(
+                info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
                     from_peer = %from_peer,
                     data_size = data.len(),
-                    "Blob downloaded successfully from peer, storing to blobstore"
+                    "Blob downloaded successfully from peer"
                 );
 
                 // Store the downloaded blob data to the local blobstore
@@ -484,15 +484,15 @@ impl Handler<NetworkEvent> for NodeManager {
 
                         match blobstore.put(reader).await {
                             Ok((stored_blob_id, _hash, size)) => {
-                                debug!(
+                                info!(
                                     requested_blob_id = %blob_id,
                                     stored_blob_id = %stored_blob_id,
                                     size = size,
-                                    "Successfully stored downloaded blob"
+                                    "Blob stored successfully"
                                 );
                             }
                             Err(e) => {
-                                warn!(
+                                error!(
                                     blob_id = %blob_id,
                                     error = %e,
                                     "Failed to store downloaded blob"
@@ -509,7 +509,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 from_peer,
                 error,
             } => {
-                debug!(
+                info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
                     from_peer = %from_peer,
@@ -560,7 +560,7 @@ async fn handle_state_delta(
         bail!("context '{}' not found", context_id);
     };
 
-    debug!(
+    info!(
         %context_id, %author_id,
         expected_root_hash = %root_hash,
         current_root_hash = %context.root_hash,
