@@ -702,8 +702,9 @@ async fn handle_state_delta(
                 let combined_payload = serde_json::to_vec(&serde_json::json!({
                     "event_kind": event.kind,
                     "event_data": event_data_base58
-                })).unwrap_or_default();
-                
+                }))
+                .unwrap_or_default();
+
                 match context_client
                     .execute(
                         &context_id,
@@ -725,7 +726,7 @@ async fn handle_state_delta(
                             logs_count = callback_outcome.logs.len(),
                             "Callback execution completed"
                         );
-                        
+
                         // Log all the logs from the execution
                         for (i, log) in callback_outcome.logs.iter().enumerate() {
                             info!(
@@ -736,7 +737,7 @@ async fn handle_state_delta(
                                 "Callback execution log"
                             );
                         }
-                        
+
                         // Check if the execution actually succeeded
                         if callback_outcome.returns.is_err() {
                             info!(
@@ -747,13 +748,13 @@ async fn handle_state_delta(
                             );
                             continue;
                         }
-                        
+
                         info!(
                             %context_id,
                             event_kind = %event.kind,
                             "Successfully processed event for automatic callback"
                         );
-                        
+
                         // Commit the callback state changes by creating a new state delta
                         if !callback_outcome.artifact.is_empty() {
                             debug!(
@@ -761,12 +762,12 @@ async fn handle_state_delta(
                                 artifact_len = callback_outcome.artifact.len(),
                                 "Committing callback state changes"
                             );
-                            
+
                             // Create a new state delta for the callback changes
                             let callback_height = height.get() + 1;
                             let callback_height = NonZeroUsize::new(callback_height)
                                 .ok_or_eyre("callback height overflow")?;
-                            
+
                             // Store the callback state delta
                             context_client.put_state_delta(
                                 &context_id,
@@ -774,7 +775,7 @@ async fn handle_state_delta(
                                 &callback_height,
                                 &callback_outcome.artifact,
                             )?;
-                            
+
                             // Apply the callback state delta
                             let final_outcome = context_client
                                 .execute(
@@ -786,10 +787,14 @@ async fn handle_state_delta(
                                     None,
                                 )
                                 .await?;
-                            
+
                             // Update the delta height
-                            context_client.set_delta_height(&context_id, &our_identity, callback_height)?;
-                            
+                            context_client.set_delta_height(
+                                &context_id,
+                                &our_identity,
+                                callback_height,
+                            )?;
+
                             debug!(
                                 %context_id,
                                 callback_height = callback_height.get(),

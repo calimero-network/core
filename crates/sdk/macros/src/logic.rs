@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
+use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl};
 
 use crate::errors::{Errors, ParseError};
 use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
@@ -15,8 +15,6 @@ mod ty;
 mod utils;
 
 pub struct LogicImpl<'a> {
-    #[expect(dead_code, reason = "This will be used in future")]
-    type_: Path,
     methods: Vec<PublicLogicMethod<'a>>,
     orig: &'a ItemImpl,
 }
@@ -127,7 +125,6 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         errors.check()?;
 
         Ok(Self {
-            type_,
             methods,
             orig: input.item,
         })

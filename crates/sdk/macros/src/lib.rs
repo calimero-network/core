@@ -10,7 +10,7 @@ use quote::{quote, ToTokens};
 use syn::{Expr, ItemImpl};
 
 use crate::event::{EventImpl, EventImplInput};
-use crate::event_handlers::derive_app_event_handlers;
+use crate::event_handlers::derive_callback_handlers;
 use crate::items::{Empty, StructOrEnumItem};
 use crate::logic::{LogicImpl, LogicImplInput};
 use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
@@ -132,9 +132,46 @@ pub fn log(input: TokenStream) -> TokenStream {
     quote!(::calimero_sdk::__log__!(#input)).into()
 }
 
-#[proc_macro_derive(AppEventHandlers)]
-pub fn derive_app_event_handlers_macro(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(CallbackHandlers)]
+pub fn derive_callback_handlers_macro(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
-    let tokens = derive_app_event_handlers(input);
+    let tokens = derive_callback_handlers(input);
     tokens.into()
+}
+
+#[proc_macro_attribute]
+pub fn callbacks(args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+    let _args = parse_macro_input!({ input } => args as Empty);
+    let block = parse_macro_input!(input as ItemImpl);
+
+    // Extract the type name from the impl block
+    let type_name = &block.self_ty;
+    let (impl_generics, ty_generics, where_clause) = block.generics.split_for_impl();
+
+    let process_remote_events_method = quote! {
+        /// Process remote events for automatic callbacks
+        ///
+        /// Uses the `#[derive(CallbackHandlers)]` dispatcher generated from the `Event` enum
+        /// to decode and call the appropriate per-variant handler implemented on `self`.
+        /// This method is generated when `#[app::callbacks]` is used.
+        pub fn process_remote_events(&mut self, event_kind: ::std::string::String, event_data: ::std::string::String) -> ::calimero_sdk::app::Result<()> {
+            // The event_data comes as base58-encoded string, so we need to decode it
+            let decoded_event_data = ::bs58::decode(&event_data)
+                .into_vec()
+                .map_err(|_| ::calimero_sdk::types::Error::msg("invalid base58 event data"))?;
+
+            // Use the event type from the AppState trait to dispatch events
+            <#type_name as ::calimero_sdk::state::AppState>::Event::dispatch(self, &event_kind, &decoded_event_data)
+        }
+    };
+
+    quote! {
+        #block
+
+        impl #impl_generics #type_name #ty_generics #where_clause {
+            #process_remote_events_method
+        }
+    }
+    .into()
 }

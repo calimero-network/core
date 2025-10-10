@@ -2,7 +2,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Ident, Type, TypePath, TypeReference};
 
-pub fn derive_app_event_handlers(input: DeriveInput) -> TokenStream2 {
+pub fn derive_callback_handlers(input: DeriveInput) -> TokenStream2 {
     let enum_ident = input.ident;
     let generics = input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -16,7 +16,7 @@ pub fn derive_app_event_handlers(input: DeriveInput) -> TokenStream2 {
 
     let Data::Enum(data_enum) = input.data else {
         return quote! {
-            compile_error!("AppEventHandlers can only be derived for enums");
+            compile_error!("CallbackHandlers can only be derived for enums");
         };
     };
 
@@ -57,22 +57,20 @@ pub fn derive_app_event_handlers(input: DeriveInput) -> TokenStream2 {
                         // Deserialize the event data directly - it's already the inner data object
                         let json_value: ::calimero_sdk::serde_json::Value = ::calimero_sdk::serde_json::from_slice(data)
                             .map_err(|_| ::calimero_sdk::types::Error::msg("event decode failed"))?;
-                        
+
                         // Extract fields from JSON - the data is already the inner object
-                        #( 
+                        #(
                             let #binds = ::calimero_sdk::serde_json::from_value(
                                 json_value.get(stringify!(#binds))
                                     .ok_or_else(|| ::calimero_sdk::types::Error::msg("missing field"))?
                                     .clone()
                             ).map_err(|_| ::calimero_sdk::types::Error::msg("field decode failed"))?;
                         )*
-                        
                         target.#handler_name( #( #binds ),* )
                     }
                 });
             }
-            Fields::Unnamed(_)
-            | Fields::Unit => {
+            Fields::Unnamed(_) | Fields::Unit => {
                 // For tuple/unit variants, pass no fields
                 trait_methods.push(quote! {
                     fn #handler_name(&mut self) -> ::calimero_sdk::app::Result<()> { Ok(()) }
@@ -90,12 +88,12 @@ pub fn derive_app_event_handlers(input: DeriveInput) -> TokenStream2 {
     }
 
     quote! {
-        pub trait AppEventHandlers {
+        pub trait CallbackHandlers {
             #( #trait_methods )*
         }
 
         impl #impl_generics #enum_ident #ty_generics #where_clause {
-            pub fn dispatch<T: AppEventHandlers>(
+            pub fn dispatch<T: CallbackHandlers>(
                 target: &mut T,
                 kind: &str,
                 data: #data_ty,
@@ -122,11 +120,19 @@ fn param_type_for(ty: &Type) -> (TokenStream2, bool) {
 }
 
 fn is_str_path(tp: &TypePath) -> bool {
-    tp.path.segments.last().map(|s| s.ident == "str").unwrap_or(false)
+    tp.path
+        .segments
+        .last()
+        .map(|s| s.ident == "str")
+        .unwrap_or(false)
 }
 
 fn is_u64_path(tp: &TypePath) -> bool {
-    tp.path.segments.last().map(|s| s.ident == "u64").unwrap_or(false)
+    tp.path
+        .segments
+        .last()
+        .map(|s| s.ident == "u64")
+        .unwrap_or(false)
 }
 
 fn to_snake(ident: &Ident) -> String {
@@ -134,8 +140,12 @@ fn to_snake(ident: &Ident) -> String {
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
         if ch.is_uppercase() {
-            if i != 0 { out.push('_'); }
-            for lc in ch.to_lowercase() { out.push(lc); }
+            if i != 0 {
+                out.push('_');
+            }
+            for lc in ch.to_lowercase() {
+                out.push(lc);
+            }
         } else {
             out.push(ch);
         }

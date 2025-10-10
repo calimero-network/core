@@ -251,7 +251,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // Broadcast state deltas and events to other nodes when:
                     // 1. It's not a state synchronization operation (is_state_op = false)
                     // 2. AND there's a state change artifact (events are only broadcast with state changes)
-                    // 
+                    //
                     // This ensures that:
                     // - Events are only broadcast when there's an actual state change
                     // - State synchronization operations don't trigger broadcasts (prevents loops)

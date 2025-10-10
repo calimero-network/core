@@ -46,6 +46,7 @@ pub enum Error<'a> {
 }
 
 #[app::logic]
+#[app::callbacks]
 impl EventCallbackApp {
     #[app::init]
     pub fn init() -> EventCallbackApp {
