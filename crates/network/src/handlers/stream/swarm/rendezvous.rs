@@ -1,6 +1,6 @@
 use libp2p::rendezvous::client::Event;
 use owo_colors::OwoColorize;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use super::{EventHandler, NetworkManager};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
@@ -106,7 +106,7 @@ impl EventHandler<Event> for NetworkManager {
                         }
                     }
                 } else {
-                    info!("Couldn't find new peer to nominate for rendezvous registration.");
+                    debug!("Couldn't find new peer to nominate for rendezvous registration.");
                 }
             }
         }

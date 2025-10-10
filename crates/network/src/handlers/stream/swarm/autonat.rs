@@ -1,6 +1,6 @@
 use libp2p::autonat::{Event, OutboundProbeEvent};
 use owo_colors::OwoColorize;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use super::EventHandler;
 use crate::NetworkManager;
@@ -63,7 +63,7 @@ impl EventHandler<Event> for NetworkManager {
                     // }
                 }
                 OutboundProbeEvent::Error { .. } => {
-                    error!("Outbound probe failed")
+                    debug!("Outbound probe failed")
                 }
             },
             Event::StatusChanged { old, new } => {
