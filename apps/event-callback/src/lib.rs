@@ -1,10 +1,9 @@
 #![allow(clippy::len_without_is_empty)]
 
-
 use calimero_sdk::app;
-use calimero_sdk::CallbackHandlers;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
+use calimero_sdk::CallbackHandlers;
 use calimero_storage::collections::UnorderedMap;
 use thiserror::Error;
 
@@ -12,7 +11,7 @@ use thiserror::Error;
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct EventCallbackApp {
-    users: UnorderedMap<String, String>, // user_id -> email
+    users: UnorderedMap<String, String>,  // user_id -> email
     orders: UnorderedMap<String, String>, // order_id -> user_id
     callback_markers: UnorderedMap<String, String>, // callback_user_id -> marker
 }
@@ -20,9 +19,18 @@ pub struct EventCallbackApp {
 #[app::event]
 #[derive(Debug, calimero_sdk::serde::Deserialize, CallbackHandlers)]
 pub enum Event<'a> {
-    UserRegistered { user_id: &'a str, email: &'a str },
-    OrderCreated { order_id: &'a str, user_id: &'a str, amount: u64 },
-    UserLoggedIn { user_id: &'a str },
+    UserRegistered {
+        user_id: &'a str,
+        email: &'a str,
+    },
+    OrderCreated {
+        order_id: &'a str,
+        user_id: &'a str,
+        amount: u64,
+    },
+    UserLoggedIn {
+        user_id: &'a str,
+    },
 }
 
 #[derive(Debug, Error, Serialize)]
@@ -67,7 +75,12 @@ impl EventCallbackApp {
         Ok(())
     }
 
-    pub fn create_order(&mut self, order_id: String, user_id: String, amount: u64) -> app::Result<()> {
+    pub fn create_order(
+        &mut self,
+        order_id: String,
+        user_id: String,
+        amount: u64,
+    ) -> app::Result<()> {
         if !self.users.contains(&user_id)? {
             app::bail!(Error::UserNotFound(&user_id));
         }
@@ -90,9 +103,7 @@ impl EventCallbackApp {
         }
 
         // Emit the UserLoggedIn event
-        app::emit!(Event::UserLoggedIn {
-            user_id: &user_id,
-        });
+        app::emit!(Event::UserLoggedIn { user_id: &user_id });
 
         Ok(())
     }
@@ -131,24 +142,31 @@ impl EventCallbackApp {
         Ok(())
     }
 
-
     // Method to check if callback was executed (for testing)
     pub fn get_callback_marker(&self, callback_user_id: String) -> app::Result<Option<String>> {
-        self.callback_markers.get(&callback_user_id).map_err(Into::into)
+        self.callback_markers
+            .get(&callback_user_id)
+            .map_err(Into::into)
     }
-
 }
 
 // Implement generated per-variant handlers for the app. Only override what you need.
 impl CallbackHandlers for EventCallbackApp {
-    fn on_user_registered(&mut self, user_id: ::std::string::String, email: ::std::string::String) -> app::Result<()> {
+    fn on_user_registered(
+        &mut self,
+        user_id: ::std::string::String,
+        email: ::std::string::String,
+    ) -> app::Result<()> {
         let callback_user_id = format!("callback_{}", user_id);
-        
-        self.callback_markers.insert(callback_user_id.clone(), "callback_executed".to_string())?;
-        
+
+        self.callback_markers
+            .insert(callback_user_id.clone(), "callback_executed".to_string())?;
+
         // Also store the last callback key for diagnostics
-        let _ = self.callback_markers.insert("last_callback".to_string(), callback_user_id)?;
-        
+        let _ = self
+            .callback_markers
+            .insert("last_callback".to_string(), callback_user_id)?;
+
         Ok(())
     }
 
