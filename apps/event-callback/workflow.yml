@@ -146,6 +146,40 @@ steps:
     outputs:
       callback_marker_node2: result
 
+  # Diagnostics: verify visibility and marker on both nodes before asserting
+  - name: Verify User on Node 2 (diagnostic)
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key}}'
+    method: get_user_email
+    args:
+      user_id: user123
+    outputs:
+      user_email_node2_diag: result
+
+  - name: Read last_callback key name on Node 2 (diagnostic)
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key}}'
+    method: get_callback_marker
+    args:
+      callback_user_id: last_callback
+    outputs:
+      last_callback_value_node2: result
+
+  - name: Read callback marker on Node 1 (diagnostic)
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_callback_marker
+    args:
+      callback_user_id: callback_user123
+    outputs:
+      callback_marker_node1: result
+
   - name: Assert Node 2 received automatic callback and mutated state
     type: json_assert
     statements:

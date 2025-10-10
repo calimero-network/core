@@ -10,6 +10,7 @@ use quote::{quote, ToTokens};
 use syn::{Expr, ItemImpl};
 
 use crate::event::{EventImpl, EventImplInput};
+use crate::event_handlers::derive_app_event_handlers;
 use crate::items::{Empty, StructOrEnumItem};
 use crate::logic::{LogicImpl, LogicImplInput};
 use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
@@ -17,6 +18,7 @@ use crate::state::{StateArgs, StateImpl, StateImplInput};
 
 mod errors;
 mod event;
+mod event_handlers;
 mod items;
 mod logic;
 mod macros;
@@ -128,4 +130,11 @@ pub fn log(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as TokenStream2);
 
     quote!(::calimero_sdk::__log__!(#input)).into()
+}
+
+#[proc_macro_derive(AppEventHandlers)]
+pub fn derive_app_event_handlers_macro(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::DeriveInput);
+    let tokens = derive_app_event_handlers(input);
+    tokens.into()
 }

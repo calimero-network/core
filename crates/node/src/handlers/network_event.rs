@@ -704,11 +704,9 @@ async fn handle_state_delta(
                 );
 
                 // Call the application's event processing method
-                // Combine event kind and data into a single payload
-                let combined_payload = serde_json::to_vec(&serde_json::json!({
-                    "event_kind": event.kind,
-                    "event_data": event.data
-                })).unwrap_or_default();
+                // Encode arguments with Borsh to match WASM ABI (event_kind: String, event_data: Vec<u8>)
+                let combined_payload = borsh::to_vec(&(event.kind.clone(), event.data.clone()))
+                    .unwrap_or_default();
 
                 // Execute the callback and commit the state changes
                 match context_client

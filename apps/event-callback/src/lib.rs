@@ -2,6 +2,7 @@
 
 
 use calimero_sdk::app;
+use calimero_sdk::AppEventHandlers;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::UnorderedMap;
@@ -17,7 +18,7 @@ pub struct EventCallbackApp {
 }
 
 #[app::event]
-#[derive(Debug, calimero_sdk::serde::Deserialize)]
+#[derive(Debug, calimero_sdk::serde::Deserialize, AppEventHandlers)]
 pub enum Event<'a> {
     UserRegistered { user_id: &'a str, email: &'a str },
     OrderCreated { order_id: &'a str, user_id: &'a str, amount: u64 },
@@ -147,61 +148,6 @@ impl EventCallbackApp {
         Ok(())
     }
 
-    // This method handles cross-node event callbacks
-    // It will be called when events are received from other nodes
-    pub fn handle_callback(&mut self, event_type: String, data: String) -> app::Result<()> {
-        app::log!("Handling callback for event: {} with data: {}", event_type, data);
-
-        match event_type.as_str() {
-            "UserRegistered" => {
-                // When a user is registered on another node, create a callback marker
-                let callback_user_id = format!("callback_{}", data);
-                self.callback_markers.insert(callback_user_id, "callback_executed".to_string())?;
-                app::log!("Created callback marker for UserRegistered event");
-            }
-            "OrderCreated" => {
-                // When an order is created on another node, we could do something here
-                app::log!("Received OrderCreated callback");
-            }
-            "UserLoggedIn" => {
-                // When a user logs in on another node, we could do something here
-                app::log!("Received UserLoggedIn callback");
-            }
-            _ => {
-                app::log!("Unknown event type: {}", event_type);
-            }
-        }
-
-        Ok(())
-    }
-
-    // This method handles automatic callbacks when state deltas are synced
-    // It's called automatically by the Calimero runtime during state synchronization
-    pub fn handle_automatic_callback(&mut self, event_type: String, user_id: String) -> app::Result<()> {
-        app::log!("Handling automatic callback for event: {} for user: {}", event_type, user_id);
-
-        match event_type.as_str() {
-            "UserRegistered" => {
-                // When a user is registered on another node, create a callback marker
-                let callback_user_id = format!("callback_{}", user_id);
-                self.callback_markers.insert(callback_user_id, "callback_executed".to_string())?;
-                app::log!("Created callback marker for UserRegistered event from another node");
-            }
-            "OrderCreated" => {
-                // When an order is created on another node, we could do something here
-                app::log!("Received OrderCreated callback from another node");
-            }
-            "UserLoggedIn" => {
-                // When a user logs in on another node, we could do something here
-                app::log!("Received UserLoggedIn callback from another node");
-            }
-            _ => {
-                app::log!("Unknown event type: {}", event_type);
-            }
-        }
-
-        Ok(())
-    }
 
     // Method to check if callback was executed (for testing)
     pub fn get_callback_marker(&self, callback_user_id: String) -> app::Result<Option<String>> {
@@ -212,55 +158,26 @@ impl EventCallbackApp {
 
     /// Process remote events for automatic callbacks
     ///
-    /// Called by the node when applying a remote state delta that included events.
-    /// Matches the JSON payload sent by the node, which provides `event_kind` and
-    /// raw `event_data` bytes for the specific event.
+    /// Uses the `#[derive(AppEventHandlers)]` dispatcher generated from the `Event` enum
+    /// to decode and call the appropriate per-variant handler implemented on `self`.
     pub fn process_remote_events(&mut self, event_kind: String, event_data: Vec<u8>) -> app::Result<()> {
-        app::log!(
-            "Processing remote event: kind={} data_len={}",
-            event_kind,
-            event_data.len()
-        );
+        app::log!("Processing remote event: kind={} data_len={}", event_kind, event_data.len());
+        Event::dispatch(self, &event_kind, &event_data)
+    }
+}
 
-        match event_kind.as_str() {
-            "UserRegistered" => {
-                // Try to parse JSON payload for { user_id, email }
-                let v: calimero_sdk::serde_json::Value = calimero_sdk::serde_json::from_slice(&event_data)
-                    .unwrap_or(calimero_sdk::serde_json::Value::Null);
-                let user_id = v
-                    .get("user_id")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                if !user_id.is_empty() {
-                    self.handle_automatic_callback("UserRegistered".to_string(), user_id)?;
-                } else if let Ok(event) = calimero_sdk::serde_json::from_slice::<Event>(&event_data) {
-                    if let Event::UserRegistered { user_id, .. } = event {
-                        self.handle_automatic_callback("UserRegistered".to_string(), user_id.to_string())?;
-                    }
-                } else {
-                    app::log!("UserRegistered event_data could not be parsed; skipping callback");
-                }
-            }
-            "OrderCreated" => {
-                app::log!("Received OrderCreated event from remote node");
-            }
-            "UserLoggedIn" => {
-                // Try to parse { user_id }
-                let v: calimero_sdk::serde_json::Value = calimero_sdk::serde_json::from_slice(&event_data)
-                    .unwrap_or(calimero_sdk::serde_json::Value::Null);
-                if let Some(uid) = v.get("user_id").and_then(|s| s.as_str()) {
-                    self.handle_automatic_callback("UserLoggedIn".to_string(), uid.to_string())?;
-                } else {
-                    app::log!("UserLoggedIn event_data could not be parsed; skipping callback");
-                }
-            }
-            other => {
-                app::log!("Unknown remote event type: {}", other);
-            }
-        }
-
+// Implement generated per-variant handlers for the app. Only override what you need.
+impl AppEventHandlers for EventCallbackApp {
+    fn on_user_registered(&mut self, user_id: ::std::string::String, _email: ::std::string::String) -> app::Result<()> {
+        app::log!("on_user_registered: user_id={} -> writing callback marker", user_id);
+        let callback_user_id = format!("callback_{}", user_id);
+        self.callback_markers.insert(callback_user_id.clone(), "callback_executed".to_string())?;
+        // Also store the last callback key for diagnostics
+        let _ = self.callback_markers.insert("last_callback".to_string(), callback_user_id.clone())?;
+        let written = self.callback_markers.get(&callback_user_id)?;
+        app::log!("on_user_registered: marker set? {:?}", written);
         Ok(())
     }
+
+    // Defaults for other events are no-ops.
 }
