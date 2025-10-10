@@ -33,12 +33,14 @@ pub fn derive_app_event_handlers(input: DeriveInput) -> TokenStream2 {
                 let mut params = Vec::new();
                 let mut binds = Vec::new();
                 let mut call_args = Vec::new();
+                let mut param_types = Vec::new();
 
                 for field in named.named {
                     let fname: Ident = field.ident.expect("named field");
                     let (pty, is_string_param) = param_type_for(&field.ty);
                     params.push(quote! { #fname: #pty });
                     binds.push(quote! { #fname });
+                    param_types.push(pty);
                     if is_string_param {
                         call_args.push(quote! { #fname.to_string() });
                     } else {
@@ -52,12 +54,17 @@ pub fn derive_app_event_handlers(input: DeriveInput) -> TokenStream2 {
 
                 match_arms.push(quote! {
                     stringify!(#v_ident) => {
-                        let v: Self = ::calimero_sdk::serde_json::from_slice(data)
-                            .map_err(|_| ::calimero_sdk::types::Error::msg("event decode failed"))?;
-                        if let Self::#v_ident { #( #binds ),* } = v {
-                            return target.#handler_name( #( #call_args ),* );
-                        }
-                        Ok(())
+                        // The event_data contains only the serialized fields, not the full enum
+                        // So we deserialize directly into the field structure
+                        ::calimero_sdk::app::log!("Attempting to deserialize event data for {}", stringify!(#v_ident));
+                        let fields: (#( #param_types ),*) = ::calimero_sdk::serde_json::from_slice(data)
+                            .map_err(|e| {
+                                ::calimero_sdk::app::log!("Failed to deserialize event data: {:?}", e);
+                                ::calimero_sdk::types::Error::msg("event decode failed")
+                            })?;
+                        let (#( #binds ),*) = fields;
+                        ::calimero_sdk::app::log!("Successfully deserialized event data for {}", stringify!(#v_ident));
+                        target.#handler_name( #( #call_args ),* )
                     }
                 });
             }

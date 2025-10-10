@@ -721,6 +721,16 @@ async fn handle_state_delta(
                     .await
                 {
                     Ok(callback_outcome) => {
+                        // Check if the execution actually succeeded
+                        if callback_outcome.returns.is_err() {
+                            debug!(
+                                %context_id,
+                                event_kind = %event.kind,
+                                "Event callback execution failed, skipping state changes"
+                            );
+                            continue;
+                        }
+                        
                         debug!(
                             %context_id,
                             event_kind = %event.kind,
