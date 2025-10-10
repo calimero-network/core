@@ -347,6 +347,11 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                 // Only process public methods
                 if matches!(method.vis, syn::Visibility::Public(_)) {
                     let method_name = method.sig.ident.to_string();
+                    
+                    // Debug logging for process_events method
+                    if method_name == "process_events" {
+                        println!("DEBUG: Found process_events method in ABI emitter");
+                    }
 
                     // Process parameters
                     let mut params = Vec::new();

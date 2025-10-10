@@ -708,7 +708,7 @@ async fn handle_state_delta(
                     .execute(
                         &context_id,
                         &our_identity,
-                        "process_remote_events".to_owned(),
+                        "process_events".to_owned(),
                         combined_payload,
                         vec![], // No aliases needed
                         None,
@@ -725,7 +725,7 @@ async fn handle_state_delta(
                             logs_count = callback_outcome.logs.len(),
                             "Callback execution completed"
                         );
-
+                        
                         // Log all the logs from the execution
                         for (i, log) in callback_outcome.logs.iter().enumerate() {
                             info!(

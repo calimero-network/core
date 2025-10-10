@@ -145,19 +145,19 @@ pub fn callbacks(args: TokenStream, input: TokenStream) -> TokenStream {
     let _args = parse_macro_input!({ input } => args as Empty);
     let block = parse_macro_input!(input as ItemImpl);
 
-    // We don't need to extract generics since we're modifying the existing impl block
+    // Extract the type name from the impl block
+    let _type_name = &block.self_ty;
 
-    let process_remote_events_method = quote! {
+    let calimero_process_events_method = quote! {
         /// Process remote events for automatic callbacks
         ///
-        /// Uses the `#[derive(CallbackHandlers)]` dispatcher generated from the `Event` enum
-        /// to decode and call the appropriate per-variant handler implemented on `self`.
         /// This method is generated when `#[app::callbacks]` is used.
-        pub fn process_remote_events(&mut self, event_kind: ::std::string::String, event_data: ::std::vec::Vec<u8>) -> ::calimero_sdk::app::Result<()> {
-            // Use the Event type directly to dispatch events
-            // We need to use the concrete Event type, not the associated type from AppState
-            // The Event type should be accessible in the same scope
-            crate::Event::dispatch(self, &event_kind, &event_data)
+        /// It safely handles cases where no event handlers are defined.
+        pub fn __calimero_process_events(&mut self, event_kind: ::std::string::String, event_data: ::std::vec::Vec<u8>) -> ::calimero_sdk::app::Result<()> {
+            // Try to dispatch the event to any registered handlers
+            // If no handlers are defined or dispatch fails, this is a no-op
+            let _ = crate::Event::dispatch(self, &event_kind, &event_data);
+            Ok(())
         }
     };
 
@@ -166,13 +166,37 @@ pub fn callbacks(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut new_block = block.clone();
     
     // Parse the method as an ImplItem
-    let method_item: syn::ImplItem = syn::parse2(process_remote_events_method).unwrap();
+    let method_item: syn::ImplItem = syn::parse2(calimero_process_events_method).unwrap();
     
     // Add the method to the impl block
     new_block.items.push(method_item);
     
     quote! {
         #new_block
+    }
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn app_callbacks(args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+    let _args = parse_macro_input!({ input } => args as Empty);
+    let item = parse_macro_input!(input as syn::ItemStruct);
+
+    // For now, generate a placeholder implementation
+    // In a real implementation, we would parse the event enum and generate methods
+    let callback_handlers_impl = quote! {
+        impl ::calimero_sdk::CallbackHandlers for #item {
+            // TODO: Generate methods dynamically based on event variants
+            // Pattern: on_{snake_case(variant_name)}(params) -> Result<()>
+            // This is a placeholder implementation
+        }
+    };
+
+    quote! {
+        #item
+        
+        #callback_handlers_impl
     }
     .into()
 }
