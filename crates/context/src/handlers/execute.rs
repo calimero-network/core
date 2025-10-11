@@ -269,16 +269,15 @@ impl Handler<ExecuteRequest> for ContextManager {
                         }
                     }
 
-                    // Always broadcast state deltas and events to other nodes when:
+                    // Broadcast state deltas to other nodes when:
                     // 1. It's not a state synchronization operation (is_state_op = false)
-                    // 2. AND either there's a state change artifact OR there are events to broadcast
+                    // 2. AND there's a state change artifact (non-empty artifact)
                     //
                     // This ensures that:
-                    // - Events are broadcast even when there's no state change (for event-only operations)
+                    // - State changes are broadcast when there are actual state changes
                     // - State synchronization operations don't trigger broadcasts (prevents loops)
-                    // - Events are propagated as part of state delta synchronization
-                    if !is_state_op && (!outcome.artifact.is_empty() || !outcome.events.is_empty())
-                    {
+                    // - Events are still broadcast via WebSocket regardless of state changes
+                    if !(is_state_op || outcome.artifact.is_empty()) {
                         info!(
                             %context_id,
                             %executor,
@@ -507,47 +506,6 @@ async fn internal_execute(
 
     if outcome.returns.is_err() {
         return Ok((outcome, None));
-    }
-
-    // Calculate height for broadcasting
-    let mut height = None;
-
-    info!(
-        %context.id,
-        %executor,
-        is_state_op,
-        artifact_empty = outcome.artifact.is_empty(),
-        events_count = outcome.events.len(),
-        "Calculating height for broadcasting"
-    );
-
-    if !is_state_op && (!outcome.artifact.is_empty() || !outcome.events.is_empty()) {
-        let delta_height = context_client
-            .get_delta_height(&context.id, &executor)?
-            .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
-
-        height = Some(delta_height);
-
-        info!(
-            %context.id,
-            %executor,
-            %delta_height,
-            "Setting height for broadcasting"
-        );
-
-        // Store state delta
-        context_client.put_state_delta(&context.id, &executor, &delta_height, &outcome.artifact)?;
-
-        context_client.set_delta_height(&context.id, &executor, delta_height)?;
-    } else {
-        info!(
-            %context.id,
-            %executor,
-            is_state_op,
-            artifact_empty = outcome.artifact.is_empty(),
-            events_count = outcome.events.len(),
-            "Not setting height - condition not met"
-        );
     }
 
     'fine: {
