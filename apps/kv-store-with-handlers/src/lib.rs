@@ -170,4 +170,32 @@ impl KvStore {
         }
         Ok(handlers)
     }
+
+    /// Get unique handlers that have been called (for testing)
+    /// This is more reliable than counting exact duplicates
+    pub fn get_unique_handlers_called(&self) -> app::Result<Vec<String>> {
+        let mut unique_handlers = std::collections::HashSet::new();
+        for i in 1..=self.handler_counter {
+            let key = format!("handler_{}", i);
+            if let Some(handler) = self.handlers_called.get(&key)? {
+                unique_handlers.insert(handler.clone());
+            }
+        }
+        let mut result: Vec<String> = unique_handlers.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    /// Check if a specific handler was called (for testing)
+    pub fn was_handler_called(&self, handler_name: &str) -> app::Result<bool> {
+        for i in 1..=self.handler_counter {
+            let key = format!("handler_{}", i);
+            if let Some(handler) = self.handlers_called.get(&key)? {
+                if handler.contains(handler_name) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
 }

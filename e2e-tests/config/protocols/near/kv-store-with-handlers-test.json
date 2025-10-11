@@ -46,10 +46,9 @@
     },
     {
       "call": {
-        "methodName": "get_handlers_called",
+        "methodName": "get_unique_handlers_called",
         "argsJson": {},
         "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
           "Handler 'insert_handler' called: key=test_key, value=test_value"
         ],
         "target": "inviter"
@@ -75,12 +74,10 @@
     },
     {
       "call": {
-        "methodName": "get_handlers_called",
+        "methodName": "get_unique_handlers_called",
         "argsJson": {},
         "expectedResultJson": [
           "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'update_handler' called: key=test_key, value=updated_value",
           "Handler 'update_handler' called: key=test_key, value=updated_value"
         ],
         "target": "invitees"
@@ -105,15 +102,12 @@
     },
     {
       "call": {
-        "methodName": "get_handlers_called",
+        "methodName": "get_unique_handlers_called",
         "argsJson": {},
         "expectedResultJson": [
           "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'update_handler' called: key=test_key, value=updated_value",
-          "Handler 'update_handler' called: key=test_key, value=updated_value",
           "Handler 'remove_handler' called: key=test_key",
-          "Handler 'remove_handler' called: key=test_key"
+          "Handler 'update_handler' called: key=test_key, value=updated_value"
         ],
         "target": "invitees"
       }
@@ -153,19 +147,14 @@
     },
     {
       "call": {
-        "methodName": "get_handlers_called",
+        "methodName": "get_unique_handlers_called",
         "argsJson": {},
         "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'update_handler' called: key=test_key, value=updated_value",
-          "Handler 'update_handler' called: key=test_key, value=updated_value",
-          "Handler 'remove_handler' called: key=test_key",
-          "Handler 'remove_handler' called: key=test_key",
-          "Handler 'insert_handler' called: key=another_key, value=another_value",
-          "Handler 'insert_handler' called: key=another_key, value=another_value",
           "Handler 'clear_handler' called: all items cleared",
-          "Handler 'clear_handler' called: all items cleared"
+          "Handler 'insert_handler' called: key=another_key, value=another_value",
+          "Handler 'insert_handler' called: key=test_key, value=test_value",
+          "Handler 'remove_handler' called: key=test_key",
+          "Handler 'update_handler' called: key=test_key, value=updated_value"
         ],
         "target": "invitees"
       }
