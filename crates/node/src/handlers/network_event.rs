@@ -10,6 +10,9 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
@@ -17,7 +20,7 @@ use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::utils::choose_stream;
 use crate::NodeManager;
@@ -297,6 +300,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         artifact,
                         height,
                         nonce,
+                        events,
                     } => {
                         let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
@@ -313,6 +317,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     artifact.into_owned(),
                                     height,
                                     nonce,
+                                    events.map(|e| e.into_owned()),
                                 )
                                 .await
                                 {
@@ -389,12 +394,12 @@ impl Handler<NetworkEvent> for NodeManager {
                 data,
                 from_peer,
             } => {
-                debug!(
+                info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
                     from_peer = %from_peer,
                     data_size = data.len(),
-                    "Blob downloaded successfully from peer, storing to blobstore"
+                    "Blob downloaded successfully from peer"
                 );
 
                 // Store the downloaded blob data to blobstore
@@ -408,15 +413,15 @@ impl Handler<NetworkEvent> for NodeManager {
 
                         match blobstore.put(reader).await {
                             Ok((stored_blob_id, _hash, size)) => {
-                                debug!(
+                                info!(
                                     requested_blob_id = %blob_id,
                                     stored_blob_id = %stored_blob_id,
                                     size = size,
-                                    "Successfully stored downloaded blob"
+                                    "Blob stored successfully"
                                 );
                             }
                             Err(e) => {
-                                warn!(
+                                error!(
                                     blob_id = %blob_id,
                                     error = %e,
                                     "Failed to store downloaded blob"
@@ -433,7 +438,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 from_peer,
                 error,
             } => {
-                debug!(
+                info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
                     from_peer = %from_peer,
@@ -457,12 +462,13 @@ async fn handle_state_delta(
     artifact: Vec<u8>,
     height: NonZeroUsize,
     nonce: Nonce,
+    events: Option<Vec<u8>>,
 ) -> eyre::Result<()> {
     let Some(context) = context_client.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
     };
 
-    debug!(
+    info!(
         %context_id, %author_id,
         expected_root_hash = %root_hash,
         current_root_hash = %context.root_hash,
@@ -534,16 +540,32 @@ async fn handle_state_delta(
             current_root_hash = %outcome.root_hash,
             "State delta application led to root hash mismatch, ignoring for now"
         );
+    }
 
-        //     debug!(
-        //         %context_id,
-        //         %author_id,
-        //         expected_root_hash = %root_hash,
-        //         current_root_hash = %outcome.root_hash,
-        //         "State delta application led to root hash mismatch, initiating sync"
-        //     );
+    // Process execution events if they were included: re-emit as unified StateMutation
+    debug!(
+        %context_id,
+        %author_id,
+        has_events = events.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
+        "Received StateDelta; checking for bundled events"
+    );
+    if let Some(events_data) = events {
+        debug!(%context_id, raw_events_len = events_data.len(), "Raw events bytes received");
+        let events_payload: Vec<ExecutionEvent> =
+            serde_json::from_slice(&events_data).unwrap_or_else(|_| Vec::new());
 
-        //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        // Only re-emit if there are actual events
+        if !events_payload.is_empty() {
+            debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
+            node_client.send_event(NodeEvent::Context(ContextEvent {
+                context_id,
+                payload: ContextEventPayload::StateMutation(
+                    StateMutationPayload::with_root_and_events(root_hash, events_payload),
+                ),
+            }))?;
+        } else {
+            debug!(%context_id, "No events after deserialization; skipping WS emit");
+        }
     }
 
     Ok(())

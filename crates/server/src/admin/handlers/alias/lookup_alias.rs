@@ -8,6 +8,7 @@ use calimero_server_primitives::admin::{LookupAliasResponse, LookupAliasResponse
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use reqwest::StatusCode;
 use serde::Serialize;
+use tracing::{error, info};
 
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
@@ -24,16 +25,25 @@ where
         .map(|Path(alias)| (alias, None))
         .or_else(|| scoped_alias.map(|Path((scope, alias))| (alias, Some(scope))))
     else {
+        error!("Invalid path params for lookup alias");
         return (StatusCode::BAD_REQUEST, "invalid path params").into_response();
     };
 
+    info!(alias=%alias, "Looking up alias");
+
     match state.node_client.lookup_alias(alias, scope) {
-        Ok(value) => ApiResponse {
-            payload: LookupAliasResponse {
-                data: LookupAliasResponseData::new(value),
-            },
+        Ok(value) => {
+            info!(alias=%alias, "Alias looked up successfully");
+            ApiResponse {
+                payload: LookupAliasResponse {
+                    data: LookupAliasResponseData::new(value),
+                },
+            }
+            .into_response()
         }
-        .into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => {
+            error!(alias=%alias, error=?err, "Failed to lookup alias");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+        }
     }
 }

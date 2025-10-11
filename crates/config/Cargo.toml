@@ -21,7 +21,7 @@ tokio = { workspace = true, features = ["fs"] }
 toml.workspace = true
 
 calimero-context.workspace = true
-calimero-server = { workspace = true, features = ["admin", "jsonrpc", "websocket"] }
+calimero-server = { workspace = true }
 calimero-network-primitives.workspace = true
 
 [lints]

@@ -188,6 +188,11 @@ jobs:
     needs: [prepare, build-binaries]
 
     steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+
       - name: Checkout core repository
         uses: actions/checkout@v4
         with:
@@ -199,6 +204,11 @@ jobs:
 
       - name: Verify Rust installation
         run: rustc --version
+
+      - name: Setup rust cache (publish)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
 
       - name: Publish calimero-workspaces on crates.io
         env:

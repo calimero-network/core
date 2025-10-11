@@ -9,6 +9,7 @@ use calimero_server_primitives::admin::{
     UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use reqwest::StatusCode;
+use tracing::{error, info};
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -18,13 +19,19 @@ pub async fn handler(
     Path(context_id): Path<String>,
     Json(req): Json<UpdateContextApplicationRequest>,
 ) -> impl IntoResponse {
-    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
-        return ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: "Invalid context id".into(),
+    let context_id_result = match ContextId::from_str(&context_id) {
+        Ok(id) => id,
+        Err(err) => {
+            error!(context_id=%context_id, error=?err, "Invalid context ID format");
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context id".into(),
+            }
+            .into_response();
         }
-        .into_response();
     };
+
+    info!(context_id=%context_id_result, application_id=%req.application_id, "Updating context application");
 
     let result = state
         .ctx_client
@@ -37,10 +44,16 @@ pub async fn handler(
         .map_err(parse_api_error);
 
     match result {
-        Ok(()) => ApiResponse {
-            payload: UpdateContextApplicationResponse::new(),
+        Ok(()) => {
+            info!(context_id=%context_id_result, application_id=%req.application_id, "Context application updated successfully");
+            ApiResponse {
+                payload: UpdateContextApplicationResponse::new(),
+            }
+            .into_response()
         }
-        .into_response(),
-        Err(err) => err.into_response(),
+        Err(err) => {
+            error!(context_id=%context_id_result, application_id=%req.application_id, error=?err, "Failed to update context application");
+            err.into_response()
+        }
     }
 }

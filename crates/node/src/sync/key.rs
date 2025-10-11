@@ -5,7 +5,7 @@ use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::{Sequencer, SyncManager};
 
@@ -16,7 +16,7 @@ impl SyncManager {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             "Initiating key share",
@@ -172,7 +172,7 @@ impl SyncManager {
         self.context_client
             .update_identity(&context.id, &their_identity)?;
 
-        debug!(
+        info!(
             context_id=%context.id,
             our_identity=%our_identity,
             their_identity=%their_identity.public_key,

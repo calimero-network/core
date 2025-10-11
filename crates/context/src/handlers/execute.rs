@@ -18,8 +18,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
-    StateMutationPayload,
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
@@ -31,7 +30,7 @@ use futures_util::future::TryFutureExt;
 use futures_util::io::Cursor;
 use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -55,6 +54,11 @@ impl Handler<ExecuteRequest> for ContextManager {
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        info!(
+            %context_id,
+            method,
+            "Executing method in context"
+        );
         debug!(
             %context_id,
             %executor,
@@ -66,7 +70,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 Some(ContextAtomic::Lock) => "acquire",
                 Some(ContextAtomic::Held(_)) => "yes",
             },
-            "execution requested"
+            "Execution request details"
         );
 
         let context = match self.get_or_fetch_context(&context_id) {
@@ -198,21 +202,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                 let _ignored = execution_duration
                     .get_or_create(&ExecutionLabels {
                         context_id: context_id.to_string(),
-                        method: method,
+                        method: method.clone(),
                         status: status.to_owned(),
                     })
                     .observe(duration);
 
+                info!(
+                    %context_id,
+                    method,
+                    status,
+                    "Method execution completed"
+                );
                 debug!(
                     %context_id,
                     %executor,
-                    status = status,
+                    method,
+                    status,
                     %old_root_hash,
                     new_root_hash=%context.root_hash,
                     artifact_len = outcome.artifact.len(),
                     logs_count = outcome.logs.len(),
                     events_count = outcome.events.len(),
-                    "executed request"
+                    "Execution outcome details"
                 );
 
                 Ok((guard, context, outcome, delta_height))
@@ -236,6 +247,21 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                     if !(is_state_op || outcome.artifact.is_empty()) {
                         if let Some(height) = delta_height {
+                            // Serialize events if any were emitted
+                            let events_data = if outcome.events.is_empty() {
+                                None
+                            } else {
+                                let events_vec: Vec<ExecutionEvent> = outcome
+                                    .events
+                                    .iter()
+                                    .map(|e| ExecutionEvent {
+                                        kind: e.kind.clone(),
+                                        data: e.data.clone(),
+                                    })
+                                    .collect();
+                                Some(serde_json::to_vec(&events_vec)?)
+                            };
+
                             node_client
                                 .broadcast(
                                     &context,
@@ -243,6 +269,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     &sender_key,
                                     outcome.artifact.clone(),
                                     height,
+                                    events_data,
                                 )
                                 .await?;
                         }
@@ -469,29 +496,32 @@ async fn internal_execute(
                     *context.root_hash,
                 ),
             )?;
-
-            node_client.send_event(NodeEvent::Context(ContextEvent {
-                context_id: context.id,
-                payload: ContextEventPayload::StateMutation(StateMutationPayload {
-                    new_root: context.root_hash,
-                }),
-            }))?;
         }
     }
 
-    node_client.send_event(NodeEvent::Context(ContextEvent {
-        context_id: context.id,
-        payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
-            events: outcome
-                .events
-                .iter()
-                .map(|e| ExecutionEvent {
-                    kind: e.kind.clone(),
-                    data: e.data.clone(),
-                })
-                .collect(),
-        }),
-    }))?;
+    // Only send StateMutation to WebSocket if there are events or state changes
+    if !outcome.events.is_empty() || outcome.root_hash.is_some() {
+        // Use the updated root if present, otherwise the current context root
+        let new_root = outcome
+            .root_hash
+            .map(|h| h.into())
+            .unwrap_or((*context.root_hash).into());
+        let events_vec = outcome
+            .events
+            .iter()
+            .map(|e| ExecutionEvent {
+                kind: e.kind.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
+
+        node_client.send_event(NodeEvent::Context(ContextEvent {
+            context_id: context.id,
+            payload: ContextEventPayload::StateMutation(
+                StateMutationPayload::with_root_and_events(new_root, events_vec),
+            ),
+        }))?;
+    }
 
     Ok((outcome, height))
 }

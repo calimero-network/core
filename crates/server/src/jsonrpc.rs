@@ -8,7 +8,7 @@ use calimero_server_primitives::jsonrpc::{
     ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{error, info};
 
 use crate::config::ServerConfig;
 
@@ -61,24 +61,50 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
-    debug!(id=?request.id, payload=%request.payload, "Received request");
-
-    let body = match serde_json::from_value(request.payload) {
+    let body = match serde_json::from_value::<RequestPayload>(request.payload.clone()) {
         Ok(payload) => match payload {
-            RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),
+            RequestPayload::Execute(exec_request) => {
+                let context_id = exec_request.context_id;
+                let method = exec_request.method.clone();
+
+                info!(
+                    context_id=%context_id,
+                    method=%method,
+                    args=%exec_request.args_json,
+                    "Received execution request"
+                );
+
+                let result = exec_request.handle(state).await.to_res_body();
+
+                match &result {
+                    ResponseBody::Error(err) => {
+                        error!(
+                            context_id=%context_id,
+                            method=%method,
+                            ?err,
+                            "Request failed"
+                        );
+                    }
+                    ResponseBody::Result(_) => {
+                        info!(
+                            context_id=%context_id,
+                            method=%method,
+                            "Request completed successfully"
+                        );
+                    }
+                }
+
+                result
+            }
         },
         Err(err) => {
-            debug!(%err, "Failed to deserialize RequestPayload");
+            error!(%err, payload=%request.payload, "Failed to parse request payload");
 
             ResponseBody::Error(ResponseBodyError::ServerError(
                 ServerResponseError::ParseError(err.to_string()),
             ))
         }
     };
-
-    if let ResponseBody::Error(err) = &body {
-        debug!(id=?request.id, ?err, "request handling failed");
-    }
 
     PrimitiveResponse::new(request.jsonrpc, request.id, body).into()
 }
