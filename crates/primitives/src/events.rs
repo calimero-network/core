@@ -45,4 +45,5 @@ impl StateMutationPayload {
 pub struct ExecutionEvent {
     pub kind: String,
     pub data: Vec<u8>,
+    pub handler: Option<String>,
 }

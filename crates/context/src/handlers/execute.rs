@@ -245,10 +245,58 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
-                    if !(is_state_op || outcome.artifact.is_empty()) {
+                    info!(
+                        %context_id,
+                        %executor,
+                        is_state_op,
+                        artifact_empty = outcome.artifact.is_empty(),
+                        events_count = outcome.events.len(),
+                        "Execution outcome details"
+                    );
+
+                    // Log events with handlers for debugging
+                    // NOTE: Handlers are NEVER executed on the node that produces the events/diffs.
+                    // Handlers are only executed on receiving nodes during network sync to avoid
+                    // infinite loops and ensure proper distributed execution.
+                    for event in &outcome.events {
+                        if let Some(handler_name) = &event.handler {
+                            info!(
+                                %context_id,
+                                event_kind = %event.kind,
+                                handler_name = %handler_name,
+                                "Event emitted with handler (will be executed on receiving nodes)"
+                            );
+                        }
+                    }
+
+                    // Always broadcast state deltas and events to other nodes when:
+                    // 1. It's not a state synchronization operation (is_state_op = false)
+                    // 2. AND either there's a state change artifact OR there are events to broadcast
+                    //
+                    // This ensures that:
+                    // - Events are broadcast even when there's no state change (for event-only operations)
+                    // - State synchronization operations don't trigger broadcasts (prevents loops)
+                    // - Events are propagated as part of state delta synchronization
+                    if !is_state_op && (!outcome.artifact.is_empty() || !outcome.events.is_empty())
+                    {
+                        info!(
+                            %context_id,
+                            %executor,
+                            is_state_op,
+                            artifact_empty = outcome.artifact.is_empty(),
+                            events_count = outcome.events.len(),
+                            delta_height = ?delta_height,
+                            "Broadcasting state delta and events to other nodes"
+                        );
+
                         if let Some(height) = delta_height {
                             // Serialize events if any were emitted
                             let events_data = if outcome.events.is_empty() {
+                                info!(
+                                    %context_id,
+                                    %executor,
+                                    "No events to serialize"
+                                );
                                 None
                             } else {
                                 let events_vec: Vec<ExecutionEvent> = outcome
@@ -257,9 +305,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     .map(|e| ExecutionEvent {
                                         kind: e.kind.clone(),
                                         data: e.data.clone(),
+                                        handler: e.handler.clone(),
                                     })
                                     .collect();
-                                Some(serde_json::to_vec(&events_vec)?)
+                                let serialized = serde_json::to_vec(&events_vec)?;
+                                info!(
+                                    %context_id,
+                                    %executor,
+                                    events_count = events_vec.len(),
+                                    serialized_len = serialized.len(),
+                                    "Serializing events for broadcast"
+                                );
+                                Some(serialized)
                             };
 
                             node_client
@@ -326,6 +383,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         .map(|e| ExecuteEvent {
                             kind: e.kind,
                             data: e.data,
+                            handler: e.handler,
                         })
                         .collect(),
                     root_hash,
@@ -451,6 +509,47 @@ async fn internal_execute(
         return Ok((outcome, None));
     }
 
+    // Calculate height for broadcasting
+    let mut height = None;
+
+    info!(
+        %context.id,
+        %executor,
+        is_state_op,
+        artifact_empty = outcome.artifact.is_empty(),
+        events_count = outcome.events.len(),
+        "Calculating height for broadcasting"
+    );
+
+    if !is_state_op && (!outcome.artifact.is_empty() || !outcome.events.is_empty()) {
+        let delta_height = context_client
+            .get_delta_height(&context.id, &executor)?
+            .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
+
+        height = Some(delta_height);
+
+        info!(
+            %context.id,
+            %executor,
+            %delta_height,
+            "Setting height for broadcasting"
+        );
+
+        // Store state delta
+        context_client.put_state_delta(&context.id, &executor, &delta_height, &outcome.artifact)?;
+
+        context_client.set_delta_height(&context.id, &executor, delta_height)?;
+    } else {
+        info!(
+            %context.id,
+            %executor,
+            is_state_op,
+            artifact_empty = outcome.artifact.is_empty(),
+            events_count = outcome.events.len(),
+            "Not setting height - condition not met"
+        );
+    }
+
     'fine: {
         if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
             if is_state_op {
@@ -497,6 +596,24 @@ async fn internal_execute(
                 ),
             )?;
         }
+    } else if !is_state_op && !outcome.events.is_empty() {
+        // For event-only operations (no state change but events emitted),
+        // we still need to set a delta height for broadcasting
+        let delta_height = context_client
+            .get_delta_height(&context.id, &executor)?
+            .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
+
+        height = Some(delta_height);
+
+        // Store an empty state delta for event-only operations
+        context_client.put_state_delta(
+            &context.id,
+            &executor,
+            &delta_height,
+            &outcome.artifact, // This will be empty for event-only operations
+        )?;
+
+        context_client.set_delta_height(&context.id, &executor, delta_height)?;
     }
 
     // Only send StateMutation to WebSocket if there are events or state changes
@@ -506,12 +623,16 @@ async fn internal_execute(
             .root_hash
             .map(|h| h.into())
             .unwrap_or((*context.root_hash).into());
+        // Note: Handler execution is handled in network sync when events are received by other nodes
+        // The emitting node does not execute handlers locally to avoid recursion
+
         let events_vec = outcome
             .events
             .iter()
             .map(|e| ExecutionEvent {
                 kind: e.kind.clone(),
                 data: e.data.clone(),
+                handler: e.handler.clone(),
             })
             .collect();
 

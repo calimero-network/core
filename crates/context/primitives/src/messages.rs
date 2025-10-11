@@ -67,6 +67,7 @@ pub struct ExecuteResponse {
 pub struct ExecuteEvent {
     pub kind: String,
     pub data: Vec<u8>,
+    pub handler: Option<String>,
 }
 
 impl Message for ExecuteRequest {
