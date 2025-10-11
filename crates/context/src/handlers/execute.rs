@@ -596,24 +596,6 @@ async fn internal_execute(
                 ),
             )?;
         }
-    } else if !is_state_op && !outcome.events.is_empty() {
-        // For event-only operations (no state change but events emitted),
-        // we still need to set a delta height for broadcasting
-        let delta_height = context_client
-            .get_delta_height(&context.id, &executor)?
-            .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
-
-        height = Some(delta_height);
-
-        // Store an empty state delta for event-only operations
-        context_client.put_state_delta(
-            &context.id,
-            &executor,
-            &delta_height,
-            &outcome.artifact, // This will be empty for event-only operations
-        )?;
-
-        context_client.set_delta_height(&context.id, &executor, delta_height)?;
     }
 
     // Only send StateMutation to WebSocket if there are events or state changes
