@@ -1,0 +1,19 @@
+{
+  "manifest_version": "1.0",
+  "app": {
+    "namespace": "com.example",
+    "name": "kvstore",
+    "developer_pubkey": "11111111111111111111111111111111"
+  },
+  "version": { "semver": "1.0.0" },
+  "artifacts": [
+    {
+      "type": "wasm",
+      "target": "node",
+      "size": 1738,
+      "path": "/Users/xilosada/dev/calimero/core/apps/kv-store/res/kv_store.wasm"
+    }
+  ],
+  "distribution": "ipfs",
+  "metadata": { "description": "dev test" }
+}

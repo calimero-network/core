@@ -68,6 +68,140 @@ impl InstallDevApplicationRequest {
     }
 }
 
+// derive-application-id API removed in favor of V2 manifest flow
+
+// -------------------------------------------- Application API V2 --------------------------------------------
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallApplicationWithIdFromUrlRequest {
+    pub application_id: ApplicationId,
+    pub url: Url,
+    pub hash: Option<Hash>,
+    pub metadata: Vec<u8>,
+}
+
+impl InstallApplicationWithIdFromUrlRequest {
+    pub const fn new(
+        application_id: ApplicationId,
+        url: Url,
+        hash: Option<Hash>,
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            application_id,
+            url,
+            hash,
+            metadata,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallApplicationWithIdFromPathRequest {
+    pub application_id: ApplicationId,
+    pub path: Utf8PathBuf,
+    pub metadata: Vec<u8>,
+}
+
+impl InstallApplicationWithIdFromPathRequest {
+    pub const fn new(application_id: ApplicationId, path: Utf8PathBuf, metadata: Vec<u8>) -> Self {
+        Self {
+            application_id,
+            path,
+            metadata,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateApplicationFromUrlRequest {
+    pub url: Url,
+    pub hash: Option<Hash>,
+    pub metadata: Vec<u8>,
+}
+
+impl UpdateApplicationFromUrlRequest {
+    pub const fn new(url: Url, hash: Option<Hash>, metadata: Vec<u8>) -> Self {
+        Self {
+            url,
+            hash,
+            metadata,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateApplicationFromPathRequest {
+    pub path: Utf8PathBuf,
+    pub metadata: Vec<u8>,
+}
+
+impl UpdateApplicationFromPathRequest {
+    pub const fn new(path: Utf8PathBuf, metadata: Vec<u8>) -> Self {
+        Self { path, metadata }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateApplicationResponseData {
+    pub application_id: ApplicationId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateApplicationResponse {
+    pub data: UpdateApplicationResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateApplicationFromSourceRequest {
+    pub path: Option<Utf8PathBuf>,
+    pub url: Option<Url>,
+    pub hash: Option<Hash>,
+    pub metadata: Vec<u8>,
+}
+
+impl UpdateApplicationFromSourceRequest {
+    pub fn new(
+        path: Option<Utf8PathBuf>,
+        url: Option<Url>,
+        hash: Option<Hash>,
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            path,
+            url,
+            hash,
+            metadata,
+        }
+    }
+}
+
+impl UpdateApplicationResponse {
+    pub const fn new(application_id: ApplicationId) -> Self {
+        Self {
+            data: UpdateApplicationResponseData { application_id },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallApplicationFromManifestRequest {
+    pub manifest: serde_json::Value,
+}
+
+impl InstallApplicationFromManifestRequest {
+    pub fn new(manifest: serde_json::Value) -> Self {
+        Self { manifest }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UninstallApplicationResponseData {
