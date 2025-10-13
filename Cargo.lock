@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.9.0-rc.3"
+version = "0.9.0"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
