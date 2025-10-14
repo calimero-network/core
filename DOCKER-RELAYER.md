@@ -343,7 +343,7 @@ curl -X POST http://localhost:63529/ \
     "network_id": "testnet", 
     "contract_id": "calimero-context-config.testnet",
     "operation": "Read",
-    "payload": "{\"method_name\":\"get_contexts\"}"
+    "payload": "{\"method_name\":\"get_context_ids\"}"
   }'
 ```
 

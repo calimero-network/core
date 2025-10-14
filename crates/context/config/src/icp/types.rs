@@ -138,6 +138,8 @@ impl From<ContextRequestKind<'_>> for ICContextRequestKind {
                     .collect(),
             },
             ContextRequestKind::UpdateProxyContract => ICContextRequestKind::UpdateProxyContract,
+            ContextRequestKind::CommitOpenInvitation { .. }
+            | ContextRequestKind::RevealOpenInvitation { .. } => todo!(),
         }
     }
 }

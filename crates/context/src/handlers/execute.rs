@@ -155,8 +155,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .map_ok(move |module, _act, _ctx| (guard, context, module))
         });
 
-        let execution_count = self.metrics.execution_count.clone();
-        let execution_duration = self.metrics.execution_duration.clone();
+        let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
+        let execution_duration = self.metrics.as_ref().map(|m| m.execution_duration.clone());
+
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
@@ -188,20 +189,29 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .then_some("success")
                     .unwrap_or("failure");
 
-                let _ignored = execution_count
-                    .get_or_create(&ExecutionLabels {
-                        context_id: context_id.to_string(),
-                        method: method.clone(),
-                        status: status.to_owned(),
-                    })
-                    .inc();
-                let _ignored = execution_duration
-                    .get_or_create(&ExecutionLabels {
-                        context_id: context_id.to_string(),
-                        method: method,
-                        status: status.to_owned(),
-                    })
-                    .observe(duration);
+                // Update execution count metrics
+                if let Some(execution_count) = execution_count {
+                    let _ignored = execution_count
+                        .clone()
+                        .get_or_create(&ExecutionLabels {
+                            context_id: context_id.to_string(),
+                            method: method.clone(),
+                            status: status.to_owned(),
+                        })
+                        .inc();
+                }
+
+                // Update execution duration metrics
+                if let Some(execution_duration) = execution_duration {
+                    let _ignored = execution_duration
+                        .clone()
+                        .get_or_create(&ExecutionLabels {
+                            context_id: context_id.to_string(),
+                            method,
+                            status: status.to_owned(),
+                        })
+                        .observe(duration);
+                }
 
                 debug!(
                     %context_id,

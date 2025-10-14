@@ -129,6 +129,38 @@ impl Meroctl {
         Ok(data)
     }
 
+    pub async fn context_invite_by_open_invitation(
+        &self,
+        node: &str,
+        context_id: &str,
+        inviter_public_key: &str,
+        valid_for_blocks: u64,
+    ) -> EyreResult<String> {
+        let json = self
+            .run_cmd(
+                node,
+                [
+                    "context",
+                    "invite-open",
+                    "--context",
+                    context_id,
+                    "--as",
+                    inviter_public_key,
+                    "--valid-for-blocks",
+                    &valid_for_blocks.to_string(),
+                ],
+            )
+            .await?;
+
+        let data = self
+            .remove_value_from_object(json, "data")?
+            .as_str()
+            .ok_or_eyre("data is not string")?
+            .to_owned();
+
+        Ok(data)
+    }
+
     pub async fn context_join(
         &self,
         node: &str,
@@ -136,6 +168,25 @@ impl Meroctl {
     ) -> EyreResult<(String, String)> {
         let json = self
             .run_cmd(node, ["context", "join", invitation_data])
+            .await?;
+
+        let data = self.remove_value_from_object(json, "data")?;
+        let context_id = self.get_string_from_object(&data, "contextId")?;
+        let member_public_key = self.get_string_from_object(&data, "memberPublicKey")?;
+
+        Ok((context_id, member_public_key))
+    }
+
+    pub async fn context_join_by_open_invitation(
+        &self,
+        node: &str,
+        invitation_data: &str,
+    ) -> EyreResult<(String, String)> {
+        let json = self
+            .run_cmd(
+                node,
+                ["context", "join-by-open-invitation", invitation_data],
+            )
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;

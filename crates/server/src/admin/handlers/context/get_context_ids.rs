@@ -10,7 +10,7 @@ use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-    let context_ids = state.ctx_client.get_contexts(None);
+    let context_ids = state.ctx_client.get_context_ids(None);
 
     let mut context_ids = pin!(context_ids);
 

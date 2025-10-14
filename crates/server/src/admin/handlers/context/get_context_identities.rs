@@ -30,7 +30,9 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let stream = state.ctx_client.context_members(&context.id, Some(owned));
+    let stream = state
+        .ctx_client
+        .get_context_members(&context.id, Some(owned));
 
     match stream.map_ok(|(id, _)| id).try_collect().await {
         Ok(identities) => ApiResponse {

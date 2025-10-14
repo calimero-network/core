@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 axum = { workspace = true, features = ["http1"] }
+borsh.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true

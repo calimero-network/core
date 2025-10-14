@@ -21,10 +21,11 @@ use calimero_server_primitives::admin::{
     GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
-    InstallDevApplicationRequest, InviteToContextRequest, InviteToContextResponse,
-    JoinContextRequest, JoinContextResponse, ListAliasesResponse, ListApplicationsResponse,
-    LookupAliasResponse, RevokePermissionResponse, SyncContextResponse,
-    UninstallApplicationResponse, UpdateContextApplicationRequest,
+    InstallDevApplicationRequest, InviteToContextOpenInvitationRequest,
+    InviteToContextOpenInvitationResponse, InviteToContextRequest, InviteToContextResponse,
+    JoinContextByOpenInvitationRequest, JoinContextRequest, JoinContextResponse,
+    ListAliasesResponse, ListApplicationsResponse, LookupAliasResponse, RevokePermissionResponse,
+    SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
@@ -314,6 +315,17 @@ where
         Ok(response)
     }
 
+    pub async fn invite_to_context_by_open_invitation(
+        &self,
+        request: InviteToContextOpenInvitationRequest,
+    ) -> Result<InviteToContextOpenInvitationResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/invite_by_open_invitation", request)
+            .await?;
+        Ok(response)
+    }
+
     pub async fn update_context_application(
         &self,
         context_id: &ContextId,
@@ -404,6 +416,17 @@ where
         let response = self
             .connection
             .post("admin-api/contexts/join", request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn join_context_by_open_invitation(
+        &self,
+        request: JoinContextByOpenInvitationRequest,
+    ) -> Result<JoinContextResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/join_by_open_invitation", request)
             .await?;
         Ok(response)
     }

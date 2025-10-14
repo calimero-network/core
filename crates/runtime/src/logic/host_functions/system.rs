@@ -2,8 +2,9 @@ use serde::Serialize;
 
 use crate::{
     errors::{HostError, Location, PanicContext},
-    logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE},
+    logic::{sys, VMHostFunctions, VMLogicResult},
 };
+use calimero_primitives::common::DIGEST_SIZE;
 
 /// Represents a structured event emitted during the execution.
 #[derive(Debug, Serialize)]

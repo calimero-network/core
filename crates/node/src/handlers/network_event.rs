@@ -502,7 +502,7 @@ async fn handle_state_delta(
         return Ok(());
     };
 
-    let identities = context_client.context_members(&context_id, Some(true));
+    let identities = context_client.get_context_members(&context_id, Some(true));
 
     let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
         .await

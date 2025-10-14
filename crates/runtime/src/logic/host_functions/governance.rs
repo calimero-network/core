@@ -1,6 +1,7 @@
 use rand::RngCore;
 
-use crate::logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE};
+use crate::logic::{sys, VMHostFunctions, VMLogicResult};
+use calimero_primitives::common::DIGEST_SIZE;
 
 impl VMHostFunctions<'_> {
     /// Creates a new governance proposal.
@@ -70,8 +71,9 @@ impl VMHostFunctions<'_> {
 mod tests {
     use crate::logic::{
         tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
-        Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
+        Cow, VMContext, VMLimits, VMLogic,
     };
+    use calimero_primitives::common::DIGEST_SIZE;
     use wasmer::{AsStoreMut, Store};
 
     /// Tests the `send_proposal()` and `approve_proposal()` host functions.
