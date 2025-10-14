@@ -5,13 +5,15 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::ProposalId;
-use calimero_context_config::ProposalWithApprovals;
+use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
-    GetContextStorageEntriesRequest, GetContextStorageEntriesResponse, GetContextValueRequest,
-    GetContextValueResponse, GetNumberOfActiveProposalsResponse,
-    GetNumberOfProposalApprovalsResponse, GetProposalApproversResponse, GetProposalResponse,
-    GetProposalsRequest, GetProposalsResponse, GetProxyContractResponse,
+    ApproveProposalRequest, ApproveProposalResponse, CreateAndApproveProposalRequest,
+    CreateAndApproveProposalResponse, GetContextStorageEntriesRequest,
+    GetContextStorageEntriesResponse, GetContextValueRequest, GetContextValueResponse,
+    GetNumberOfActiveProposalsResponse, GetNumberOfProposalApprovalsResponse,
+    GetProposalApproversResponse, GetProposalResponse, GetProposalsRequest, GetProposalsResponse,
+    GetProxyContractResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -301,6 +303,112 @@ pub async fn get_proposal_approvers_handler(
                 Err(err) => parse_api_error(err.into()).into_response(),
             }
         }
+        Err(err) => parse_api_error(err).into_response(),
+    }
+}
+
+pub async fn create_and_approve_proposal_handler(
+    Path(context_id): Path<ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<CreateAndApproveProposalRequest>,
+) -> impl IntoResponse {
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    let res = async {
+        let signer_pk = req.signer_id;
+        let Proposal { id, actions, .. } = req.proposal;
+        let proposal_id = id.rt().expect("infallible conversion");
+
+        external_client
+            .proxy()
+            .propose(&signer_pk, &proposal_id, actions)
+            .await?;
+
+        external_client
+            .proxy()
+            .approve(&signer_pk, &proposal_id)
+            .await?;
+
+        let approvals = external_client
+            .proxy()
+            .proposal_approvals(&proposal_id)
+            .await?;
+
+        let data = Some(ProposalWithApprovals {
+            proposal_id: id,
+            num_approvals: approvals,
+        });
+
+        eyre::Result::<_, eyre::Report>::Ok(data)
+    };
+
+    match res.await {
+        Ok(data) => ApiResponse {
+            payload: CreateAndApproveProposalResponse { data },
+        }
+        .into_response(),
+        Err(err) => parse_api_error(err).into_response(),
+    }
+}
+
+pub async fn approve_proposal_handler(
+    Path(context_id): Path<ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<ApproveProposalRequest>,
+) -> impl IntoResponse {
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    let res = async {
+        let signer_pk = req.signer_id;
+        let proposal_id = req.proposal_id.rt().expect("infallible conversion");
+
+        external_client
+            .proxy()
+            .approve(&signer_pk, &proposal_id)
+            .await?;
+
+        let approvals = external_client
+            .proxy()
+            .proposal_approvals(&proposal_id)
+            .await?;
+
+        let data = Some(ProposalWithApprovals {
+            proposal_id: req.proposal_id,
+            num_approvals: approvals,
+        });
+
+        eyre::Result::<_, eyre::Report>::Ok(data)
+    };
+
+    match res.await {
+        Ok(data) => ApiResponse {
+            payload: ApproveProposalResponse { data },
+        }
+        .into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
 }
