@@ -21,6 +21,8 @@ pub enum Column {
     State,
     Delta,
     Blobs,
+    KadRecord,
+    KadProviderRecord,
     Application,
     Alias,
     Generic,
