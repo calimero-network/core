@@ -27,7 +27,7 @@ use super::handlers::{alias, blob};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
-    uninstall_application,
+    uninstall_application, v2_install_from_manifest, v2_update_from_path,
 };
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_identities, get_context_storage,
@@ -192,6 +192,19 @@ pub(crate) fn setup(
         )
         // Alias management
         .nest("/alias", alias::service())
+        // V2 Application management
+        .nest(
+            "/v2",
+            Router::new()
+                .route(
+                    "/applications/install-from-manifest",
+                    post(v2_install_from_manifest::handler),
+                )
+                .route(
+                    "/applications/:application_id/from-path",
+                    put(v2_update_from_path::handler),
+                ),
+        )
         .route("/health", get(health_check_handler))
         // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))
