@@ -245,10 +245,57 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
+                    info!(
+                        %context_id,
+                        %executor,
+                        is_state_op,
+                        artifact_empty = outcome.artifact.is_empty(),
+                        events_count = outcome.events.len(),
+                        "Execution outcome details"
+                    );
+
+                    // Log events with handlers for debugging
+                    // NOTE: Handlers are NEVER executed on the node that produces the events/diffs.
+                    // Handlers are only executed on receiving nodes during network sync to avoid
+                    // infinite loops and ensure proper distributed execution.
+                    for event in &outcome.events {
+                        if let Some(handler_name) = &event.handler {
+                            info!(
+                                %context_id,
+                                event_kind = %event.kind,
+                                handler_name = %handler_name,
+                                "Event emitted with handler (will be executed on receiving nodes)"
+                            );
+                        }
+                    }
+
+                    // Broadcast state deltas to other nodes when:
+                    // 1. It's not a state synchronization operation (is_state_op = false)
+                    // 2. AND there's a state change artifact (non-empty artifact)
+                    //
+                    // This ensures that:
+                    // - State changes are broadcast when there are actual state changes
+                    // - State synchronization operations don't trigger broadcasts (prevents loops)
+                    // - Events are still broadcast via WebSocket regardless of state changes
                     if !(is_state_op || outcome.artifact.is_empty()) {
+                        info!(
+                            %context_id,
+                            %executor,
+                            is_state_op,
+                            artifact_empty = outcome.artifact.is_empty(),
+                            events_count = outcome.events.len(),
+                            delta_height = ?delta_height,
+                            "Broadcasting state delta and events to other nodes"
+                        );
+
                         if let Some(height) = delta_height {
                             // Serialize events if any were emitted
                             let events_data = if outcome.events.is_empty() {
+                                info!(
+                                    %context_id,
+                                    %executor,
+                                    "No events to serialize"
+                                );
                                 None
                             } else {
                                 let events_vec: Vec<ExecutionEvent> = outcome
@@ -257,9 +304,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     .map(|e| ExecutionEvent {
                                         kind: e.kind.clone(),
                                         data: e.data.clone(),
+                                        handler: e.handler.clone(),
                                     })
                                     .collect();
-                                Some(serde_json::to_vec(&events_vec)?)
+                                let serialized = serde_json::to_vec(&events_vec)?;
+                                info!(
+                                    %context_id,
+                                    %executor,
+                                    events_count = events_vec.len(),
+                                    serialized_len = serialized.len(),
+                                    "Serializing events for broadcast"
+                                );
+                                Some(serialized)
                             };
 
                             node_client
@@ -326,6 +382,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         .map(|e| ExecuteEvent {
                             kind: e.kind,
                             data: e.data,
+                            handler: e.handler,
                         })
                         .collect(),
                     root_hash,
@@ -506,12 +563,16 @@ async fn internal_execute(
             .root_hash
             .map(|h| h.into())
             .unwrap_or((*context.root_hash).into());
+        // Note: Handler execution is handled in network sync when events are received by other nodes
+        // The emitting node does not execute handlers locally to avoid recursion
+
         let events_vec = outcome
             .events
             .iter()
             .map(|e| ExecutionEvent {
                 kind: e.kind.clone(),
                 data: e.data.clone(),
+                handler: e.handler.clone(),
             })
             .collect();
 

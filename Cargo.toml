@@ -14,6 +14,7 @@ version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
     "./apps/kv-store",
+    "./apps/kv-store-with-handlers",
     "./e2e-tests",
     "./crates/merod",
     "./crates/version",
@@ -58,6 +59,7 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/kv-store",
+    "./apps/kv-store-with-handlers",
     "./apps/private_data",
     "./apps/abi_conformance",
 
