@@ -33,7 +33,9 @@ impl ExternalProxyClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         let client = self.client.mutate::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
@@ -41,9 +43,9 @@ impl ExternalProxyClient<'_> {
             self.client.config.proxy_contract.as_ref().into(),
         );
 
-        let _ignored = client
+        client
             .propose(*proposal_id, signer_id, actions)
-            .send(**private_key)
+            .send(*private_key)
             .await?;
 
         Ok(())
@@ -62,7 +64,9 @@ impl ExternalProxyClient<'_> {
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        let private_key = identity
+            .private_key(self.client.context_client())?
+            .ok_or_eyre("private key not available for this identity")?;
 
         let client = self.client.mutate::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
@@ -70,9 +74,9 @@ impl ExternalProxyClient<'_> {
             self.client.config.proxy_contract.as_ref().into(),
         );
 
-        let _ignored = client
+        client
             .approve(signer_id, *proposal_id)
-            .send(**private_key)
+            .send(*private_key)
             .await?;
 
         Ok(())

@@ -24,6 +24,7 @@ use crate::ContextAtomic;
 
 pub mod crypto;
 pub mod external;
+mod keypairs;
 mod sync;
 
 #[derive(Clone, Debug)]
@@ -164,12 +165,7 @@ impl ContextClient {
         }
     }
 
-    pub fn has_member(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-        // is_owned: Option<bool>,
-    ) -> eyre::Result<bool> {
+    pub fn has_member(&self, context_id: &ContextId, public_key: &PublicKey) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
 
         let key = key::ContextIdentity::new(*context_id, *public_key);
@@ -201,7 +197,7 @@ impl ContextClient {
                     break;
                 }
 
-                let is_owned = v.private_key.is_some();
+                let is_owned = v.keypair_ref.is_some(); // Changed from private_key to keypair_ref
                 if !only_owned || is_owned {
                     yield (k.public_key(), is_owned);
                 }
