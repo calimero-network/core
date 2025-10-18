@@ -50,7 +50,7 @@ async fn join_context(
     }
 
     let stored_identity = context_client
-        .get_identity(&ContextId::from([0u8; 32]), &invitee_id)?
+        .get_identity(&ContextId::zero(), &invitee_id)?
         .ok_or_else(|| eyre!("missing identity for public key: {}", invitee_id))?;
 
     let identity_secret = stored_identity
@@ -105,7 +105,9 @@ async fn join_context(
         },
     )?;
 
-    context_client.delete_identity(&ContextId::from([0u8; 32]), &invitee_id)?;
+    // Delete the identity from the zero context (a.k.a. identity pool),
+    // because we just assigned that identity to the new context.
+    context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
     node_client.subscribe(&context_id).await?;
 
