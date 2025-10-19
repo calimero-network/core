@@ -18,8 +18,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
-    StateMutationPayload,
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
@@ -31,7 +30,7 @@ use futures_util::future::TryFutureExt;
 use futures_util::io::Cursor;
 use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -55,6 +54,11 @@ impl Handler<ExecuteRequest> for ContextManager {
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        info!(
+            %context_id,
+            method,
+            "Executing method in context"
+        );
         debug!(
             %context_id,
             %executor,
@@ -66,7 +70,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 Some(ContextAtomic::Lock) => "acquire",
                 Some(ContextAtomic::Held(_)) => "yes",
             },
-            "execution requested"
+            "Execution request details"
         );
 
         let context = match self.get_or_fetch_context(&context_id) {
@@ -207,22 +211,29 @@ impl Handler<ExecuteRequest> for ContextManager {
                         .clone()
                         .get_or_create(&ExecutionLabels {
                             context_id: context_id.to_string(),
-                            method,
+                            method: method.clone(),
                             status: status.to_owned(),
                         })
                         .observe(duration);
                 }
 
+                info!(
+                    %context_id,
+                    method,
+                    status,
+                    "Method execution completed"
+                );
                 debug!(
                     %context_id,
                     %executor,
-                    status = status,
+                    method,
+                    status,
                     %old_root_hash,
                     new_root_hash=%context.root_hash,
                     artifact_len = outcome.artifact.len(),
                     logs_count = outcome.logs.len(),
                     events_count = outcome.events.len(),
-                    "executed request"
+                    "Execution outcome details"
                 );
 
                 Ok((guard, context, outcome, delta_height))
@@ -244,8 +255,79 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
+                    info!(
+                        %context_id,
+                        %executor,
+                        is_state_op,
+                        artifact_empty = outcome.artifact.is_empty(),
+                        events_count = outcome.events.len(),
+                        "Execution outcome details"
+                    );
+
+                    // Log events with handlers for debugging
+                    // NOTE: Handlers are NEVER executed on the node that produces the events/diffs.
+                    // Handlers are only executed on receiving nodes during network sync to avoid
+                    // infinite loops and ensure proper distributed execution.
+                    for event in &outcome.events {
+                        if let Some(handler_name) = &event.handler {
+                            info!(
+                                %context_id,
+                                event_kind = %event.kind,
+                                handler_name = %handler_name,
+                                "Event emitted with handler (will be executed on receiving nodes)"
+                            );
+                        }
+                    }
+
+                    // Broadcast state deltas to other nodes when:
+                    // 1. It's not a state synchronization operation (is_state_op = false)
+                    // 2. AND there's a state change artifact (non-empty artifact)
+                    //
+                    // This ensures that:
+                    // - State changes are broadcast when there are actual state changes
+                    // - State synchronization operations don't trigger broadcasts (prevents loops)
+                    // - Events are still broadcast via WebSocket regardless of state changes
                     if !(is_state_op || outcome.artifact.is_empty()) {
+                        info!(
+                            %context_id,
+                            %executor,
+                            is_state_op,
+                            artifact_empty = outcome.artifact.is_empty(),
+                            events_count = outcome.events.len(),
+                            delta_height = ?delta_height,
+                            "Broadcasting state delta and events to other nodes"
+                        );
+
                         if let Some(height) = delta_height {
+                            // Serialize events if any were emitted
+                            let events_data = if outcome.events.is_empty() {
+                                info!(
+                                    %context_id,
+                                    %executor,
+                                    "No events to serialize"
+                                );
+                                None
+                            } else {
+                                let events_vec: Vec<ExecutionEvent> = outcome
+                                    .events
+                                    .iter()
+                                    .map(|e| ExecutionEvent {
+                                        kind: e.kind.clone(),
+                                        data: e.data.clone(),
+                                        handler: e.handler.clone(),
+                                    })
+                                    .collect();
+                                let serialized = serde_json::to_vec(&events_vec)?;
+                                info!(
+                                    %context_id,
+                                    %executor,
+                                    events_count = events_vec.len(),
+                                    serialized_len = serialized.len(),
+                                    "Serializing events for broadcast"
+                                );
+                                Some(serialized)
+                            };
+
                             node_client
                                 .broadcast(
                                     &context,
@@ -253,6 +335,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     &sender_key,
                                     outcome.artifact.clone(),
                                     height,
+                                    events_data,
                                 )
                                 .await?;
                         }
@@ -309,6 +392,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         .map(|e| ExecuteEvent {
                             kind: e.kind,
                             data: e.data,
+                            handler: e.handler,
                         })
                         .collect(),
                     root_hash,
@@ -479,29 +563,36 @@ async fn internal_execute(
                     *context.root_hash,
                 ),
             )?;
-
-            node_client.send_event(NodeEvent::Context(ContextEvent {
-                context_id: context.id,
-                payload: ContextEventPayload::StateMutation(StateMutationPayload {
-                    new_root: context.root_hash,
-                }),
-            }))?;
         }
     }
 
-    node_client.send_event(NodeEvent::Context(ContextEvent {
-        context_id: context.id,
-        payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
-            events: outcome
-                .events
-                .iter()
-                .map(|e| ExecutionEvent {
-                    kind: e.kind.clone(),
-                    data: e.data.clone(),
-                })
-                .collect(),
-        }),
-    }))?;
+    // Only send StateMutation to WebSocket if there are events or state changes
+    if !outcome.events.is_empty() || outcome.root_hash.is_some() {
+        // Use the updated root if present, otherwise the current context root
+        let new_root = outcome
+            .root_hash
+            .map(|h| h.into())
+            .unwrap_or((*context.root_hash).into());
+        // Note: Handler execution is handled in network sync when events are received by other nodes
+        // The emitting node does not execute handlers locally to avoid recursion
+
+        let events_vec = outcome
+            .events
+            .iter()
+            .map(|e| ExecutionEvent {
+                kind: e.kind.clone(),
+                data: e.data.clone(),
+                handler: e.handler.clone(),
+            })
+            .collect();
+
+        node_client.send_event(NodeEvent::Context(ContextEvent {
+            context_id: context.id,
+            payload: ContextEventPayload::StateMutation(
+                StateMutationPayload::with_root_and_events(new_root, events_vec),
+            ),
+        }))?;
+    }
 
     Ok((outcome, height))
 }

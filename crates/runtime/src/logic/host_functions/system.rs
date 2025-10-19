@@ -1,10 +1,17 @@
 use serde::Serialize;
+use std::cell::RefCell;
 
 use crate::{
     errors::{HostError, Location, PanicContext},
     logic::{sys, VMHostFunctions, VMLogicResult},
 };
 use calimero_primitives::common::DIGEST_SIZE;
+
+thread_local! {
+    /// The name of the callback handler method to call when emitting events with handlers.
+    /// This is set temporarily by the SDK's `emit_with_handler` function and read by the runtime.
+    static CURRENT_CALLBACK_HANDLER: RefCell<Option<String>> = RefCell::new(None);
+}
 
 /// Represents a structured event emitted during the execution.
 #[derive(Debug, Serialize)]
@@ -14,6 +21,8 @@ pub struct Event {
     pub kind: String,
     /// The binary data payload associated with the event.
     pub data: Vec<u8>,
+    /// Optional handler name for the event.
+    pub handler: Option<String>,
 }
 
 impl VMHostFunctions<'_> {
@@ -289,7 +298,89 @@ impl VMHostFunctions<'_> {
         let kind = self.read_guest_memory_str(event.kind())?.to_owned();
         let data = self.read_guest_memory_slice(event.data()).to_vec();
 
-        self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
+        // Read callback handler name from thread-local storage
+        let handler = CURRENT_CALLBACK_HANDLER.with(|name| name.borrow().clone());
+
+        self.with_logic_mut(|logic| {
+            logic.events.push(Event {
+                kind,
+                data,
+                handler,
+            })
+        });
+
+        Ok(())
+    }
+
+    /// Emits an event with an optional handler name.
+    ///
+    /// This function is similar to `emit` but includes handler information.
+    /// The handler name is read from the provided memory pointer.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_event_ptr` - Pointer to the event data in guest memory.
+    /// * `src_handler_ptr` - Pointer to the handler name in guest memory (can be 0 for no handler).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the event was successfully emitted.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::EventKindSizeOverflow` if the event kind is too long.
+    /// * `HostError::EventDataSizeOverflow` if the event data is too large.
+    /// * `HostError::EventsOverflow` if the maximum number of events has been reached.
+    /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
+    pub fn emit_with_handler(
+        &mut self,
+        src_event_ptr: u64,
+        src_handler_ptr: u64,
+    ) -> VMLogicResult<()> {
+        let event = unsafe { self.read_guest_memory_typed::<sys::Event<'_>>(src_event_ptr)? };
+
+        let kind_len = event.kind().len();
+        let data_len = event.data().len();
+
+        let logic = self.borrow_logic();
+
+        if kind_len > logic.limits.max_event_kind_size {
+            return Err(HostError::EventKindSizeOverflow.into());
+        }
+
+        if data_len > logic.limits.max_event_data_size {
+            return Err(HostError::EventDataSizeOverflow.into());
+        }
+
+        if logic.events.len()
+            >= usize::try_from(logic.limits.max_events).map_err(|_| HostError::IntegerOverflow)?
+        {
+            return Err(HostError::EventsOverflow.into());
+        }
+
+        let kind = self.read_guest_memory_str(event.kind())?.to_owned();
+        let data = self.read_guest_memory_slice(event.data()).to_vec();
+
+        // Parse handler name if provided (src_handler_ptr != 0)
+        let handler = if src_handler_ptr == 0 {
+            None
+        } else {
+            // Read the handler buffer from guest memory
+            let handler_buffer =
+                unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_handler_ptr)? };
+            match self.read_guest_memory_str(&handler_buffer) {
+                Ok(handler_str) => Some(handler_str.to_owned()),
+                Err(_) => None, // If we can't read the handler, just set to None
+            }
+        };
+
+        self.with_logic_mut(|logic| {
+            logic.events.push(Event {
+                kind,
+                data,
+                handler,
+            })
+        });
 
         Ok(())
     }

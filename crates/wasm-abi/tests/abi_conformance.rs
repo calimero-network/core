@@ -79,7 +79,7 @@ impl AbiState {
 }
 "#;
 
-    let file = parse_file(source_code).expect("Failed to parse source code");
+    let _file = parse_file(source_code).expect("Failed to parse source code");
     let manifest = emit_manifest(source_code).expect("Failed to emit manifest");
 
     // Test list_records method

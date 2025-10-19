@@ -100,7 +100,7 @@
         "intervalMs": 5000,
         "description": [
           "if a node still hasn't received the broadcast",
-          "try 5 more times in 5 seconds, but no more"
+          "try 5 more times every 5 seconds, but no more"
         ]
       }
     }

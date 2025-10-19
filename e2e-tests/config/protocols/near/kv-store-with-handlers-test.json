@@ -1,0 +1,163 @@
+{
+  "steps": [
+    {
+      "applicationInstall": {
+        "application": {
+          "localFile": "./apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm"
+        },
+        "target": "allMembers"
+      }
+    },
+    {
+      "contextCreate": null
+    },
+    {
+      "contextCreateAlias": {
+        "aliasName": "my_context_callback"
+      }
+    },
+    {
+      "contextInviteJoin": null
+    },
+    {
+      "wait": {
+        "durationMs": 5000,
+        "for": "consensus",
+        "description": "Wait for nodes to join and reach consensus"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "test_key",
+          "value": "test_value"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync and handler execution on receiving nodes"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_unique_handlers_called",
+        "argsJson": {},
+        "expectedResultJson": [
+          "Handler 'insert_handler' called: key=test_key, value=test_value"
+        ],
+        "target": "inviter"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "test_key",
+          "value": "updated_value"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync and handler execution on receiving nodes"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_unique_handlers_called",
+        "argsJson": {},
+        "expectedResultJson": [
+          "Handler 'insert_handler' called: key=test_key, value=test_value",
+          "Handler 'update_handler' called: key=test_key, value=updated_value"
+        ],
+        "target": "invitees"
+      }
+    },
+    {
+      "call": {
+        "methodName": "remove",
+        "argsJson": {
+          "key": "test_key"
+        },
+        "expectedResultJson": "updated_value",
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync and handler execution on receiving nodes"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_unique_handlers_called",
+        "argsJson": {},
+        "expectedResultJson": [
+          "Handler 'insert_handler' called: key=test_key, value=test_value",
+          "Handler 'remove_handler' called: key=test_key",
+          "Handler 'update_handler' called: key=test_key, value=updated_value"
+        ],
+        "target": "invitees"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "another_key",
+          "value": "another_value"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync and handler execution on receiving nodes"
+      }
+    },
+    {
+      "call": {
+        "methodName": "clear",
+        "argsJson": {},
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync and handler execution on receiving nodes"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_unique_handlers_called",
+        "argsJson": {},
+        "expectedResultJson": [
+          "Handler 'clear_handler' called: all items cleared",
+          "Handler 'insert_handler' called: key=another_key, value=another_value",
+          "Handler 'insert_handler' called: key=test_key, value=test_value",
+          "Handler 'remove_handler' called: key=test_key",
+          "Handler 'update_handler' called: key=test_key, value=updated_value"
+        ],
+        "target": "invitees"
+      }
+    }
+  ]
+}

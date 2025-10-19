@@ -22,19 +22,22 @@ pub struct ContextEvent {
 #[expect(variant_size_differences, reason = "fine for now")]
 pub enum ContextEventPayload {
     StateMutation(StateMutationPayload),
-    ExecutionEvent(ExecutionEventPayload),
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateMutationPayload {
     pub new_root: Hash,
+    pub events: Option<Vec<ExecutionEvent>>,
 }
 
 impl StateMutationPayload {
     #[must_use]
-    pub const fn new(new_root: Hash) -> Self {
-        Self { new_root }
+    pub const fn with_root_and_events(new_root: Hash, events: Vec<ExecutionEvent>) -> Self {
+        Self {
+            new_root,
+            events: Some(events),
+        }
     }
 }
 
@@ -42,10 +45,5 @@ impl StateMutationPayload {
 pub struct ExecutionEvent {
     pub kind: String,
     pub data: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionEventPayload {
-    pub events: Vec<ExecutionEvent>,
+    pub handler: Option<String>,
 }

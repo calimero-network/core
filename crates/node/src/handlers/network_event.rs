@@ -10,6 +10,9 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
@@ -17,7 +20,7 @@ use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::utils::choose_stream;
 use crate::NodeManager;
@@ -289,6 +292,8 @@ impl Handler<NetworkEvent> for NodeManager {
                     }
                 };
 
+                info!("Deserialized broadcast message successfully");
+
                 match message {
                     BroadcastMessage::StateDelta {
                         context_id,
@@ -297,12 +302,28 @@ impl Handler<NetworkEvent> for NodeManager {
                         artifact,
                         height,
                         nonce,
+                        events,
                     } => {
+                        info!(
+                            %context_id,
+                            %author_id,
+                            has_events = events.is_some(),
+                            events_len = events.as_ref().map(|e| e.len()).unwrap_or(0),
+                            "Matched StateDelta message"
+                        );
+
                         let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
 
                         let _ignored = ctx.spawn(
                             async move {
+                                info!(
+                                    %context_id,
+                                    %author_id,
+                                    has_events = events.is_some(),
+                                    "About to call handle_state_delta"
+                                );
+
                                 if let Err(err) = handle_state_delta(
                                     node_client,
                                     context_client,
@@ -313,6 +334,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     artifact.into_owned(),
                                     height,
                                     nonce,
+                                    events.map(|e| e.into_owned()),
                                 )
                                 .await
                                 {
@@ -389,12 +411,12 @@ impl Handler<NetworkEvent> for NodeManager {
                 data,
                 from_peer,
             } => {
-                debug!(
+                info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
                     from_peer = %from_peer,
                     data_size = data.len(),
-                    "Blob downloaded successfully from peer, storing to blobstore"
+                    "Blob downloaded successfully from peer"
                 );
 
                 // Store the downloaded blob data to blobstore
@@ -408,15 +430,15 @@ impl Handler<NetworkEvent> for NodeManager {
 
                         match blobstore.put(reader).await {
                             Ok((stored_blob_id, _hash, size)) => {
-                                debug!(
+                                info!(
                                     requested_blob_id = %blob_id,
                                     stored_blob_id = %stored_blob_id,
                                     size = size,
-                                    "Successfully stored downloaded blob"
+                                    "Blob stored successfully"
                                 );
                             }
                             Err(e) => {
-                                warn!(
+                                error!(
                                     blob_id = %blob_id,
                                     error = %e,
                                     "Failed to store downloaded blob"
@@ -433,7 +455,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 from_peer,
                 error,
             } => {
-                debug!(
+                info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
                     from_peer = %from_peer,
@@ -457,23 +479,146 @@ async fn handle_state_delta(
     artifact: Vec<u8>,
     height: NonZeroUsize,
     nonce: Nonce,
+    events: Option<Vec<u8>>,
 ) -> eyre::Result<()> {
     let Some(context) = context_client.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
     };
 
-    debug!(
+    info!(
         %context_id, %author_id,
         expected_root_hash = %root_hash,
         current_root_hash = %context.root_hash,
         "Received state delta"
     );
 
+    // Debug: Log if events are present
+    if let Some(events_data) = &events {
+        info!(
+            %context_id,
+            events_len = events_data.len(),
+            "Received state delta with events"
+        );
+
+        // Try to deserialize and log the events
+        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+            Ok(events_payload) => {
+                info!(
+                    %context_id,
+                    events_count = events_payload.len(),
+                    "Deserialized events successfully"
+                );
+                for (i, event) in events_payload.iter().enumerate() {
+                    info!(
+                        %context_id,
+                        event_index = i,
+                        event_kind = %event.kind,
+                        event_data_len = event.data.len(),
+                        event_handler = ?event.handler,
+                        "Event details"
+                    );
+                }
+            }
+            Err(e) => {
+                info!(
+                    %context_id,
+                    error = %e,
+                    "Failed to deserialize events"
+                );
+            }
+        }
+    } else {
+        info!(
+            %context_id,
+            "Received state delta without events"
+        );
+    }
+
+    // Execute handlers for events that have handlers
+    // NOTE: Handlers are ONLY executed on receiving nodes during network sync.
+    // This ensures that:
+    // 1. The node that produces events/diffs never executes its own handlers (avoids infinite loops)
+    // 2. Handlers are executed in a distributed manner across the network
+    // 3. Each receiving node processes handlers independently
+    if let Some(events_data) = &events {
+        // Get our identity for handler execution
+        let identities = context_client.get_context_members(&context_id, Some(true));
+        if let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        {
+            match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+                Ok(events_payload) => {
+                    for event in &events_payload {
+                        if let Some(handler_name) = &event.handler {
+                            debug!(
+                                %context_id,
+                                event_kind = %event.kind,
+                                handler_name = %handler_name,
+                                "Executing handler for event on receiving node"
+                            );
+
+                            // Parse the event data and call the handler method
+                            if let Ok(event_data) =
+                                serde_json::from_slice::<serde_json::Value>(&event.data)
+                            {
+                                debug!(
+                                    "Calling handler method: {} with event data: {:?}",
+                                    handler_name, event_data
+                                );
+
+                                // Call the handler method using context_client.execute
+                                // This will trigger the normal execution pipeline and broadcast results
+                                match context_client
+                                    .execute(
+                                        &context_id,
+                                        &our_identity,
+                                        handler_name.clone(),
+                                        event.data.clone(),
+                                        vec![], // No aliases for handler calls
+                                        None,   // No atomic operations for handler calls
+                                    )
+                                    .await
+                                {
+                                    Ok(handler_response) => {
+                                        debug!(
+                                            "Handler {} executed successfully, logs: {:?}",
+                                            handler_name, handler_response.logs
+                                        );
+                                    }
+                                    Err(err) => {
+                                        debug!(
+                                            "Handler {} execution failed: {:?}",
+                                            handler_name, err
+                                        );
+                                    }
+                                }
+                            } else {
+                                debug!("Failed to parse event data for handler: {}", handler_name);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        %context_id,
+                        error = %e,
+                        "Failed to deserialize events for handler execution"
+                    );
+                }
+            }
+        } else {
+            debug!(%context_id, "No owned identities found for handler execution");
+        }
+    }
+
+    // If root hash matches, we shouldn't process anything (no state change, no events)
     if root_hash == context.root_hash {
-        debug!(%context_id, "Received state delta with same root hash, ignoring..");
+        debug!(%context_id, "Received state delta with same root hash, ignoring");
         return Ok(());
     }
 
+    // Perform state sync since root hash doesn't match
     if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
         if known_height >= height || height.get() - known_height.get() > 1 {
             debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
@@ -534,16 +679,84 @@ async fn handle_state_delta(
             current_root_hash = %outcome.root_hash,
             "State delta application led to root hash mismatch, ignoring for now"
         );
+    }
 
-        //     debug!(
-        //         %context_id,
-        //         %author_id,
-        //         expected_root_hash = %root_hash,
-        //         current_root_hash = %outcome.root_hash,
-        //         "State delta application led to root hash mismatch, initiating sync"
-        //     );
+    // Process execution events if they were included: execute handlers and re-emit as unified StateMutation
+    debug!(
+        %context_id,
+        %author_id,
+        has_events = events.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
+        events_len = events.as_ref().map(|e| e.len()).unwrap_or(0),
+        "Received StateDelta; checking for bundled events"
+    );
+    if let Some(events_data) = events {
+        debug!(%context_id, raw_events_len = events_data.len(), "Raw events bytes received");
+        let events_payload: Vec<ExecutionEvent> =
+            serde_json::from_slice(&events_data).unwrap_or_else(|_| Vec::new());
 
-        //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        // Execute handlers for events that have handlers
+        // NOTE: Handlers are ONLY executed on receiving nodes during network sync.
+        // This ensures that:
+        // 1. The node that produces events/diffs never executes its own handlers (avoids infinite loops)
+        // 2. Handlers are executed in a distributed manner across the network
+        // 3. Each receiving node processes handlers independently
+        for event in &events_payload {
+            if let Some(handler_name) = &event.handler {
+                debug!(
+                    %context_id,
+                    event_kind = %event.kind,
+                    handler_name = %handler_name,
+                    "Executing handler for event on receiving node"
+                );
+
+                // Parse the event data and call the handler method
+                if let Ok(event_data) = serde_json::from_slice::<serde_json::Value>(&event.data) {
+                    debug!(
+                        "Calling handler method: {} with event data: {:?}",
+                        handler_name, event_data
+                    );
+
+                    // Call the handler method using context_client.execute
+                    // This will trigger the normal execution pipeline and broadcast results
+                    match context_client
+                        .execute(
+                            &context_id,
+                            &our_identity,
+                            handler_name.clone(),
+                            event.data.clone(),
+                            vec![], // No aliases for handler calls
+                            None,   // No atomic operations for handler calls
+                        )
+                        .await
+                    {
+                        Ok(handler_response) => {
+                            debug!(
+                                "Handler {} executed successfully, logs: {:?}",
+                                handler_name, handler_response.logs
+                            );
+                        }
+                        Err(err) => {
+                            debug!("Handler {} execution failed: {:?}", handler_name, err);
+                        }
+                    }
+                } else {
+                    debug!("Failed to parse event data for handler: {}", handler_name);
+                }
+            }
+        }
+
+        // Only re-emit if there are actual events
+        if !events_payload.is_empty() {
+            debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
+            node_client.send_event(NodeEvent::Context(ContextEvent {
+                context_id,
+                payload: ContextEventPayload::StateMutation(
+                    StateMutationPayload::with_root_and_events(root_hash, events_payload),
+                ),
+            }))?;
+        } else {
+            debug!(%context_id, "No events after deserialization; skipping WS emit");
+        }
     }
 
     Ok(())
