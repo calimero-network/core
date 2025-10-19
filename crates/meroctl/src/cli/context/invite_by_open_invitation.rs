@@ -76,9 +76,9 @@ impl InviteByOpenInvitationCommand {
         //}
         environment.output.write(&response);
 
-        let signed_open_invitation_payload = response
-            .data
-            .ok_or_else(|| eyre::eyre!("No signed open invitation payload found in the response"))?;
+        let signed_open_invitation_payload = response.data.ok_or_else(|| {
+            eyre::eyre!("No signed open invitation payload found in the response")
+        })?;
 
         Ok(signed_open_invitation_payload)
     }

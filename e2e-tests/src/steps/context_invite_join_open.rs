@@ -26,7 +26,10 @@ impl Test for ContextInviteJoinOpenStep {
 
         for invitee in &ctx.invitees {
             let invitee_public_key = ctx.meroctl.identity_generate(invitee).await?;
-            println!("Generated on {invitee} a new identity: {}", invitee_public_key);
+            println!(
+                "Generated on {invitee} a new identity: {}",
+                invitee_public_key
+            );
 
             let signed_open_invitation = ctx
                 .meroctl
@@ -41,7 +44,11 @@ impl Test for ContextInviteJoinOpenStep {
             println!("E2E: successfully ran context_invite_by_open_invitation");
             let (invitee_context_id, invitee_member_public_key) = ctx
                 .meroctl
-                .context_join_by_open_invitation(invitee, &signed_open_invitation, &invitee_public_key)
+                .context_join_by_open_invitation(
+                    invitee,
+                    &signed_open_invitation,
+                    &invitee_public_key,
+                )
                 .await?;
             println!("E2E: successfully ran context_join_by_open_invitation");
 

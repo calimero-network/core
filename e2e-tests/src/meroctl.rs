@@ -4,7 +4,7 @@ use std::process::Stdio;
 
 use calimero_context_config::types::SignedOpenInvitation;
 use camino::Utf8PathBuf;
-use eyre::{bail, eyre, OptionExt, Result as EyreResult, ContextCompat, WrapErr};
+use eyre::{bail, eyre, ContextCompat, OptionExt, Result as EyreResult, WrapErr};
 use tokio::process::Command;
 
 use crate::output::OutputWriter;
@@ -153,14 +153,14 @@ impl Meroctl {
             )
             .await?;
 
-        let data = self
-            .remove_value_from_object(json, "data")?;
+        let data = self.remove_value_from_object(json, "data")?;
 
         // Verify the structure is properly deserialized
-        let opt_signed_open_invitation: Option<SignedOpenInvitation> = serde_json::from_value(data.clone())
-            .context("Serde deserialization for SignedOpenInvitation failed")?;
-        let _signed_open_invitation = opt_signed_open_invitation
-            .context("SignedOpenInvitation is None in the response")?;
+        let opt_signed_open_invitation: Option<SignedOpenInvitation> =
+            serde_json::from_value(data.clone())
+                .context("Serde deserialization for SignedOpenInvitation failed")?;
+        let _signed_open_invitation =
+            opt_signed_open_invitation.context("SignedOpenInvitation is None in the response")?;
 
         let signed_open_invitation_str = data.to_string();
         Ok(signed_open_invitation_str)
@@ -191,7 +191,13 @@ impl Meroctl {
         let json = self
             .run_cmd(
                 node,
-                ["context", "join-open", invitation_data, "--as", new_member_public_key],
+                [
+                    "context",
+                    "join-open",
+                    invitation_data,
+                    "--as",
+                    new_member_public_key,
+                ],
             )
             .await?;
 

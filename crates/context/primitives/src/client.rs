@@ -11,7 +11,9 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_primitives::context::{ContextConfigParams, Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{
+    Context, ContextConfigParams, ContextId, ContextInvitationPayload,
+};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
@@ -334,7 +336,8 @@ impl ContextClient {
             external_config_params = Some(external_config);
         };
 
-        let external_config_params = external_config_params.context("External config is None while it should be set")?;
+        let external_config_params =
+            external_config_params.context("External config is None while it should be set")?;
         let external_client = self.external_client(&context_id, &external_config_params)?;
 
         external_client

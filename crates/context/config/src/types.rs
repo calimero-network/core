@@ -556,14 +556,20 @@ mod tests {
             network: "devnet".to_string(),
             contract_id: "".to_string(),
         };
-        let invitation_borsh = borsh::to_vec(&invitation)
-            .expect("Failed to Borsh serialize the invitation");
+        let invitation_borsh =
+            borsh::to_vec(&invitation).expect("Failed to Borsh serialize the invitation");
         let invitation_deserialized: InvitationFromMember = borsh::from_slice(&invitation_borsh)
             .expect("Failed to Borsh deserialize the invitation");
 
-        assert_eq!(invitation.inviter_identity, invitation_deserialized.inviter_identity);
+        assert_eq!(
+            invitation.inviter_identity,
+            invitation_deserialized.inviter_identity
+        );
         assert_eq!(invitation.context_id, invitation_deserialized.context_id);
-        assert_eq!(invitation.expiration_height, invitation_deserialized.expiration_height);
+        assert_eq!(
+            invitation.expiration_height,
+            invitation_deserialized.expiration_height
+        );
         assert_eq!(invitation.secret_salt, invitation_deserialized.secret_salt);
         assert_eq!(invitation.protocol, invitation_deserialized.protocol);
         assert_eq!(invitation.network, invitation_deserialized.network);
