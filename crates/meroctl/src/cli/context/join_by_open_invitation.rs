@@ -1,3 +1,4 @@
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -28,10 +29,8 @@ impl JoinByOpenInvitationCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?.clone();
 
-        let invitation = borsh::from_slice(
-            &hex::decode(&self.invitation).context("Failed to hex-decode open invitation")?,
-        )
-        .context("Failed to deserialize open invitation")?;
+        let invitation: SignedOpenInvitation = serde_json::from_str(&self.invitation)
+            .context("Failed to serde-deserialize SignedOpenInvitation")?;
         let request = JoinContextByOpenInvitationRequest::new(invitation, self.identity);
         let response = client.join_context_by_open_invitation(request).await?;
 

@@ -11,7 +11,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{ContextConfigParams, Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
@@ -207,16 +207,15 @@ impl ContextClient {
         let inviter_identity_context_type = inviter_identity.into();
         let context_id = **context_id;
 
-        // TODO: pass the protocol ID from the admin API?
-        let near_protocol_testnet_id = 100;
-
         // 2. Construct the invitation payload.
         let invitation = InvitationFromMember {
             inviter_identity: inviter_identity_context_type,
             context_id: context_id.into(),
             expiration_height: expiration_block_height,
             secret_salt,
-            protocol: near_protocol_testnet_id,
+            protocol: external_config.protocol.to_string(),
+            network: external_config.network_id.to_string(),
+            contract_id: external_config.contract_id.to_string(),
         };
 
         // 3. Sign the invitation payload.
@@ -283,7 +282,7 @@ impl ContextClient {
         signed_invitation: SignedOpenInvitation,
         new_member_public_key: &PublicKey,
     ) -> eyre::Result<Option<JoinContextResponse>> {
-        let invitation = signed_invitation.invitation;
+        let invitation = signed_invitation.invitation.clone();
         // Convert `config::types::ContextId` to `crypto::ContextId`
         let context_id = invitation.context_id.to_bytes().into();
         println!(
@@ -291,12 +290,10 @@ impl ContextClient {
             context_id
         );
 
-        let Some(external_config) = self.context_config(&context_id)? else {
-            return Ok(None);
-        };
-
+        // At this step the identity should be at the zeroth context:
+        // it should exist on the node, but available to be assigned for a new context.
         let new_member_identity = self
-            .get_identity(&context_id, new_member_public_key)?
+            .get_identity(&ContextId::zero(), new_member_public_key)?
             .with_context(|| {
                 format!("New member's identity {} not found", new_member_public_key)
             })?;
@@ -316,7 +313,29 @@ impl ContextClient {
         let commitment_hash = hex::encode(Sha256::digest(&reveal_payload_data_bytes));
         println!("New member commitment hash: {:?}", commitment_hash);
 
-        let external_client = self.external_client(&context_id, &external_config)?;
+        // Create a config for the external client.
+        // We don't have a config for that context ID yet, as we are about to join it.
+        let mut external_config_params = None;
+        if !self.has_context(&context_id)? {
+            let mut external_config = ContextConfigParams {
+                protocol: invitation.protocol.into(),
+                network_id: invitation.network.into(),
+                contract_id: invitation.contract_id.into(),
+                proxy_contract: "".into(),
+                application_revision: 0,
+                members_revision: 0,
+            };
+
+            let external_client = self.external_client(&context_id, &external_config)?;
+            let config_client = external_client.config();
+            let proxy_contract = config_client.get_proxy_contract().await?;
+            external_config.proxy_contract = proxy_contract.into();
+
+            external_config_params = Some(external_config);
+        };
+
+        let external_config_params = external_config_params.context("External config is None while it should be set")?;
+        let external_client = self.external_client(&context_id, &external_config_params)?;
 
         external_client
             .config()
@@ -357,9 +376,9 @@ impl ContextClient {
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
             new_member_identity.public_key,
-            external_config.protocol,
-            external_config.network_id,
-            external_config.contract_id,
+            external_config_params.protocol,
+            external_config_params.network_id,
+            external_config_params.contract_id,
         )?;
 
         // Join the context in the node

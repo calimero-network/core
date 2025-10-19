@@ -3242,6 +3242,7 @@ version = "0.0.0"
 dependencies = [
  "alloy",
  "async-compression",
+ "calimero-context-config",
  "camino",
  "candid",
  "clap",

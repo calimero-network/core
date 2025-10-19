@@ -485,7 +485,7 @@ impl<'a, T: Deserialize<'a>> Signed<T> {
 }
 
 /// The structure represents an open invitation payload that allows any party to claim it.
-#[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct InvitationFromMember {
     /// The identity of the inviter (public key). The inviter should be a member of the context
     /// that he is inviting to.
@@ -497,7 +497,13 @@ pub struct InvitationFromMember {
     /// Secret salt.
     pub secret_salt: [u8; 32],
     // The protocol ID to prevent reusing the same invitation on different blockchains.
-    pub protocol: u8,
+    // TODO(opt): utilize the integer for the protocol, and possibly a compressed integer
+    // representation of protocol+network.
+    pub protocol: String,
+    // The protocol network (e.g. "mainnet", "testnet", etc.)
+    pub network: String,
+    // The contract ID for the config context contract on the target protocol.
+    pub contract_id: String,
 }
 
 /// A container for an open invitation and the inviter's signature over it.
@@ -529,4 +535,38 @@ pub struct SignedRevealPayload {
     pub data: RevealPayloadData,
     /// The invitee's signature over the `data` (`RevealPayloadData`).
     pub invitee_signature: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smoke_invitation_borsh_roundtrip() {
+        let inviter_identity_bytes = [1u8; 32];
+        let context_id_bytes = [2u8; 32];
+        let salt = [3u8; 32];
+
+        let invitation = InvitationFromMember {
+            inviter_identity: inviter_identity_bytes.into(),
+            context_id: context_id_bytes.into(),
+            expiration_height: 1000,
+            secret_salt: salt,
+            protocol: "near".to_string(),
+            network: "devnet".to_string(),
+            contract_id: "".to_string(),
+        };
+        let invitation_borsh = borsh::to_vec(&invitation)
+            .expect("Failed to Borsh serialize the invitation");
+        let invitation_deserialized: InvitationFromMember = borsh::from_slice(&invitation_borsh)
+            .expect("Failed to Borsh deserialize the invitation");
+
+        assert_eq!(invitation.inviter_identity, invitation_deserialized.inviter_identity);
+        assert_eq!(invitation.context_id, invitation_deserialized.context_id);
+        assert_eq!(invitation.expiration_height, invitation_deserialized.expiration_height);
+        assert_eq!(invitation.secret_salt, invitation_deserialized.secret_salt);
+        assert_eq!(invitation.protocol, invitation_deserialized.protocol);
+        assert_eq!(invitation.network, invitation_deserialized.network);
+        assert_eq!(invitation.contract_id, invitation_deserialized.contract_id);
+    }
 }

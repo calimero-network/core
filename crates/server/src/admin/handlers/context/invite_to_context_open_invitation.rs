@@ -11,7 +11,6 @@ use calimero_server_primitives::admin::{
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-#[axum::debug_handler]
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<InviteToContextOpenInvitationRequest>,

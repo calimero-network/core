@@ -5,6 +5,7 @@ use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{self as types, BlockHeight, Capability, SignedRevealPayload};
 use calimero_primitives::application::{Application, ApplicationBlob};
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::{bail, OptionExt};
 
@@ -211,29 +212,29 @@ impl ExternalConfigClient<'_> {
             bail!("Only NEAR Protocol currently supports open invitaitons");
         }
 
+        // At this step the identity should be at the zeroth context:
+        // it should exist on the node, but available to be assigned for a new context.
         let identity = self
             .client
             .context_client()
-            .get_identity(&self.client.context_id, public_key)?
+            .get_identity(&ContextId::zero(), public_key)?
             .ok_or_eyre("identity not found")?;
 
         let private_key = identity.private_key()?;
 
-        self.with_nonce(public_key, async |nonce| {
-            let client = self.client.mutate::<ContextConfig>(
-                self.client.config.protocol.as_ref().into(),
-                self.client.config.network_id.as_ref().into(),
-                self.client.config.contract_id.as_ref().into(),
-            );
+        let client = self.client.mutate::<ContextConfig>(
+            self.client.config.protocol.as_ref().into(),
+            self.client.config.network_id.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
+        );
 
-            let context_id = self.client.context_id.rt().expect("infallible conversion");
+        let context_id = self.client.context_id.rt().expect("infallible conversion");
 
-            client
-                .commit_invitation(context_id, commitment_hash.clone(), expiration_block_height)
-                .send(**private_key, nonce)
-                .await
-        })
-        .await?;
+        let nonce = 0;
+        let _ = client
+            .commit_invitation(context_id, commitment_hash.clone(), expiration_block_height)
+            .send(**private_key, nonce)
+            .await;
 
         Ok(())
     }
@@ -249,30 +250,30 @@ impl ExternalConfigClient<'_> {
             bail!("Only NEAR Protocol currently supports open invitaitons");
         }
 
+        // At this step the identity should be at the zeroth context:
+        // it should exist on the node, but available to be assigned for a new context.
         let identity = self
             .client
             .context_client()
-            .get_identity(&self.client.context_id, public_key)?
+            .get_identity(&ContextId::zero(), public_key)?
             .ok_or_eyre("identity not found")?;
 
         let private_key = identity.private_key()?;
 
-        self.with_nonce(public_key, async |nonce| {
-            let client = self.client.mutate::<ContextConfig>(
-                self.client.config.protocol.as_ref().into(),
-                self.client.config.network_id.as_ref().into(),
-                self.client.config.contract_id.as_ref().into(),
-            );
+        let client = self.client.mutate::<ContextConfig>(
+            self.client.config.protocol.as_ref().into(),
+            self.client.config.network_id.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
+        );
 
-            let context_id = self.client.context_id.rt().expect("infallible conversion");
+        let context_id = self.client.context_id.rt().expect("infallible conversion");
 
-            // Similar to commit, this is a public method call sent by the relayer.
-            client
-                .reveal_invitation(context_id, payload.clone())
-                .send(**private_key, nonce)
-                .await
-        })
-        .await?;
+        let nonce = 0;
+        // Similar to commit, this is a public method call sent by the relayer.
+        let _ = client
+            .reveal_invitation(context_id, payload.clone())
+            .send(**private_key, nonce)
+            .await;
 
         Ok(())
     }
