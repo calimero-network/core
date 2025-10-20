@@ -4,12 +4,14 @@ pub mod applications;
 pub mod blobs;
 pub mod common;
 pub mod contexts;
+mod identities;
 pub mod proposals;
 
 // Re-export common types
 use clap::ValueEnum;
 pub use common::{ErrorLine, InfoLine, WarnLine};
 // Re-export types from other modules
+pub use identities::*;
 pub use proposals::ProposalDetailsResponse;
 use serde::Serialize;
 

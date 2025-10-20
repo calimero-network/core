@@ -143,6 +143,24 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
             state: None,
         }
     }
+
+    pub fn get_keypairs(&self) -> EyreResult<Vec<(K, Arc<V>)>> {
+        let Some(column) = self.links.get(&Column::Keypairs) else {
+            return Ok(Vec::new());
+        };
+
+        let mut keypairs = Vec::new();
+        for (key, idx) in column.iter() {
+            let Some(value) = self.arena.read()?.get(**idx).cloned() else {
+                return Err(eyre!(
+                    "inconsistent state, index points to non-existent value"
+                ));
+            };
+            keypairs.push((key.clone(), value));
+        }
+
+        Ok(keypairs)
+    }
 }
 
 #[derive(Debug)]
