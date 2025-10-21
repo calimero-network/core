@@ -32,7 +32,7 @@ calimero-network.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
-calimero-server = { workspace = true, features = ["jsonrpc", "metrics", "websocket", "admin"] }
+calimero-server.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true

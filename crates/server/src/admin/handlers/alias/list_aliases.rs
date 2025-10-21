@@ -6,6 +6,7 @@ use axum::Extension;
 use calimero_server_primitives::admin::ListAliasesResponse;
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use serde::Serialize;
+use tracing::{error, info};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -20,15 +21,22 @@ where
 {
     let scope = maybe_scope.map(|Path(s)| s);
 
+    info!("Listing aliases");
+
     let aliases = match state.node_client.list_aliases::<T>(scope) {
         Ok(aliases) => aliases,
-        Err(err) => return parse_api_error(err).into_response(),
+        Err(err) => {
+            error!(error=?err, "Failed to list aliases");
+            return parse_api_error(err).into_response();
+        }
     };
 
     let aliases = aliases
         .into_iter()
         .map(|(alias, value, _scope)| (alias, value))
         .collect();
+
+    info!("Aliases listed successfully");
 
     ApiResponse {
         payload: ListAliasesResponse::new(aliases),

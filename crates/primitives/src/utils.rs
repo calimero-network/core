@@ -1,6 +1,28 @@
-use std::iter;
+use core::iter;
 
+/// Creates an iterator that finds and compacts segments of a Rust type name.
+///
+/// This function scans a path, discarding segments that do not contain generic
+/// parameters (`<` or `>`). For segments that do, it truncates them after the
+/// last `<` or `>` character.
+/// Creates an iterator that splits a Rust-style path by `"::"`.
+///
+/// ## Examples
+///
+/// ```
+/// use calimero_primitives::utils::compact_path;
+///
+/// let path = "path::to::Struct<path::to::OtherStruct<Option<Vec<module::Thing<T>>>, U>>";
+/// let captures = compact_path(path).collect::<Vec<_>>();
+/// assert_eq!(
+///     captures,
+///     ["Struct<", "OtherStruct<Option<Vec<", "Thing<T>>>, U>>"]
+/// );
+/// ```
 pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
+    const PATH_SEPARATOR: &str = "::";
+    const PATH_SEPARATOR_END: &str = ">::";
+
     let mut path = path;
 
     iter::from_fn(move || {
@@ -8,8 +30,11 @@ pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
             return None;
         }
 
+        // TODO: refactor the function to improve the readability.
         loop {
-            let idx = path.find("::").map_or(path.len(), |idx| idx + 2);
+            let idx = path
+                .find(PATH_SEPARATOR)
+                .map_or(path.len(), |idx| idx + PATH_SEPARATOR.len());
             let (segment, rest) = path.split_at(idx);
 
             path = rest;
@@ -18,11 +43,11 @@ pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
                 break Some(segment);
             }
 
-            if segment.ends_with(">::") {
+            if segment.ends_with(PATH_SEPARATOR_END) {
                 break Some(segment);
             }
 
-            let Some(idx) = segment.rfind(&['<', '>']) else {
+            let Some(idx) = segment.rfind(['<', '>']) else {
                 continue;
             };
 

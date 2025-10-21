@@ -152,7 +152,7 @@ impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
     fn read(&self) -> EyreResult<Slice<'_>> {
         if let Some(value) = &self.value {
             return Ok(value.into());
-        };
+        }
 
         self.inner.read()
     }
