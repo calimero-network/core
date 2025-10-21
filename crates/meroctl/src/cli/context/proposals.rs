@@ -174,27 +174,19 @@ impl ProposalsCommand {
                     .value()
                     .copied()
                     .ok_or_eyre("unable to resolve")?;
+
+                use calimero_context_config::repr::ReprBytes;
                 let id_bytes: [u8; 32] = (*proposal_id).into();
-                let proposal_id_repr = match <calimero_context_config::repr::Repr<
-                    calimero_context_config::types::ProposalId,
-                > as calimero_context_config::repr::ReprBytes>::from_bytes(
-                    |buf: &mut [u8; 32]| {
+                let proposal_id: calimero_context_config::types::ProposalId =
+                    ReprBytes::from_bytes(|buf: &mut [u8; 32]| {
                         *buf = id_bytes;
                         Ok(buf.as_ref().len())
-                    },
-                ) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Err(eyre::eyre!(format!(
-                            "failed to construct proposal id repr: {}",
-                            e
-                        )))
-                    }
-                };
+                    })
+                    .map_err(|e| eyre::eyre!("failed to construct proposal id: {}", e))?;
 
                 let req = ApproveProposalRequest {
                     signer_id: signer,
-                    proposal_id: proposal_id_repr,
+                    proposal_id: proposal_id,
                 };
 
                 let resp = client.approve_proposal(&context_id, req).await?;

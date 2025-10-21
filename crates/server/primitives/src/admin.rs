@@ -928,7 +928,7 @@ impl CreateAndApproveProposalResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ApproveProposalRequest {
     pub signer_id: PublicKey,
-    pub proposal_id: Repr<calimero_context_config::types::ProposalId>,
+    pub proposal_id: calimero_context_config::types::ProposalId,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

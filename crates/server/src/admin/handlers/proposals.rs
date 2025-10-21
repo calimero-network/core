@@ -384,7 +384,7 @@ pub async fn approve_proposal_handler(
 
     let res = async {
         let signer_pk = req.signer_id;
-        let proposal_id = req.proposal_id.rt().expect("infallible conversion");
+        let proposal_id = req.proposal_id;
 
         external_client
             .proxy()
@@ -397,7 +397,7 @@ pub async fn approve_proposal_handler(
             .await?;
 
         let data = Some(ProposalWithApprovals {
-            proposal_id: req.proposal_id,
+            proposal_id: Repr::new(proposal_id),
             num_approvals: approvals,
         });
 
