@@ -905,6 +905,44 @@ impl RevokePermissionResponse {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAndApproveProposalRequest {
+    pub signer_id: PublicKey,
+    pub proposal: Proposal,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAndApproveProposalResponse {
+    pub data: Option<ProposalWithApprovals>,
+}
+
+impl CreateAndApproveProposalResponse {
+    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
+        Self { data }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveProposalRequest {
+    pub signer_id: PublicKey,
+    pub proposal_id: calimero_context_config::types::ProposalId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveProposalResponse {
+    pub data: Option<ProposalWithApprovals>,
+}
+
+impl ApproveProposalResponse {
+    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
+        Self { data }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncContextResponse {
