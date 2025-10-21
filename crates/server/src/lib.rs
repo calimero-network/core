@@ -112,7 +112,7 @@ pub async fn start(
         serviced = true;
     }
 
-    if let Some((path, router)) = sse::service(&config, node_client.clone()) {
+    if let Some((path, router)) = sse::service(&config, node_client.clone(), datastore.clone()) {
         app = app.nest(&path, router);
         serviced = true;
     }

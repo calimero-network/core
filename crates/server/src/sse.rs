@@ -13,9 +13,14 @@ use calimero_server_primitives::sse::{
     Command, ConnectionId, Request, RequestPayload, Response, ResponseBody, ResponseBodyError,
     ServerResponseError, SseEvent,
 };
+use calimero_store::key::Generic as GenericKey;
+use calimero_store::layer::{ReadLayer, WriteLayer};
+use calimero_store::slice::Slice;
+use calimero_store::Store;
 use core::convert::Infallible;
 use core::pin::pin;
 use core::time::Duration;
+use eyre::Result as EyreResult;
 use futures_util::stream::{self as stream, Stream};
 use futures_util::StreamExt;
 use rand::random;
@@ -25,6 +30,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
@@ -48,10 +54,25 @@ impl SseConfig {
 // Retry timeout for client reconnection (in milliseconds)
 const SSE_RETRY_TIMEOUT_MS: u64 = 3000;
 
+// Session expiry time (24 hours in seconds)
+const SESSION_EXPIRY_SECS: u64 = 24 * 60 * 60;
+
+// Scope for SSE sessions in storage
+const SSE_SESSION_SCOPE: [u8; 16] = *b"sse-sessions\0\0\0\0";
+
+/// Persistable session data (stored in database)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSessionData {
+    subscriptions: HashSet<ContextId>,
+    event_counter: u64,
+    last_activity: u64, // Unix timestamp
+}
+
 #[derive(Debug)]
 pub(crate) struct SessionStateInner {
     subscriptions: HashSet<ContextId>,
     event_counter: AtomicU64,
+    last_activity: AtomicU64,
 }
 
 impl Default for SessionStateInner {
@@ -59,8 +80,43 @@ impl Default for SessionStateInner {
         Self {
             subscriptions: HashSet::new(),
             event_counter: AtomicU64::new(0),
+            last_activity: AtomicU64::new(now_secs()),
         }
     }
+}
+
+impl SessionStateInner {
+    fn from_persisted(data: PersistedSessionData) -> Self {
+        Self {
+            subscriptions: data.subscriptions,
+            event_counter: AtomicU64::new(data.event_counter),
+            last_activity: AtomicU64::new(data.last_activity),
+        }
+    }
+
+    fn to_persisted(&self) -> PersistedSessionData {
+        PersistedSessionData {
+            subscriptions: self.subscriptions.clone(),
+            event_counter: self.event_counter.load(Ordering::SeqCst),
+            last_activity: self.last_activity.load(Ordering::SeqCst),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_activity.store(now_secs(), Ordering::SeqCst);
+    }
+
+    fn is_expired(&self) -> bool {
+        let last = self.last_activity.load(Ordering::SeqCst);
+        now_secs() - last > SESSION_EXPIRY_SECS
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[derive(Clone, Debug)]
@@ -75,15 +131,46 @@ pub(crate) struct ActiveConnection {
 
 pub(crate) struct ServiceState {
     node_client: NodeClient,
-    // Session state persists across reconnections
+    store: Store,
+    // Session state persists across reconnections (in-memory cache)
     sessions: RwLock<HashMap<ConnectionId, SessionState>>,
     // Active connections track current SSE streams
     active_connections: RwLock<HashMap<ConnectionId, ActiveConnection>>,
 }
 
+// Helper functions for session persistence
+fn session_key(session_id: ConnectionId) -> GenericKey {
+    let mut fragment = [0u8; 32];
+    fragment[..8].copy_from_slice(&session_id.to_be_bytes());
+    GenericKey::new(SSE_SESSION_SCOPE, fragment)
+}
+
+fn load_session_from_store(store: &Store, session_id: ConnectionId) -> EyreResult<Option<PersistedSessionData>> {
+    let key = session_key(session_id);
+    let Some(data) = store.get(&key)? else {
+        return Ok(None);
+    };
+    let session_data: PersistedSessionData = serde_json::from_slice(&data)?;
+    Ok(Some(session_data))
+}
+
+fn save_session_to_store(store: &mut Store, session_id: ConnectionId, data: &PersistedSessionData) -> EyreResult<()> {
+    let key = session_key(session_id);
+    let json = serde_json::to_vec(data)?;
+    store.put(&key, Slice::from(json))?;
+    Ok(())
+}
+
+fn delete_session_from_store(store: &mut Store, session_id: ConnectionId) -> EyreResult<()> {
+    let key = session_key(session_id);
+    store.delete(&key)?;
+    Ok(())
+}
+
 pub(crate) fn service(
     config: &ServerConfig,
     node_client: NodeClient,
+    store: Store,
 ) -> Option<(&'static str, Router)> {
     let _ = match &config.sse {
         Some(config) if config.enabled => config,
@@ -101,6 +188,7 @@ pub(crate) fn service(
 
     let state = Arc::new(ServiceState {
         node_client,
+        store,
         sessions: RwLock::default(),
         active_connections: RwLock::default(),
     });
@@ -144,6 +232,17 @@ async fn handle_subscription(
                 for ctx in &ctxs.context_ids {
                     let _ = inner.subscriptions.insert(*ctx);
                 }
+                inner.touch();
+                
+                // Persist to store
+                let persisted = inner.to_persisted();
+                drop(inner);
+                drop(sessions);
+                
+                let mut store = state.store.clone();
+                if let Err(err) = save_session_to_store(&mut store, session_id, &persisted) {
+                    error!(%session_id, %err, "Failed to persist session subscriptions");
+                }
 
                 (
                     StatusCode::OK,
@@ -180,6 +279,17 @@ async fn handle_subscription(
                     if !inner.subscriptions.remove(ctx) {
                         invalid.push(*ctx);
                     }
+                }
+                inner.touch();
+                
+                // Persist to store
+                let persisted = inner.to_persisted();
+                drop(inner);
+                drop(sessions);
+                
+                let mut store = state.store.clone();
+                if let Err(err) = save_session_to_store(&mut store, session_id, &persisted) {
+                    error!(%session_id, %err, "Failed to persist session after unsubscribe");
                 }
 
                 if !invalid.is_empty() {
@@ -243,13 +353,47 @@ async fn sse_handler(
         // Attempt to reconnect to existing session
         let sessions = state.sessions.read().await;
         if let Some(existing_session) = sessions.get(&existing_session_id).cloned() {
-            info!(%existing_session_id, "Client reconnecting to existing session");
-            (existing_session_id, existing_session, true)
+            // Check expiry
+            if existing_session.inner.read().await.is_expired() {
+                drop(sessions);
+                warn!(%existing_session_id, "Session expired, creating new session");
+                create_new_session(&state).await
+            } else {
+                info!(%existing_session_id, "Client reconnecting to existing session (from cache)");
+                (existing_session_id, existing_session, true)
+            }
         } else {
-            // Session expired or doesn't exist, create new one
             drop(sessions);
-            warn!(%existing_session_id, "Session not found for reconnection, creating new session");
-            create_new_session(&state).await
+            // Try to load from persistent storage
+            match load_session_from_store(&state.store, existing_session_id) {
+                Ok(Some(persisted_data)) => {
+                    // Check if session expired
+                    if now_secs() - persisted_data.last_activity > SESSION_EXPIRY_SECS {
+                        warn!(%existing_session_id, "Persisted session expired, creating new session");
+                        // Clean up expired session
+                        let mut store = state.store.clone();
+                        drop(delete_session_from_store(&mut store, existing_session_id));
+                        create_new_session(&state).await
+                    } else {
+                        info!(%existing_session_id, "Client reconnecting to persisted session");
+                        // Restore session from storage
+                        let session_state = SessionState {
+                            inner: Arc::new(RwLock::new(SessionStateInner::from_persisted(persisted_data))),
+                        };
+                        // Add to in-memory cache
+                        drop(state.sessions.write().await.insert(existing_session_id, session_state.clone()));
+                        (existing_session_id, session_state, true)
+                    }
+                }
+                Ok(None) => {
+                    warn!(%existing_session_id, "Session not found in storage, creating new session");
+                    create_new_session(&state).await
+                }
+                Err(err) => {
+                    error!(%existing_session_id, %err, "Failed to load session from storage, creating new session");
+                    create_new_session(&state).await
+                }
+            }
         }
     } else {
         // New connection, create new session
@@ -336,6 +480,16 @@ async fn create_new_session(state: &ServiceState) -> (ConnectionId, SessionState
                     inner: Arc::new(RwLock::new(SessionStateInner::default())),
                 };
                 let _ = entry.insert(session_state.clone());
+                
+                // Persist new session to store
+                let persisted = session_state.inner.blocking_read().to_persisted();
+                drop(sessions);
+                
+                let mut store = state.store.clone();
+                if let Err(err) = save_session_to_store(&mut store, session_id, &persisted) {
+                    error!(%session_id, %err, "Failed to persist new session to storage");
+                }
+                
                 return (session_id, session_state, false);
             }
         }
