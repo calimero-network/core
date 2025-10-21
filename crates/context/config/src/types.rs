@@ -353,6 +353,43 @@ impl ReprBytes for ProposalId {
     }
 }
 
+impl Serialize for ProposalId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let encoded = bs58::encode(self.as_bytes()).into_string();
+        serializer.serialize_str(&encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProposalId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ProposalIdVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ProposalIdVisitor {
+            type Value = ProposalId;
+
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a base58-encoded ProposalId string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                ProposalId::from_bytes(|bytes| bs58::decode(value).onto(bytes))
+                    .map_err(|e| E::custom(format!("invalid ProposalId: {}", e)))
+            }
+        }
+
+        deserializer.deserialize_str(ProposalIdVisitor)
+    }
+}
+
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum VerificationKeyParseError {

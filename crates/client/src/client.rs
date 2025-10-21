@@ -371,6 +371,36 @@ where
         Ok(response)
     }
 
+    pub async fn create_and_approve_proposal(
+        &self,
+        context_id: &ContextId,
+        request: calimero_server_primitives::admin::CreateAndApproveProposalRequest,
+    ) -> Result<calimero_server_primitives::admin::CreateAndApproveProposalResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/contexts/{context_id}/proposals/create-and-approve"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn approve_proposal(
+        &self,
+        context_id: &ContextId,
+        request: calimero_server_primitives::admin::ApproveProposalRequest,
+    ) -> Result<calimero_server_primitives::admin::ApproveProposalResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/contexts/{context_id}/proposals/approve"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
     pub async fn list_proposals(
         &self,
         context_id: &ContextId,

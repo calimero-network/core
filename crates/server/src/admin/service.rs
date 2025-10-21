@@ -18,6 +18,7 @@ use tracing::info;
 
 use super::handlers::context::{grant_capabilities, revoke_capabilities};
 use super::handlers::proposals::{
+    approve_proposal_handler, create_and_approve_proposal_handler,
     get_context_storage_entries_handler, get_context_value_handler,
     get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler,
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
@@ -160,6 +161,14 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/proposals",
             post(get_proposals_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals/create-and-approve",
+            post(create_and_approve_proposal_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals/approve",
+            post(approve_proposal_handler),
         )
         .route(
             "/contexts/:context_id/proposals/:proposal_id",
