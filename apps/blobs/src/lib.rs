@@ -11,26 +11,42 @@ use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::{app, env};
 use calimero_storage::collections::UnorderedMap;
 
+// === CONSTANTS ===
+
+/// Size of blob ID in bytes (32 bytes = 256 bits)
+const BLOB_ID_SIZE: usize = 32;
+
+/// Maximum size of base58-encoded blob ID string
+/// Base58 encoding of 32 bytes requires max 44 characters
+const BASE58_ENCODED_MAX_SIZE: usize = 44;
+
+/// Bytes per kilobyte
+const BYTES_PER_KB: f64 = 1024.0;
+
+/// Bytes per megabyte
+const BYTES_PER_MB: f64 = BYTES_PER_KB * 1024.0;
+
 // === BLOB ID ENCODING HELPERS ===
 
 /// Convert blob ID bytes to base58 string
-fn encode_blob_id_base58(blob_id_bytes: &[u8; 32]) -> String {
-    let mut buf = [0u8; 44];
+fn encode_blob_id_base58(blob_id_bytes: &[u8; BLOB_ID_SIZE]) -> String {
+    let mut buf = [0u8; BASE58_ENCODED_MAX_SIZE];
     let len = bs58::encode(blob_id_bytes).onto(&mut buf[..]).unwrap();
     std::str::from_utf8(&buf[..len]).unwrap().to_owned()
 }
 
 /// Parse base58 string to blob ID bytes
-fn parse_blob_id_base58(blob_id_str: &str) -> Result<[u8; 32], String> {
+fn parse_blob_id_base58(blob_id_str: &str) -> Result<[u8; BLOB_ID_SIZE], String> {
     match bs58::decode(blob_id_str).into_vec() {
         Ok(bytes) => {
-            if bytes.len() != 32 {
+            if bytes.len() != BLOB_ID_SIZE {
                 return Err(format!(
-                    "Invalid blob ID length: expected 32 bytes, got {}",
+                    "Invalid blob ID length: expected {} bytes, got {}",
+                    BLOB_ID_SIZE,
                     bytes.len()
                 ));
             }
-            let mut blob_id = [0u8; 32];
+            let mut blob_id = [0u8; BLOB_ID_SIZE];
             blob_id.copy_from_slice(&bytes);
             Ok(blob_id)
         }
@@ -39,7 +55,10 @@ fn parse_blob_id_base58(blob_id_str: &str) -> Result<[u8; 32], String> {
 }
 
 /// Serialize blob ID as base58 string for JSON responses
-fn serialize_blob_id_bytes<S>(blob_id_bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_blob_id_bytes<S>(
+    blob_id_bytes: &[u8; BLOB_ID_SIZE],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: calimero_sdk::serde::Serializer,
 {
@@ -54,13 +73,31 @@ where
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct FileRecord {
+    /// Unique file identifier (e.g., "file_0", "file_1")
     pub id: String,
+
+    /// Human-readable file name (e.g., "document.pdf", "image.png")
     pub name: String,
+
+    /// Blob ID as 32-byte array
+    /// Serialized as base58 string in JSON (e.g., "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
+    /// Note: Must use literal `32` instead of `BLOB_ID_SIZE` const for ABI generator compatibility
     #[serde(serialize_with = "serialize_blob_id_bytes")]
     pub blob_id: [u8; 32],
+
+    /// File size in bytes
     pub size: u64,
+
+    /// MIME type following RFC 6838 standard
+    /// Examples: "application/pdf", "image/png", "text/plain", "video/mp4"
     pub mime_type: String,
+
+    /// Uploader's identity as base58-encoded public key
+    /// Derived from `env::executor_id()` and converted to base58 string
     pub uploaded_by: String,
+
+    /// Upload timestamp in milliseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
+    /// Obtained from `env::time_now()`
     pub uploaded_at: u64,
 }
 
@@ -69,8 +106,16 @@ pub struct FileRecord {
 #[derive(BorshDeserialize, BorshSerialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct FileShareState {
+    /// Context owner's identity as base58-encoded public key
+    /// Set during initialization from `env::executor_id()`
     pub owner: String,
+
+    /// Map of file ID to file metadata records
+    /// Key: file ID (e.g., "file_0"), Value: FileRecord
     pub files: UnorderedMap<String, FileRecord>,
+
+    /// Counter for generating unique file IDs
+    /// Incremented on each file upload
     pub file_counter: u64,
 }
 
@@ -79,14 +124,22 @@ pub struct FileShareState {
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub enum FileShareEvent {
+    /// Emitted when a file is successfully uploaded
     FileUploaded {
+        /// Unique file identifier (e.g., "file_0")
         id: String,
+        /// File name
         name: String,
+        /// File size in bytes
         size: u64,
+        /// Uploader's base58-encoded public key
         uploader: String,
     },
+    /// Emitted when a file is deleted
     FileDeleted {
+        /// ID of the deleted file
         id: String,
+        /// Name of the deleted file
         name: String,
     },
 }
@@ -115,6 +168,16 @@ impl FileShareState {
     /// The client first uploads the file binary using `blobClient.uploadBlob()` which
     /// returns a blob_id. This method then stores the metadata and announces the blob
     /// to the network so other nodes can discover and download it.
+    ///
+    /// # Arguments
+    /// * `name` - Human-readable file name
+    /// * `blob_id_str` - Base58-encoded blob ID (obtained from blob client)
+    /// * `size` - File size in bytes
+    /// * `mime_type` - MIME type (e.g., "application/pdf", "image/png")
+    ///
+    /// # Returns
+    /// * `Ok(String)` - The generated file ID (e.g., "file_0", "file_1")
+    /// * `Err(String)` - Error message if blob ID is invalid or storage operation fails
     pub fn upload_file(
         &mut self,
         name: String,
@@ -170,6 +233,17 @@ impl FileShareState {
     }
 
     /// Delete a file by its ID
+    ///
+    /// Note: This only removes the file metadata from contract storage.
+    /// The actual blob data remains in the blob store, as the SDK does not
+    /// currently expose blob deletion methods.
+    ///
+    /// # Arguments
+    /// * `file_id` - The ID of the file to delete (e.g., "file_0")
+    ///
+    /// # Returns
+    /// * `Ok(())` - File metadata successfully deleted
+    /// * `Err(String)` - Error message if file not found or deletion fails
     pub fn delete_file(&mut self, file_id: String) -> Result<(), String> {
         // Retrieve the file before deleting to get its name for the event
         let file_record = self
@@ -180,7 +254,8 @@ impl FileShareState {
 
         let file_name = file_record.name.clone();
 
-        // Remove the file from storage
+        // Remove the file metadata from storage
+        // NOTE: The underlying blob is not deleted from blob storage
         self.files
             .remove(&file_id)
             .map_err(|e| format!("Failed to delete file: {:?}", e))?;
@@ -196,7 +271,11 @@ impl FileShareState {
         Ok(())
     }
 
-    /// List all files
+    /// List all files in the system
+    ///
+    /// # Returns
+    /// * `Ok(Vec<FileRecord>)` - Vector of all file records with complete metadata (not just names)
+    /// * `Err(String)` - Error message if storage operation fails (rarely occurs)
     pub fn list_files(&self) -> Result<Vec<FileRecord>, String> {
         let mut files = Vec::new();
 
@@ -212,6 +291,13 @@ impl FileShareState {
     }
 
     /// Get a specific file by ID
+    ///
+    /// # Arguments
+    /// * `file_id` - The ID of the file to retrieve (e.g., "file_0")
+    ///
+    /// # Returns
+    /// * `Ok(FileRecord)` - Complete file record with all metadata
+    /// * `Err(String)` - Error message if file not found or retrieval fails
     pub fn get_file(&self, file_id: String) -> Result<FileRecord, String> {
         match self.files.get(&file_id) {
             Ok(Some(file_record)) => Ok(file_record.clone()),
@@ -221,12 +307,29 @@ impl FileShareState {
     }
 
     /// Get blob ID for download (base58-encoded)
-    pub fn get_blob_id(&self, file_id: String) -> Result<String, String> {
+    ///
+    /// Use this to retrieve the blob ID for downloading the actual file content
+    /// via `blobClient.downloadBlob(blob_id, context_id)`.
+    ///
+    /// # Arguments
+    /// * `file_id` - The ID of the file (e.g., "file_0")
+    ///
+    /// # Returns
+    /// * `Ok(String)` - Base58-encoded blob ID (e.g., "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
+    /// * `Err(String)` - Error message if file not found
+    pub fn get_blob_id_b58(&self, file_id: String) -> Result<String, String> {
         let file_record = self.get_file(file_id)?;
         Ok(encode_blob_id_base58(&file_record.blob_id))
     }
 
-    /// Search files by name
+    /// Search files by name (case-insensitive substring match)
+    ///
+    /// # Arguments
+    /// * `query` - Search term to match against file names
+    ///
+    /// # Returns
+    /// * `Ok(Vec<FileRecord>)` - Vector of matching file records (not just names), may be empty if no matches
+    /// * `Err(String)` - Error message if storage operation fails (rarely occurs)
     pub fn search_files(&self, query: String) -> Result<Vec<FileRecord>, String> {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
@@ -244,7 +347,14 @@ impl FileShareState {
         Ok(results)
     }
 
-    /// Get total storage usage in bytes
+    /// Get total size of all files in bytes
+    ///
+    /// Calculates the sum of all file sizes (blob data only).
+    /// Note: This does not include contract storage overhead (FileRecord structs, map overhead, etc.).
+    ///
+    /// # Returns
+    /// * `Ok(u64)` - Total size of all files in bytes (sum of file sizes)
+    /// * `Err(String)` - Error message if storage operation fails (rarely occurs)
     pub fn get_total_storage(&self) -> Result<u64, String> {
         let mut total_size = 0u64;
 
@@ -257,7 +367,22 @@ impl FileShareState {
         Ok(total_size)
     }
 
-    /// Get storage statistics
+    /// Get file sharing statistics as a formatted string
+    ///
+    /// # Returns
+    /// * `Ok(String)` - Formatted statistics including file count, total file size (not contract storage), and owner
+    /// * `Err(String)` - Error message if storage operations fail
+    ///
+    /// # Example Output
+    /// ```text
+    /// File Sharing Statistics:
+    /// - Total files: 3
+    /// - Total storage: 2.44 MB (2564096 bytes)
+    /// - Owner: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+    /// ```
+    ///
+    /// Note: "Total storage" refers to the sum of all file sizes, not the actual
+    /// contract storage usage (which would include metadata overhead).
     pub fn get_stats(&self) -> Result<String, String> {
         let file_count = self
             .files
@@ -266,7 +391,7 @@ impl FileShareState {
 
         let total_size = self.get_total_storage()?;
 
-        let total_mb = (total_size as f64) / (1024.0 * 1024.0);
+        let total_mb = (total_size as f64) / BYTES_PER_MB;
 
         Ok(format!(
             "File Sharing Statistics:\n\
