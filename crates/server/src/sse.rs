@@ -33,7 +33,7 @@ let config = SseConfig::new(true);
 ```
 */
 
-mod config;
+pub mod config;
 mod events;
 mod handlers;
 mod session;
