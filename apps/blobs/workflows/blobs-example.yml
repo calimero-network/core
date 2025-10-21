@@ -1,0 +1,369 @@
+description: A workflow demonstrating the Calimero blob API for file sharing
+name: Blob API Example Workflow
+
+# Force pull Docker images even if they exist locally
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: calimero-node
+
+steps:
+  # Step 1: Install the blobs application on the first node
+  - name: Install Blobs Application on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: res/blobs.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create a context using the installed application
+  - name: Create Context on Node 1
+    type: create_context
+    node: calimero-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{member_public_key}})"
+
+  # Step 3: Generate identity on second node
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      public_key: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 5
+
+  # Step 4: Invite second node to join the context
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation: invitation
+
+  # Step 5: Join context from second node
+  - name: Join Context from Node 2
+    type: join_context
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key}}"
+    invitation: "{{invitation}}"
+
+  # BLOB API DEMONSTRATION STARTS HERE
+
+  # Step 6: Upload first file (PDF document)
+  # Note: In real scenario, blob_id would come from blobClient.uploadBlob()
+  - name: Upload PDF Document
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: upload_file
+    args:
+      name: project-proposal.pdf
+      blob_id_str: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+      size: 2048000
+      mime_type: application/pdf
+    outputs:
+      file_0_id: result
+
+  - name: Assert PDF upload successful
+    type: json_assert
+    statements:
+      - 'json_equal({{file_0_id}}, {"output": "file_0"})'
+
+  - name: Wait for blob announcement to propagate
+    type: wait
+    seconds: 2
+
+  # Step 7: Upload second file (image)
+  - name: Upload Image File
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: upload_file
+    args:
+      name: screenshot.png
+      blob_id_str: 8KqPq3JFvxYqNJBGbPzQKqYHnBQQWXKFWMzJKqYHnBQQWXKF
+      size: 512000
+      mime_type: image/png
+    outputs:
+      file_1_id: result
+
+  - name: Assert image upload successful
+    type: json_assert
+    statements:
+      - 'json_equal({{file_1_id}}, {"output": "file_1"})'
+
+  # Step 8: Upload third file (text document)
+  - name: Upload Text File
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: upload_file
+    args:
+      name: readme.txt
+      blob_id_str: 3MbPzQKqYHnBQQWXKFWMzJKqYHnBQQWXKF8KqPq3JFvxYqNJ
+      size: 4096
+      mime_type: text/plain
+    outputs:
+      file_2_id: result
+
+  - name: Assert text upload successful
+    type: json_assert
+    statements:
+      - 'json_equal({{file_2_id}}, {"output": "file_2"})'
+
+  # Step 9: List all files from Node 1
+  - name: List All Files (Node 1)
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: list_files
+    outputs:
+      files_list_node1: result
+
+  - name: Assert 3 files listed on Node 1
+    type: json_assert
+    statements:
+      - 'json_path_count({{files_list_node1}}, "$.output", 3)'
+
+  # Step 10: Verify blobs are accessible from Node 2 (blob announcement worked)
+  - name: List All Files (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: list_files
+    outputs:
+      files_list_node2: result
+
+  - name: Assert 3 files visible on Node 2 (blob sync works)
+    type: json_assert
+    statements:
+      - 'json_path_count({{files_list_node2}}, "$.output", 3)'
+
+  # Step 11: Get specific file metadata
+  - name: Get PDF File Metadata
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_file
+    args:
+      file_id: file_0
+    outputs:
+      pdf_metadata: result
+
+  - name: Assert PDF metadata is correct
+    type: json_assert
+    statements:
+      - 'json_subset({{pdf_metadata}}, {"output": {"id": "file_0", "name": "project-proposal.pdf", "size": 2048000}})'
+
+  # Step 12: Get blob ID for download
+  - name: Get Blob ID for PDF
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_blob_id
+    args:
+      file_id: file_0
+    outputs:
+      pdf_blob_id: result
+
+  - name: Assert blob ID matches uploaded blob
+    type: json_assert
+    statements:
+      - 'json_equal({{pdf_blob_id}}, {"output": "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"})'
+
+  # Step 13: Search files by name
+  - name: Search for PDF Files
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: search_files
+    args:
+      query: pdf
+    outputs:
+      search_results: result
+
+  - name: Assert search found PDF
+    type: json_assert
+    statements:
+      - 'json_path_count({{search_results}}, "$.output", 1)'
+      - 'json_subset({{search_results}}, {"output": [{"name": "project-proposal.pdf"}]})'
+
+  # Step 14: Get storage statistics
+  - name: Get Storage Stats
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_stats
+    outputs:
+      stats: result
+
+  - name: Assert stats show 3 files
+    type: json_assert
+    statements:
+      - 'json_path_contains({{stats}}, "$.output", "Total files: 3")'
+
+  # Step 15: Get total storage
+  - name: Get Total Storage
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_total_storage
+    outputs:
+      total_storage: result
+
+  - name: Assert total storage is correct
+    type: json_assert
+    statements:
+      - 'json_equal({{total_storage}}, {"output": 2564096})'
+
+  # Step 16: Delete a file
+  - name: Delete Screenshot
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: delete_file
+    args:
+      file_id: file_1
+    outputs:
+      delete_result: result
+
+  - name: Wait for deletion to propagate
+    type: wait
+    seconds: 2
+
+  # Step 17: Verify file was deleted
+  - name: List Files After Delete
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: list_files
+    outputs:
+      files_after_delete: result
+
+  - name: Assert only 2 files remain
+    type: json_assert
+    statements:
+      - 'json_path_count({{files_after_delete}}, "$.output", 2)'
+
+  # Step 18: Verify deletion is visible on Node 2
+  - name: Verify Delete on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: list_files
+    outputs:
+      files_node2_after_delete: result
+
+  - name: Assert Node 2 also sees 2 files
+    type: json_assert
+    statements:
+      - 'json_path_count({{files_node2_after_delete}}, "$.output", 2)'
+
+  # Step 19: Test error handling - try to get deleted file
+  - name: Try to Get Deleted File (Should Fail)
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_file
+    args:
+      file_id: file_1
+    outputs:
+      deleted_file_error: result
+    expect_error: true
+
+  # Step 20: Test error handling - invalid blob ID
+  - name: Try Upload with Invalid Blob ID (Should Fail)
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: upload_file
+    args:
+      name: bad-file.txt
+      blob_id_str: invalid_blob_id
+      size: 1000
+      mime_type: text/plain
+    outputs:
+      invalid_blob_error: result
+    expect_error: true
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 60
+# Use Cases Demonstrated:
+#
+# 1. BLOB API INTEGRATION
+#    ✓ Upload files with blob announcement (env::blob_announce_to_context)
+#    ✓ Blobs become discoverable across network nodes
+#    ✓ Parse and encode base58 blob IDs
+#    ✓ Retrieve blob IDs for downloads
+#
+# 2. MULTI-NODE VERIFICATION
+#    ✓ Files uploaded on Node 1 are visible on Node 2
+#    ✓ Blob announcement enables distributed access
+#    ✓ Deletions propagate across nodes
+#
+# 3. FILE OPERATIONS
+#    ✓ Upload multiple file types (PDF, image, text)
+#    ✓ List all files
+#    ✓ Get specific file metadata
+#    ✓ Search files by name
+#    ✓ Delete files
+#
+# 4. STORAGE MANAGEMENT
+#    ✓ Track total storage usage
+#    ✓ Get file statistics
+#    ✓ Monitor file counts
+#
+# 5. ERROR HANDLING
+#    ✓ Handle missing files gracefully
+#    ✓ Validate blob IDs
+#    ✓ Return appropriate error messages
+#
+# BLOB API WORKFLOW:
+#
+# UPLOAD FLOW:
+#   Client → blobClient.uploadBlob(file) → Blob Storage
+#   Blob Storage → returns blob_id → Client
+#   Client → contract.upload_file(blob_id, metadata) → Contract
+#   Contract → env::blob_announce_to_context(blob_id) → Network
+#   Network → All nodes discover blob → Distributed Storage
+#
+# DOWNLOAD FLOW:
+#   Client → contract.get_blob_id(file_id) → Contract
+#   Contract → returns blob_id → Client
+#   Client → blobClient.downloadBlob(blob_id, context_id) → Network
+#   Network → Finds peers with blob → Client receives data

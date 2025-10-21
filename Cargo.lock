@@ -1503,6 +1503,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "blobs"
+version = "0.0.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "hex",
+ "serde_json",
+ "sha2 0.10.8",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
