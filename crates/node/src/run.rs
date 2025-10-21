@@ -142,7 +142,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         config.context.client.clone(),
-        &mut registry,
+        Some(&mut registry),
     );
 
     let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {

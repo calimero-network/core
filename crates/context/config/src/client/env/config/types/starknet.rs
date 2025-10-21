@@ -286,6 +286,8 @@ impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
             crate::ContextRequestKind::UpdateProxyContract => {
                 ContextRequestKind::UpdateProxyContract
             }
+            crate::ContextRequestKind::CommitOpenInvitation { .. }
+            | crate::ContextRequestKind::RevealOpenInvitation { .. } => todo!(),
         }
     }
 }

@@ -3,8 +3,9 @@ use std::cell::RefCell;
 
 use crate::{
     errors::{HostError, Location, PanicContext},
-    logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE},
+    logic::{sys, VMHostFunctions, VMLogicResult},
 };
+use calimero_primitives::common::DIGEST_SIZE;
 
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.

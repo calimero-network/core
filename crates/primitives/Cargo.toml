@@ -24,5 +24,12 @@ url = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 hex.workspace = true
 
+# Reimport self with the borsh feature enabled
+calimero-primitives = { path = ".", features = ["borsh"] }
+
+[features]
+default = []
+borsh = ["dep:borsh"]
+
 [lints]
 workspace = true

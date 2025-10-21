@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use calimero_context_config::repr::Repr;
-use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
+use calimero_context_config::types::{
+    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedOpenInvitation,
+};
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -346,6 +348,44 @@ impl InviteToContextResponse {
     }
 }
 
+// TODO: refactor `InviteToContextRequest` with an optional `invitee_id` field to serve both
+// types of requests.
+#[derive(Debug, Deserialize, Copy, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteToContextOpenInvitationRequest {
+    pub context_id: ContextId,
+    pub inviter_id: PublicKey,
+    pub valid_for_blocks: BlockHeight,
+}
+
+impl InviteToContextOpenInvitationRequest {
+    pub const fn new(
+        context_id: ContextId,
+        inviter_id: PublicKey,
+        valid_for_blocks: BlockHeight,
+    ) -> Self {
+        Self {
+            context_id,
+            inviter_id,
+            valid_for_blocks,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteToContextOpenInvitationResponse {
+    pub data: Option<SignedOpenInvitation>,
+}
+
+impl InviteToContextOpenInvitationResponse {
+    pub const fn new(signed_open_invitation: Option<SignedOpenInvitation>) -> Self {
+        Self {
+            data: signed_open_invitation,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextRequest {
@@ -355,6 +395,22 @@ pub struct JoinContextRequest {
 impl JoinContextRequest {
     pub const fn new(invitation_payload: ContextInvitationPayload) -> Self {
         Self { invitation_payload }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinContextByOpenInvitationRequest {
+    pub invitation: SignedOpenInvitation,
+    pub new_member_public_key: PublicKey,
+}
+
+impl JoinContextByOpenInvitationRequest {
+    pub const fn new(invitation: SignedOpenInvitation, new_member_public_key: PublicKey) -> Self {
+        Self {
+            invitation,
+            new_member_public_key,
+        }
     }
 }
 
