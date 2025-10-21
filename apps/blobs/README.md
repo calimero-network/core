@@ -1,6 +1,6 @@
 # File Sharing App - Blob API Implementation
 
-A minimal  demonstration of the Calimero blob API for building decentralized file sharing applications.
+A minimal demonstration of the Calimero blob API for building decentralized file sharing applications.
 
 ## Overview
 
@@ -366,7 +366,6 @@ interface BlobApi {
    - Only nodes in the same context can discover/download
    - Provides natural privacy boundaries
 
-
 ## Building
 
 ```bash
@@ -374,6 +373,64 @@ interface BlobApi {
 ```
 
 This will compile the contract to WebAssembly.
+
+## Workflow Testing
+
+The `workflows/blobs-example.yml` file provides end-to-end testing that demonstrates:
+
+### 1. Blob API Integration
+
+- ✓ Upload files with blob announcement (`env::blob_announce_to_context`)
+- ✓ Blobs become discoverable across network nodes
+- ✓ Parse and encode base58 blob IDs
+- ✓ Retrieve blob IDs for downloads
+
+### 2. Multi-Node Verification
+
+- ✓ Files uploaded on Node 1 are visible on Node 2
+- ✓ Blob announcement enables distributed access
+- ✓ Deletions propagate across nodes
+
+### 3. File Operations
+
+- ✓ Upload multiple file types (PDF, image, text)
+- ✓ List all files
+- ✓ Get specific file metadata
+- ✓ Search files by name
+- ✓ Delete files
+
+### 4. Storage Management
+
+- ✓ Track total file sizes
+- ✓ Get file statistics
+- ✓ Monitor file counts
+
+### 5. Error Handling
+
+- ✓ Handle missing files gracefully
+- ✓ Validate blob IDs
+- ✓ Return appropriate error messages
+
+### Blob API Workflow Diagram
+
+**Upload Flow:**
+
+```
+Client → blobClient.uploadBlob(file) → Blob Storage
+Blob Storage → returns blob_id → Client
+Client → contract.upload_file(blob_id, metadata) → Contract
+Contract → env::blob_announce_to_context(blob_id) → Network
+Network → All nodes discover blob → Distributed Storage
+```
+
+**Download Flow:**
+
+```
+Client → contract.get_blob_id_b58(file_id) → Contract
+Contract → returns blob_id → Client
+Client → blobClient.downloadBlob(blob_id, context_id) → Network
+Network → Finds peers with blob → Client receives data
+```
 
 ## Key Takeaways
 
