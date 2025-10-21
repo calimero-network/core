@@ -158,7 +158,7 @@ impl ProposalsCommand {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp)
-                        .unwrap_or_else(|_| "<serialize-error>".to_string())
+                        .unwrap_or_else(|_| "<serialize-error>".to_owned())
                 );
             }
             ProposalsSubcommand::Approve {
@@ -174,8 +174,6 @@ impl ProposalsCommand {
                     .value()
                     .copied()
                     .ok_or_eyre("unable to resolve")?;
-
-           
                 let id_bytes: [u8; 32] = (*proposal_id).into();
                 let proposal_id_repr = match <calimero_context_config::repr::Repr<
                     calimero_context_config::types::ProposalId,
@@ -204,7 +202,7 @@ impl ProposalsCommand {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&resp)
-                        .unwrap_or_else(|_| "<serialize-error>".to_string())
+                        .unwrap_or_else(|_| "<serialize-error>".to_owned())
                 );
             }
         }
