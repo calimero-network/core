@@ -105,6 +105,17 @@ real-time subscriptions within the Node Server. They allow clients to
 dynamically subscribe to and unsubscribe from updates about various application
 contexts.
 
+**Important**: WebSocket connections are **unidirectional for events** - the server
+pushes events to subscribed clients. For executing transactions (`mutate`) or 
+reading state (`query`), clients must use the separate JSON-RPC endpoint. This 
+separation of concerns provides:
+
+- **WebSocket/SSE**: Real-time event streaming (Server → Client)
+- **JSON-RPC**: Execute transactions and queries (Client ↔ Server)
+
+This architecture ensures efficient event streaming while maintaining reliable
+request/response patterns for state modifications.
+
 #### Subscription Handling:
 
 Websocket handles requests to subscribe to specific contexts and send responses
