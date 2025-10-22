@@ -123,7 +123,7 @@ Retrieves a single file's metadata by ID.
 ### Get Blob ID
 
 ```rust
-get_blob_id(file_id: String) -> Result<String, String>
+get_blob_id_b58(file_id: String) -> Result<String, String>
 ```
 
 Returns the base58-encoded blob ID for a file (useful for downloading).
@@ -140,7 +140,7 @@ Case-insensitive search by filename.
 
 ```rust
 get_stats() -> Result<String, String>
-get_total_storage() -> Result<u64, String>
+get_total_files_size() -> Result<u64, String>
 ```
 
 Get usage statistics and total storage.
@@ -248,7 +248,7 @@ const response = await contractApi.upload_file(
 const fileId = "file_0"; // File ID returned from upload
 
 // Option A: Get just the blob ID
-const blobId = await contractApi.get_blob_id(fileId);
+const blobId = await contractApi.get_blob_id_b58(fileId);
 
 // Option B: Get full file metadata (includes blob ID)
 const fileRecord = await contractApi.get_file(fileId);
