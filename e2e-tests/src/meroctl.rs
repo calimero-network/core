@@ -2,8 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
 
+use calimero_context_config::types::SignedOpenInvitation;
 use camino::Utf8PathBuf;
-use eyre::{bail, eyre, OptionExt, Result as EyreResult};
+use eyre::{bail, eyre, ContextCompat, OptionExt, Result as EyreResult, WrapErr};
 use tokio::process::Command;
 
 use crate::output::OutputWriter;
@@ -129,6 +130,42 @@ impl Meroctl {
         Ok(data)
     }
 
+    pub async fn context_invite_by_open_invitation(
+        &self,
+        node: &str,
+        context_id: &str,
+        inviter_public_key: &str,
+        valid_for_blocks: u64,
+    ) -> EyreResult<String> {
+        let json = self
+            .run_cmd(
+                node,
+                [
+                    "context",
+                    "invite-open",
+                    "--context",
+                    context_id,
+                    "--as",
+                    inviter_public_key,
+                    "--valid-for-blocks",
+                    &valid_for_blocks.to_string(),
+                ],
+            )
+            .await?;
+
+        let data = self.remove_value_from_object(json, "data")?;
+
+        // Verify the structure is properly deserialized
+        let opt_signed_open_invitation: Option<SignedOpenInvitation> =
+            serde_json::from_value(data.clone())
+                .context("Serde deserialization for SignedOpenInvitation failed")?;
+        let _signed_open_invitation =
+            opt_signed_open_invitation.context("SignedOpenInvitation is None in the response")?;
+
+        let signed_open_invitation_str = data.to_string();
+        Ok(signed_open_invitation_str)
+    }
+
     pub async fn context_join(
         &self,
         node: &str,
@@ -136,6 +173,32 @@ impl Meroctl {
     ) -> EyreResult<(String, String)> {
         let json = self
             .run_cmd(node, ["context", "join", invitation_data])
+            .await?;
+
+        let data = self.remove_value_from_object(json, "data")?;
+        let context_id = self.get_string_from_object(&data, "contextId")?;
+        let member_public_key = self.get_string_from_object(&data, "memberPublicKey")?;
+
+        Ok((context_id, member_public_key))
+    }
+
+    pub async fn context_join_by_open_invitation(
+        &self,
+        node: &str,
+        invitation_data: &str,
+        new_member_public_key: &str,
+    ) -> EyreResult<(String, String)> {
+        let json = self
+            .run_cmd(
+                node,
+                [
+                    "context",
+                    "join-open",
+                    invitation_data,
+                    "--as",
+                    new_member_public_key,
+                ],
+            )
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;

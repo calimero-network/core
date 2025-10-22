@@ -9,11 +9,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::vec;
 
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::common::DIGEST_SIZE;
 use calimero_sys as sys;
 use ouroboros::self_referencing;
 use serde::Serialize;
 
-use crate::constants::{DIGEST_SIZE, ONE_GIB, ONE_KIB, ONE_MIB};
+use crate::constants::{ONE_GIB, ONE_KIB, ONE_MIB};
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
 use crate::store::Storage;

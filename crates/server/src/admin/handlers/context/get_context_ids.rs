@@ -13,10 +13,8 @@ use crate::AdminState;
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
     info!("Listing contexts");
 
-    let context_ids = state.ctx_client.get_contexts(None);
-
+    let context_ids = state.ctx_client.get_context_ids(None);
     let mut context_ids = pin!(context_ids);
-
     let mut contexts = Vec::new();
 
     while let Some(context_id) = context_ids.try_next().await.transpose() {

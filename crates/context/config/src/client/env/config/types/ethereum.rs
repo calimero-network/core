@@ -124,6 +124,8 @@ impl<'a> ToSol<SolContextRequestKind> for ContextRequestKind<'a> {
             ContextRequestKind::UpdateProxyContract { .. } => {
                 SolContextRequestKind::UpdateProxyContract
             }
+            ContextRequestKind::CommitOpenInvitation { .. }
+            | ContextRequestKind::RevealOpenInvitation { .. } => todo!(),
         }
     }
 }
@@ -282,6 +284,8 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
             sol_app.abi_encode()
         }
         ContextRequestKind::UpdateProxyContract => Vec::new(),
+        ContextRequestKind::CommitOpenInvitation { .. }
+        | ContextRequestKind::RevealOpenInvitation { .. } => todo!(),
     }
 }
 

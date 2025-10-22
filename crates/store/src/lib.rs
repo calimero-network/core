@@ -25,6 +25,11 @@ pub struct Store {
 }
 
 impl Store {
+    /// Creates a new `Store` from an existing database instance. Useful for testing.
+    pub fn new(db: Arc<dyn for<'a> Database<'a>>) -> Self {
+        Self { db }
+    }
+
     pub fn open<T: for<'a> Database<'a>>(config: &StoreConfig) -> EyreResult<Self> {
         let db = T::open(config)?;
         Ok(Self { db: Arc::new(db) })

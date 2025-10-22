@@ -289,7 +289,7 @@ impl SyncManager {
             "Starting bidirectional state delta sync",
         );
 
-        let members = self.context_client.context_members(&context.id, None);
+        let members = self.context_client.get_context_members(&context.id, None);
 
         let mut members = pin!(members);
 
