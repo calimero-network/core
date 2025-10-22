@@ -10,7 +10,6 @@ use crate::{Handle, Store};
 
 // todo!
 // mod cache;
-mod experiments;
 pub mod read_only;
 pub mod temporal;
 
