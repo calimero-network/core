@@ -14,9 +14,7 @@ mod experiments;
 pub mod read_only;
 pub mod temporal;
 
-pub trait Layer {
-    type Base: Layer;
-}
+pub trait Layer {}
 
 pub trait ReadLayer: Layer {
     fn has<K: AsKeyParts>(&self, key: &K) -> EyreResult<bool>;
@@ -62,9 +60,7 @@ impl<L: Layer> LayerExt for L {
     }
 }
 
-impl Layer for Store {
-    type Base = Self;
-}
+impl Layer for Store {}
 
 impl ReadLayer for Store {
     fn has<K: AsKeyParts>(&self, key: &K) -> EyreResult<bool> {

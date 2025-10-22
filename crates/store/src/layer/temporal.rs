@@ -31,12 +31,7 @@ where
     }
 }
 
-impl<L> Layer for Temporal<'_, '_, L>
-where
-    L: Layer,
-{
-    type Base = L;
-}
+impl<L> Layer for Temporal<'_, '_, L> where L: Layer {}
 
 impl<L> ReadLayer for Temporal<'_, '_, L>
 where
