@@ -1,3 +1,38 @@
+//! SSE (Server-Sent Events) implementation for real-time event streaming
+//!
+//! # Architecture Overview
+//!
+//! This module implements a session-based SSE system with the following components:
+//! - **Sessions**: Persistent client sessions with unique IDs, subscriptions, and event counters
+//! - **Connections**: Ephemeral HTTP/SSE connections that can disconnect and reconnect
+//! - **Events**: Node events filtered by subscription and delivered over active connections
+//!
+//! # Event Delivery Model: Skip-on-Disconnect
+//!
+//! This implementation uses a **skip-on-disconnect** approach:
+//! - ✅ Sessions persist across reconnections (subscriptions, event counter, etc.)
+//! - ✅ Event IDs are sequential and monotonically increasing per session
+//! - ❌ Events are **NOT buffered** - they only go to active connections
+//! - ❌ Events occurring during disconnection are **permanently skipped**
+//!
+//! When clients reconnect:
+//! 1. Session state is restored (subscriptions, counter position)
+//! 2. New events continue from the current counter value
+//! 3. Event ID gaps indicate missed events during disconnection
+//! 4. Clients should re-query application state to handle gaps
+//!
+//! # Design Rationale
+//!
+//! This design prioritizes:
+//! - **Simplicity**: No complex buffering or replay logic
+//! - **Resource efficiency**: No memory overhead for buffering events
+//! - **Scalability**: Constant memory usage per session
+//!
+//! Trade-offs:
+//! - Clients must handle missed events via state reconciliation
+//! - Not suitable for guaranteed delivery use cases
+//! - Best for real-time notifications where missing some is acceptable
+
 use axum::extract::Request as AxumRequest;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -20,7 +55,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
 
-use super::config::{retry_timeout, SESSION_EXPIRY_SECS};
+use super::config::{retry_timeout, COMMAND_CHANNEL_BUFFER_SIZE, SESSION_EXPIRY_SECS};
 use super::events::{handle_connection_cleanup, handle_node_events};
 use super::session::{now_secs, ActiveConnection, SessionState, SessionStateInner};
 use super::state::ServiceState;
@@ -31,7 +66,7 @@ pub async fn handle_subscription(
     Extension(state): Extension<Arc<ServiceState>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
-    let session_id = match request.id.parse::<u64>() {
+    let session_id = match request.id.parse::<ConnectionId>() {
         Ok(id) => id,
         Err(_) => {
             return (
@@ -100,11 +135,14 @@ pub async fn handle_subscription(
             let sessions = state.sessions.read().await;
             if let Some(session) = sessions.get(&session_id) {
                 let mut inner = session.inner.write().await;
-                let mut invalid = Vec::new();
+                let mut unsubscribed = Vec::new();
 
+                // Remove contexts that were actually subscribed
+                // This is an idempotent operation - attempting to unsubscribe from
+                // a context that wasn't subscribed is not an error
                 for ctx in &ctxs.context_ids {
-                    if !inner.subscriptions.remove(ctx) {
-                        invalid.push(*ctx);
+                    if inner.subscriptions.remove(ctx) {
+                        unsubscribed.push(*ctx);
                     }
                 }
                 inner.touch();
@@ -119,26 +157,21 @@ pub async fn handle_subscription(
                     error!(%session_id, %err, "Failed to persist session after unsubscribe");
                 }
 
-                if !invalid.is_empty() {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        Json(Response {
-                            body: ResponseBody::Error(ResponseBodyError::HandlerError(
-                                "Some context IDs were not subscribed".into(),
-                            )),
-                        }),
-                    )
-                } else {
-                    (
-                        StatusCode::OK,
-                        Json(Response {
-                            body: ResponseBody::Result(serde_json::json!({
-                                "status": "unsubscribed",
-                                "contexts": ctxs.context_ids,
-                            })),
-                        }),
-                    )
-                }
+                // Idempotent operation - always return OK with info about what was unsubscribed
+                // Response includes:
+                // - "unsubscribed": contexts that were actually removed from subscriptions
+                // - "requested": contexts that the client requested to unsubscribe from
+                // Clients can compare these to detect contexts they weren't subscribed to
+                (
+                    StatusCode::OK,
+                    Json(Response {
+                        body: ResponseBody::Result(serde_json::json!({
+                            "status": "unsubscribed",
+                            "unsubscribed": unsubscribed,
+                            "requested": ctxs.context_ids,
+                        })),
+                    }),
+                )
             } else {
                 (
                     StatusCode::NOT_FOUND,
@@ -166,6 +199,21 @@ pub async fn handle_subscription(
     clippy::too_many_lines,
     reason = "Complex handler with multiple reconnection paths"
 )]
+/// Handle SSE stream connections and reconnections
+///
+/// # Reconnection Behavior
+///
+/// This handler supports session-based reconnection using the `Last-Event-ID` header:
+/// - New clients get a new session with a fresh event counter starting at 0
+/// - Reconnecting clients provide their last event ID (format: `{session_id}-{event_num}`)
+/// - Sessions persist for up to [`SESSION_EXPIRY_SECS`] seconds across reconnections
+///
+/// **Important**: While sessions persist, **events are NOT buffered**. When a client
+/// reconnects, they will:
+/// - Resume their session with the same session ID and subscriptions
+/// - Continue receiving new events from the current counter value
+/// - **NOT** receive events that occurred during disconnection (these are skipped)
+/// Clients observing gaps in event IDs should re-query application state as needed.
 pub async fn sse_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     request: AxumRequest,
@@ -173,13 +221,15 @@ pub async fn sse_handler(
     let headers = request.headers();
 
     // Check for Last-Event-ID header for reconnection
+    // Format: "{session_id}-{event_number}"
+    // We extract the session_id to restore subscriptions and counter position
     let last_event_id = headers
         .get("Last-Event-ID")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split('-').next())
-        .and_then(|id| id.parse::<u64>().ok());
+        .and_then(|id| id.parse::<ConnectionId>().ok());
 
-    let (commands_sender, commands_receiver) = mpsc::channel::<Command>(32);
+    let (commands_sender, commands_receiver) = mpsc::channel::<Command>(COMMAND_CHANNEL_BUFFER_SIZE);
 
     let (session_id, session_state, is_reconnect) = if let Some(existing_session_id) = last_event_id
     {

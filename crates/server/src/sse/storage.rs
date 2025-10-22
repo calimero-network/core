@@ -1,3 +1,4 @@
+use calimero_primitives::common::DIGEST_SIZE;
 use calimero_server_primitives::sse::ConnectionId;
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::layer::{ReadLayer, WriteLayer};
@@ -8,10 +9,24 @@ use eyre::Result as EyreResult;
 use super::config::SSE_SESSION_SCOPE;
 use super::session::PersistedSessionData;
 
-/// Generate storage key for a session
+/// Generates a generic storage key for a given session ID.
+///
+/// This function creates a unique key by taking the `session_id`, converting it
+/// to its big-endian byte representation, and using it as the first 8 bytes
+/// of the key's fragment (which is [`DIGEST_SIZE`] bytes). The remaining bytes 
+/// of the fragment are zero-padded. The entire key is scoped under 
+/// `SSE_SESSION_SCOPE` to prevent collisions.
+///
+/// # Arguments
+///
+/// * `session_id` - The `ConnectionId` for which to generate a storage key.
+///
+/// # Returns
+///
+/// A `GenericKey` that can be used to uniquely identify session data in a storage backend.
 #[must_use]
 pub fn session_key(session_id: ConnectionId) -> GenericKey {
-    let mut fragment = [0u8; 32];
+    let mut fragment = [0u8; DIGEST_SIZE];
     fragment[..8].copy_from_slice(&session_id.to_be_bytes());
     GenericKey::new(SSE_SESSION_SCOPE, fragment)
 }

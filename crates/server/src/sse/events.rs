@@ -6,7 +6,6 @@ use core::pin::pin;
 use core::time::Duration;
 use futures_util::StreamExt;
 use serde_json::to_value as to_json_value;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -15,6 +14,18 @@ use super::session::SessionState;
 use super::state::ServiceState;
 
 /// Handle incoming node events and forward to subscribed clients
+///
+/// # Event Delivery Behavior
+///
+/// This handler uses a **skip-on-disconnect** model:
+/// - Events are only delivered to currently active connections
+/// - Events that occur during disconnection are **not buffered** and will be skipped
+/// - When a client reconnects, they resume from the current event counter
+/// - Clients should handle gaps in event IDs and re-query application state if needed
+///
+/// This design prioritizes simplicity and resource efficiency over guaranteed delivery.
+/// For critical state updates, clients should implement their own state reconciliation
+/// after reconnection.
 pub async fn handle_node_events(
     session_id: ConnectionId,
     state: Arc<ServiceState>,
@@ -28,7 +39,7 @@ pub async fn handle_node_events(
         // Check if there's an active connection for this session
         let active_connections = state.active_connections.read().await;
         let Some(active_conn) = active_connections.get(&session_id).cloned() else {
-            debug!(%session_id, "No active connection, waiting for reconnection");
+            debug!(%session_id, "No active connection, skipping event (no buffering)");
             drop(active_connections);
 
             // Wait a bit before checking again (connection might be reconnecting)
@@ -53,14 +64,6 @@ pub async fn handle_node_events(
             NodeEvent::Context(_) => continue,
         };
 
-        // Increment event counter (unused return value is intentional)
-        let _ = session_state
-            .inner
-            .read()
-            .await
-            .event_counter
-            .fetch_add(1, Ordering::SeqCst);
-
         let body = match to_json_value(event) {
             Ok(v) => ResponseBody::Result(v),
             Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
@@ -76,9 +79,9 @@ pub async fn handle_node_events(
             debug!(
                 %session_id,
                 %err,
-                "Failed to send event (connection likely closed, will retry on reconnect)",
+                "Failed to send event (connection closed, event skipped - no buffering)",
             );
-            // Don't break - session persists, connection might reconnect
+            // Don't break - session persists for reconnection, but this event is lost
         };
     }
 }

@@ -10,6 +10,16 @@ use tokio::sync::{mpsc, RwLock};
 use super::config::SESSION_EXPIRY_SECS;
 
 /// Persistable session data (stored in database)
+///
+/// # Event Counter Semantics
+///
+/// The `event_counter` tracks the next event ID to be assigned. It persists across
+/// reconnections to maintain a monotonically increasing sequence for each session.
+///
+/// **Important**: This counter increments regardless of whether events are successfully
+/// delivered. When clients reconnect after a disconnection, they will observe gaps in
+/// event IDs corresponding to events that occurred while they were offline. Events are
+/// **not buffered** - the counter simply continues from where it left off.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedSessionData {
     pub subscriptions: HashSet<ContextId>,
