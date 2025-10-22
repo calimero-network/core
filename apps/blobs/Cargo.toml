@@ -1,0 +1,28 @@
+[package]
+name = "blobs"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+thiserror.workspace = true
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+bs58 = "0.5"
+
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true
+
+[package.metadata.workspaces]
+independent = true
+
+
