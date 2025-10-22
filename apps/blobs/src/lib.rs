@@ -389,7 +389,7 @@ impl FileShareState {
             .len()
             .map_err(|e| format!("Failed to get file count: {:?}", e))?;
 
-        let total_size = self.get_total_storage()?;
+        let total_size = self.get_total_files_size()?;
 
         let total_mb = (total_size as f64) / BYTES_PER_MB;
 
