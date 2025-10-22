@@ -37,7 +37,9 @@ pub async fn handler(
         }
     };
 
-    let stream = state.ctx_client.context_members(&context.id, Some(owned));
+    let stream = state
+        .ctx_client
+        .get_context_members(&context.id, Some(owned));
 
     match stream.map_ok(|(id, _)| id).try_collect::<Vec<_>>().await {
         Ok(identities) => {

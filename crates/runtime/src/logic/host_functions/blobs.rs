@@ -8,8 +8,9 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::{
     errors::HostError,
-    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult, DIGEST_SIZE},
+    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult},
 };
+use calimero_primitives::common::DIGEST_SIZE;
 
 /// An enum representing a handle to a blob, which can be for reading or writing.
 #[derive(Debug)]

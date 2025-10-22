@@ -10,6 +10,8 @@ use thiserror::Error;
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
+use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey};
+
 #[expect(
     missing_copy_implementations,
     reason = "PrivateKey must not be copied, cloned, viewed or serialized"
@@ -49,7 +51,7 @@ impl Deref for PrivateKey {
 impl PrivateKey {
     #[must_use]
     pub fn public_key(&self) -> PublicKey {
-        ed25519_dalek::SigningKey::from_bytes(self)
+        SigningKey::from_bytes(self)
             .verifying_key()
             .to_bytes()
             .into()
@@ -62,6 +64,10 @@ impl PrivateKey {
         csprng.fill_bytes(&mut secret);
 
         Self::from(secret)
+    }
+
+    pub fn sign(&self, message: &[u8]) -> Result<Signature, SignatureError> {
+        SigningKey::from_bytes(self).try_sign(message)
     }
 }
 

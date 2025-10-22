@@ -542,7 +542,7 @@ async fn handle_state_delta(
     // 3. Each receiving node processes handlers independently
     if let Some(events_data) = &events {
         // Get our identity for handler execution
-        let identities = context_client.context_members(&context_id, Some(true));
+        let identities = context_client.get_context_members(&context_id, Some(true));
         if let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
             .await
             .transpose()?
@@ -647,7 +647,7 @@ async fn handle_state_delta(
         return Ok(());
     };
 
-    let identities = context_client.context_members(&context_id, Some(true));
+    let identities = context_client.get_context_members(&context_id, Some(true));
 
     let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
         .await

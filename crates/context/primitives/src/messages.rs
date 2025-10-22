@@ -1,4 +1,5 @@
 use actix::Message;
+use calimero_context_config::types::SignedRevealPayload;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
@@ -110,6 +111,15 @@ pub struct JoinContextResponse {
     pub member_public_key: PublicKey,
 }
 
+#[derive(Debug)]
+pub struct JoinContextOpenInvitationRequest {
+    pub payload: SignedRevealPayload,
+}
+
+impl Message for JoinContextOpenInvitationRequest {
+    type Result = eyre::Result<JoinContextResponse>;
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct SyncRequest {
     pub context_id: ContextId,
@@ -149,6 +159,10 @@ pub enum ContextMessage {
     JoinContext {
         request: JoinContextRequest,
         outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
+    },
+    JoinContextOpenInvitation {
+        request: JoinContextOpenInvitationRequest,
+        outcome: oneshot::Sender<<JoinContextOpenInvitationRequest as Message>::Result>,
     },
     UpdateApplication {
         request: UpdateApplicationRequest,

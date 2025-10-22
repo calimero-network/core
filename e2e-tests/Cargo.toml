@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 async-compression = { version = "0.4.22", features = ["tokio", "gzip"] }
+calimero-context-config.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 const_format.workspace = true
