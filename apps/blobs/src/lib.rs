@@ -355,7 +355,7 @@ impl FileShareState {
     /// # Returns
     /// * `Ok(u64)` - Total size of all files in bytes (sum of file sizes)
     /// * `Err(String)` - Error message if storage operation fails (rarely occurs)
-    pub fn get_total_storage(&self) -> Result<u64, String> {
+    pub fn get_total_files_size(&self) -> Result<u64, String> {
         let mut total_size = 0u64;
 
         if let Ok(entries) = self.files.entries() {

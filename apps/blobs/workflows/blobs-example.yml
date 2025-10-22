@@ -185,7 +185,7 @@ steps:
     node: calimero-node-2
     context_id: "{{context_id}}"
     executor_public_key: "{{public_key}}"
-    method: get_blob_id
+    method: get_blob_id_b58
     args:
       file_id: file_0
     outputs:
@@ -229,20 +229,20 @@ steps:
     statements:
       - 'json_path_contains({{stats}}, "$.output", "Total files: 3")'
 
-  # Step 15: Get total storage
-  - name: Get Total Storage
+  # Step 15: Get total Files Size
+  - name: Get Total Files Size
     type: call
     node: calimero-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: get_total_storage
+    method: get_total_files_size
     outputs:
-      total_storage: result
+      total_files_size: result
 
-  - name: Assert total storage is correct
+  - name: Assert total files size is correct
     type: json_assert
     statements:
-      - 'json_equal({{total_storage}}, {"output": 2564096})'
+      - 'json_equal({{total_files_size}}, {"output": 2564096})'
 
   # Step 16: Delete a file
   - name: Delete Screenshot
