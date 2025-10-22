@@ -8,6 +8,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
+use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
@@ -28,6 +29,8 @@ use tokio::spawn;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
 
+mod execute;
+mod query;
 mod subscribe;
 mod unsubscribe;
 
@@ -57,12 +60,14 @@ pub(crate) struct ConnectionState {
 }
 
 pub(crate) struct ServiceState {
+    ctx_client: ContextClient,
     node_client: NodeClient,
     connections: RwLock<HashMap<ConnectionId, ConnectionState>>,
 }
 
 pub(crate) fn service(
     config: &ServerConfig,
+    ctx_client: ContextClient,
     node_client: NodeClient,
 ) -> Option<(String, MethodRouter)> {
     let _config = match &config.websocket {
@@ -87,6 +92,7 @@ pub(crate) fn service(
     }
 
     let state = Arc::new(ServiceState {
+        ctx_client,
         node_client,
         connections: RwLock::default(),
     });
@@ -308,6 +314,14 @@ async fn handle_text_message(
                 .await
                 .to_res_body(),
             RequestPayload::Unsubscribe(request) => request
+                .handle(Arc::clone(&state), connection_state.clone())
+                .await
+                .to_res_body(),
+            RequestPayload::Execute(request) => request
+                .handle(Arc::clone(&state), connection_state.clone())
+                .await
+                .to_res_body(),
+            RequestPayload::Query(request) => request
                 .handle(Arc::clone(&state), connection_state.clone())
                 .await
                 .to_res_body(),

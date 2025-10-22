@@ -101,12 +101,12 @@ pub async fn start(
         node_client.clone(),
     ));
 
-    if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
+    if let Some((path, router)) = jsonrpc::service(&config, ctx_client.clone()) {
         app = app.nest(&path, router);
         serviced = true;
     }
 
-    if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
+    if let Some((path, handler)) = ws::service(&config, ctx_client.clone(), node_client.clone()) {
         app = app.route(&path, handler);
 
         serviced = true;

@@ -1,4 +1,6 @@
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use eyre::Error as EyreError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,6 +24,8 @@ pub struct Request<P> {
 pub enum RequestPayload {
     Subscribe(SubscribeRequest),
     Unsubscribe(UnsubscribeRequest),
+    Execute(ExecuteRequest),
+    Query(QueryRequest),
 }
 // *************************************************************************
 
@@ -88,6 +92,42 @@ pub struct UnsubscribeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeResponse {
     pub context_ids: Vec<ContextId>,
+}
+// *************************************************************************
+
+// **************************** execute method *******************************
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteRequest {
+    pub context_id: ContextId,
+    pub method: String,
+    pub args_json: Value,
+    pub executor_public_key: PublicKey,
+    #[serde(default)]
+    pub substitute: Vec<Alias<PublicKey>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteResponse {
+    pub output: Option<Value>,
+}
+// *************************************************************************
+
+// **************************** query method *******************************
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryRequest {
+    pub context_id: ContextId,
+    pub method: String,
+    pub args_json: Value,
+    pub executor_public_key: PublicKey,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryResponse {
+    pub output: Option<Value>,
 }
 // *************************************************************************
 
