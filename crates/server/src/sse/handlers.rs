@@ -229,7 +229,8 @@ pub async fn sse_handler(
         .and_then(|s| s.split('-').next())
         .and_then(|id| id.parse::<ConnectionId>().ok());
 
-    let (commands_sender, commands_receiver) = mpsc::channel::<Command>(COMMAND_CHANNEL_BUFFER_SIZE);
+    let (commands_sender, commands_receiver) =
+        mpsc::channel::<Command>(COMMAND_CHANNEL_BUFFER_SIZE);
 
     let (session_id, session_state, is_reconnect) = if let Some(existing_session_id) = last_event_id
     {

@@ -13,8 +13,8 @@ use super::session::PersistedSessionData;
 ///
 /// This function creates a unique key by taking the `session_id`, converting it
 /// to its big-endian byte representation, and using it as the first 8 bytes
-/// of the key's fragment (which is [`DIGEST_SIZE`] bytes). The remaining bytes 
-/// of the fragment are zero-padded. The entire key is scoped under 
+/// of the key's fragment (which is [`DIGEST_SIZE`] bytes). The remaining bytes
+/// of the fragment are zero-padded. The entire key is scoped under
 /// `SSE_SESSION_SCOPE` to prevent collisions.
 ///
 /// # Arguments
