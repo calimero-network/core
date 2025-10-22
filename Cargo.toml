@@ -61,6 +61,7 @@ members = [
     "./apps/kv-store",
     "./apps/kv-store-with-handlers",
     "./apps/private_data",
+    "./apps/blobs",
     "./apps/abi_conformance",
 
     "./e2e-tests",
