@@ -14,6 +14,7 @@ alloy.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
+colored = { workspace = true }
 const_format.workspace = true
 ic-agent.workspace = true
 dirs.workspace = true
@@ -25,10 +26,14 @@ multiaddr.workspace = true
 near-crypto.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
+schemars = { workspace = true }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+similar = { workspace = true }
 starknet.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
+toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
