@@ -13,7 +13,7 @@ impl<'a> XCall<'a> {
 
     #[inline]
     pub fn context_id(&self) -> &[u8; 32] {
-        self.context_id
+        (*self.context_id)
             .try_into()
             .expect("context_id should always be a 32-byte array")
     }

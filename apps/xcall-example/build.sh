@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname $0)"
 
-TARGET="${CARGO_TARGET_DIR:-../../target}"
+TARGET="${CARGO_TARGET_DIR:-target}"
 
 rustup target add wasm32-unknown-unknown
 
