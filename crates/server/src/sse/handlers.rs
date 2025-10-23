@@ -324,31 +324,35 @@ pub async fn sse_handler(
 
     // Convert commands to SSE events with event IDs
     let event_counter = Arc::clone(&session_state.inner);
-    let command_stream = ReceiverStream::new(commands_receiver).map(move |command| {
-        let event_id = event_counter
-            .blocking_read()
-            .event_counter
-            .fetch_add(1, Ordering::SeqCst);
-        let id_str = format!("{}-{}", session_id, event_id);
+    let command_stream = ReceiverStream::new(commands_receiver).then(move |command| {
+        let event_counter = Arc::clone(&event_counter);
+        async move {
+            let event_id = event_counter
+                .read()
+                .await
+                .event_counter
+                .fetch_add(1, Ordering::SeqCst);
+            let id_str = format!("{}-{}", session_id, event_id);
 
-        match command {
-            Command::Close(reason) => Ok(Event::default()
-                .event(SseEvent::Close.as_str())
-                .id(id_str)
-                .data(reason)),
-            Command::Send(response) => match to_json_string(&response) {
-                Ok(message) => Ok(Event::default()
-                    .event(SseEvent::Message.as_str())
+            match command {
+                Command::Close(reason) => Ok(Event::default()
+                    .event(SseEvent::Close.as_str())
                     .id(id_str)
-                    .data(message)),
-                Err(err) => {
-                    error!("Failed to serialize SseResponse: {}", err);
-                    Ok(Event::default()
-                        .event(SseEvent::Error.as_str())
+                    .data(reason)),
+                Command::Send(response) => match to_json_string(&response) {
+                    Ok(message) => Ok(Event::default()
+                        .event(SseEvent::Message.as_str())
                         .id(id_str)
-                        .data("Failed to serialize SseResponse"))
-                }
-            },
+                        .data(message)),
+                    Err(err) => {
+                        error!("Failed to serialize SseResponse: {}", err);
+                        Ok(Event::default()
+                            .event(SseEvent::Error.as_str())
+                            .id(id_str)
+                            .data("Failed to serialize SseResponse"))
+                    }
+                },
+            }
         }
     });
 
@@ -378,7 +382,7 @@ async fn create_new_session(state: &ServiceState) -> (ConnectionId, SessionState
                 let _ = entry.insert(session_state.clone());
 
                 // Persist new session to store
-                let persisted = session_state.inner.blocking_read().to_persisted();
+                let persisted = session_state.inner.read().await.to_persisted();
                 drop(sessions);
 
                 let mut store = state.store.clone();
