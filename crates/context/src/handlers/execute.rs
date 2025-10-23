@@ -233,6 +233,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     artifact_len = outcome.artifact.len(),
                     logs_count = outcome.logs.len(),
                     events_count = outcome.events.len(),
+                    xcalls_count = outcome.xcalls.len(),
                     "Execution outcome details"
                 );
 
@@ -261,6 +262,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         is_state_op,
                         artifact_empty = outcome.artifact.is_empty(),
                         events_count = outcome.events.len(),
+                        xcalls_count = outcome.xcalls.len(),
                         "Execution outcome details"
                     );
 
@@ -276,6 +278,51 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 handler_name = %handler_name,
                                 "Event emitted with handler (will be executed on receiving nodes)"
                             );
+                        }
+                    }
+
+                    // Process cross-context calls
+                    // NOTE: XCalls are executed locally on the current node after the main execution completes.
+                    // This allows contexts to communicate by calling functions on other contexts.
+                    for xcall in &outcome.xcalls {
+                        info!(
+                            %context_id,
+                            target_context = ?ContextId::from(xcall.context_id),
+                            function = %xcall.function,
+                            params_len = xcall.params.len(),
+                            "Processing cross-context call"
+                        );
+
+                        // Execute the cross-context call
+                        let xcall_result = context_client
+                            .execute(
+                                &ContextId::from(xcall.context_id),
+                                &executor,
+                                xcall.function.clone(),
+                                xcall.params.clone(),
+                                vec![],
+                                None,
+                            )
+                            .await;
+
+                        match xcall_result {
+                            Ok(_) => {
+                                info!(
+                                    %context_id,
+                                    target_context = ?ContextId::from(xcall.context_id),
+                                    function = %xcall.function,
+                                    "Cross-context call executed successfully"
+                                );
+                            }
+                            Err(err) => {
+                                error!(
+                                    %context_id,
+                                    target_context = ?ContextId::from(xcall.context_id),
+                                    function = %xcall.function,
+                                    ?err,
+                                    "Cross-context call failed"
+                                );
+                            }
                         }
                     }
 
