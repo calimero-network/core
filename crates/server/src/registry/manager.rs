@@ -144,7 +144,7 @@ impl RegistryManager {
                 timeout_ms,
                 ..
             } => {
-                if base_url.is_empty() {
+                if base_url.as_str().is_empty() {
                     return Err(eyre::eyre!("Base URL cannot be empty"));
                 }
                 if *timeout_ms == 0 {

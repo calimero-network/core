@@ -14,7 +14,7 @@ pub async fn handler(
     Json(request): Json<SetupRegistryRequest>,
 ) -> impl IntoResponse {
     let config = RegistryConfig {
-        name: request.registry_name.clone(),
+        name: request.name.clone(),
         registry_type: request.registry_type,
         config: request.config,
     };
@@ -22,10 +22,7 @@ pub async fn handler(
     let mut registry_manager = state.registry_manager.lock().unwrap();
     match registry_manager.setup_registry(config).await {
         Ok(_) => ApiResponse {
-            payload: SetupRegistryResponse {
-                success: true,
-                message: format!("Registry '{}' setup successfully", request.registry_name),
-            },
+            payload: SetupRegistryResponse::new(request.name.clone()),
         }
         .into_response(),
         Err(err) => {

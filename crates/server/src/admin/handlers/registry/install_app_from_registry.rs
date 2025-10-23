@@ -42,10 +42,8 @@ pub async fn handler(
     };
 
     // Fetch app manifest
-    let manifest = match client
-        .get_app_manifest(&request.app_name, &request.version)
-        .await
-    {
+    let version = request.version.as_deref().unwrap_or("latest");
+    let manifest = match client.get_app_manifest(&request.app_name, version).await {
         Ok(manifest) => manifest,
         Err(err) => {
             tracing::error!("Failed to fetch app manifest: {}", err);

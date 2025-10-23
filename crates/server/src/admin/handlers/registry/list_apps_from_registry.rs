@@ -38,7 +38,8 @@ pub async fn handler(
     };
 
     // Fetch apps from registry
-    match client.get_apps(request.filters).await {
+    let filters = request.filters.unwrap_or_default();
+    match client.get_apps(filters).await {
         Ok(apps) => ApiResponse {
             payload: ListAppsResponse { apps },
         }

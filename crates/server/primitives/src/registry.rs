@@ -220,6 +220,15 @@ pub struct AppFilters {
     pub name: Option<String>,
 }
 
+impl Default for AppFilters {
+    fn default() -> Self {
+        Self {
+            developer: None,
+            name: None,
+        }
+    }
+}
+
 impl ListAppsFromRegistryRequest {
     pub fn new(registry_name: String, filters: Option<AppFilters>) -> Self {
         Self {
@@ -257,4 +266,128 @@ impl ListAppsFromRegistryResponse {
             data: ListAppsFromRegistryResponseData { apps },
         }
     }
+}
+
+// App management request/response types
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallAppRequest {
+    pub app_name: String,
+    pub registry_name: String,
+    pub version: Option<String>,
+    pub metadata: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallAppResponse {
+    pub success: bool,
+    pub message: String,
+    pub app_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAppRequest {
+    pub app_name: String,
+    pub registry_name: String,
+    pub version: Option<String>,
+    pub metadata: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAppResponse {
+    pub success: bool,
+    pub message: String,
+    pub app_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallAppRequest {
+    pub app_name: String,
+    pub registry_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallAppResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAppsRequest {
+    pub registry_name: String,
+    pub filters: Option<AppFilters>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAppsResponse {
+    pub apps: Vec<AppSummary>,
+}
+
+// Registry client types
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppManifest {
+    pub manifest_version: String,
+    pub app: AppInfo,
+    pub supported_chains: Vec<String>,
+    pub permissions: Vec<String>,
+    pub metadata: serde_json::Value,
+    pub distribution: Distribution,
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    pub id: String,
+    pub name: String,
+    pub developer_pubkey: String,
+    pub version: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionInfo {
+    pub version: String,
+    pub cid: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Artifact {
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub target: String,
+    pub size: u64,
+    pub mirrors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Distribution {
+    pub artifacts: Vec<Artifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitResult {
+    pub success: bool,
+    pub message: String,
+    pub app_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthStatus {
+    pub status: String,
+    pub version: Option<String>,
 }

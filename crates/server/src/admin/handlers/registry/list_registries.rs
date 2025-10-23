@@ -26,7 +26,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         .collect();
 
     ApiResponse {
-        payload: ListRegistriesResponse { registries },
+        payload: ListRegistriesResponse::new(registries),
     }
     .into_response()
 }

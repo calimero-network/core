@@ -176,10 +176,11 @@ impl RegistryClientFactory {
             calimero_server_primitives::registry::RegistryType::Remote => match &config.config {
                 calimero_server_primitives::registry::RegistryConfigData::Remote {
                     base_url,
-                    bearer_auth,
+                    auth_token,
                     ..
                 } => {
-                    let client = RemoteRegistryClient::new(base_url.clone(), bearer_auth.clone())?;
+                    let client =
+                        RemoteRegistryClient::new(base_url.to_string(), auth_token.clone())?;
                     Ok(Box::new(client))
                 }
                 _ => Err(eyre::eyre!("Invalid config for remote registry")),
