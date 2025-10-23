@@ -1,0 +1,381 @@
+description: A workflow demonstrating cross-context calls (XCall) for inter-context communication
+name: XCall Example Workflow
+
+# Force pull Docker images even if they exist locally
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: calimero-node
+
+steps:
+  # ============================================
+  # Setup Phase: Install app and create contexts
+  # ============================================
+  
+  # Step 1: Install the xcall-example application on Node 1
+  - name: Install XCall Application on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: res/xcall_example.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert app installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  # Step 2: Create Context A on Node 1
+  - name: Create Context A on Node 1
+    type: create_context
+    node: calimero-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_a_id: contextId
+      context_a_member_key: memberPublicKey
+
+  - name: Assert Context A created
+    type: assert
+    statements:
+      - "is_set({{context_a_id}})"
+      - "is_set({{context_a_member_key}})"
+
+  # Step 3: Create Context B on Node 2
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      node2_public_key: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  # Step 4: Install the same application on Node 2
+  - name: Install XCall Application on Node 2
+    type: install_application
+    node: calimero-node-2
+    path: res/xcall_example.wasm
+    dev: true
+    outputs:
+      app_id_node2: applicationId
+
+  # Step 5: Create Context B on Node 2
+  - name: Create Context B on Node 2
+    type: create_context
+    node: calimero-node-2
+    application_id: "{{app_id_node2}}"
+    outputs:
+      context_b_id: contextId
+      context_b_member_key: memberPublicKey
+
+  - name: Assert Context B created
+    type: assert
+    statements:
+      - "is_set({{context_b_id}})"
+      - "is_set({{context_b_member_key}})"
+
+  - name: Wait for contexts to be ready
+    type: wait
+    seconds: 3
+
+  # ============================================
+  # Testing Phase: XCall functionality
+  # ============================================
+
+  # Step 6: Verify both contexts start with zero messages
+  - name: Check initial message count on Context A
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: message_count
+    outputs:
+      context_a_initial_count: result
+
+  - name: Assert Context A starts with zero messages
+    type: json_assert
+    statements:
+      - 'json_equal({{context_a_initial_count}}, {"output": 0})'
+
+  - name: Check initial message count on Context B
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: message_count
+    outputs:
+      context_b_initial_count: result
+
+  - name: Assert Context B starts with zero messages
+    type: json_assert
+    statements:
+      - 'json_equal({{context_b_initial_count}}, {"output": 0})'
+
+  # Step 7: Send a greeting from Context A to Context B
+  - name: Send greeting from Context A to Context B
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: send_greeting
+    args:
+      target_context: "{{context_b_id}}"
+      message: "Hello from Context A!"
+    outputs:
+      send_result_1: result
+
+  - name: Assert send_greeting succeeded
+    type: json_assert
+    statements:
+      - 'json_equal({{send_result_1}}, {"output": null})'
+
+  # Step 8: Wait for cross-context call to be processed
+  - name: Wait for XCall to propagate
+    type: wait
+    seconds: 5
+
+  # Step 9: Verify Context B received the message
+  - name: Check message count on Context B
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: message_count
+    outputs:
+      context_b_count_after_1: result
+
+  - name: Assert Context B has 1 message
+    type: json_assert
+    statements:
+      - 'json_equal({{context_b_count_after_1}}, {"output": 1})'
+
+  # Step 10: Get messages on Context B
+  - name: Get messages on Context B
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: get_messages
+    outputs:
+      context_b_messages: result
+
+  - name: Assert Context B received correct message
+    type: json_assert
+    statements:
+      - 'json_path_count({{context_b_messages}}, "$.output", 1)'
+      - 'json_subset({{context_b_messages}}, {"output": [{"from_context": "{{context_a_id}}", "content": "Hello from Context A!"}]})'
+
+  # Step 11: Verify Context A still has no messages (sender doesn't receive)
+  - name: Check message count on Context A
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: message_count
+    outputs:
+      context_a_count_after_1: result
+
+  - name: Assert Context A still has zero messages
+    type: json_assert
+    statements:
+      - 'json_equal({{context_a_count_after_1}}, {"output": 0})'
+
+  # ============================================
+  # Bi-directional Communication Test
+  # ============================================
+
+  # Step 12: Send a greeting from Context B to Context A
+  - name: Send greeting from Context B to Context A
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: send_greeting
+    args:
+      target_context: "{{context_a_id}}"
+      message: "Hi back from Context B!"
+    outputs:
+      send_result_2: result
+
+  - name: Assert send_greeting succeeded
+    type: json_assert
+    statements:
+      - 'json_equal({{send_result_2}}, {"output": null})'
+
+  # Step 13: Wait for cross-context call to be processed
+  - name: Wait for XCall to propagate
+    type: wait
+    seconds: 5
+
+  # Step 14: Verify Context A received the message
+  - name: Check message count on Context A after reply
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: message_count
+    outputs:
+      context_a_count_after_reply: result
+
+  - name: Assert Context A has 1 message
+    type: json_assert
+    statements:
+      - 'json_equal({{context_a_count_after_reply}}, {"output": 1})'
+
+  # Step 15: Get messages on Context A
+  - name: Get messages on Context A
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: get_messages
+    outputs:
+      context_a_messages: result
+
+  - name: Assert Context A received correct message
+    type: json_assert
+    statements:
+      - 'json_path_count({{context_a_messages}}, "$.output", 1)'
+      - 'json_subset({{context_a_messages}}, {"output": [{"from_context": "{{context_b_id}}", "content": "Hi back from Context B!"}]})'
+
+  # ============================================
+  # Multiple Messages Test
+  # ============================================
+
+  # Step 16: Send multiple messages from Context A to Context B
+  - name: Send second message from Context A to Context B
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: send_greeting
+    args:
+      target_context: "{{context_b_id}}"
+      message: "How are you?"
+    outputs:
+      send_result_3: result
+
+  - name: Wait for XCall to propagate
+    type: wait
+    seconds: 5
+
+  - name: Send third message from Context A to Context B
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: send_greeting
+    args:
+      target_context: "{{context_b_id}}"
+      message: "XCall is working great!"
+    outputs:
+      send_result_4: result
+
+  - name: Wait for XCall to propagate
+    type: wait
+    seconds: 5
+
+  # Step 17: Verify Context B now has 3 messages total
+  - name: Check final message count on Context B
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: message_count
+    outputs:
+      context_b_final_count: result
+
+  - name: Assert Context B has 3 messages
+    type: json_assert
+    statements:
+      - 'json_equal({{context_b_final_count}}, {"output": 3})'
+
+  # Step 18: Get all messages on Context B
+  - name: Get all messages on Context B
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: get_messages
+    outputs:
+      context_b_all_messages: result
+
+  - name: Assert Context B has all 3 messages
+    type: json_assert
+    statements:
+      - 'json_path_count({{context_b_all_messages}}, "$.output", 3)'
+
+  # ============================================
+  # Clear Messages Test
+  # ============================================
+
+  # Step 19: Clear messages on Context B
+  - name: Clear messages on Context B
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: clear_messages
+    outputs:
+      clear_result: result
+
+  - name: Assert clear succeeded
+    type: json_assert
+    statements:
+      - 'json_equal({{clear_result}}, {"output": null})'
+
+  # Step 20: Verify Context B has zero messages after clearing
+  - name: Check message count after clearing
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: message_count
+    outputs:
+      context_b_count_after_clear: result
+
+  - name: Assert Context B has zero messages
+    type: json_assert
+    statements:
+      - 'json_equal({{context_b_count_after_clear}}, {"output": 0})'
+
+  # Step 21: Verify get_messages returns empty array
+  - name: Get messages after clearing
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: get_messages
+    outputs:
+      context_b_messages_after_clear: result
+
+  - name: Assert messages list is empty
+    type: json_assert
+    statements:
+      - 'json_equal({{context_b_messages_after_clear}}, {"output": []})'
+
+  # Step 22: Verify Context A still has its message (clearing is per-context)
+  - name: Verify Context A still has its message
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: message_count
+    outputs:
+      context_a_final_count: result
+
+  - name: Assert Context A still has 1 message
+    type: json_assert
+    statements:
+      - 'json_equal({{context_a_final_count}}, {"output": 1})'
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
+

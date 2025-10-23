@@ -44,3 +44,30 @@ meroctl --node-name node1 context query \
 - **Parameters**: Function parameters should be JSON-encoded to match the target function's expected input
 - **Context ID**: The 32-byte context ID is required to specify which context to call
 
+## Testing
+
+This application includes an automated workflow for end-to-end testing. The workflow:
+
+1. Creates two separate contexts (Context A and Context B)
+2. Sends messages between contexts using xcall
+3. Verifies bi-directional communication
+4. Tests multiple messages
+5. Tests message clearing functionality
+
+To run the automated tests:
+
+```bash
+# Build the application first
+./build.sh
+
+# Run the workflow using merobox
+merobox bootstrap run workflows/xcall-example.yml
+```
+
+The workflow demonstrates all key features:
+- Cross-context message sending
+- Message reception and storage
+- Message counting
+- Message retrieval
+- Message clearing
+
