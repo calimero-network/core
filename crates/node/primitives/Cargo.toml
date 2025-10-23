@@ -22,6 +22,7 @@ reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true, features = ["sync"] }
 tokio-util.workspace = true
 tracing.workspace = true
+serde_json.workspace = true
 
 calimero-crypto.workspace = true
 calimero-primitives.workspace = true

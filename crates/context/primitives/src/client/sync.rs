@@ -100,32 +100,70 @@ impl ContextClient {
 
             if !self.node_client.has_application(&application.id)? {
                 let source: Url = application.source.into();
-
                 let metadata = application.metadata;
 
-                let derived_application_id = {
-                    let app_id = match source.scheme() {
-                        "http" | "https" => self
-                            .node_client
-                            .install_application_from_url(source.clone(), metadata.clone(), None)
-                            .await
-                            .ok(),
-                        _ => None,
+                // Try to detect V2 manifest by looking for keys in metadata JSON
+                let is_v2 = serde_json::from_slice::<serde_json::Value>(&metadata)
+                    .ok()
+                    .and_then(|v| {
+                        Some(v.get("manifest_version").is_some() && v.get("app").is_some())
+                    })
+                    .unwrap_or(false);
+
+                if is_v2 {
+                    // Install under provided id without deriving
+                    match source.scheme() {
+                        "http" | "https" => {
+                            let _ = self
+                                .node_client
+                                .install_application_from_url_with_id(
+                                    &application.id,
+                                    source.clone(),
+                                    metadata,
+                                    None,
+                                )
+                                .await?;
+                        }
+                        _ => {
+                            let _ = self.node_client.install_application_with_id(
+                                &application.id,
+                                &application.blob.bytecode,
+                                application.size,
+                                &source.into(),
+                                metadata,
+                            )?;
+                        }
+                    }
+                } else {
+                    // V1 behavior
+                    let derived_application_id = {
+                        let app_id = match source.scheme() {
+                            "http" | "https" => self
+                                .node_client
+                                .install_application_from_url(
+                                    source.clone(),
+                                    metadata.clone(),
+                                    None,
+                                )
+                                .await
+                                .ok(),
+                            _ => None,
+                        };
+
+                        match app_id {
+                            Some(id) => id,
+                            None => self.node_client.install_application(
+                                &application.blob.bytecode,
+                                application.size,
+                                &source.into(),
+                                metadata,
+                            )?,
+                        }
                     };
 
-                    match app_id {
-                        Some(id) => id,
-                        None => self.node_client.install_application(
-                            &application.blob.bytecode,
-                            application.size,
-                            &source.into(),
-                            metadata,
-                        )?,
+                    if application.id != derived_application_id {
+                        eyre::bail!("application mismatch")
                     }
-                };
-
-                if application.id != derived_application_id {
-                    eyre::bail!("application mismatch")
                 }
             }
         }

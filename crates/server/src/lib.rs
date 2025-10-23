@@ -1,5 +1,6 @@
 use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use tower as _;
 
@@ -23,6 +24,7 @@ pub mod admin;
 pub mod config;
 pub mod jsonrpc;
 mod metrics;
+pub mod registry;
 pub mod sse;
 pub mod ws;
 
@@ -32,15 +34,24 @@ pub struct AdminState {
     pub store: Store,
     pub ctx_client: ContextClient,
     pub node_client: NodeClient,
+    pub registry_manager: Arc<Mutex<registry::manager::RegistryManager>>,
 }
 
 impl AdminState {
     #[must_use]
-    pub const fn new(store: Store, ctx_client: ContextClient, node_client: NodeClient) -> Self {
+    pub fn new(
+        store: Store,
+        ctx_client: ContextClient,
+        node_client: NodeClient,
+        config_path: std::path::PathBuf,
+    ) -> Self {
         Self {
-            store,
+            store: store.clone(),
             ctx_client,
             node_client,
+            registry_manager: Arc::new(Mutex::new(registry::manager::RegistryManager::new(
+                config_path,
+            ))),
         }
     }
 }
@@ -99,7 +110,14 @@ pub async fn start(
         datastore.clone(),
         ctx_client.clone(),
         node_client.clone(),
+        std::path::PathBuf::from("test-node/testnode"), // TODO: Get this from config
     ));
+
+    // Load registry configurations on startup
+    // TODO: Fix mutability issue - need to restructure to allow mutable access
+    // if let Err(err) = shared_state.registry_manager.load_configurations().await {
+    //     warn!(error = ?err, "Failed to load registry configurations on startup");
+    // }
 
     if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
         app = app.nest(&path, router);

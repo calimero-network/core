@@ -24,6 +24,7 @@ mod call;
 mod context;
 mod node;
 mod peers;
+mod registry;
 
 use app::AppCommand;
 use blob::BlobCommand;
@@ -31,6 +32,7 @@ use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
+use registry::RegistryCommand;
 
 use crate::auth::{authenticate_with_session_cache, check_authentication};
 
@@ -68,6 +70,7 @@ pub enum SubCommands {
     Context(ContextCommand),
     Call(CallCommand),
     Peers(PeersCommand),
+    Registry(RegistryCommand),
     #[command(subcommand)]
     Node(NodeCommand),
 }
@@ -139,6 +142,7 @@ impl RootCommand {
             SubCommands::Context(context) => context.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
+            SubCommands::Registry(registry) => registry.run(&mut environment).await,
             SubCommands::Node(node) => node.run(&environment).await,
         };
 

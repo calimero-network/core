@@ -7,6 +7,7 @@ use crate::cli::Environment;
 pub mod get;
 pub mod install;
 pub mod list;
+pub mod registry;
 pub mod uninstall;
 pub mod watch;
 
@@ -43,6 +44,7 @@ pub enum AppSubCommands {
     List(list::ListCommand),
     Uninstall(uninstall::UninstallCommand),
     Watch(watch::WatchCommand),
+    Registry(registry::AppRegistryCommand),
 }
 
 impl AppCommand {
@@ -53,6 +55,7 @@ impl AppCommand {
             AppSubCommands::List(list) => list.run(environment).await,
             AppSubCommands::Uninstall(uninstall) => uninstall.run(environment).await,
             AppSubCommands::Watch(watch) => watch.run(environment).await,
+            AppSubCommands::Registry(registry) => registry.run(environment).await,
         }
     }
 }

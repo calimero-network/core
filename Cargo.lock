@@ -1876,6 +1876,7 @@ dependencies = [
  "hex",
  "rand 0.8.5",
  "serde",
+ "serde_json",
  "sha2 0.10.8",
  "tempfile",
  "thiserror 1.0.69",
@@ -1992,6 +1993,7 @@ dependencies = [
  "libp2p",
  "rand 0.8.5",
  "reqwest 0.12.23",
+ "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2106,6 +2108,7 @@ dependencies = [
 name = "calimero-server"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "axum 0.7.9",
  "bytes",
  "cached-path",
@@ -2131,11 +2134,13 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "toml 0.8.19",
  "tower 0.4.13",
  "tower-http 0.5.2",
  "tower-sessions",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
