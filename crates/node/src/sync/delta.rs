@@ -16,6 +16,12 @@ use tracing::{debug, info};
 
 use super::{Sequencer, SyncManager};
 
+/// Maximum delta gap threshold for attempting delta-based synchronization.
+/// If a node is behind by more than this many deltas, delta sync will fail and
+/// trigger a fallback to full state sync. Set to half of DELTA_RETENTION_LIMIT
+/// to ensure deltas are still available on peers.
+const DELTA_SYNC_THRESHOLD: usize = 128;
+
 impl SyncManager {
     pub(super) async fn initiate_delta_sync_process(
         &self,
@@ -394,12 +400,11 @@ impl SyncManager {
 
                             // If the gap is too large, fail the sync
                             // This means we're missing too many deltas (likely pruned)
-                            const MAX_DELTA_GAP: usize = 128;
-                            if gap > MAX_DELTA_GAP {
+                            if gap > DELTA_SYNC_THRESHOLD {
                                 bail!(
                                     "Delta gap too large ({} > {}), missing deltas for member {}",
                                     gap,
-                                    MAX_DELTA_GAP,
+                                    DELTA_SYNC_THRESHOLD,
                                     member
                                 );
                             }
@@ -484,12 +489,11 @@ impl SyncManager {
 
                     // If we're too far behind (likely due to pruning), fail the delta sync
                     // This allows fallback to state sync which doesn't need historical deltas
-                    const MAX_DELTA_GAP: usize = 128;
-                    if gap > MAX_DELTA_GAP {
+                    if gap > DELTA_SYNC_THRESHOLD {
                         bail!(
                             "Delta gap too large ({} > {}), cannot sync via deltas for member {}",
                             gap,
-                            MAX_DELTA_GAP,
+                            DELTA_SYNC_THRESHOLD,
                             member
                         );
                     }

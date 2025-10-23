@@ -35,6 +35,10 @@ pub mod crypto;
 pub mod external;
 mod sync;
 
+/// Maximum number of state deltas to retain in storage per member.
+/// Older deltas beyond this limit are automatically pruned to prevent unbounded storage growth.
+const DELTA_RETENTION_LIMIT: usize = 256;
+
 /// A client for interacting with the context management system.
 ///
 /// This struct serves as the primary public API, providing methods to create,
@@ -743,7 +747,7 @@ impl ContextClient {
         )?;
 
         // Prune old deltas to prevent unbounded storage growth
-        self.prune_state_delta(context_id, public_key, height);
+        self.prune_state_delta(context_id, public_key, height, DELTA_RETENTION_LIMIT);
 
         Ok(())
     }
@@ -759,19 +763,19 @@ impl ContextClient {
     /// * `context_id` - The context ID for the delta.
     /// * `public_key` - The member whose deltas are being pruned.
     /// * `current_height` - The current height to prune from.
+    /// * `max_deltas` - Maximum number of deltas to retain per member.
     fn prune_state_delta(
         &self,
         context_id: &ContextId,
         public_key: &PublicKey,
         current_height: &NonZeroUsize,
+        max_deltas: usize,
     ) {
-        const MAX_DELTAS_PER_MEMBER: usize = 256;
-
-        if current_height.get() <= MAX_DELTAS_PER_MEMBER {
+        if current_height.get() <= max_deltas {
             return;
         }
 
-        let old_height = current_height.get() - MAX_DELTAS_PER_MEMBER;
+        let old_height = current_height.get() - max_deltas;
         let old_key = key::ContextDelta::new(*context_id, *public_key, old_height);
 
         let mut handle = self.datastore.handle();
