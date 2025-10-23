@@ -754,7 +754,7 @@ impl ContextClient {
 
     /// Prunes old state deltas to prevent unbounded storage growth.
     ///
-    /// Keeps only the last 256 deltas per member. Older deltas are automatically deleted.
+    /// Keeps only the last `max_deltas` deltas per member. Older deltas are automatically deleted.
     /// Deletion errors are logged but do not cause the operation to fail, as the delta
     /// may have already been pruned or deleted.
     ///
