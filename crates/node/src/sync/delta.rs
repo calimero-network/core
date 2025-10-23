@@ -16,6 +16,12 @@ use tracing::{debug, info};
 
 use super::{Sequencer, SyncManager};
 
+/// Maximum delta gap threshold for attempting delta-based synchronization.
+/// If a node is behind by more than this many deltas, delta sync will fail and
+/// trigger a fallback to full state sync. Set to half of DELTA_RETENTION_LIMIT
+/// to ensure deltas are still available on peers.
+const DELTA_SYNC_THRESHOLD: usize = 128;
+
 impl SyncManager {
     pub(super) async fn initiate_delta_sync_process(
         &self,
@@ -380,14 +386,28 @@ impl SyncManager {
                             break 'handler;
                         }
 
-                        if their_height.get() - our_height.get() != 1 {
+                        let gap = their_height.get() - our_height.get();
+
+                        if gap != 1 {
                             debug!(
                                 context_id=%context.id,
                                 %member,
                                 our_height,
                                 their_height,
-                                "Received delta is not sequential, ignoring",
+                                gap = %gap,
+                                "Received delta is not sequential",
                             );
+
+                            // If the gap is too large, fail the sync
+                            // This means we're missing too many deltas (likely pruned)
+                            if gap > DELTA_SYNC_THRESHOLD {
+                                bail!(
+                                    "Delta gap too large ({} > {}), missing deltas for member {}",
+                                    gap,
+                                    DELTA_SYNC_THRESHOLD,
+                                    member
+                                );
+                            }
 
                             break 'handler;
                         }
@@ -452,17 +472,31 @@ impl SyncManager {
                 );
 
                 if our_height < height {
+                    let gap = height.get() - our_height.get();
+
                     debug!(
                         context_id=%context.id,
                         %member,
                         our_height,
                         requested_height = height,
+                        gap = %gap,
                         "We are {}, there's nothing new to share",
-                        match height.get() - our_height.get() {
+                        match gap {
                             1 => "in sync",
                             _ => "behind",
                         },
                     );
+
+                    // If we're too far behind (likely due to pruning), fail the delta sync
+                    // This allows fallback to state sync which doesn't need historical deltas
+                    if gap > DELTA_SYNC_THRESHOLD {
+                        bail!(
+                            "Delta gap too large ({} > {}), cannot sync via deltas for member {}",
+                            gap,
+                            DELTA_SYNC_THRESHOLD,
+                            member
+                        );
+                    }
 
                     break 'handler;
                 }

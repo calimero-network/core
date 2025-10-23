@@ -22,6 +22,7 @@ use futures_util::Stream;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
+use tracing::{debug, trace};
 
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -33,6 +34,10 @@ use crate::ContextAtomic;
 pub mod crypto;
 pub mod external;
 mod sync;
+
+/// Maximum number of state deltas to retain in storage per member.
+/// Older deltas beyond this limit are automatically pruned to prevent unbounded storage growth.
+const DELTA_RETENTION_LIMIT: usize = 256;
 
 /// A client for interacting with the context management system.
 ///
@@ -714,6 +719,9 @@ impl ContextClient {
 
     /// Stores a new state delta (a chunk of state changes) for a member at a specific height.
     ///
+    /// This function also implements automatic pruning to prevent unbounded storage growth.
+    /// Only the last 256 deltas per member are retained; older deltas are automatically deleted.
+    ///
     /// # Arguments
     ///
     /// * `context_id` - The context ID for the delta.
@@ -738,7 +746,59 @@ impl ContextClient {
             &types::ContextDelta::Data(delta.into()),
         )?;
 
+        // Prune old deltas to prevent unbounded storage growth
+        self.prune_state_delta(context_id, public_key, height, DELTA_RETENTION_LIMIT);
+
         Ok(())
+    }
+
+    /// Prunes old state deltas to prevent unbounded storage growth.
+    ///
+    /// Keeps only the last `max_deltas` deltas per member. Older deltas are automatically deleted.
+    /// Deletion errors are logged but do not cause the operation to fail, as the delta
+    /// may have already been pruned or deleted.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The context ID for the delta.
+    /// * `public_key` - The member whose deltas are being pruned.
+    /// * `current_height` - The current height to prune from.
+    /// * `max_deltas` - Maximum number of deltas to retain per member.
+    fn prune_state_delta(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        current_height: &NonZeroUsize,
+        max_deltas: usize,
+    ) {
+        if current_height.get() <= max_deltas {
+            return;
+        }
+
+        let old_height = current_height.get() - max_deltas;
+        let old_key = key::ContextDelta::new(*context_id, *public_key, old_height);
+
+        let mut handle = self.datastore.handle();
+
+        if let Err(err) = handle.delete(&old_key) {
+            // Log the error but don't fail - delta may have already been pruned
+            debug!(
+                context_id=%context_id,
+                public_key=%public_key,
+                pruned_height=%old_height,
+                current_height=%current_height.get(),
+                error=%err,
+                "Failed to prune old state delta (may have already been pruned)"
+            );
+        } else {
+            trace!(
+                context_id=%context_id,
+                public_key=%public_key,
+                pruned_height=%old_height,
+                current_height=%current_height.get(),
+                "Successfully pruned old state delta"
+            );
+        }
     }
 
     /// Returns a stream of state deltas, allowing nodes to synchronize their state.

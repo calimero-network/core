@@ -15,7 +15,6 @@ use tracing::{debug, info};
 use super::{Sequencer, SyncManager};
 
 impl SyncManager {
-    #[expect(dead_code, reason = "superceded by delta sync")]
     pub(super) async fn initiate_state_sync_process(
         &self,
         context: &mut Context,

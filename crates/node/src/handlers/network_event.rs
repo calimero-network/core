@@ -618,10 +618,35 @@ async fn handle_state_delta(
         return Ok(());
     }
 
-    // Perform state sync since root hash doesn't match
+    // Perform sync if we detect we're missing deltas
+    // Delta sync will fail if gap > 128 and automatically fallback to state sync
     if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
-        if known_height >= height || height.get() - known_height.get() > 1 {
-            debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
+        let gap = height.get().saturating_sub(known_height.get());
+
+        // If gap == 0, we've already seen this delta or we're ahead - ignore it
+        if gap == 0 {
+            debug!(
+                %author_id,
+                %context_id,
+                known_height=%known_height.get(),
+                received_height=%height.get(),
+                "Received state delta at or below known height, ignoring"
+            );
+            return Ok(());
+        }
+
+        // Sync if gap > 1 (non-sequential, missing deltas in between)
+        // If gap > 128, delta sync will fail and fallback to state sync
+        if gap > 1 {
+            debug!(
+                %author_id,
+                %context_id,
+                known_height=%known_height.get(),
+                received_height=%height.get(),
+                gap=%gap,
+                "Non-sequential delta received (gap {}), initiating sync",
+                gap
+            );
 
             node_client.sync(Some(&context_id), Some(&source)).await?;
             return Ok(());
