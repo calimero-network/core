@@ -618,36 +618,34 @@ async fn handle_state_delta(
         return Ok(());
     }
 
-    // Perform sync if we detect we're too far behind
-    // If gap > 128, the sync process will automatically use state sync instead of delta sync
-    const MAX_DELTA_GAP_FOR_DELTA_SYNC: usize = 128;
-
+    // Perform sync if we detect we're missing deltas
+    // Delta sync will fail if gap > 128 and automatically fallback to state sync
     if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
-        let gap = if height.get() > known_height.get() {
-            height.get() - known_height.get()
-        } else {
-            0
-        };
+        let gap = height.get().saturating_sub(known_height.get());
 
-        if known_height >= height || gap > MAX_DELTA_GAP_FOR_DELTA_SYNC {
+        // If gap == 0, we've already seen this delta or we're ahead - ignore it
+        if gap == 0 {
             debug!(
                 %author_id,
                 %context_id,
-                gap=%gap,
-                "Received state delta with large gap (> {}), initiating sync",
-                MAX_DELTA_GAP_FOR_DELTA_SYNC
+                known_height=%known_height.get(),
+                received_height=%height.get(),
+                "Received state delta at or below known height, ignoring"
             );
-
-            node_client.sync(Some(&context_id), Some(&source)).await?;
             return Ok(());
         }
 
+        // Sync if gap > 1 (non-sequential, missing deltas in between)
+        // If gap > 128, delta sync will fail and fallback to state sync
         if gap > 1 {
             debug!(
                 %author_id,
                 %context_id,
+                known_height=%known_height.get(),
+                received_height=%height.get(),
                 gap=%gap,
-                "Non-sequential delta received (gap > 1), initiating sync"
+                "Non-sequential delta received (gap {}), initiating sync",
+                gap
             );
 
             node_client.sync(Some(&context_id), Some(&source)).await?;
