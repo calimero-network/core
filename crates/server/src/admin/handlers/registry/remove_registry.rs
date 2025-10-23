@@ -12,7 +12,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let mut registry_manager = state.registry_manager.lock().unwrap();
+    let mut registry_manager = state.registry_manager.lock().await;
     match registry_manager.remove_registry(&name).await {
         Ok(_) => ApiResponse {
             payload: RemoveRegistryResponse::new(name.clone()),

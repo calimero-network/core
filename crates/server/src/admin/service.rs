@@ -208,13 +208,13 @@ pub(crate) fn setup(
         )
         // Alias management
         .nest("/alias", alias::service())
-        // Registry management - TODO: Fix Handler trait issues
-        // .route("/registries", post(setup_registry::handler).get(list_registries::handler))
-        // .route("/registries/:name", delete(remove_registry::handler))
-        // .route("/registries/:name/apps", get(list_apps_from_registry::handler))
-        // .route("/registries/:name/apps/install", post(install_app_from_registry::handler))
-        // .route("/registries/:name/apps/update", put(update_app_from_registry::handler))
-        // .route("/registries/:name/apps/uninstall", delete(uninstall_app_from_registry::handler))
+        // Registry management
+        .route("/registries", post(setup_registry::handler).get(list_registries::handler))
+        .route("/registries/:name", delete(remove_registry::handler))
+        .route("/registries/:name/apps", post(list_apps_from_registry::handler))
+        .route("/registries/:name/apps/install", post(install_app_from_registry::handler))
+        .route("/registries/:name/apps/update", put(update_app_from_registry::handler))
+        .route("/registries/:name/apps/uninstall", delete(uninstall_app_from_registry::handler))
         .route("/health", get(health_check_handler))
         // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))

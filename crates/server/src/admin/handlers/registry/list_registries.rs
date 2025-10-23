@@ -8,7 +8,7 @@ use crate::AdminState;
 use calimero_server_primitives::registry::{ListRegistriesResponse, RegistryInfo};
 
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-    let registry_manager = state.registry_manager.lock().unwrap();
+    let registry_manager = state.registry_manager.lock().await;
     let registry_names = registry_manager.list_registries().await;
 
     let registries: Vec<RegistryInfo> = registry_names

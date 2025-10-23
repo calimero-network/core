@@ -13,7 +13,7 @@ pub async fn handler(
     Json(request): Json<ListAppsRequest>,
 ) -> impl IntoResponse {
     // Get registry configuration
-    let registry_manager = state.registry_manager.lock().unwrap();
+    let registry_manager = state.registry_manager.lock().await;
     let registry_config = match registry_manager.get_registry_config(&request.registry_name) {
         Some(config) => config,
         None => {
