@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::pin::pin;
 use std::sync::Arc;
 
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
@@ -95,14 +97,44 @@ pub(crate) fn service(
 }
 
 async fn ws_handler(
-    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
 ) -> impl IntoResponse {
+    // Validate WebSocket upgrade request
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(rejection) => {
+            debug!("Invalid WebSocket upgrade request: {}", rejection);
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid WebSocket upgrade request: {}", rejection),
+            )
+                .into_response();
+        }
+    };
+
+    // Check for required upgrade headers
+    if !headers
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false)
+    {
+        debug!("Missing or invalid upgrade header");
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            "This endpoint requires WebSocket upgrade",
+        )
+            .into_response();
+    }
+
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
-    let (commands_sender, commands_receiver) = mpsc::channel(32);
+    let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
     let (connection_id, _) = loop {
         let connection_id = random();
         let mut connections = state.connections.write().await;
@@ -254,7 +286,13 @@ async fn handle_commands(
                         "Failed to send ws::Message::Close",
                     );
                 }
-                drop(socket_sender.close().await);
+                if let Err(err) = socket_sender.close().await {
+                    debug!(
+                        %connection_id,
+                        %err,
+                        "Error closing WebSocket sender (connection likely already closed)",
+                    );
+                }
                 break;
             }
             Command::Send(response) => {
@@ -284,12 +322,7 @@ async fn handle_text_message(
 ) {
     debug!(%connection_id, %message, "Received text message");
     let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned() else {
-        error!(%connection_id, "Unexpected state, client_id not found in client state map");
-        return;
-    };
-
-    if state.connections.read().await.get(&connection_id).is_none() {
-        error!(%connection_id, "Unexpected state, client_id not found in client state map");
+        error!(%connection_id, "Connection not found in state map");
         return;
     };
 
@@ -413,3 +446,9 @@ macro_rules! mount_method {
 pub(crate) use mount_method;
 
 use crate::config::ServerConfig;
+
+/// WebSocket command channel buffer size
+///
+/// This controls how many WebSocket commands can be queued in the channel before
+/// the sender blocks. Should match SSE's COMMAND_CHANNEL_BUFFER_SIZE for consistency.
+const WS_COMMAND_CHANNEL_BUFFER_SIZE: usize = 32;

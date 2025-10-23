@@ -64,7 +64,7 @@ impl Actor for NodeManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         let node_client = self.node_client.clone();
 
-        let contexts = self.context_client.get_contexts(None);
+        let contexts = self.context_client.get_context_ids(None);
 
         let _ignored = ctx.spawn(
             async move {

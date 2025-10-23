@@ -167,7 +167,7 @@ impl SyncManager {
 
             let contexts = requested_ctx
                 .is_none()
-                .then(|| self.context_client.get_contexts(None));
+                .then(|| self.context_client.get_context_ids(None));
 
             let contexts = stream::iter(requested_ctx)
                 .map(Ok)
@@ -359,7 +359,9 @@ impl SyncManager {
             bail!("application not found: {}", context.application_id);
         };
 
-        let identities = self.context_client.context_members(&context.id, Some(true));
+        let identities = self
+            .context_client
+            .get_context_members(&context.id, Some(true));
 
         let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
             .await
@@ -458,7 +460,9 @@ impl SyncManager {
 
         // todo! prevent initiating sync once we are already syncing
 
-        let identities = self.context_client.context_members(&context.id, Some(true));
+        let identities = self
+            .context_client
+            .get_context_members(&context.id, Some(true));
 
         let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
             .await

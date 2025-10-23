@@ -10,7 +10,7 @@ publish = true
 
 [dependencies]
 async-trait = "0.1"
-axum = { workspace = true, features = ["multipart", "ws"] }
+axum = { workspace = true, features = ["multipart", "ws", "tokio"] }
 url = "2.5"
 eyre.workspace = true
 futures-util.workspace = true
@@ -24,6 +24,7 @@ rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-p
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tokio-util.workspace = true
 tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs", "trace"] }

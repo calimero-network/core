@@ -7,6 +7,7 @@ mod application_install;
 mod context_create;
 mod context_create_alias;
 mod context_invite_join;
+mod context_invite_join_open;
 mod get_proposals;
 mod jsonrpc_call;
 mod verify_external_state;
@@ -16,6 +17,7 @@ use application_install::ApplicationInstallStep;
 use context_create::ContextCreateStep;
 use context_create_alias::ContextCreateAliasStep;
 use context_invite_join::ContextInviteJoinStep;
+use context_invite_join_open::ContextInviteJoinOpenStep;
 use get_proposals::GetProposalsStep;
 use jsonrpc_call::CallStep;
 use verify_external_state::VerifyExternalStateStep;
@@ -35,6 +37,7 @@ pub enum TestStep {
     ContextCreate(ContextCreateStep),
     ContextCreateAlias(ContextCreateAliasStep),
     ContextInviteJoin(ContextInviteJoinStep),
+    ContextInviteJoinOpen(ContextInviteJoinOpenStep),
     Call(CallStep),
     Wait(WaitStep),
     VerifyExternalState(VerifyExternalStateStep),
@@ -48,6 +51,7 @@ impl Test for TestStep {
             Self::ContextCreate(step) => step.display_name(),
             Self::ContextCreateAlias(step) => step.display_name(),
             Self::ContextInviteJoin(step) => step.display_name(),
+            Self::ContextInviteJoinOpen(step) => step.display_name(),
             Self::Call(step) => step.display_name(),
             Self::Wait(step) => step.display_name(),
             Self::VerifyExternalState(step) => step.display_name(),
@@ -61,6 +65,7 @@ impl Test for TestStep {
             Self::ContextCreate(step) => step.run_assert(ctx).await,
             Self::ContextCreateAlias(step) => step.run_assert(ctx).await,
             Self::ContextInviteJoin(step) => step.run_assert(ctx).await,
+            Self::ContextInviteJoinOpen(step) => step.run_assert(ctx).await,
             Self::Call(step) => step.run_assert(ctx).await,
             Self::Wait(step) => step.run_assert(ctx).await,
             Self::VerifyExternalState(step) => step.run_assert(ctx).await,

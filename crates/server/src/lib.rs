@@ -24,6 +24,7 @@ pub mod config;
 pub mod jsonrpc;
 mod metrics;
 pub mod registry;
+pub mod sse;
 pub mod ws;
 
 #[derive(Debug)]
@@ -122,6 +123,11 @@ pub async fn start(
     if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
         app = app.route(&path, handler);
 
+        serviced = true;
+    }
+
+    if let Some((path, router)) = sse::service(&config, node_client.clone(), datastore.clone()) {
+        app = app.nest(&path, router);
         serviced = true;
     }
 
