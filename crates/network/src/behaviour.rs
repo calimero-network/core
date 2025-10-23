@@ -1,12 +1,15 @@
 use std::time::Duration;
 
+use crate::store::KadStore;
+
 use calimero_network_primitives::config::NetworkConfig;
 use eyre::WrapErr;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
-    autonat, dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, tcp, tls,
-    yamux, StreamProtocol, SwarmBuilder,
+    autonat, dcutr, gossipsub, identify, kad,
+    kad::{store::RecordStore, Quorum},
+    mdns, noise, ping, relay, rendezvous, tcp, tls, yamux, StreamProtocol, SwarmBuilder,
 };
 use multiaddr::Protocol;
 use tracing::warn;
@@ -20,7 +23,7 @@ pub struct Behaviour {
     pub dcutr: dcutr::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub identify: identify::Behaviour,
-    pub kad: kad::Behaviour<kad::store::MemoryStore>,
+    pub kad: kad::Behaviour<KadStore>,
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub ping: ping::Behaviour,
     pub relay: relay::client::Behaviour,
@@ -29,7 +32,10 @@ pub struct Behaviour {
 }
 
 impl Behaviour {
-    pub fn build_swarm(config: &NetworkConfig) -> eyre::Result<Swarm<Self>> {
+    pub fn build_swarm(
+        config: &NetworkConfig,
+        db: calimero_store::Store,
+    ) -> eyre::Result<Swarm<Self>> {
         let peer_id = config.identity.public().to_peer_id();
 
         let bootstrap_peers = {
@@ -45,6 +51,10 @@ impl Behaviour {
 
             peers
         };
+
+        let kad_store = KadStore::new(peer_id, db)?;
+        let reannounce_provided: Vec<_> = kad_store.provided().map(|c| c.into_owned()).collect();
+        let reannounce_records: Vec<_> = kad_store.records().map(|c| c.into_owned()).collect();
 
         let mut swarm = SwarmBuilder::with_existing_identity(config.identity.clone())
             .with_tokio()
@@ -81,11 +91,7 @@ impl Behaviour {
                     kad: {
                         let kad_config = kad::Config::new(CALIMERO_KAD_PROTO_NAME);
 
-                        let mut kad = kad::Behaviour::with_config(
-                            peer_id,
-                            kad::store::MemoryStore::new(peer_id),
-                            kad_config,
-                        );
+                        let mut kad = kad::Behaviour::with_config(peer_id, kad_store, kad_config);
 
                         kad.set_mode(Some(kad::Mode::Server));
 
@@ -113,6 +119,27 @@ impl Behaviour {
             })?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30)))
             .build();
+
+        // Reannounce.
+        let now = std::time::Instant::now();
+        {
+            let kad = &mut swarm.behaviour_mut().kad;
+
+            for pr in reannounce_provided
+                .into_iter()
+                .filter(|p| !p.is_expired(now))
+            {
+                let _ = kad.start_providing(pr.key);
+            }
+
+            for rec in reannounce_records {
+                if rec.is_expired(now) {
+                    continue;
+                }
+
+                let _ = kad.put_record(rec, Quorum::One);
+            }
+        }
 
         for addr in &config.swarm.listen {
             let _ignored = swarm
