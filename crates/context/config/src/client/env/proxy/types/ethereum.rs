@@ -164,7 +164,7 @@ impl TryFrom<SolProposalAction> for ProposalAction {
     fn try_from(action: SolProposalAction) -> Result<Self, Self::Error> {
         let res = match action.kind {
             SolProposalActionKind::ExternalFunctionCall => {
-                let data: ExternalFunctionCallData = SolValue::abi_decode(&action.data, false)
+                let data: ExternalFunctionCallData = SolValue::abi_decode(&action.data)
                     .wrap_err("Invalid external call data")?;
 
                 ProposalAction::ExternalFunctionCall {
@@ -179,7 +179,7 @@ impl TryFrom<SolProposalAction> for ProposalAction {
             }
             SolProposalActionKind::Transfer => {
                 let data: TransferData =
-                    SolValue::abi_decode(&action.data, false).wrap_err("Invalid transfer data")?;
+                    SolValue::abi_decode(&action.data).wrap_err("Invalid transfer data")?;
                 ProposalAction::Transfer {
                     receiver_id: format!("{:?}", data.recipient),
                     amount: data
@@ -189,19 +189,19 @@ impl TryFrom<SolProposalAction> for ProposalAction {
                 }
             }
             SolProposalActionKind::SetNumApprovals => {
-                let num_approvals: u32 = SolValue::abi_decode(&action.data, false)
+                let num_approvals: u32 = SolValue::abi_decode(&action.data)
                     .wrap_err("Invalid num approvals data")?;
                 ProposalAction::SetNumApprovals { num_approvals }
             }
             SolProposalActionKind::SetActiveProposalsLimit => {
-                let active_proposals_limit: u32 = SolValue::abi_decode(&action.data, false)
+                let active_proposals_limit: u32 = SolValue::abi_decode(&action.data)
                     .wrap_err("Invalid proposals limit data")?;
                 ProposalAction::SetActiveProposalsLimit {
                     active_proposals_limit,
                 }
             }
             SolProposalActionKind::SetContextValue => {
-                let data: ContextValueData = SolValue::abi_decode(&action.data, false)
+                let data: ContextValueData = SolValue::abi_decode(&action.data)
                     .wrap_err("Invalid context value data")?;
                 ProposalAction::SetContextValue {
                     key: Vec::from(data.key).into_boxed_slice(),
@@ -209,7 +209,7 @@ impl TryFrom<SolProposalAction> for ProposalAction {
                 }
             }
             SolProposalActionKind::DeleteProposal => {
-                let proposal_id: [u8; 32] = SolValue::abi_decode(&action.data, false)
+                let proposal_id: [u8; 32] = SolValue::abi_decode(&action.data)
                     .wrap_err("Invalid proposal id data")?;
                 ProposalAction::DeleteProposal {
                     proposal_id: proposal_id.rt().wrap_err("Invalid proposal id")?,

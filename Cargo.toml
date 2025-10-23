@@ -70,8 +70,8 @@ members = [
 
 [workspace.dependencies]
 actix = "0.13.5"
-alloy = "0.11.1"
-alloy-sol-types = "0.8.22"
+alloy = "1.0"
+alloy-sol-types = "1.4"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
 async-trait = "0.1.89"
