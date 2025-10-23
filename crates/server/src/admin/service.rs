@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -27,7 +27,7 @@ use super::handlers::{alias, blob};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
-    uninstall_application, v2_install_from_manifest, v2_update_from_path,
+    uninstall_application,
 };
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_identities, get_context_storage,
@@ -35,6 +35,10 @@ use crate::admin::handlers::context::{
 };
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::peers::get_peers_count_handler;
+use crate::admin::handlers::registry::{
+    install_app_from_registry, list_apps_from_registry, list_registries, remove_registry,
+    setup_registry, uninstall_app_from_registry, update_app_from_registry,
+};
 use crate::config::ServerConfig;
 use crate::AdminState;
 
@@ -192,19 +196,13 @@ pub(crate) fn setup(
         )
         // Alias management
         .nest("/alias", alias::service())
-        // V2 Application management
-        .nest(
-            "/v2",
-            Router::new()
-                .route(
-                    "/applications/install-from-manifest",
-                    post(v2_install_from_manifest::handler),
-                )
-                .route(
-                    "/applications/:application_id/from-path",
-                    put(v2_update_from_path::handler),
-                ),
-        )
+        // Registry management
+        .route("/registries", post(setup_registry::handler).get(list_registries::handler))
+        .route("/registries/:name", delete(remove_registry::handler))
+        .route("/registries/:name/apps", get(list_apps_from_registry::handler))
+        .route("/registries/:name/apps/install", post(install_app_from_registry::handler))
+        .route("/registries/:name/apps/update", put(update_app_from_registry::handler))
+        .route("/registries/:name/apps/uninstall", delete(uninstall_app_from_registry::handler))
         .route("/health", get(health_check_handler))
         // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))

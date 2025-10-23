@@ -9,7 +9,9 @@ description.workspace = true
 publish = true
 
 [dependencies]
+async-trait = "0.1"
 axum = { workspace = true, features = ["multipart", "ws"] }
+url = "2.5"
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
@@ -27,6 +29,7 @@ tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs", "trace"] }
 tower-sessions = { workspace = true }
 tracing.workspace = true
+toml = "0.8"
 
 calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true

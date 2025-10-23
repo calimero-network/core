@@ -1,0 +1,16 @@
+[[registries]]
+name = "local-dev"
+registryType = "local"
+
+[registries.config.local]
+port = 8082
+data_dir = "/tmp/registry-data"
+
+[[registries]]
+name = "remote-prod"
+registryType = "remote"
+
+[registries.config.remote]
+base_url = "https://registry.example.com/"
+timeout_ms = 30000
+auth_token = "optional-token"

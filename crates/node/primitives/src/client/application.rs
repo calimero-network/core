@@ -286,7 +286,7 @@ impl NodeClient {
         } else {
             let url = mirrors
                 .into_iter()
-                .find(|u| u.starts_with("https://"))
+                .find(|u| u.starts_with("https://") || u.starts_with("http://localhost"))
                 .map(|s| s.to_string())
                 .or_else(|| cid.map(|c| format!("https://ipfs.io/ipfs/{c}")))
                 .ok_or_eyre("no artifact path, url or cid available")?;
