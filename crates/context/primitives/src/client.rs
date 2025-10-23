@@ -714,6 +714,9 @@ impl ContextClient {
 
     /// Stores a new state delta (a chunk of state changes) for a member at a specific height.
     ///
+    /// This function also implements automatic pruning to prevent unbounded storage growth.
+    /// Only the last 256 deltas per member are retained; older deltas are automatically deleted.
+    ///
     /// # Arguments
     ///
     /// * `context_id` - The context ID for the delta.
@@ -731,12 +734,24 @@ impl ContextClient {
         height: &NonZeroUsize,
         delta: &[u8],
     ) -> eyre::Result<()> {
+        const MAX_DELTAS_PER_MEMBER: usize = 256;
+
         let mut handle = self.datastore.handle();
 
         handle.put(
             &key::ContextDelta::new(*context_id, *public_key, height.get()),
             &types::ContextDelta::Data(delta.into()),
         )?;
+
+        // Prune old deltas to prevent unbounded storage growth
+        // Keep only the last MAX_DELTAS_PER_MEMBER deltas
+        if height.get() > MAX_DELTAS_PER_MEMBER {
+            let old_height = height.get() - MAX_DELTAS_PER_MEMBER;
+            let old_key = key::ContextDelta::new(*context_id, *public_key, old_height);
+
+            // Ignore errors on delete - the delta may have already been pruned
+            let _ignored = handle.delete(&old_key);
+        }
 
         Ok(())
     }

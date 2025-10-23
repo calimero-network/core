@@ -618,10 +618,37 @@ async fn handle_state_delta(
         return Ok(());
     }
 
-    // Perform state sync since root hash doesn't match
+    // Perform sync if we detect we're too far behind
+    // If gap > 128, the sync process will automatically use state sync instead of delta sync
+    const MAX_DELTA_GAP_FOR_DELTA_SYNC: usize = 128;
+
     if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
-        if known_height >= height || height.get() - known_height.get() > 1 {
-            debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
+        let gap = if height.get() > known_height.get() {
+            height.get() - known_height.get()
+        } else {
+            0
+        };
+
+        if known_height >= height || gap > MAX_DELTA_GAP_FOR_DELTA_SYNC {
+            debug!(
+                %author_id,
+                %context_id,
+                gap=%gap,
+                "Received state delta with large gap (> {}), initiating sync",
+                MAX_DELTA_GAP_FOR_DELTA_SYNC
+            );
+
+            node_client.sync(Some(&context_id), Some(&source)).await?;
+            return Ok(());
+        }
+
+        if gap > 1 {
+            debug!(
+                %author_id,
+                %context_id,
+                gap=%gap,
+                "Non-sequential delta received (gap > 1), initiating sync"
+            );
 
             node_client.sync(Some(&context_id), Some(&source)).await?;
             return Ok(());
