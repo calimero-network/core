@@ -1,5 +1,4 @@
 use std::collections::{hash_map, HashMap};
-use std::num::NonZeroUsize;
 use std::pin::pin;
 
 use calimero_context_primitives::client::ContextClient;
@@ -351,8 +350,6 @@ impl SyncManager {
         context_id: ContextId,
         chosen_peer: PeerId,
     ) -> eyre::Result<()> {
-        const MAX_DELTA_GAP_FOR_DELTA_SYNC: usize = 128;
-
         let mut context = self
             .context_client
             .sync_context_config(context_id, None)
@@ -389,83 +386,23 @@ impl SyncManager {
             .await?;
         }
 
-        // Determine whether to use delta sync or state sync
-        // Check if we're too far behind for delta sync to be efficient
-        let should_use_state_sync = self
-            .should_use_state_sync(&context, MAX_DELTA_GAP_FOR_DELTA_SYNC)
-            .await?;
-
-        if should_use_state_sync {
-            info!(
-                context_id=%context.id,
-                "Delta gap exceeds {}, using state sync instead of delta sync",
-                MAX_DELTA_GAP_FOR_DELTA_SYNC
-            );
-            self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
-                .await
-        } else {
-            // Try delta sync first, fall back to state sync on failure
-            match self
-                .initiate_delta_sync_process(&mut context, our_identity, &mut stream)
-                .await
-            {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    warn!(
-                        context_id=%context.id,
-                        error=%e,
-                        "Delta sync failed, falling back to state sync"
-                    );
-                    self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
-                        .await
-                }
+        // Try delta sync first, fall back to state sync on failure
+        // This is simpler and more efficient than checking all members upfront
+        match self
+            .initiate_delta_sync_process(&mut context, our_identity, &mut stream)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                warn!(
+                    context_id=%context.id,
+                    error=%e,
+                    "Delta sync failed, falling back to state sync"
+                );
+                self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
+                    .await
             }
         }
-    }
-
-    async fn should_use_state_sync(
-        &self,
-        context: &calimero_primitives::context::Context,
-        max_gap: usize,
-    ) -> eyre::Result<bool> {
-        // Check all members to see if any have a gap larger than max_gap
-        let members = self.context_client.get_context_members(&context.id, None);
-        let members = pin!(members).try_collect::<Vec<_>>().await?;
-
-        for (member, _) in members {
-            if let Some(height) = self.context_client.get_delta_height(&context.id, &member)? {
-                // If we have a height tracked but no recent deltas, we might be missing too many
-                // This is a heuristic - if height is suspiciously high, we're probably missing deltas
-                if height.get() > max_gap {
-                    // Check if we actually have deltas from (height - max_gap) onwards
-                    // If we're missing them, we should use state sync
-                    let check_height = NonZeroUsize::new(height.get().saturating_sub(max_gap))
-                        .unwrap_or(NonZeroUsize::MIN);
-
-                    let deltas = self.context_client.get_state_deltas(
-                        &context.id,
-                        Some(&member),
-                        check_height,
-                    );
-
-                    let count = pin!(deltas).count().await;
-
-                    // If we have fewer deltas than expected, use state sync
-                    if count < max_gap.min(height.get()) {
-                        debug!(
-                            context_id=%context.id,
-                            member=%member,
-                            expected_deltas=%max_gap.min(height.get()),
-                            found_deltas=%count,
-                            "Insufficient deltas available, will use state sync"
-                        );
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-
-        Ok(false)
     }
 
     pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
