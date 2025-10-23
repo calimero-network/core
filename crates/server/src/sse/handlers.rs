@@ -33,18 +33,18 @@
 //! - Not suitable for guaranteed delivery use cases
 //! - Best for real-time notifications where missing some is acceptable
 
-use axum::extract::Request as AxumRequest;
+use axum::extract::{Path, Request as AxumRequest};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::Extension;
 use axum::Json;
 use calimero_server_primitives::sse::{
-    Command, ConnectionId, Request, RequestPayload, Response, ResponseBody, ResponseBodyError,
-    ServerResponseError, SseEvent,
+    Command, ConnectionId, Request, RequestPayload, Response as SseResponse, ResponseBody,
+    ResponseBodyError, ServerResponseError, SseEvent,
 };
 use core::convert::Infallible;
-use futures_util::stream::{self as stream, Stream};
+use futures_util::stream;
 use futures_util::StreamExt;
 use rand::random;
 use serde_json::to_string as to_json_string;
@@ -71,7 +71,7 @@ pub async fn handle_subscription(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(Response {
+                Json(SseResponse {
                     body: ResponseBody::Error(ResponseBodyError::HandlerError(
                         "Invalid Session Id".into(),
                     )),
@@ -108,7 +108,7 @@ pub async fn handle_subscription(
 
                 (
                     StatusCode::OK,
-                    Json(Response {
+                    Json(SseResponse {
                         body: ResponseBody::Result(serde_json::json!({
                             "status": "subscribed",
                             "contexts": ctxs.context_ids,
@@ -118,7 +118,7 @@ pub async fn handle_subscription(
             } else {
                 (
                     StatusCode::NOT_FOUND,
-                    Json(Response {
+                    Json(SseResponse {
                         body: ResponseBody::Error(ResponseBodyError::HandlerError(
                             "Session not found. Please reconnect to SSE endpoint first.".into(),
                         )),
@@ -164,7 +164,7 @@ pub async fn handle_subscription(
                 // Clients can compare these to detect contexts they weren't subscribed to
                 (
                     StatusCode::OK,
-                    Json(Response {
+                    Json(SseResponse {
                         body: ResponseBody::Result(serde_json::json!({
                             "status": "unsubscribed",
                             "unsubscribed": unsubscribed,
@@ -175,7 +175,7 @@ pub async fn handle_subscription(
             } else {
                 (
                     StatusCode::NOT_FOUND,
-                    Json(Response {
+                    Json(SseResponse {
                         body: ResponseBody::Error(ResponseBodyError::HandlerError(
                             "Session not found. Please reconnect to SSE endpoint first.".into(),
                         )),
@@ -185,7 +185,7 @@ pub async fn handle_subscription(
         }
         Err(err) => (
             StatusCode::BAD_REQUEST,
-            Json(Response {
+            Json(SseResponse {
                 body: ResponseBody::Error(ResponseBodyError::ServerError(
                     ServerResponseError::ParseError(err.to_string()),
                 )),
@@ -217,7 +217,7 @@ pub async fn handle_subscription(
 pub async fn sse_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     request: AxumRequest,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> impl IntoResponse {
     let headers = request.headers();
 
     // Check for Last-Event-ID header for reconnection
@@ -308,7 +308,75 @@ pub async fn sse_handler(
         debug!(%session_id, "New client session established");
     }
 
-    // Spawn event handler
+    // Convert commands to SSE events with event IDs
+    let event_counter = Arc::clone(&session_state.inner);
+    let command_stream = ReceiverStream::new(commands_receiver).then(move |command| {
+        let event_counter = Arc::clone(&event_counter);
+        async move {
+            let event_id = event_counter
+                .read()
+                .await
+                .event_counter
+                .fetch_add(1, Ordering::SeqCst);
+            let id_str = format!("{}-{}", session_id, event_id);
+
+            match command {
+                Command::Close(reason) => {
+                    // Send close as standard "message" type with metadata
+                    let close_data = serde_json::json!({
+                        "type": "close",
+                        "reason": reason
+                    });
+                    Ok::<Event, Infallible>(
+                        Event::default()
+                            .event(SseEvent::Message.as_str())
+                            .id(id_str)
+                            .data(close_data.to_string()),
+                    )
+                }
+                Command::Send(response) => match to_json_string(&response) {
+                    Ok(message) => Ok::<Event, Infallible>(
+                        Event::default()
+                            .event(SseEvent::Message.as_str())
+                            .id(id_str)
+                            .data(message),
+                    ),
+                    Err(err) => {
+                        error!("Failed to serialize SseResponse: {}", err);
+                        let error_data = serde_json::json!({
+                            "type": "error",
+                            "message": "Failed to serialize SseResponse"
+                        });
+                        Ok::<Event, Infallible>(
+                            Event::default()
+                                .event(SseEvent::Message.as_str())
+                                .id(id_str)
+                                .data(error_data.to_string()),
+                        )
+                    }
+                },
+            }
+        }
+    });
+
+    // Initial connection event with retry configuration
+    // Note: Sent as first event in stream, but background handlers spawn concurrently
+    // Uses standard "message" type so browsers' EventSource.onmessage catches it
+    let connect_data = serde_json::json!({
+        "type": "connect",
+        "session_id": session_id.to_string(),
+        "reconnect": is_reconnect
+    });
+    let initial_event = Event::default()
+        .event(SseEvent::Message.as_str()) // Standard browser-compatible event type
+        .id(format!("{}-0", session_id))
+        .retry(retry_timeout())
+        .data(connect_data.to_string());
+    let initial_stream = stream::once(async { Ok::<Event, Infallible>(initial_event) });
+
+    let stream = initial_stream.chain(command_stream);
+
+    // Spawn event handler (after stream setup to ensure command channel is ready)
     drop(tokio::spawn(handle_node_events(
         session_id,
         Arc::clone(&state),
@@ -322,46 +390,128 @@ pub async fn sse_handler(
         commands_sender.clone(),
     )));
 
-    // Convert commands to SSE events with event IDs
-    let event_counter = Arc::clone(&session_state.inner);
-    let command_stream = ReceiverStream::new(commands_receiver).map(move |command| {
-        let event_id = event_counter
-            .blocking_read()
-            .event_counter
-            .fetch_add(1, Ordering::SeqCst);
-        let id_str = format!("{}-{}", session_id, event_id);
+    // Build response with session ID in header for easy client access
+    let sse_response = Sse::new(stream).keep_alive(KeepAlive::default());
 
-        match command {
-            Command::Close(reason) => Ok(Event::default()
-                .event(SseEvent::Close.as_str())
-                .id(id_str)
-                .data(reason)),
-            Command::Send(response) => match to_json_string(&response) {
-                Ok(message) => Ok(Event::default()
-                    .event(SseEvent::Message.as_str())
-                    .id(id_str)
-                    .data(message)),
-                Err(err) => {
-                    error!("Failed to serialize SseResponse: {}", err);
-                    Ok(Event::default()
-                        .event(SseEvent::Error.as_str())
-                        .id(id_str)
-                        .data("Failed to serialize SseResponse"))
-                }
-            },
+    // Convert to Response and add custom headers
+    let mut response: AxumResponse = sse_response.into_response();
+    let headers = response.headers_mut();
+
+    // Add session ID header for easy client access (no need to parse from stream)
+    if let Ok(header_value) = session_id.to_string().try_into() {
+        drop(headers.insert("X-SSE-Session-ID", header_value));
+    }
+
+    // Add reconnect status header
+    drop(
+        headers.insert(
+            "X-SSE-Reconnect",
+            if is_reconnect { "true" } else { "false" }
+                .try_into()
+                .unwrap(),
+        ),
+    );
+
+    response
+}
+
+/// Get session information by ID
+///
+/// Returns session details including subscriptions and event counter.
+/// Useful for clients that missed the initial connect event or want to verify session state.
+pub async fn get_session_handler(
+    Extension(state): Extension<Arc<ServiceState>>,
+    Path(session_id): Path<ConnectionId>,
+) -> impl IntoResponse {
+    debug!(%session_id, "GET session info request");
+
+    // Check in-memory sessions first
+    let sessions = state.sessions.read().await;
+    if let Some(session) = sessions.get(&session_id) {
+        let inner = session.inner.read().await;
+
+        // Check if expired
+        if inner.is_expired() {
+            drop(inner);
+            drop(sessions);
+            return (
+                StatusCode::GONE,
+                Json(SseResponse {
+                    body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                        "Session expired".into(),
+                    )),
+                }),
+            );
         }
-    });
 
-    // Initial connection event with retry configuration
-    let initial_event = Event::default()
-        .event(SseEvent::Connect.as_str())
-        .id(format!("{}-0", session_id))
-        .retry(retry_timeout())
-        .data(&session_id.to_string());
-    let initial_stream = stream::once(async { Ok(initial_event) });
+        let subscriptions: Vec<_> = inner.subscriptions.iter().copied().collect();
+        let event_counter = inner.event_counter.load(Ordering::SeqCst);
+        drop(inner);
+        drop(sessions);
 
-    let stream = initial_stream.chain(command_stream);
-    Sse::new(stream).keep_alive(KeepAlive::default())
+        return (
+            StatusCode::OK,
+            Json(SseResponse {
+                body: ResponseBody::Result(serde_json::json!({
+                    "session_id": session_id,
+                    "subscriptions": subscriptions,
+                    "event_counter": event_counter,
+                    "status": "active"
+                })),
+            }),
+        );
+    }
+    drop(sessions);
+
+    // Try to load from persistent storage
+    match load_session(&state.store, session_id) {
+        Ok(Some(persisted_data)) => {
+            // Check if expired
+            use super::session::now_secs;
+            if now_secs() - persisted_data.last_activity > SESSION_EXPIRY_SECS {
+                (
+                    StatusCode::GONE,
+                    Json(SseResponse {
+                        body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                            "Session expired".into(),
+                        )),
+                    }),
+                )
+            } else {
+                let subscriptions: Vec<_> = persisted_data.subscriptions.iter().copied().collect();
+                (
+                    StatusCode::OK,
+                    Json(SseResponse {
+                        body: ResponseBody::Result(serde_json::json!({
+                            "session_id": session_id,
+                            "subscriptions": subscriptions,
+                            "event_counter": persisted_data.event_counter,
+                            "status": "persisted"
+                        })),
+                    }),
+                )
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(SseResponse {
+                body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                    "Session not found".into(),
+                )),
+            }),
+        ),
+        Err(err) => {
+            error!(%session_id, %err, "Failed to load session from storage");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SseResponse {
+                    body: ResponseBody::Error(ResponseBodyError::ServerError(
+                        ServerResponseError::InternalError { err: Some(err) },
+                    )),
+                }),
+            )
+        }
+    }
 }
 
 /// Create a new session with persistent storage
@@ -378,7 +528,7 @@ async fn create_new_session(state: &ServiceState) -> (ConnectionId, SessionState
                 let _ = entry.insert(session_state.clone());
 
                 // Persist new session to store
-                let persisted = session_state.inner.blocking_read().to_persisted();
+                let persisted = session_state.inner.read().await.to_persisted();
                 drop(sessions);
 
                 let mut store = state.store.clone();
