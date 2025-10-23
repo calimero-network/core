@@ -175,7 +175,7 @@ impl Network {
 
         let bytes = self
             .provider
-            .call(&request)
+            .call(request)
             .block(BlockId::latest())
             .await
             .map_err(|e| EthereumError::Custom {
@@ -248,7 +248,7 @@ impl Network {
 
         let return_data = self
             .provider
-            .call(&request)
+            .call(request)
             .block((block_number - 1).into())
             .await
             .map_err(|e| EthereumError::Custom {
