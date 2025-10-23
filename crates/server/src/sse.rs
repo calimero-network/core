@@ -52,7 +52,7 @@ use crate::config::ServerConfig;
 
 // Re-export public types
 pub use config::SseConfig;
-use handlers::{handle_subscription, sse_handler};
+use handlers::{get_session_handler, handle_subscription, sse_handler};
 use state::ServiceState;
 
 /// Initialize SSE service
@@ -86,6 +86,7 @@ pub fn service(
 
     let router = Router::new()
         .route("/", get(sse_handler))
+        .route("/session/:session_id", get(get_session_handler))
         .route("/subscription", post(handle_subscription))
         .layer(Extension(state));
 
