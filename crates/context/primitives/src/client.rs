@@ -22,6 +22,7 @@ use futures_util::Stream;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
+use tracing::{debug, trace};
 
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -734,8 +735,6 @@ impl ContextClient {
         height: &NonZeroUsize,
         delta: &[u8],
     ) -> eyre::Result<()> {
-        const MAX_DELTAS_PER_MEMBER: usize = 256;
-
         let mut handle = self.datastore.handle();
 
         handle.put(
@@ -744,16 +743,58 @@ impl ContextClient {
         )?;
 
         // Prune old deltas to prevent unbounded storage growth
-        // Keep only the last MAX_DELTAS_PER_MEMBER deltas
-        if height.get() > MAX_DELTAS_PER_MEMBER {
-            let old_height = height.get() - MAX_DELTAS_PER_MEMBER;
-            let old_key = key::ContextDelta::new(*context_id, *public_key, old_height);
-
-            // Ignore errors on delete - the delta may have already been pruned
-            let _ignored = handle.delete(&old_key);
-        }
+        self.prune_state_delta(context_id, public_key, height);
 
         Ok(())
+    }
+
+    /// Prunes old state deltas to prevent unbounded storage growth.
+    ///
+    /// Keeps only the last 256 deltas per member. Older deltas are automatically deleted.
+    /// Deletion errors are logged but do not cause the operation to fail, as the delta
+    /// may have already been pruned or deleted.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The context ID for the delta.
+    /// * `public_key` - The member whose deltas are being pruned.
+    /// * `current_height` - The current height to prune from.
+    fn prune_state_delta(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        current_height: &NonZeroUsize,
+    ) {
+        const MAX_DELTAS_PER_MEMBER: usize = 256;
+
+        if current_height.get() <= MAX_DELTAS_PER_MEMBER {
+            return;
+        }
+
+        let old_height = current_height.get() - MAX_DELTAS_PER_MEMBER;
+        let old_key = key::ContextDelta::new(*context_id, *public_key, old_height);
+
+        let mut handle = self.datastore.handle();
+
+        if let Err(err) = handle.delete(&old_key) {
+            // Log the error but don't fail - delta may have already been pruned
+            debug!(
+                context_id=%context_id,
+                public_key=%public_key,
+                pruned_height=%old_height,
+                current_height=%current_height.get(),
+                error=%err,
+                "Failed to prune old state delta (may have already been pruned)"
+            );
+        } else {
+            trace!(
+                context_id=%context_id,
+                public_key=%public_key,
+                pruned_height=%old_height,
+                current_height=%current_height.get(),
+                "Successfully pruned old state delta"
+            );
+        }
     }
 
     /// Returns a stream of state deltas, allowing nodes to synchronize their state.
