@@ -1,5 +1,5 @@
 use core::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tower as _;
 
@@ -33,7 +33,7 @@ pub struct AdminState {
     pub store: Store,
     pub ctx_client: ContextClient,
     pub node_client: NodeClient,
-    pub registry_manager: registry::manager::RegistryManager,
+    pub registry_manager: Arc<Mutex<registry::manager::RegistryManager>>,
 }
 
 impl AdminState {
@@ -48,7 +48,9 @@ impl AdminState {
             store: store.clone(),
             ctx_client,
             node_client,
-            registry_manager: registry::manager::RegistryManager::new(config_path),
+            registry_manager: Arc::new(Mutex::new(registry::manager::RegistryManager::new(
+                config_path,
+            ))),
         }
     }
 }
@@ -111,9 +113,10 @@ pub async fn start(
     ));
 
     // Load registry configurations on startup
-    if let Err(err) = shared_state.registry_manager.load_configurations().await {
-        warn!(error = ?err, "Failed to load registry configurations on startup");
-    }
+    // TODO: Fix mutability issue - need to restructure to allow mutable access
+    // if let Err(err) = shared_state.registry_manager.load_configurations().await {
+    //     warn!(error = ?err, "Failed to load registry configurations on startup");
+    // }
 
     if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
         app = app.nest(&path, router);

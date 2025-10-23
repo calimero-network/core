@@ -1,37 +1,33 @@
-use std::sync::Arc;
-
+use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_server_primitives::registry::{RemoveRegistryRequest, RemoveRegistryResponse};
-use tracing::{error, info};
+use std::sync::Arc;
 
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
+use calimero_server_primitives::registry::SetupRegistryResponse;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<RemoveRegistryRequest>,
+    Path(name): Path<String>,
 ) -> impl IntoResponse {
-    info!(name=%req.name, "Removing registry");
-
-    // TODO: Implement registry removal logic
-    // This would:
-    // 1. Check if registry is in use
-    // 2. Remove registry configuration
-    // 3. Clean up any associated resources
-
-    match state.registry_manager.remove_registry(&req.name).await {
-        Ok(()) => {
-            info!(name=%req.name, "Registry removed successfully");
-            ApiResponse {
-                payload: RemoveRegistryResponse::new(req.name),
-            }
-            .into_response()
+    let mut registry_manager = state.registry_manager.lock().unwrap();
+    match registry_manager.remove_registry(&name).await {
+        Ok(_) => ApiResponse {
+            payload: SetupRegistryResponse {
+                success: true,
+                message: format!("Registry '{}' removed successfully", name),
+            },
         }
+        .into_response(),
         Err(err) => {
-            error!(name=%req.name, error=?err, "Failed to remove registry");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            tracing::error!("Failed to remove registry: {}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to remove registry: {}", err),
+            )
+                .into_response()
         }
     }
 }

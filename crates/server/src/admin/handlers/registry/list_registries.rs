@@ -1,37 +1,32 @@
-use std::sync::Arc;
-
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Extension;
-use calimero_server_primitives::registry::ListRegistriesResponse;
-use tracing::{error, info};
+use axum::{Extension, Json};
+use std::sync::Arc;
 
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
+use calimero_server_primitives::registry::{ListRegistriesResponse, RegistryInfo};
 
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-    info!("Listing registries");
+    let registry_manager = state.registry_manager.lock().unwrap();
+    let registry_names = registry_manager.list_registries().await;
 
-    // Get all configured registries
-    let registry_names = state.registry_manager.list_registries().await;
-    info!(count=%registry_names.len(), "Registries listed successfully");
-
-    // Convert registry names to RegistryInfo objects
-    let mut registry_infos = Vec::new();
-    for name in registry_names {
-        if let Some(config) = state.registry_manager.get_registry_config(&name).await {
-            let registry_info = calimero_server_primitives::registry::RegistryInfo {
-                name: config.name.clone(),
-                registry_type: config.registry_type,
-                status: "configured".to_string(),
-                config: config.config.clone(),
-            };
-            registry_infos.push(registry_info);
-        }
-    }
+    let registries: Vec<RegistryInfo> = registry_names
+        .into_iter()
+        .filter_map(|name| {
+            registry_manager
+                .get_registry_config(&name)
+                .map(|config| RegistryInfo {
+                    name: config.name.clone(),
+                    registry_type: config.registry_type.clone(),
+                    config: config.config.clone(),
+                    status: "active".to_string(),
+                })
+        })
+        .collect();
 
     ApiResponse {
-        payload: ListRegistriesResponse::new(registry_infos),
+        payload: ListRegistriesResponse { registries },
     }
     .into_response()
 }
