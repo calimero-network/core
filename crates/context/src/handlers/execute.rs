@@ -285,19 +285,49 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // NOTE: XCalls are executed locally on the current node after the main execution completes.
                     // This allows contexts to communicate by calling functions on other contexts.
                     for xcall in &outcome.xcalls {
+                        let target_context_id = ContextId::from(xcall.context_id);
+
                         info!(
                             %context_id,
-                            target_context = ?ContextId::from(xcall.context_id),
+                            target_context = ?target_context_id,
                             function = %xcall.function,
                             params_len = xcall.params.len(),
                             "Processing cross-context call"
                         );
 
-                        // Execute the cross-context call
+                        // Find an owned member of the target context to execute as
+                        // We need to use a member that has permissions on the target context
+                        use futures_util::TryStreamExt;
+                        let members: Vec<_> = context_client
+                            .get_context_members(&target_context_id, Some(true))
+                            .try_collect()
+                            .await
+                            .unwrap_or_default();
+                        
+                        let Some((target_executor, _is_owned)) = members.first() else {
+                            error!(
+                                %context_id,
+                                target_context = ?target_context_id,
+                                function = %xcall.function,
+                                "No owned members found for target context"
+                            );
+                            continue;
+                        };
+                        
+                        let target_executor = *target_executor;
+
+                        info!(
+                            %context_id,
+                            target_context = ?target_context_id,
+                            target_executor = ?target_executor,
+                            "Found owned member for target context"
+                        );
+
+                        // Execute the cross-context call with the target context's member
                         let xcall_result = context_client
                             .execute(
-                                &ContextId::from(xcall.context_id),
-                                &executor,
+                                &target_context_id,
+                                &target_executor,
                                 xcall.function.clone(),
                                 xcall.params.clone(),
                                 vec![],
@@ -309,7 +339,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             Ok(_) => {
                                 info!(
                                     %context_id,
-                                    target_context = ?ContextId::from(xcall.context_id),
+                                    target_context = ?target_context_id,
                                     function = %xcall.function,
                                     "Cross-context call executed successfully"
                                 );
@@ -317,7 +347,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             Err(err) => {
                                 error!(
                                     %context_id,
-                                    target_context = ?ContextId::from(xcall.context_id),
+                                    target_context = ?target_context_id,
                                     function = %xcall.function,
                                     ?err,
                                     "Cross-context call failed"

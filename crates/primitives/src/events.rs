@@ -47,3 +47,11 @@ pub struct ExecutionEvent {
     pub data: Vec<u8>,
     pub handler: Option<String>,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionXCall {
+    pub target_context_id: ContextId,
+    pub function: String,
+    pub params: Vec<u8>,
+}

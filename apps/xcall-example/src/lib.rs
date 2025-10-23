@@ -45,21 +45,28 @@ impl XCallExample {
     /// Send a greeting to another context via cross-context call
     ///
     /// # Arguments
-    /// * `target_context` - The 32-byte ID of the context to send the greeting to
+    /// * `target_context` - The base58-encoded ID of the context to send the greeting to
     /// * `message` - The greeting message to send
     ///
     /// # Example
     /// ```json
     /// {
-    ///   "target_context": "0x1234...",
+    ///   "target_context": "AmxF5dVaqTTAWNbv4uDJhxdoQTEY1wfv6Ld8Gjbu6Zdk",
     ///   "message": "Hello from Context A!"
     /// }
     /// ```
-    pub fn send_greeting(&mut self, target_context: [u8; 32], message: String) -> app::Result<()> {
+    pub fn send_greeting(&mut self, target_context: String, message: String) -> app::Result<()> {
+        // Decode the base58 context ID to bytes
+        let target_context_bytes: [u8; 32] = bs58::decode(&target_context)
+            .into_vec()
+            .map_err(|e| calimero_sdk::types::Error::msg(format!("Failed to decode context ID: {}", e)))?
+            .try_into()
+            .map_err(|_| calimero_sdk::types::Error::msg("Context ID must be exactly 32 bytes"))?;
+        
         let current_context = calimero_sdk::env::context_id();
         
         app::log!(
-            "Sending greeting from context {:?} to context {:?}: {}",
+            "Sending greeting from context {:?} to context {}: {}",
             current_context,
             target_context,
             message
@@ -82,11 +89,11 @@ impl XCallExample {
         // Make the cross-context call
         // This will execute the "receive_greeting" function on the target context
         // after this execution completes
-        calimero_sdk::env::xcall(&target_context, "receive_greeting", &params);
+        calimero_sdk::env::xcall(&target_context_bytes, "receive_greeting", &params);
 
         // Emit an event to notify that a greeting was sent
         app::emit!(Event::GreetingSent {
-            to_context: target_context,
+            to_context: target_context_bytes,
             message: &message,
         });
 

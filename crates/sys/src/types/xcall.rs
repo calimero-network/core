@@ -13,4 +13,3 @@ pub struct XCall<'a> {
     function: Buffer<'a>,
     params: Buffer<'a>,
 }
-

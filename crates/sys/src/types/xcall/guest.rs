@@ -30,4 +30,3 @@ impl<'a> XCall<'a> {
         &self.params
     }
 }
-

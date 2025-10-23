@@ -519,6 +519,7 @@ dependencies = [
 name = "xcall-example"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "calimero-sdk",
  "calimero-storage",
  "calimero-wasm-abi",

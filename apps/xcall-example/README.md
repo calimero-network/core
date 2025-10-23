@@ -46,15 +46,29 @@ meroctl --node-name node1 context query \
 
 ## Testing
 
-This application includes an automated workflow for end-to-end testing. The workflow:
+This application includes an automated workflow for end-to-end testing across multiple nodes.
 
-1. Creates two separate contexts (Context A and Context B)
-2. Sends messages between contexts using xcall
-3. Verifies bi-directional communication
-4. Tests multiple messages
-5. Tests message clearing functionality
+### How the Test Works
 
-To run the automated tests:
+1. **Node 1** creates both Context A and Context B
+2. **Node 2** creates two identities and joins both contexts (so both nodes have both contexts)
+3. **Node 1** calls a method on Context A, which makes an xcall to Context B
+4. The xcall finds an owned member of Context B and executes the call locally (on Node 1)
+5. The execution on Context B produces a state delta
+6. The state delta is broadcast to the network
+7. **Node 2** receives and syncs the Context B state change
+8. Both nodes now have the same state for Context B
+
+### What the Workflow Tests
+
+- Cross-context calls (xcall) between contexts on the same node
+- State delta generation from xcall execution
+- State synchronization across nodes
+- Bi-directional xcalls (A→B and B→A)
+- Multiple xcalls
+- Message clearing functionality
+
+### Running the Tests
 
 ```bash
 # Build the application first
@@ -64,10 +78,8 @@ To run the automated tests:
 merobox bootstrap run workflows/xcall-example.yml
 ```
 
-The workflow demonstrates all key features:
-- Cross-context message sending
-- Message reception and storage
-- Message counting
-- Message retrieval
-- Message clearing
+The workflow verifies that:
+- XCalls execute locally and produce state deltas
+- State deltas from xcalls are broadcast and synced correctly
+- Both nodes maintain consistent state for all contexts
 
