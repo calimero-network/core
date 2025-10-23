@@ -327,26 +327,32 @@ pub async fn sse_handler(
                         "type": "close",
                         "reason": reason
                     });
-                    Ok::<Event, Infallible>(Event::default()
-                        .event(SseEvent::Message.as_str())
-                        .id(id_str)
-                        .data(close_data.to_string()))
+                    Ok::<Event, Infallible>(
+                        Event::default()
+                            .event(SseEvent::Message.as_str())
+                            .id(id_str)
+                            .data(close_data.to_string()),
+                    )
                 }
                 Command::Send(response) => match to_json_string(&response) {
-                    Ok(message) => Ok::<Event, Infallible>(Event::default()
-                        .event(SseEvent::Message.as_str())
-                        .id(id_str)
-                        .data(message)),
+                    Ok(message) => Ok::<Event, Infallible>(
+                        Event::default()
+                            .event(SseEvent::Message.as_str())
+                            .id(id_str)
+                            .data(message),
+                    ),
                     Err(err) => {
                         error!("Failed to serialize SseResponse: {}", err);
                         let error_data = serde_json::json!({
                             "type": "error",
                             "message": "Failed to serialize SseResponse"
                         });
-                        Ok::<Event, Infallible>(Event::default()
-                            .event(SseEvent::Message.as_str())
-                            .id(id_str)
-                            .data(error_data.to_string()))
+                        Ok::<Event, Infallible>(
+                            Event::default()
+                                .event(SseEvent::Message.as_str())
+                                .id(id_str)
+                                .data(error_data.to_string()),
+                        )
                     }
                 },
             }
@@ -386,22 +392,26 @@ pub async fn sse_handler(
 
     // Build response with session ID in header for easy client access
     let sse_response = Sse::new(stream).keep_alive(KeepAlive::default());
-    
+
     // Convert to Response and add custom headers
     let mut response: AxumResponse = sse_response.into_response();
     let headers = response.headers_mut();
-    
+
     // Add session ID header for easy client access (no need to parse from stream)
     if let Ok(header_value) = session_id.to_string().try_into() {
         drop(headers.insert("X-SSE-Session-ID", header_value));
     }
-    
+
     // Add reconnect status header
-    drop(headers.insert(
-        "X-SSE-Reconnect",
-        if is_reconnect { "true" } else { "false" }.try_into().unwrap(),
-    ));
-    
+    drop(
+        headers.insert(
+            "X-SSE-Reconnect",
+            if is_reconnect { "true" } else { "false" }
+                .try_into()
+                .unwrap(),
+        ),
+    );
+
     response
 }
 
