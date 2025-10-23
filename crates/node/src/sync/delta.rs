@@ -381,7 +381,7 @@ impl SyncManager {
                         }
 
                         let gap = their_height.get() - our_height.get();
-                        
+
                         if gap != 1 {
                             debug!(
                                 context_id=%context.id,
@@ -468,7 +468,7 @@ impl SyncManager {
 
                 if our_height < height {
                     let gap = height.get() - our_height.get();
-                    
+
                     debug!(
                         context_id=%context.id,
                         %member,
