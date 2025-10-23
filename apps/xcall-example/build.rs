@@ -27,4 +27,3 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", abi_path.display());
 }
-

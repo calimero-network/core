@@ -13,12 +13,28 @@ pub struct XCallExample {
     messages: Vector<Message>,
 }
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
-#[serde(crate = "calimero_sdk::serde")]
 pub struct Message {
     pub from_context: [u8; 32],
     pub content: String,
+}
+
+// Custom Serialize implementation to encode from_context as base58
+impl calimero_sdk::serde::Serialize for Message {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: calimero_sdk::serde::Serializer,
+    {
+        use calimero_sdk::serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Message", 2)?;
+        state.serialize_field(
+            "from_context",
+            &bs58::encode(&self.from_context).into_string(),
+        )?;
+        state.serialize_field("content", &self.content)?;
+        state.end()
+    }
 }
 
 #[app::event]
@@ -59,12 +75,14 @@ impl XCallExample {
         // Decode the base58 context ID to bytes
         let target_context_bytes: [u8; 32] = bs58::decode(&target_context)
             .into_vec()
-            .map_err(|e| calimero_sdk::types::Error::msg(format!("Failed to decode context ID: {}", e)))?
+            .map_err(|e| {
+                calimero_sdk::types::Error::msg(format!("Failed to decode context ID: {}", e))
+            })?
             .try_into()
             .map_err(|_| calimero_sdk::types::Error::msg("Context ID must be exactly 32 bytes"))?;
-        
+
         let current_context = calimero_sdk::env::context_id();
-        
+
         app::log!(
             "Sending greeting from context {:?} to context {}: {}",
             current_context,
@@ -109,13 +127,9 @@ impl XCallExample {
     /// # Arguments
     /// * `from_context` - The 32-byte ID of the context sending the greeting
     /// * `message` - The greeting message
-    pub fn receive_greeting(
-        &mut self,
-        from_context: [u8; 32],
-        message: String,
-    ) -> app::Result<()> {
+    pub fn receive_greeting(&mut self, from_context: [u8; 32], message: String) -> app::Result<()> {
         let current_context = calimero_sdk::env::context_id();
-        
+
         app::log!(
             "Context {:?} received greeting from {:?}: {}",
             current_context,
@@ -161,17 +175,16 @@ impl XCallExample {
     /// Get the number of received messages
     pub fn message_count(&self) -> app::Result<usize> {
         app::log!("Getting message count");
-        
+
         Ok(self.messages.len()? as usize)
     }
 
     /// Clear all received messages
     pub fn clear_messages(&mut self) -> app::Result<()> {
         app::log!("Clearing all messages");
-        
+
         self.messages.clear()?;
 
         Ok(())
     }
 }
-

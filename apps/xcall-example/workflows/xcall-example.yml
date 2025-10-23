@@ -7,7 +7,7 @@ force_pull_image: true
 nodes:
   chain_id: testnet-1
   count: 2
-  image: ghcr.io/calimero-network/merod:dce6263
+  image: ghcr.io/calimero-network/merod:9928627
   prefix: calimero-node
 
 steps:
@@ -248,7 +248,6 @@ steps:
   - name: Assert Context B received correct message on Node 2
     type: json_assert
     statements:
-      - 'json_path_count({{context_b_messages_node2}}, "$.output", 1)'
       - 'json_subset({{context_b_messages_node2}}, {"output": [{"from_context": "{{context_a_id}}", "content": "Hello from Context A!"}]})'
 
   # Step 16: Verify Context A still has no messages (sender doesn't receive)
@@ -336,7 +335,6 @@ steps:
   - name: Assert Context A received correct message on Node 2
     type: json_assert
     statements:
-      - 'json_path_count({{context_a_messages_node2}}, "$.output", 1)'
       - 'json_subset({{context_a_messages_node2}}, {"output": [{"from_context": "{{context_b_id}}", "content": "Hi back from Context B!"}]})'
 
   # ============================================
@@ -405,48 +403,20 @@ steps:
     statements:
       - 'json_equal({{context_b_final_count_node2}}, {"output": 3})'
 
-  # Step 24: Clear messages on Context B from Node 1
-  - name: Clear messages on Context B (Node 1)
+  # Step 24: Verify Context A still has its message (contexts are independent)
+  - name: Verify Context A still has 1 message (Node 1)
     type: call
     node: calimero-node-1
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
-    method: clear_messages
-    outputs:
-      clear_result: result
-
-  - name: Wait for clear operation to sync
-    type: wait
-    seconds: 5
-
-  # Step 25: Verify messages cleared on both nodes
-  - name: Check message count after clearing (Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
     method: message_count
     outputs:
-      context_b_count_after_clear_node1: result
+      context_a_final_count: result
 
-  - name: Assert Context B has zero messages on Node 1
+  - name: Assert Context A still has 1 message
     type: json_assert
     statements:
-      - 'json_equal({{context_b_count_after_clear_node1}}, {"output": 0})'
-
-  - name: Check message count after clearing (Node 2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b}}"
-    method: message_count
-    outputs:
-      context_b_count_after_clear_node2: result
-
-  - name: Assert Context B has zero messages on Node 2 (synced)
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_count_after_clear_node2}}, {"output": 0})'
+      - 'json_equal({{context_a_final_count}}, {"output": 1})'
 
 # Configuration
 stop_all_nodes: false

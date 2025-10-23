@@ -303,7 +303,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             .try_collect()
                             .await
                             .unwrap_or_default();
-                        
+
                         let Some((target_executor, _is_owned)) = members.first() else {
                             error!(
                                 %context_id,
@@ -313,7 +313,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             );
                             continue;
                         };
-                        
+
                         let target_executor = *target_executor;
 
                         info!(
