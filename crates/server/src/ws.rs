@@ -2,7 +2,9 @@ use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::pin::pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
@@ -28,7 +30,8 @@ use serde_json::{
 };
 use tokio::spawn;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info};
+use tokio::time::interval;
+use tracing::{debug, error, info, warn};
 
 mod subscribe;
 mod unsubscribe;
@@ -38,18 +41,50 @@ mod unsubscribe;
 pub struct WsConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+
+    /// Interval for server-initiated ping messages (in seconds)
+    /// Set to 0 to disable server pings (rely on client pings only)
+    #[serde(default = "default_ping_interval")]
+    pub ping_interval_secs: u64,
+
+    /// Timeout for pong responses (in seconds)
+    /// If no pong received within this time after ping, connection is closed
+    #[serde(default = "default_pong_timeout")]
+    pub pong_timeout_secs: u64,
+}
+
+const fn default_ping_interval() -> u64 {
+    30 // Send ping every 30 seconds
+}
+
+const fn default_pong_timeout() -> u64 {
+    10 // Expect pong within 10 seconds
 }
 
 impl WsConfig {
     #[must_use]
     pub const fn new(enabled: bool) -> Self {
-        Self { enabled }
+        Self {
+            enabled,
+            ping_interval_secs: default_ping_interval(),
+            pong_timeout_secs: default_pong_timeout(),
+        }
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
+    last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
+}
+
+impl Default for ConnectionStateInner {
+    fn default() -> Self {
+        Self {
+            subscriptions: HashSet::default(),
+            last_pong: AtomicU64::new(unix_timestamp()),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -61,14 +96,23 @@ pub(crate) struct ConnectionState {
 pub(crate) struct ServiceState {
     node_client: NodeClient,
     connections: RwLock<HashMap<ConnectionId, ConnectionState>>,
+    config: WsConfig,
+}
+
+/// Get current Unix timestamp in seconds
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("System time before UNIX epoch")
+        .as_secs()
 }
 
 pub(crate) fn service(
     config: &ServerConfig,
     node_client: NodeClient,
 ) -> Option<(String, MethodRouter)> {
-    let _config = match &config.websocket {
-        Some(config) if config.enabled => config,
+    let ws_config = match &config.websocket {
+        Some(config) if config.enabled => *config,
         _ => {
             info!("WebSocket server is disabled");
             return None;
@@ -91,6 +135,7 @@ pub(crate) fn service(
     let state = Arc::new(ServiceState {
         node_client,
         connections: RwLock::default(),
+        config: ws_config,
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -135,7 +180,7 @@ async fn ws_handler(
 
 async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
-    let (connection_id, _) = loop {
+    let (connection_id, connection_state) = loop {
         let connection_id = random();
         let mut connections = state.connections.write().await;
 
@@ -168,6 +213,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         socket_sender,
     )));
 
+    // Spawn health check task if ping interval is configured
+    if state.config.ping_interval_secs > 0 {
+        drop(spawn(handle_health_check(
+            connection_id,
+            Arc::clone(&state),
+            connection_state.clone(),
+        )));
+    }
+
     while let Some(message) = socket_receiver.next().await {
         let message = match message {
             Ok(message) => message,
@@ -188,14 +242,34 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
             Message::Binary(_) => {
                 debug!("Received binary message");
             }
-            Message::Ping(_) => {
-                debug!("Received ping message");
+            Message::Ping(payload) => {
+                debug!(%connection_id, "Received ping message, responding with pong");
+                // Respond to ping with pong to keep connection alive
+                if let Err(err) = connection_state.commands.send(Command::Pong(payload)).await {
+                    error!(%connection_id, %err, "Failed to send pong response");
+                }
             }
             Message::Pong(_) => {
-                debug!("Received pong message");
+                debug!(%connection_id, "Received pong message");
+                // Update last pong timestamp for health monitoring
+                connection_state
+                    .inner
+                    .read()
+                    .await
+                    .last_pong
+                    .store(unix_timestamp(), Ordering::Relaxed);
             }
-            Message::Close(_) => {
-                debug!("Received close message");
+            Message::Close(close_frame) => {
+                if let Some(frame) = close_frame {
+                    info!(
+                        %connection_id,
+                        code = frame.code,
+                        reason = %frame.reason,
+                        "Received close message from client"
+                    );
+                } else {
+                    info!(%connection_id, "Received close message from client (no close frame)");
+                }
                 break;
             }
         }
@@ -311,6 +385,70 @@ async fn handle_commands(
                     error!(%connection_id, %err, "Failed to send Message::Text");
                 }
             }
+            Command::Ping(payload) => {
+                if let Err(err) = socket_sender.send(Message::Ping(payload)).await {
+                    error!(%connection_id, %err, "Failed to send ws::Message::Ping");
+                }
+            }
+            Command::Pong(payload) => {
+                if let Err(err) = socket_sender.send(Message::Pong(payload)).await {
+                    error!(%connection_id, %err, "Failed to send ws::Message::Pong");
+                }
+            }
+        }
+    }
+}
+
+async fn handle_health_check(
+    connection_id: ConnectionId,
+    state: Arc<ServiceState>,
+    connection_state: ConnectionState,
+) {
+    let mut ping_timer = interval(Duration::from_secs(state.config.ping_interval_secs));
+    ping_timer.tick().await; // First tick completes immediately
+
+    loop {
+        ping_timer.tick().await;
+
+        // Check if connection still exists
+        if state.connections.read().await.get(&connection_id).is_none() {
+            debug!(%connection_id, "Connection no longer exists, stopping health check");
+            break;
+        }
+
+        // Check for pong timeout
+        let last_pong = connection_state
+            .inner
+            .read()
+            .await
+            .last_pong
+            .load(Ordering::Relaxed);
+        let elapsed = unix_timestamp().saturating_sub(last_pong);
+
+        if elapsed > state.config.ping_interval_secs + state.config.pong_timeout_secs {
+            warn!(
+                %connection_id,
+                elapsed_secs = elapsed,
+                timeout_secs = state.config.ping_interval_secs + state.config.pong_timeout_secs,
+                "Client failed to respond to ping, closing connection"
+            );
+
+            // Close connection due to timeout
+            if let Err(err) = connection_state
+                .commands
+                .send(Command::Close(1002, "Ping timeout".to_string()))
+                .await
+            {
+                error!(%connection_id, %err, "Failed to send close command");
+            }
+            break;
+        }
+
+        // Send ping to check if client is alive
+        debug!(%connection_id, "Sending ping to client");
+        if let Err(err) = connection_state.commands.send(Command::Ping(vec![])).await {
+            error!(%connection_id, %err, "Failed to send ping command");
+            break;
         }
     }
 }
