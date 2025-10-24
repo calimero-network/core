@@ -64,6 +64,7 @@ members = [
     "./apps/private_data",
     "./apps/blobs",
     "./apps/abi_conformance",
+    "./apps/xcall-example",
 
     "./e2e-tests",
     "./tools/calimero-abi",
