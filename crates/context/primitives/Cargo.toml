@@ -31,14 +31,7 @@ calimero-utils-actix.workspace = true
 
 [dev-dependencies]
 calimero-blobstore.workspace = true
-# Use version range instead of workspace = true to avoid circular dependency during publishing.
-# calimero-context depends on calimero-context-primitives, so we can't use exact workspace version here.
-# Local development still uses workspace version automatically; this only affects crates.io publishing.
-# TODO: Long-term fix - refactor to remove circular dependency. Options:
-#   1. Move tests requiring calimero-context to integration tests in calimero-context itself
-#   2. Create a separate calimero-context-test-utils crate
-#   3. Restructure code to break the dependency cycle
-calimero-context = { version = ">=0.9.0, <1.0.0" }
+calimero-context.workspace = true
 calimero-network-primitives.workspace = true
 
 actix-rt = "2.11"
