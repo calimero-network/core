@@ -66,6 +66,7 @@ members = [
 
     "./e2e-tests",
     "./tools/calimero-abi",
+    "./tools/merodb",
 ]
 
 [workspace.dependencies]
