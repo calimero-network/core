@@ -22,6 +22,21 @@ use crate::AdminState;
 
 //todo split it up into separate files
 
+/// Generate a new ProposalId
+fn generate_proposal_id() -> ProposalId {
+    use calimero_context_config::repr::ReprBytes;
+    use rand::RngCore;
+
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+
+    ReprBytes::from_bytes(|buf: &mut [u8; 32]| {
+        *buf = bytes;
+        Ok(buf.as_ref().len())
+    })
+    .expect("infallible conversion")
+}
+
 #[derive(Debug, Deserialize, Serialize, Copy, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionType {
@@ -328,12 +343,18 @@ pub async fn create_and_approve_proposal_handler(
 
     let res = async {
         let signer_pk = req.signer_id;
-        let Proposal { id, actions, .. } = req.proposal;
-        let proposal_id = id.rt().expect("infallible conversion");
+
+        // Generate ProposalId
+        let proposal_id = generate_proposal_id();
+        let proposal = Proposal {
+            id: Repr::new(proposal_id),
+            author_id: Repr::new(req.author_id),
+            actions: req.actions,
+        };
 
         external_client
             .proxy()
-            .propose(&signer_pk, &proposal_id, actions)
+            .propose(&signer_pk, &proposal_id, proposal.actions)
             .await?;
 
         external_client
@@ -347,7 +368,7 @@ pub async fn create_and_approve_proposal_handler(
             .await?;
 
         let data = Some(ProposalWithApprovals {
-            proposal_id: id,
+            proposal_id: Repr::new(proposal_id),
             num_approvals: approvals,
         });
 

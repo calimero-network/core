@@ -965,7 +965,8 @@ impl RevokePermissionResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CreateAndApproveProposalRequest {
     pub signer_id: PublicKey,
-    pub proposal: Proposal,
+    pub author_id: calimero_context_config::types::SignerId,
+    pub actions: Vec<calimero_context_config::ProposalAction>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

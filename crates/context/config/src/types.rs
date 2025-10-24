@@ -103,7 +103,18 @@ impl From<[u8; 32]> for Identity {
 }
 
 #[derive(
-    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, Hash,
+    Eq,
+    Ord,
+    Copy,
+    Debug,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Hash,
+    Serialize,
+    Deserialize,
 )]
 pub struct SignerId(Identity);
 

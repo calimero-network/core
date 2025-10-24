@@ -1,4 +1,3 @@
-use calimero_context_config::Proposal;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -48,9 +47,13 @@ pub enum ProposalsSubcommand {
         #[arg(long, help = "Signer public key in hex")]
         signer: PublicKey,
 
-        /// Path to a JSON file containing the proposal (calimero_context_config::Proposal)
-        #[arg(long, help = "Path to proposal JSON file")]
-        proposal_file: String,
+        /// Author public key (hex) - who created the proposal
+        #[arg(long, help = "Author public key in hex")]
+        author: PublicKey,
+
+        /// Path to a JSON file containing the proposal actions
+        #[arg(long, help = "Path to proposal actions JSON file")]
+        actions_file: String,
 
         /// Context the proposal belongs to
         #[arg(long, short, default_value = "default")]
@@ -133,7 +136,8 @@ impl ProposalsCommand {
             }
             ProposalsSubcommand::CreateAndApprove {
                 signer,
-                proposal_file,
+                author,
+                actions_file,
                 context,
             } => {
                 let client = environment.client()?;
@@ -145,12 +149,24 @@ impl ProposalsCommand {
                     .copied()
                     .ok_or_eyre("unable to resolve")?;
 
-                let file = File::open(&proposal_file)?;
-                let proposal: Proposal = serde_json::from_reader(file)?;
+                let file = File::open(&actions_file)?;
+                let actions: Vec<calimero_context_config::ProposalAction> =
+                    serde_json::from_reader(file)?;
+
+                // Convert PublicKey to SignerId
+                use calimero_context_config::repr::ReprBytes;
+                let author_bytes: [u8; 32] = (*author).into();
+                let author_id: calimero_context_config::types::SignerId =
+                    ReprBytes::from_bytes(|buf: &mut [u8; 32]| {
+                        *buf = author_bytes;
+                        Ok(buf.as_ref().len())
+                    })
+                    .map_err(|e| eyre::eyre!("failed to construct author id: {}", e))?;
 
                 let req = CreateAndApproveProposalRequest {
                     signer_id: signer,
-                    proposal,
+                    author_id,
+                    actions,
                 };
 
                 let resp = client.create_and_approve_proposal(&context_id, req).await?;
