@@ -24,7 +24,7 @@ impl Method<Ethereum> for ActiveProposalRequest {
         Ok(().abi_encode())
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let active_proposals_limit: Self::Returns = SolValue::abi_decode(&response, false)?;
+        let active_proposals_limit: Self::Returns = SolValue::abi_decode(&response)?;
         Ok(active_proposals_limit)
     }
 }
@@ -76,7 +76,7 @@ impl Method<Ethereum> for ContextVariableRequest {
         Ok(self.key.abi_encode())
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let context_value: Self::Returns = SolValue::abi_decode(&response, false)?;
+        let context_value: Self::Returns = SolValue::abi_decode(&response)?;
         Ok(context_value)
     }
 }
@@ -93,7 +93,7 @@ impl Method<Ethereum> for ProposalApprovalsRequest {
         Ok(proposal_id.abi_encode())
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let (proposal_id, num_approvals): (B256, u32) = SolValue::abi_decode(&response, false)?;
+        let (proposal_id, num_approvals): (B256, u32) = SolValue::abi_decode(&response)?;
 
         Ok(ProposalWithApprovals {
             proposal_id: proposal_id
@@ -115,7 +115,7 @@ impl Method<Ethereum> for ProposalApproversRequest {
         Ok(proposal_id.abi_encode())
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
+        let decoded: Vec<B256> = SolValue::abi_decode(&response)?;
         let context_identities: Result<Vec<ContextIdentity>, _> = decoded
             .into_iter()
             .map(|bytes| {
@@ -142,7 +142,7 @@ impl Method<Ethereum> for ProposalRequest {
         if response.is_empty() || response.iter().all(|&b| b == 0) {
             return Ok(None);
         }
-        let sol_proposal: SolProposal = SolValue::abi_decode(&response, false)?;
+        let sol_proposal: SolProposal = SolValue::abi_decode(&response)?;
         sol_proposal.try_into().map(Some)
     }
 }
@@ -158,7 +158,7 @@ impl Method<Ethereum> for ProposalsRequest {
         Ok((offset, length).abi_encode())
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let proposals: Vec<SolProposal> = SolValue::abi_decode(&response, false)?;
+        let proposals: Vec<SolProposal> = SolValue::abi_decode(&response)?;
         proposals.into_iter().map(TryInto::try_into).collect()
     }
 }

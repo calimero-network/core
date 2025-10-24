@@ -87,7 +87,7 @@ impl<'a> EthereumTransport<'a> {
 
             let provider: DynProvider<EthereumNetwork> = ProviderBuilder::new()
                 .wallet(wallet)
-                .on_http(network_config.rpc_url.clone())
+                .connect_http(network_config.rpc_url.clone())
                 .erased();
 
             let _ignored = networks.insert(network_id.clone(), Network { provider });
@@ -175,7 +175,7 @@ impl Network {
 
         let bytes = self
             .provider
-            .call(&request)
+            .call(request)
             .block(BlockId::latest())
             .await
             .map_err(|e| EthereumError::Custom {
@@ -248,7 +248,7 @@ impl Network {
 
         let return_data = self
             .provider
-            .call(&request)
+            .call(request)
             .block((block_number - 1).into())
             .await
             .map_err(|e| EthereumError::Custom {
