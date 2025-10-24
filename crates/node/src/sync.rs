@@ -16,7 +16,7 @@ use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio::time::{self, timeout, timeout_at, Instant, MissedTickBehavior};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::utils::choose_stream;
 
@@ -386,11 +386,23 @@ impl SyncManager {
             .await?;
         }
 
-        self.initiate_delta_sync_process(&mut context, our_identity, &mut stream)
+        // Try delta sync first, fall back to state sync on failure
+        // This is simpler and more efficient than checking all members upfront
+        match self
+            .initiate_delta_sync_process(&mut context, our_identity, &mut stream)
             .await
-
-        // self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
-        //     .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                warn!(
+                    context_id=%context.id,
+                    error=%e,
+                    "Delta sync failed, falling back to state sync"
+                );
+                self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
+                    .await
+            }
+        }
     }
 
     pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
