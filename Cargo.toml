@@ -13,8 +13,10 @@ description = "Core Calimero infrastructure and tools"
 version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
+    "./apps/blobs",
     "./apps/kv-store",
     "./apps/kv-store-with-handlers",
+    "./apps/private_data",
     "./apps/xcall-example",
     "./e2e-tests",
     "./crates/merod",
@@ -64,6 +66,7 @@ members = [
     "./apps/private_data",
     "./apps/blobs",
     "./apps/abi_conformance",
+    "./apps/xcall-example",
 
     "./e2e-tests",
     "./tools/calimero-abi",
@@ -207,6 +210,7 @@ e2e-tests = { path = "./e2e-tests" }
 kv-store = { path = "./apps/kv-store" }
 meroctl = { path = "./crates/meroctl" }
 merod = { path = "./crates/merod" }
+xcall-example = { path = "./apps/xcall-example" }
 
 [profile.release]
 strip = "symbols"
