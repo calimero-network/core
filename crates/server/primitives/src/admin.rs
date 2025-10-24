@@ -25,14 +25,24 @@ pub struct InstallApplicationRequest {
     pub url: Url,
     pub hash: Option<Hash>,
     pub metadata: Vec<u8>,
+    pub package: String,
+    pub version: String,
 }
 
 impl InstallApplicationRequest {
-    pub const fn new(url: Url, hash: Option<Hash>, metadata: Vec<u8>) -> Self {
+    pub const fn new(
+        url: Url,
+        hash: Option<Hash>,
+        metadata: Vec<u8>,
+        package: String,
+        version: String,
+    ) -> Self {
         Self {
             url,
             hash,
             metadata,
+            package,
+            version,
         }
     }
 }
@@ -62,11 +72,23 @@ impl InstallApplicationResponse {
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
     pub metadata: Vec<u8>,
+    pub package: String,
+    pub version: String,
 }
 
 impl InstallDevApplicationRequest {
-    pub const fn new(path: Utf8PathBuf, metadata: Vec<u8>) -> Self {
-        Self { path, metadata }
+    pub const fn new(
+        path: Utf8PathBuf,
+        metadata: Vec<u8>,
+        package: String,
+        version: String,
+    ) -> Self {
+        Self {
+            path,
+            metadata,
+            package,
+            version,
+        }
     }
 }
 
@@ -87,6 +109,43 @@ impl UninstallApplicationResponse {
         Self {
             data: UninstallApplicationResponseData { application_id },
         }
+    }
+}
+
+// -------------------------------------------- Package Management API --------------------------------------------
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPackagesResponse {
+    pub packages: Vec<String>,
+}
+
+impl ListPackagesResponse {
+    pub const fn new(packages: Vec<String>) -> Self {
+        Self { packages }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListVersionsResponse {
+    pub versions: Vec<String>,
+}
+
+impl ListVersionsResponse {
+    pub const fn new(versions: Vec<String>) -> Self {
+        Self { versions }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetLatestVersionResponse {
+    pub application_id: Option<ApplicationId>,
+}
+
+impl GetLatestVersionResponse {
+    pub const fn new(application_id: Option<ApplicationId>) -> Self {
+        Self { application_id }
     }
 }
 

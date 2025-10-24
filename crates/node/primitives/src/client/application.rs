@@ -83,6 +83,8 @@ impl NodeClient {
         size: u64,
         source: &ApplicationSource,
         metadata: Vec<u8>,
+        package: &str,
+        version: &str,
     ) -> eyre::Result<ApplicationId> {
         let application = types::ApplicationMeta::new(
             key::BlobMeta::new(*blob_id),
@@ -90,6 +92,8 @@ impl NodeClient {
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
             key::BlobMeta::new(BlobId::from([0; 32])),
+            package.to_owned().into_boxed_str(),
+            version.to_owned().into_boxed_str(),
         );
 
         let application_id = {
@@ -116,6 +120,8 @@ impl NodeClient {
         &self,
         path: Utf8PathBuf,
         metadata: Vec<u8>,
+        package: &str,
+        version: &str,
     ) -> eyre::Result<ApplicationId> {
         let path = path.canonicalize_utf8()?;
 
@@ -131,7 +137,14 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_application(&blob_id, size, &uri.as_str().parse()?, metadata)
+        self.install_application(
+            &blob_id,
+            size,
+            &uri.as_str().parse()?,
+            metadata,
+            package,
+            version,
+        )
     }
 
     pub async fn install_application_from_url(
@@ -139,6 +152,8 @@ impl NodeClient {
         url: Url,
         metadata: Vec<u8>,
         expected_hash: Option<&Hash>,
+        package: &str,
+        version: &str,
     ) -> eyre::Result<ApplicationId> {
         let uri = url.as_str().parse()?;
 
@@ -157,7 +172,7 @@ impl NodeClient {
             )
             .await?;
 
-        self.install_application(&blob_id, size, &uri, metadata)
+        self.install_application(&blob_id, size, &uri, metadata, package, version)
     }
 
     pub fn uninstall_application(&self, application_id: &ApplicationId) -> eyre::Result<()> {
@@ -212,5 +227,74 @@ impl NodeClient {
         handle.put(&key, &application)?;
 
         Ok(())
+    }
+
+    /// List all packages
+    pub fn list_packages(&self) -> eyre::Result<Vec<String>> {
+        let handle = self.datastore.handle();
+        let mut iter = handle.iter::<key::ApplicationMeta>()?;
+        let mut packages = std::collections::HashSet::new();
+
+        for (id, app) in iter.entries() {
+            let (_, app) = (id?, app?);
+            let _ = packages.insert(app.package.to_string());
+        }
+
+        Ok(packages.into_iter().collect())
+    }
+
+    /// List all versions of a package
+    pub fn list_versions(&self, package: &str) -> eyre::Result<Vec<String>> {
+        let handle = self.datastore.handle();
+        let mut iter = handle.iter::<key::ApplicationMeta>()?;
+        let mut versions = Vec::new();
+
+        for (id, app) in iter.entries() {
+            let (_, app) = (id?, app?);
+            if app.package.as_ref() == package {
+                versions.push(app.version.to_string());
+            }
+        }
+
+        Ok(versions)
+    }
+
+    /// Get the latest version of a package
+    pub fn get_latest_version(&self, package: &str) -> eyre::Result<Option<ApplicationId>> {
+        let handle = self.datastore.handle();
+        let mut iter = handle.iter::<key::ApplicationMeta>()?;
+        let mut latest_version: Option<(String, ApplicationId)> = None;
+
+        for (id, app) in iter.entries() {
+            let (id, app) = (id?, app?);
+            if app.package.as_ref() == package {
+                let version = app.version.to_string();
+                match &latest_version {
+                    None => latest_version = Some((version, id.application_id())),
+                    Some((current_version, _)) => {
+                        if version > *current_version {
+                            latest_version = Some((version, id.application_id()));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(latest_version.map(|(_, id)| id))
+    }
+
+    /// Install application by package and version
+    pub async fn install_by_package_version(
+        &self,
+        package: &str,
+        version: &str,
+        source: &ApplicationSource,
+        metadata: Vec<u8>,
+    ) -> eyre::Result<ApplicationId> {
+        // For now, we'll use the source URL to download the application
+        // In a real implementation, you might want to resolve the package/version to a URL
+        let url = source.to_string().parse()?;
+        self.install_application_from_url(url, metadata, None, package, version)
+            .await
     }
 }

@@ -6,8 +6,8 @@ use regex::Regex;
 
 use super::types::{
     AddBlobPermission, ApplicationPermission, BlobPermission, CapabilityPermission,
-    ContextApplicationPermission, ContextPermission, HttpMethod, KeyPermission, Permission,
-    ResourceScope, UserScope,
+    ContextApplicationPermission, ContextPermission, HttpMethod, KeyPermission, PackagePermission,
+    Permission, ResourceScope, UserScope,
 };
 
 /// Pre-compiled regex patterns for performance
@@ -24,6 +24,13 @@ static CONTEXT_CAPABILITIES_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static CONTEXT_APPLICATION_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/application$").unwrap());
 
+static CONTEXTS_FOR_APPLICATION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/for-application/([^/]+)$").unwrap());
+
+static CONTEXTS_WITH_EXECUTORS_FOR_APPLICATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/contexts/with-executors/for-application/([^/]+)$").unwrap()
+});
+
 static BLOB_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/blobs/([^/]+)$").unwrap());
 
 static ADMIN_KEY_REGEX: LazyLock<Regex> =
@@ -34,6 +41,12 @@ static KEY_PERMISSIONS_REGEX: LazyLock<Regex> =
 
 static CLIENT_MANAGEMENT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin/keys/([^/]+)/clients/([^/]+)$").unwrap());
+
+static PACKAGE_VERSIONS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/packages/([^/]+)/versions$").unwrap());
+
+static PACKAGE_LATEST_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/packages/([^/]+)/latest$").unwrap());
 
 /// Permission validator for checking request permissions
 #[derive(Debug, Default)]
@@ -90,6 +103,26 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         }
     }
 
+    if let Some(captures) = CONTEXTS_FOR_APPLICATION_REGEX.captures(path) {
+        if let Some(app_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![app_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = CONTEXTS_WITH_EXECUTORS_FOR_APPLICATION_REGEX.captures(path) {
+        if let Some(app_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![app_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
     if let Some(captures) = BLOB_REGEX.captures(path) {
         if let Some(blob_id) = captures.get(1) {
             return match method {
@@ -129,6 +162,31 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         };
     }
 
+    // Package management endpoints
+    if let Some(captures) = PACKAGE_VERSIONS_REGEX.captures(path) {
+        if let Some(package) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![package.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => {
+                    vec![Permission::Package(PackagePermission::ListVersions(scope))]
+                }
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = PACKAGE_LATEST_REGEX.captures(path) {
+        if let Some(package) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![package.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Package(PackagePermission::GetLatestVersion(
+                    scope,
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
     vec![]
 }
 
@@ -157,6 +215,11 @@ impl PermissionValidator {
                     ResourceScope::Global,
                 ))]
             }
+
+            // Admin API - Package Management
+            ("/admin-api/packages", HttpMethod::GET) => vec![Permission::Package(
+                PackagePermission::ListPackages(ResourceScope::Global),
+            )],
 
             // Admin API - Contexts
             ("/admin-api/contexts", HttpMethod::GET) => vec![Permission::Context(
@@ -424,6 +487,28 @@ mod tests {
 
     use super::super::types::*;
     use super::*;
+
+    #[test]
+    fn test_enhanced_contexts_endpoint() {
+        let validator = PermissionValidator::new();
+
+        // Test the new enhanced endpoint
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin-api/contexts/with-executors/for-application/9e4gX24aMx3KWWViZeYu8E4e8UrntWDEsuDTFJTXdKsu")
+            .body(Body::empty())
+            .unwrap();
+
+        let permissions = validator.determine_required_permissions(&req);
+        assert_eq!(permissions.len(), 1);
+        match &permissions[0] {
+            Permission::Context(ContextPermission::List(ResourceScope::Specific(ids))) => {
+                assert_eq!(ids.len(), 1);
+                assert_eq!(ids[0], "9e4gX24aMx3KWWViZeYu8E4e8UrntWDEsuDTFJTXdKsu");
+            }
+            _ => panic!("Unexpected permission type: {:?}", permissions[0]),
+        }
+    }
 
     #[test]
     fn test_determine_required_permissions() {
