@@ -19,16 +19,24 @@ use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Engine {
     limits: VMLimits,
     engine: wasmer::Engine,
 }
 
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine")
+            .field("limits", &self.limits)
+            .field("engine", &self.engine)
+            .finish()
+    }
+}
+
 impl Default for Engine {
     fn default() -> Self {
         let limits = VMLimits::default();
-
         let engine = wasmer::Engine::default();
 
         Self::new(engine, limits)
@@ -36,20 +44,38 @@ impl Default for Engine {
 }
 
 impl Engine {
+    /// Creates a new Engine with the specified Wasmer engine and limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `engine` - The Wasmer engine to use for compilation.
+    /// * `limits` - Resource limits for VM execution.
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
         engine.set_tunables(WasmerTunables::new(&limits));
 
         Self { limits, engine }
     }
 
+    /// Creates a headless Engine (for deserialization only).
     pub fn headless() -> Self {
         let limits = VMLimits::default();
-
         let engine = wasmer::Engine::headless();
 
         Self::new(engine, limits)
     }
 
+    /// Compiles a WASM module from bytes.
+    ///
+    /// Note: Caching is handled at a higher level (CompiledModuleCache in ContextManager).
+    /// This method simply compiles the bytecode without any caching logic.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - The WASM module bytes to compile.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompileError` if compilation fails.
     pub fn compile(&self, bytes: &[u8]) -> Result<Module, CompileError> {
         // todo! apply a prepare step
         // todo! - parse the wasm blob, validate and apply transformations
@@ -59,7 +85,6 @@ impl Engine {
         // todo!   - transformations:
         // todo!     - remove memory export
         // todo!     - remove memory section
-        // todo! cache the compiled module in storage for later
 
         let module = wasmer::Module::new(&self.engine, bytes)?;
 

@@ -14,8 +14,10 @@ borsh.workspace = true
 either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+lru.workspace = true
 memchr.workspace = true
 ouroboros.workspace = true
+parking_lot.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
 serde.workspace = true
@@ -30,6 +32,17 @@ calimero-runtime.workspace = true
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
+
+[dev-dependencies]
+camino.workspace = true
+criterion.workspace = true
+tempfile.workspace = true
+
+calimero-store-rocksdb.workspace = true
+
+[[bench]]
+name = "module_cache_bench"
+harness = false
 
 [lints]
 workspace = true

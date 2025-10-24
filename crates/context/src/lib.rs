@@ -16,8 +16,10 @@ use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
+use crate::compiled_module_cache::CompiledModuleCache;
 use crate::metrics::Metrics;
 
+pub mod compiled_module_cache;
 pub mod config;
 pub mod handlers;
 mod metrics;
@@ -38,7 +40,6 @@ struct ContextMeta {
 ///
 /// As an actor, it maintains its own state and processes incoming messages
 /// sequentially from a mailbox.
-#[derive(Debug)]
 pub struct ContextManager {
     /// Handle to the persistent key-value store. Used for fetching context data on cache misses.
     datastore: Store,
@@ -67,14 +68,36 @@ pub struct ContextManager {
     /// so we cannot blindly reuse compiled blobs across apps.
     applications: BTreeMap<ApplicationId, Application>,
 
+    /// The WASM runtime engine with an integrated module cache.
+    /// This is shared across all WASM executions to reuse compiled modules.
+    engine: Arc<calimero_runtime::Engine>,
+
+    /// In-memory cache of compiled module bytes by blob ID.
+    /// This cache sits in front of RocksDB to avoid disk I/O for hot contracts.
+    compiled_module_cache: Arc<CompiledModuleCache>,
+
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
-    //
-    // todo! when runtime let's us compile blobs separate from its
-    // todo! execution, we can introduce a cached::TimedSizedCache
-    // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
-    //
+}
+
+impl std::fmt::Debug for ContextManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextManager")
+            .field("datastore", &self.datastore)
+            .field("node_client", &"<NodeClient>")
+            .field("context_client", &"<ContextClient>")
+            .field("external_config", &self.external_config)
+            .field("contexts_count", &self.contexts.len())
+            .field("applications_count", &self.applications.len())
+            .field("engine", &self.engine)
+            .field(
+                "compiled_module_cache_size",
+                &self.compiled_module_cache.len(),
+            )
+            .field("metrics", &self.metrics.is_some())
+            .finish()
+    }
 }
 
 /// Creates a new `ContextManager`.
@@ -95,6 +118,12 @@ impl ContextManager {
         external_config: ExternalClientConfig,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
+        // Initialize the WASM runtime engine with module cache
+        let engine = Arc::new(calimero_runtime::Engine::default());
+
+        // Initialize compiled module cache (sits before RocksDB)
+        let compiled_module_cache = Arc::new(CompiledModuleCache::default());
+
         Self {
             datastore,
             node_client,
@@ -103,6 +132,9 @@ impl ContextManager {
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
+
+            engine,
+            compiled_module_cache,
 
             metrics: prometheus_registry.map(Metrics::new),
         }

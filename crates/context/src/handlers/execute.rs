@@ -504,44 +504,78 @@ impl ContextManager {
 
         let module_task = blob_task.and_then(move |mut blob, act, _ctx| {
             let node_client = act.node_client.clone();
+            let engine = act.engine.clone();
+            let compiled_module_cache = act.compiled_module_cache.clone();
 
             async move {
-                if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
-                    let module =
-                        unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
-
-                    match module {
-                        Ok(module) => return Ok((module, None)),
+                // Helper function to deserialize and optionally cache compiled bytes
+                let try_load_module = |bytes: Box<[u8]>, source: &str, should_cache: bool| {
+                    match unsafe { calimero_runtime::Engine::headless().from_precompiled(&bytes) } {
+                        Ok(module) => {
+                            debug!(
+                                %application_id,
+                                blob_id=%blob.compiled,
+                                source,
+                                "successfully loaded module"
+                            );
+                            if should_cache {
+                                compiled_module_cache.put(blob.compiled, bytes);
+                            }
+                            Some(module)
+                        }
                         Err(err) => {
                             debug!(
                                 ?err,
                                 %application_id,
                                 blob_id=%blob.compiled,
-                                "failed to load precompiled module, recompiling.."
+                                source,
+                                "failed to deserialize module"
                             );
+                            None
                         }
+                    }
+                };
+
+                // Step 1: Check in-memory cache first (fastest path)
+                if let Some(cached_bytes) = compiled_module_cache.get(&blob.compiled) {
+                    if let Some(module) = try_load_module(cached_bytes, "memory_cache", false) {
+                        return Ok((module, None));
                     }
                 }
 
+                // Step 2: Check RocksDB (slower, but still better than recompiling)
+                if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
+                    let bytes: Box<[u8]> = compiled.to_vec().into_boxed_slice();
+                    if let Some(module) = try_load_module(bytes, "rocksdb", true) {
+                        return Ok((module, None));
+                    }
+                }
+
+                // Step 3: Compile from source (slowest path)
                 debug!(
                     %application_id,
                     blob_id=%blob.compiled,
-                    "no usable precompiled module found, compiling.."
+                    "no usable precompiled module found, compiling from source"
                 );
 
                 let Some(bytecode) = node_client.get_blob_bytes(&blob.bytecode, None).await? else {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 
-                let module = calimero_runtime::Engine::default().compile(&bytecode)?;
+                // Use the shared engine with cache instead of creating a new one
+                let module = engine.compile(&bytecode)?;
 
-                let compiled = Cursor::new(module.to_bytes()?);
+                let compiled_bytes = module.to_bytes()?;
+                let compiled = Cursor::new(compiled_bytes.clone());
 
                 let (blob_id, _ignored) = node_client.add_blob(compiled, None, None).await?;
 
                 blob.compiled = blob_id;
 
                 node_client.update_compiled_app(&application_id, &blob_id)?;
+
+                // Cache the newly compiled module
+                compiled_module_cache.put(blob_id, compiled_bytes);
 
                 Ok((module, Some(blob)))
             }
