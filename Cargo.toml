@@ -70,8 +70,8 @@ members = [
 
 [workspace.dependencies]
 actix = "0.13.5"
-alloy = "0.11.1"
-alloy-sol-types = "0.8.22"
+alloy = "1.0"
+alloy-sol-types = "1.4"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
 async-trait = "0.1.89"
@@ -371,3 +371,21 @@ multiple_crate_versions = "allow" # Cannot resolve all these
 missing_errors_doc = "allow"      # TODO: Remove later once documentation has been added
 missing_panics_doc = "allow"      # TODO: Remove later once documentation has been added
 future_not_send = "allow"         # TODO: Remove later once Send is implemented
+
+# Patch crates.io to use local workspace versions
+# This allows calimero-context-primitives dev-dependency on calimero-context to use workspace version,
+# avoiding conflicts during dependency upgrades (e.g., alloy 0.11 vs 1.0).
+#
+# NOTE: This is a workaround for circular dev-dependency:
+#   calimero-context → calimero-context-primitives (regular dependency)
+#   calimero-context-primitives → calimero-context (dev-dependency)
+#
+# TODO: Remove circular dependency. Options:
+#   1. Move tests requiring calimero-context to integration tests in calimero-context itself
+#   2. Create a separate calimero-context-test-utils crate
+#   3. Restructure code to break the dependency cycle
+#
+# After removing circular dependency, remove this patch and update calimero-context-primitives
+# dev-dependency to use version range: { version = ">=0.9.0, <1.0.0" }
+[patch.crates-io]
+calimero-context = { path = "./crates/context" }

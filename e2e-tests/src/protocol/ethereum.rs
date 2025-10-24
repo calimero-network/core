@@ -129,17 +129,17 @@ impl EthereumSandboxEnvironment {
         let wallet = EthereumWallet::from(private_key);
         let provider = ProviderBuilder::new()
             .wallet(wallet)
-            .on_http(rpc_url)
+            .connect_http(rpc_url)
             .erased();
 
         // Prepare and execute the call
         let request = TransactionRequest::default()
             .to(address)
             .input(Bytes::from(call_data).into());
-        let result = provider.call(&request).block(BlockId::latest()).await?;
+        let result = provider.call(request).block(BlockId::latest()).await?;
 
         // Decode and return the result
-        let output: String = SolValue::abi_decode(&result, false)?;
+        let output: String = SolValue::abi_decode(&result)?;
         Ok(Some(output))
     }
 }
