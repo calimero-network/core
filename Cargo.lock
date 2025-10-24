@@ -2036,6 +2036,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -2387,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.1"
+version = "0.10.0-rc.3"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
