@@ -108,6 +108,8 @@ impl UpdateCommand {
                     .install_dev_application(InstallDevApplicationRequest::new(
                         path.clone(),
                         metadata.clone().unwrap_or_default(),
+                        "unknown".to_string(),
+                        "0.0.0".to_string(),
                     ))
                     .await?
                     .data
@@ -189,6 +191,8 @@ async fn watch_app_and_update_context(
             .install_dev_application(InstallDevApplicationRequest::new(
                 path.clone(),
                 metadata.clone().unwrap_or_default(),
+                "unknown".to_string(),
+                "0.0.0".to_string(),
             ))
             .await?
             .data

@@ -68,6 +68,15 @@ pub enum ApplicationPermission {
     Uninstall(ResourceScope),
 }
 
+/// Package-related permissions
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PackagePermission {
+    All,
+    ListPackages(ResourceScope),
+    ListVersions(ResourceScope),
+    GetLatestVersion(ResourceScope),
+}
+
 /// Blob-related permissions
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlobPermission {
@@ -134,6 +143,7 @@ pub enum ContextPermission {
 pub enum Permission {
     Admin(AdminPermission),
     Application(ApplicationPermission),
+    Package(PackagePermission),
     Blob(BlobPermission),
     Context(ContextPermission),
     Keys(KeyPermission),
@@ -310,6 +320,25 @@ impl FromStr for Permission {
                 }
             }
 
+            "package" => {
+                let action = parts.get(1).unwrap_or(&"");
+                let (scope, _, _) = parse_permission_params(params_part);
+
+                match *action {
+                    "list-packages" => {
+                        Ok(Permission::Package(PackagePermission::ListPackages(scope)))
+                    }
+                    "list-versions" => {
+                        Ok(Permission::Package(PackagePermission::ListVersions(scope)))
+                    }
+                    "get-latest-version" => Ok(Permission::Package(
+                        PackagePermission::GetLatestVersion(scope),
+                    )),
+                    "" => Ok(Permission::Package(PackagePermission::All)),
+                    _ => Err(format!("Unknown package action: {}", action)),
+                }
+            }
+
             "blob" => {
                 let action = parts.get(1).unwrap_or(&"");
                 let subaction = parts.get(2).unwrap_or(&"");
@@ -468,6 +497,21 @@ impl fmt::Display for Permission {
                 ApplicationPermission::Uninstall(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "application:uninstall{params}")
+                }
+            },
+            Permission::Package(pkg_perm) => match pkg_perm {
+                PackagePermission::All => write!(f, "package"),
+                PackagePermission::ListPackages(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "package:list-packages{}", params)
+                }
+                PackagePermission::ListVersions(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "package:list-versions{}", params)
+                }
+                PackagePermission::GetLatestVersion(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "package:get-latest-version{}", params)
                 }
             },
             Permission::Blob(blob_perm) => match blob_perm {
