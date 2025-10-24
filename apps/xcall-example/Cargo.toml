@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "xcall-example"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+calimero-sdk = { path = "../../crates/sdk" }
+calimero-storage = { path = "../../crates/storage" }
+thiserror = { version = "2", default-features = false }
+
+[build-dependencies]
+calimero-wasm-abi = { path = "../../crates/wasm-abi" }
+serde_json = "1"
+
+[profile.release]
+debug = false
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = "symbols"
+
