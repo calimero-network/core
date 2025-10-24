@@ -2,50 +2,23 @@
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::Vector;
 
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(emits = Event)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct XCallExample {
-    /// Vector of received messages from other contexts
-    messages: Vector<Message>,
-}
-
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
-pub struct Message {
-    pub from_context: [u8; 32],
-    pub content: String,
-}
-
-// Custom Serialize implementation to encode from_context as base58
-impl calimero_sdk::serde::Serialize for Message {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: calimero_sdk::serde::Serializer,
-    {
-        use calimero_sdk::serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Message", 2)?;
-        state.serialize_field(
-            "from_context",
-            &bs58::encode(&self.from_context).into_string(),
-        )?;
-        state.serialize_field("content", &self.content)?;
-        state.end()
-    }
+    /// Counter for tracking pongs received
+    counter: u64,
 }
 
 #[app::event]
-pub enum Event<'a> {
-    GreetingSent {
+pub enum Event {
+    PingSent {
         to_context: [u8; 32],
-        message: &'a str,
     },
-    GreetingReceived {
+    PongReceived {
         from_context: [u8; 32],
-        message: &'a str,
+        counter: u64,
     },
 }
 
@@ -53,25 +26,21 @@ pub enum Event<'a> {
 impl XCallExample {
     #[app::init]
     pub fn init() -> XCallExample {
-        XCallExample {
-            messages: Vector::new(),
-        }
+        XCallExample { counter: 0 }
     }
 
-    /// Send a greeting to another context via cross-context call
+    /// Send a ping to another context via cross-context call
     ///
     /// # Arguments
-    /// * `target_context` - The base58-encoded ID of the context to send the greeting to
-    /// * `message` - The greeting message to send
+    /// * `target_context` - The base58-encoded ID of the context to send the ping to
     ///
     /// # Example
     /// ```json
     /// {
-    ///   "target_context": "AmxF5dVaqTTAWNbv4uDJhxdoQTEY1wfv6Ld8Gjbu6Zdk",
-    ///   "message": "Hello from Context A!"
+    ///   "target_context": "AmxF5dVaqTTAWNbv4uDJhxdoQTEY1wfv6Ld8Gjbu6Zdk"
     /// }
     /// ```
-    pub fn send_greeting(&mut self, target_context: String, message: String) -> app::Result<()> {
+    pub fn ping(&mut self, target_context: String) -> app::Result<()> {
         // Decode the base58 context ID to bytes
         let target_context_bytes: [u8; 32] = bs58::decode(&target_context)
             .into_vec()
@@ -84,107 +53,75 @@ impl XCallExample {
         let current_context = calimero_sdk::env::context_id();
 
         app::log!(
-            "Sending greeting from context {:?} to context {}: {}",
+            "Sending ping from context {:?} to context {}",
             current_context,
-            target_context,
-            message
+            target_context
         );
 
         // Prepare the parameters for the cross-context call
-        // The parameters must be JSON-encoded to match the target function's signature
         #[derive(calimero_sdk::serde::Serialize)]
         #[serde(crate = "calimero_sdk::serde")]
-        struct ReceiveGreetingParams {
+        struct PongParams {
             from_context: [u8; 32],
-            message: String,
         }
 
-        let params = calimero_sdk::serde_json::to_vec(&ReceiveGreetingParams {
+        let params = calimero_sdk::serde_json::to_vec(&PongParams {
             from_context: current_context,
-            message: message.clone(),
         })?;
 
-        // Make the cross-context call
-        // This will execute the "receive_greeting" function on the target context
-        // after this execution completes
-        calimero_sdk::env::xcall(&target_context_bytes, "receive_greeting", &params);
+        // Make the cross-context call to the pong method
+        calimero_sdk::env::xcall(&target_context_bytes, "pong", &params);
 
-        // Emit an event to notify that a greeting was sent
-        app::emit!(Event::GreetingSent {
+        // Emit an event to notify that a ping was sent
+        app::emit!(Event::PingSent {
             to_context: target_context_bytes,
-            message: &message,
         });
 
-        app::log!("Cross-context call queued successfully");
+        app::log!("Ping sent successfully");
 
         Ok(())
     }
 
-    /// Receive a greeting from another context
+    /// Receive a pong from another context
     ///
     /// This function is called via xcall from other contexts
+    /// It increments the counter when a pong is received
     ///
     /// # Arguments
-    /// * `from_context` - The 32-byte ID of the context sending the greeting
-    /// * `message` - The greeting message
-    pub fn receive_greeting(&mut self, from_context: [u8; 32], message: String) -> app::Result<()> {
+    /// * `from_context` - The 32-byte ID of the context sending the pong
+    pub fn pong(&mut self, from_context: [u8; 32]) -> app::Result<()> {
         let current_context = calimero_sdk::env::context_id();
 
         app::log!(
-            "Context {:?} received greeting from {:?}: {}",
+            "Context {:?} received pong from {:?}",
             current_context,
-            from_context,
-            message
+            from_context
         );
 
-        // Store the message
-        self.messages.push(Message {
-            from_context,
-            content: message.clone(),
-        })?;
+        // Increment the counter
+        self.counter += 1;
 
-        // Emit an event to notify that a greeting was received
-        app::emit!(Event::GreetingReceived {
+        // Emit an event to notify that a pong was received
+        app::emit!(Event::PongReceived {
             from_context,
-            message: &message,
+            counter: self.counter,
         });
 
-        app::log!("Greeting stored successfully");
+        app::log!("Pong received! Counter is now: {}", self.counter);
 
         Ok(())
     }
 
-    /// Get all received messages
-    ///
-    /// Returns a vector of all messages received from other contexts
-    pub fn get_messages(&self) -> app::Result<Vec<Message>> {
-        app::log!("Retrieving all messages");
-
-        let mut messages = Vec::new();
-        for i in 0..self.messages.len()? {
-            if let Some(msg) = self.messages.get(i)? {
-                messages.push(msg);
-            }
-        }
-
-        app::log!("Retrieved {} messages", messages.len());
-
-        Ok(messages)
+    /// Get the current counter value
+    pub fn get_counter(&self) -> app::Result<u64> {
+        app::log!("Getting counter value: {}", self.counter);
+        Ok(self.counter)
     }
 
-    /// Get the number of received messages
-    pub fn message_count(&self) -> app::Result<usize> {
-        app::log!("Getting message count");
-
-        Ok(self.messages.len()? as usize)
-    }
-
-    /// Clear all received messages
-    pub fn clear_messages(&mut self) -> app::Result<()> {
-        app::log!("Clearing all messages");
-
-        self.messages.clear()?;
-
+    /// Reset the counter to zero
+    pub fn reset_counter(&mut self) -> app::Result<()> {
+        app::log!("Resetting counter");
+        self.counter = 0;
         Ok(())
     }
 }

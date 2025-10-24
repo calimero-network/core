@@ -1,5 +1,5 @@
-description: A workflow demonstrating cross-context calls (XCall) between contexts across nodes
-name: XCall Example Workflow
+description: A workflow demonstrating cross-context calls (XCall) using ping-pong between contexts
+name: XCall Ping-Pong Workflow
 
 # Force pull Docker images even if they exist locally
 force_pull_image: true
@@ -136,287 +136,253 @@ steps:
     seconds: 5
 
   # ============================================
-  # Testing Phase: XCall functionality
+  # Testing Phase: Ping-Pong XCall functionality
   # ============================================
 
-  # Step 10: Verify both contexts start with zero messages
-  - name: Check initial message count on Context A (Node 1)
+  # Step 11: Verify both contexts start with counter at 0
+  - name: Check initial counter on Context A (Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_a_initial_count: result
+      context_a_initial_counter: result
 
-  - name: Assert Context A starts with zero messages
+  - name: Assert Context A starts with counter at 0
     type: json_assert
     statements:
-      - 'json_equal({{context_a_initial_count}}, {"output": 0})'
+      - 'json_equal({{context_a_initial_counter}}, {"output": 0})'
 
-  - name: Check initial message count on Context B (Node 1)
+  - name: Check initial counter on Context B (Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
     executor_public_key: "{{context_b_member_key}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_b_initial_count_node1: result
+      context_b_initial_counter_node1: result
 
-  - name: Assert Context B starts with zero messages on Node 1
+  - name: Assert Context B starts with counter at 0 on Node 1
     type: json_assert
     statements:
-      - 'json_equal({{context_b_initial_count_node1}}, {"output": 0})'
+      - 'json_equal({{context_b_initial_counter_node1}}, {"output": 0})'
 
-  - name: Check initial message count on Context B (Node 2)
+  - name: Check initial counter on Context B (Node 2)
     type: call
     node: calimero-node-2
     context_id: "{{context_b_id}}"
     executor_public_key: "{{identity_b}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_b_initial_count_node2: result
+      context_b_initial_counter_node2: result
 
-  - name: Assert Context B starts with zero messages on Node 2
+  - name: Assert Context B starts with counter at 0 on Node 2
     type: json_assert
     statements:
-      - 'json_equal({{context_b_initial_count_node2}}, {"output": 0})'
+      - 'json_equal({{context_b_initial_counter_node2}}, {"output": 0})'
 
-  # Step 11: Node 1 calls Context A, which xcalls Context B (locally on Node 1)
-  - name: Send greeting from Context A to Context B (on Node 1)
+  # Step 12: Context A sends ping to Context B
+  - name: Send ping from Context A to Context B (on Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
-    method: send_greeting
+    method: ping
     args:
       target_context: "{{context_b_id}}"
-      message: "Hello from Context A!"
     outputs:
-      send_result_1: result
+      ping_result_1: result
 
-  - name: Assert send_greeting succeeded
+  - name: Assert ping succeeded
     type: json_assert
     statements:
-      - 'json_equal({{send_result_1}}, {"output": null})'
+      - 'json_equal({{ping_result_1}}, {"output": null})'
 
-  # Step 12: Wait for XCall execution and state delta broadcast
+  # Step 13: Wait for XCall execution and state delta broadcast
   - name: Wait for XCall execution and broadcast
     type: wait
     seconds: 5
 
-  # Step 13: Verify Context B received the message on Node 1 (where xcall executed)
-  - name: Check message count on Context B (Node 1)
+  # Step 14: Verify Context B counter incremented on Node 1
+  - name: Check counter on Context B (Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
     executor_public_key: "{{context_b_member_key}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_b_count_node1: result
+      context_b_counter_node1: result
 
-  - name: Assert Context B has 1 message on Node 1
+  - name: Assert Context B counter is 1 on Node 1
     type: json_assert
     statements:
-      - 'json_equal({{context_b_count_node1}}, {"output": 1})'
+      - 'json_equal({{context_b_counter_node1}}, {"output": 1})'
 
-  # Step 14: Verify Context B's state change synced to Node 2
-  - name: Check message count on Context B (Node 2)
+  # Step 15: Verify Context B's state change synced to Node 2
+  - name: Check counter on Context B (Node 2)
     type: call
     node: calimero-node-2
     context_id: "{{context_b_id}}"
     executor_public_key: "{{identity_b}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_b_count_node2: result
+      context_b_counter_node2: result
 
-  - name: Assert Context B has 1 message on Node 2 (synced)
+  - name: Assert Context B counter is 1 on Node 2 (synced)
     type: json_assert
     statements:
-      - 'json_equal({{context_b_count_node2}}, {"output": 1})'
+      - 'json_equal({{context_b_counter_node2}}, {"output": 1})'
 
-  # Step 15: Get messages on Context B from Node 2 and verify content
-  - name: Get messages on Context B (Node 2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b}}"
-    method: get_messages
-    outputs:
-      context_b_messages_node2: result
-
-  - name: Assert Context B received correct message on Node 2
-    type: json_assert
-    statements:
-      - 'json_subset({{context_b_messages_node2}}, {"output": [{"from_context": "{{context_a_id}}", "content": "Hello from Context A!"}]})'
-
-  # Step 16: Verify Context A still has no messages (sender doesn't receive)
-  - name: Check message count on Context A (Node 1)
+  # Step 16: Verify Context A counter is still 0 (sender doesn't increment)
+  - name: Check counter on Context A (Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_a_count_after_send: result
+      context_a_counter_after_ping: result
 
-  - name: Assert Context A still has zero messages
+  - name: Assert Context A counter is still 0
     type: json_assert
     statements:
-      - 'json_equal({{context_a_count_after_send}}, {"output": 0})'
+      - 'json_equal({{context_a_counter_after_ping}}, {"output": 0})'
 
   # ============================================
-  # Bi-directional Communication Test
+  # Bi-directional Ping-Pong Test
   # ============================================
 
-  # Step 17: Send a greeting from Context B to Context A
-  - name: Send greeting from Context B to Context A (on Node 1)
+  # Step 17: Send a ping from Context B to Context A
+  - name: Send ping from Context B to Context A (on Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
     executor_public_key: "{{context_b_member_key}}"
-    method: send_greeting
+    method: ping
     args:
       target_context: "{{context_a_id}}"
-      message: "Hi back from Context B!"
     outputs:
-      send_result_2: result
+      ping_result_2: result
 
-  - name: Assert send_greeting from B to A succeeded
+  - name: Assert ping from B to A succeeded
     type: json_assert
     statements:
-      - 'json_equal({{send_result_2}}, {"output": null})'
+      - 'json_equal({{ping_result_2}}, {"output": null})'
 
   # Step 18: Wait for XCall execution and broadcast
   - name: Wait for XCall execution and broadcast
     type: wait
     seconds: 5
 
-  # Step 19: Verify Context A received the message on Node 1
-  - name: Check message count on Context A (Node 1)
+  # Step 19: Verify Context A counter incremented on Node 1
+  - name: Check counter on Context A (Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_a_count_node1: result
+      context_a_counter_node1: result
 
-  - name: Assert Context A has 1 message on Node 1
+  - name: Assert Context A counter is 1 on Node 1
     type: json_assert
     statements:
-      - 'json_equal({{context_a_count_node1}}, {"output": 1})'
+      - 'json_equal({{context_a_counter_node1}}, {"output": 1})'
 
   # Step 20: Verify Context A's state change synced to Node 2
-  - name: Check message count on Context A (Node 2)
+  - name: Check counter on Context A (Node 2)
     type: call
     node: calimero-node-2
     context_id: "{{context_a_id}}"
     executor_public_key: "{{identity_a}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_a_count_node2: result
+      context_a_counter_node2: result
 
-  - name: Assert Context A has 1 message on Node 2 (synced)
+  - name: Assert Context A counter is 1 on Node 2 (synced)
     type: json_assert
     statements:
-      - 'json_equal({{context_a_count_node2}}, {"output": 1})'
-
-  # Step 21: Verify message content on Node 2
-  - name: Get messages on Context A (Node 2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_a_id}}"
-    executor_public_key: "{{identity_a}}"
-    method: get_messages
-    outputs:
-      context_a_messages_node2: result
-
-  - name: Assert Context A received correct message on Node 2
-    type: json_assert
-    statements:
-      - 'json_subset({{context_a_messages_node2}}, {"output": [{"from_context": "{{context_b_id}}", "content": "Hi back from Context B!"}]})'
+      - 'json_equal({{context_a_counter_node2}}, {"output": 1})'
 
   # ============================================
-  # Multiple Messages Test
+  # Multiple Pings Test
   # ============================================
 
-  # Step 22: Send multiple messages from Context A to Context B
-  - name: Send second message from Context A to Context B
+  # Step 21: Send multiple pings from Context A to Context B
+  - name: Send second ping from Context A to Context B
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
-    method: send_greeting
+    method: ping
     args:
       target_context: "{{context_b_id}}"
-      message: "How are you?"
     outputs:
-      send_result_3: result
+      ping_result_3: result
 
   - name: Wait for XCall execution
     type: wait
     seconds: 5
 
-  - name: Send third message from Context A to Context B
+  - name: Send third ping from Context A to Context B
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
-    method: send_greeting
+    method: ping
     args:
       target_context: "{{context_b_id}}"
-      message: "XCall is working great!"
     outputs:
-      send_result_4: result
+      ping_result_4: result
 
   - name: Wait for XCall execution
     type: wait
     seconds: 5
 
-  # Step 23: Verify Context B now has 3 messages total on both nodes
-  - name: Check final message count on Context B (Node 1)
+  # Step 22: Verify Context B counter is now 3 on both nodes
+  - name: Check final counter on Context B (Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
     executor_public_key: "{{context_b_member_key}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_b_final_count_node1: result
+      context_b_final_counter_node1: result
 
-  - name: Assert Context B has 3 messages on Node 1
+  - name: Assert Context B counter is 3 on Node 1
     type: json_assert
     statements:
-      - 'json_equal({{context_b_final_count_node1}}, {"output": 3})'
+      - 'json_equal({{context_b_final_counter_node1}}, {"output": 3})'
 
-  - name: Check final message count on Context B (Node 2)
+  - name: Check final counter on Context B (Node 2)
     type: call
     node: calimero-node-2
     context_id: "{{context_b_id}}"
     executor_public_key: "{{identity_b}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_b_final_count_node2: result
+      context_b_final_counter_node2: result
 
-  - name: Assert Context B has 3 messages on Node 2 (synced)
+  - name: Assert Context B counter is 3 on Node 2 (synced)
     type: json_assert
     statements:
-      - 'json_equal({{context_b_final_count_node2}}, {"output": 3})'
+      - 'json_equal({{context_b_final_counter_node2}}, {"output": 3})'
 
-  # Step 24: Verify Context A still has its message (contexts are independent)
-  - name: Verify Context A still has 1 message (Node 1)
+  # Step 23: Verify Context A counter is still 1 (contexts are independent)
+  - name: Verify Context A counter is still 1 (Node 1)
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
-    method: message_count
+    method: get_counter
     outputs:
-      context_a_final_count: result
+      context_a_final_counter: result
 
-  - name: Assert Context A still has 1 message
+  - name: Assert Context A counter is still 1
     type: json_assert
     statements:
-      - 'json_equal({{context_a_final_count}}, {"output": 1})'
+      - 'json_equal({{context_a_final_counter}}, {"output": 1})'
 
 # Configuration
 stop_all_nodes: false
