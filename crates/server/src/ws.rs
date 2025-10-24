@@ -36,6 +36,13 @@ use tracing::{debug, error, info, warn};
 mod subscribe;
 mod unsubscribe;
 
+/// WebSocket close codes (RFC 6455)
+/// https://datatracker.ietf.org/doc/html/rfc6455#section-7.4.1
+mod close_code {
+    /// Endpoint is terminating the connection due to a protocol error (e.g., ping timeout).
+    pub const PROTOCOL_ERROR: u16 = 1002;
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct WsConfig {
@@ -436,7 +443,10 @@ async fn handle_health_check(
             // Close connection due to timeout
             if let Err(err) = connection_state
                 .commands
-                .send(Command::Close(1002, "Ping timeout".to_string()))
+                .send(Command::Close(
+                    close_code::PROTOCOL_ERROR,
+                    "Ping timeout".to_owned(),
+                ))
                 .await
             {
                 error!(%connection_id, %err, "Failed to send close command");
