@@ -1747,8 +1747,8 @@ name = "calimero-blobstore"
 version = "0.0.0"
 dependencies = [
  "async-stream",
- "calimero-primitives",
- "calimero-store",
+ "calimero-primitives 0.0.0",
+ "calimero-store 0.0.0",
  "camino",
  "eyre",
  "futures-util",
@@ -1760,12 +1760,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-blobstore"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71a0e806ccbacb645ea0626c6cc99c7dec1d9f4ff211ff2d051fc5da26e60e74"
+dependencies = [
+ "async-stream",
+ "calimero-primitives 0.9.0",
+ "calimero-store 0.9.0",
+ "camino",
+ "eyre",
+ "futures-util",
+ "serde",
+ "sha2 0.10.8",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "calimero-client"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "calimero-context-config",
- "calimero-primitives",
+ "calimero-context-config 0.0.0",
+ "calimero-primitives 0.0.0",
  "calimero-server-primitives",
  "chrono",
  "eyre",
@@ -1786,8 +1804,8 @@ name = "calimero-config"
 version = "0.0.0"
 dependencies = [
  "bs58 0.5.1",
- "calimero-context",
- "calimero-network-primitives",
+ "calimero-context 0.0.0",
+ "calimero-network-primitives 0.0.0",
  "calimero-server",
  "camino",
  "eyre",
@@ -1804,13 +1822,41 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "borsh",
- "calimero-context-config",
- "calimero-context-primitives",
- "calimero-node-primitives",
- "calimero-primitives",
- "calimero-runtime",
- "calimero-store",
- "calimero-utils-actix",
+ "calimero-context-config 0.0.0",
+ "calimero-context-primitives 0.0.0",
+ "calimero-node-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
+ "calimero-runtime 0.0.0",
+ "calimero-store 0.0.0",
+ "calimero-utils-actix 0.0.0",
+ "either",
+ "eyre",
+ "futures-util",
+ "memchr",
+ "ouroboros",
+ "prometheus-client",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "calimero-context"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ced243838c330865d266ca66e527d574766aabeb4eb5aecc19571d00c71044fb"
+dependencies = [
+ "actix",
+ "borsh",
+ "calimero-context-config 0.9.0",
+ "calimero-context-primitives 0.9.0",
+ "calimero-node-primitives 0.9.0",
+ "calimero-primitives 0.9.0",
+ "calimero-runtime 0.9.0",
+ "calimero-store 0.9.0",
+ "calimero-utils-actix 0.9.0",
  "either",
  "eyre",
  "futures-util",
@@ -1856,6 +1902,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-context-config"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "342705c29b75c122b048c29c15cb83603b31ac2897018010c887468747094a21"
+dependencies = [
+ "alloy",
+ "alloy-sol-types",
+ "borsh",
+ "bs58 0.5.1",
+ "candid",
+ "ed25519-consensus",
+ "ed25519-dalek",
+ "either",
+ "ethabi",
+ "eyre",
+ "hex",
+ "ic-agent",
+ "near-crypto",
+ "near-jsonrpc-client",
+ "near-jsonrpc-primitives",
+ "near-primitives",
+ "reqwest 0.12.23",
+ "serde",
+ "serde_json",
+ "starknet",
+ "starknet-crypto",
+ "starknet-types-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "calimero-context-primitives"
 version = "0.0.0"
 dependencies = [
@@ -1863,14 +1942,14 @@ dependencies = [
  "actix-rt",
  "async-stream",
  "borsh",
- "calimero-blobstore",
- "calimero-context",
- "calimero-context-config",
- "calimero-network-primitives",
- "calimero-node-primitives",
- "calimero-primitives",
- "calimero-store",
- "calimero-utils-actix",
+ "calimero-blobstore 0.0.0",
+ "calimero-context 0.9.0",
+ "calimero-context-config 0.0.0",
+ "calimero-network-primitives 0.0.0",
+ "calimero-node-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
+ "calimero-store 0.0.0",
+ "calimero-utils-actix 0.0.0",
  "eyre",
  "futures-util",
  "hex",
@@ -1880,6 +1959,29 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "calimero-context-primitives"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4488ca9a13b1a4d1650a3bca8e6aa062e84a62210c5dbe13a81e57f4102733e"
+dependencies = [
+ "actix",
+ "async-stream",
+ "calimero-context-config 0.9.0",
+ "calimero-node-primitives 0.9.0",
+ "calimero-primitives 0.9.0",
+ "calimero-store 0.9.0",
+ "calimero-utils-actix 0.9.0",
+ "eyre",
+ "futures-util",
+ "rand 0.8.5",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
  "url",
 ]
 
@@ -1887,11 +1989,23 @@ dependencies = [
 name = "calimero-crypto"
 version = "0.0.0"
 dependencies = [
- "calimero-primitives",
+ "calimero-primitives 0.0.0",
  "curve25519-dalek",
  "ed25519-dalek",
  "eyre",
  "rand 0.8.5",
+ "ring",
+]
+
+[[package]]
+name = "calimero-crypto"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f30292351a0b24e272f5615cad074a25de24ee86dffb9055d0a9818d6156786f"
+dependencies = [
+ "calimero-primitives 0.9.0",
+ "curve25519-dalek",
+ "ed25519-dalek",
  "ring",
 ]
 
@@ -1901,9 +2015,9 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "borsh",
- "calimero-network-primitives",
- "calimero-primitives",
- "calimero-utils-actix",
+ "calimero-network-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
+ "calimero-utils-actix 0.0.0",
  "eyre",
  "futures-util",
  "hex",
@@ -1927,8 +2041,8 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "bytes",
- "calimero-primitives",
- "calimero-utils-actix",
+ "calimero-primitives 0.0.0",
+ "calimero-utils-actix 0.0.0",
  "eyre",
  "futures-util",
  "libp2p",
@@ -1941,24 +2055,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-network-primitives"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c325c4360cb8631d3d8c96aa5541d6d29a343046e3ae4c64476aea5dad5fae1"
+dependencies = [
+ "actix",
+ "bytes",
+ "calimero-primitives 0.9.0",
+ "calimero-utils-actix 0.9.0",
+ "eyre",
+ "futures-util",
+ "libp2p",
+ "multiaddr",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "calimero-node"
 version = "0.0.0"
 dependencies = [
  "actix",
  "borsh",
- "calimero-blobstore",
- "calimero-context",
- "calimero-context-config",
- "calimero-context-primitives",
- "calimero-crypto",
+ "calimero-blobstore 0.0.0",
+ "calimero-context 0.0.0",
+ "calimero-context-config 0.0.0",
+ "calimero-context-primitives 0.0.0",
+ "calimero-crypto 0.0.0",
  "calimero-network",
- "calimero-network-primitives",
- "calimero-node-primitives",
- "calimero-primitives",
+ "calimero-network-primitives 0.0.0",
+ "calimero-node-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
  "calimero-server",
- "calimero-store",
+ "calimero-store 0.0.0",
  "calimero-store-rocksdb",
- "calimero-utils-actix",
+ "calimero-utils-actix 0.0.0",
  "camino",
  "either",
  "eyre",
@@ -1979,12 +2113,39 @@ dependencies = [
  "actix",
  "async-stream",
  "borsh",
- "calimero-blobstore",
- "calimero-crypto",
- "calimero-network-primitives",
- "calimero-primitives",
- "calimero-store",
- "calimero-utils-actix",
+ "calimero-blobstore 0.0.0",
+ "calimero-crypto 0.0.0",
+ "calimero-network-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
+ "calimero-store 0.0.0",
+ "calimero-utils-actix 0.0.0",
+ "camino",
+ "eyre",
+ "futures-util",
+ "infer",
+ "libp2p",
+ "rand 0.8.5",
+ "reqwest 0.12.23",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "calimero-node-primitives"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e57c35df6a2368c27dc040291020e54f3165206d2c738cf0a1d413b925f66d3"
+dependencies = [
+ "actix",
+ "async-stream",
+ "borsh",
+ "calimero-blobstore 0.9.0",
+ "calimero-crypto 0.9.0",
+ "calimero-network-primitives 0.9.0",
+ "calimero-primitives 0.9.0",
+ "calimero-store 0.9.0",
+ "calimero-utils-actix 0.9.0",
  "camino",
  "eyre",
  "futures-util",
@@ -2003,10 +2164,29 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
- "calimero-primitives",
+ "calimero-primitives 0.0.0",
  "ed25519-dalek",
  "eyre",
  "hex",
+ "multiaddr",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
+name = "calimero-primitives"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65f1daf028356b8a371f6bdef4c66f8fd819a6497da3b1b9f970ba549b0030e2"
+dependencies = [
+ "borsh",
+ "bs58 0.5.1",
+ "ed25519-dalek",
+ "eyre",
  "multiaddr",
  "rand 0.8.5",
  "serde",
@@ -2021,7 +2201,7 @@ name = "calimero-relayer"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
- "calimero-context-config",
+ "calimero-context-config 0.0.0",
  "chrono",
  "clap",
  "color-eyre",
@@ -2043,9 +2223,9 @@ dependencies = [
  "assert-json-diff",
  "borsh",
  "bytes",
- "calimero-node-primitives",
- "calimero-primitives",
- "calimero-sys",
+ "calimero-node-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
+ "calimero-sys 0.0.0",
  "eyre",
  "fragile",
  "futures-util",
@@ -2064,13 +2244,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-runtime"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a81b7e68f6c528055b5399a161cb8a9c3f9e4d6e73a45c187f6557f7790fa9e8"
+dependencies = [
+ "borsh",
+ "bytes",
+ "calimero-node-primitives 0.9.0",
+ "calimero-primitives 0.9.0",
+ "calimero-sys 0.9.0",
+ "eyre",
+ "fragile",
+ "futures-util",
+ "ouroboros",
+ "rand 0.8.5",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "ureq",
+ "wasmer",
+ "wasmer-types",
+]
+
+[[package]]
 name = "calimero-sdk"
 version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
  "calimero-sdk-macros",
- "calimero-sys",
+ "calimero-sys 0.0.0",
  "calimero-wasm-abi",
  "serde",
  "serde_json",
@@ -2093,7 +2299,7 @@ dependencies = [
 name = "calimero-sdk-near"
 version = "0.0.0"
 dependencies = [
- "calimero-primitives",
+ "calimero-primitives 0.0.0",
  "calimero-sdk",
  "near-account-id",
  "serde",
@@ -2109,12 +2315,12 @@ dependencies = [
  "axum 0.7.9",
  "bytes",
  "cached-path",
- "calimero-context-config",
- "calimero-context-primitives",
- "calimero-node-primitives",
- "calimero-primitives",
+ "calimero-context-config 0.0.0",
+ "calimero-context-primitives 0.0.0",
+ "calimero-node-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
  "calimero-server-primitives",
- "calimero-store",
+ "calimero-store 0.0.0",
  "color-eyre",
  "eyre",
  "futures-util",
@@ -2142,9 +2348,9 @@ dependencies = [
 name = "calimero-server-primitives"
 version = "0.0.0"
 dependencies = [
- "calimero-context-config",
- "calimero-context-primitives",
- "calimero-primitives",
+ "calimero-context-config 0.0.0",
+ "calimero-context-primitives 0.0.0",
+ "calimero-primitives 0.0.0",
  "camino",
  "eyre",
  "serde",
@@ -2185,7 +2391,7 @@ name = "calimero-store"
 version = "0.0.0"
 dependencies = [
  "borsh",
- "calimero-primitives",
+ "calimero-primitives 0.0.0",
  "camino",
  "eyre",
  "generic-array 1.1.1",
@@ -2197,10 +2403,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-store"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f90e4456a80180d792331fd56a6626cec44aaf14e4a171291cfe0bf4f913fe"
+dependencies = [
+ "borsh",
+ "calimero-primitives 0.9.0",
+ "camino",
+ "eyre",
+ "generic-array 1.1.1",
+ "strum 0.26.3",
+ "thiserror 1.0.69",
+ "thunderdome",
+]
+
+[[package]]
 name = "calimero-store-rocksdb"
 version = "0.0.0"
 dependencies = [
- "calimero-store",
+ "calimero-store 0.0.0",
  "eyre",
  "rocksdb",
  "strum 0.26.3",
@@ -2215,18 +2437,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-sys"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00ddf19558e9afefd9a061bbec66bedd5219f5bb568c59ccd5806a072424d25f"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "calimero-utils-actix"
 version = "0.0.0"
 dependencies = [
  "actix",
  "async-stream",
- "calimero-primitives",
+ "calimero-primitives 0.0.0",
  "eyre",
  "futures-util",
  "itertools 0.14.0",
  "paste",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "calimero-utils-actix"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f32cbb0f1482f88cbdda26fe2e3f60e9dffb9ad715d7457ba2e51e0dcb2120a5"
+dependencies = [
+ "actix",
+ "async-stream",
+ "calimero-primitives 0.9.0",
+ "eyre",
+ "futures-util",
+ "itertools 0.14.0",
+ "paste",
+ "tokio",
 ]
 
 [[package]]
@@ -3259,7 +3506,7 @@ version = "0.0.0"
 dependencies = [
  "alloy",
  "async-compression",
- "calimero-context-config",
+ "calimero-context-config 0.0.0",
  "camino",
  "candid",
  "clap",
@@ -5288,7 +5535,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4979f22fdb869068da03c9f7528f8297c6fd2606bc3a4affe42e6a823fdb8da4"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -6034,8 +6281,8 @@ dependencies = [
  "bs58 0.5.1",
  "bytes",
  "cached-path",
- "calimero-primitives",
- "calimero-store",
+ "calimero-primitives 0.0.0",
+ "calimero-store 0.0.0",
  "chrono",
  "clap",
  "config",
@@ -6087,8 +6334,8 @@ dependencies = [
  "borsh",
  "calimero-client",
  "calimero-config",
- "calimero-context-config",
- "calimero-primitives",
+ "calimero-context-config 0.0.0",
+ "calimero-primitives 0.0.0",
  "calimero-server-primitives",
  "calimero-version",
  "camino",
@@ -6120,16 +6367,16 @@ name = "merod"
 version = "0.1.0"
 dependencies = [
  "alloy",
- "calimero-blobstore",
+ "calimero-blobstore 0.0.0",
  "calimero-config",
- "calimero-context",
- "calimero-context-config",
- "calimero-network-primitives",
+ "calimero-context 0.0.0",
+ "calimero-context-config 0.0.0",
+ "calimero-network-primitives 0.0.0",
  "calimero-node",
  "calimero-server",
- "calimero-store",
+ "calimero-store 0.0.0",
  "calimero-store-rocksdb",
- "calimero-utils-actix",
+ "calimero-utils-actix 0.0.0",
  "calimero-version",
  "camino",
  "clap",
@@ -10946,7 +11193,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
