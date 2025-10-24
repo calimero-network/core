@@ -15,6 +15,7 @@ exclude = [
     "./apps/abi_conformance",
     "./apps/kv-store",
     "./apps/kv-store-with-handlers",
+    "./apps/xcall-example",
     "./e2e-tests",
     "./crates/merod",
     "./crates/version",

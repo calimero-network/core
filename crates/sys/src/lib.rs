@@ -21,6 +21,8 @@ wasm_imports! {
         fn emit(event: Ref<Event<'_>>);
         fn emit_with_handler(event: Ref<Event<'_>>, handler: Ref<Buffer<'_>>);
         // --
+        fn xcall(call: Ref<XCall<'_>>);
+        // --
         fn commit(root: Ref<Buffer<'_>>, artifact: Ref<Buffer<'_>>);
         // --
         fn storage_read(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
