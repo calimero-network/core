@@ -53,6 +53,7 @@ style_src = ["'self'", "'unsafe-inline'"]
 [providers]
 near_wallet = true
 user_password = true
+farcaster = true
 
 # NEAR wallet configuration
 [near]
@@ -64,6 +65,10 @@ wallet_url = "https://wallet.testnet.near.org"
 [user_password]
 min_password_length = 8
 max_password_length = 128
+
+# Farcaster configuration
+[farcaster]
+enabled = true
 
 # Development/testing configuration
 [development]
