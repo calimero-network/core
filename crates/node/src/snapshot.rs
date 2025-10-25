@@ -7,11 +7,11 @@
 use calimero_primitives::context::ContextId;
 use calimero_storage::index::EntityIndex;
 use calimero_storage::interface::Snapshot;
-use calimero_store::key::{self, ContextState};
+use calimero_store::key::ContextState;
 use calimero_store::layer::ReadLayer;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Generates a complete snapshot of a context's storage state.
 ///
@@ -156,14 +156,14 @@ pub fn apply_snapshot(
     for (id_bytes, _data) in &snapshot.entries {
         let state_key: [u8; 32] = (*id_bytes).try_into()
             .map_err(|_| eyre::eyre!("Invalid ID length in snapshot entry"))?;
-        entry_keys.push(key::ContextState::new(*context_id, state_key));
+        entry_keys.push(ContextState::new(*context_id, state_key));
     }
     
     // Prepare all index keys
     for (id_bytes, _data) in &snapshot.indexes {
         let state_key: [u8; 32] = (*id_bytes).try_into()
             .map_err(|_| eyre::eyre!("Invalid ID length in snapshot index"))?;
-        index_keys.push(key::ContextState::new(*context_id, state_key));
+        index_keys.push(ContextState::new(*context_id, state_key));
     }
     
     // Build transaction with references to keys

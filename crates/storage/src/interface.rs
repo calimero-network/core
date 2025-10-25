@@ -210,7 +210,7 @@ pub struct Snapshot {
 /// Used to determine when full resync is needed vs incremental sync.
 /// Persisted per remote node ID in storage under Key::SyncState.
 ///
-#[derive(Clone, Debug, BorshDeserialize, BorshSerialize, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, BorshDeserialize, BorshSerialize, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SyncState {
     /// ID of the remote node this sync state tracks.
     pub node_id: Id,

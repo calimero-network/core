@@ -50,6 +50,7 @@ impl RunCommand {
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
             server: server_config,
+            gc_interval_secs: None, // Use default (12 hours)
         })
         .await
     }

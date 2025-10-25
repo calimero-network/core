@@ -18,7 +18,7 @@ use eyre::Result as EyreResult;
 use tracing::{debug, error, info, warn};
 
 /// Message to trigger garbage collection.
-#[derive(Debug, Message)]
+#[derive(Copy, Clone, Debug, Message)]
 #[rtype(result = "()")]
 pub struct RunGC;
 
@@ -158,7 +158,7 @@ impl Actor for GarbageCollector {
 
         // Schedule periodic GC runs
         let interval = self.interval;
-        ctx.run_interval(interval, |_act, ctx| {
+        let _handle = ctx.run_interval(interval, |_act, ctx| {
             ctx.notify(RunGC);
         });
     }
