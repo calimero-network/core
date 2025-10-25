@@ -14,6 +14,9 @@ pub enum Key {
 
     /// An entry key.
     Entry(Id),
+
+    /// Sync state key for tracking last sync time with a remote node.
+    SyncState(Id),
 }
 
 impl Key {
@@ -28,6 +31,10 @@ impl Key {
             }
             Self::Entry(id) => {
                 bytes[0] = 1;
+                bytes[1..33].copy_from_slice(id.as_bytes());
+            }
+            Self::SyncState(id) => {
+                bytes[0] = 2;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
         }
@@ -66,6 +73,21 @@ pub trait StorageAdaptor {
     /// * `value` - The data to write.
     ///
     fn storage_write(key: Key, value: &[u8]) -> bool;
+
+    /// Iterates over all keys in storage.
+    ///
+    /// Returns an iterator over all keys currently in storage.
+    /// Used primarily for garbage collection and full resync.
+    ///
+    /// # Implementation Note
+    ///
+    /// For production (MainStorage), this may need to be implemented
+    /// via the underlying storage backend (RocksDB, etc.).
+    ///
+    /// TODO: For WASM/production environments, this needs backend support.
+    /// Currently only implemented for MockedStorage (testing).
+    ///
+    fn storage_iter_keys() -> Vec<Key>;
 }
 
 /// The main storage system.
@@ -92,6 +114,19 @@ impl StorageAdaptor for MainStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         storage_write(key, value)
+    }
+
+    fn storage_iter_keys() -> Vec<Key> {
+        // TODO: Implement this via the underlying storage backend
+        // For RocksDB: iterate over all keys in the database
+        // For WASM: may need to maintain a separate key index
+        //
+        // This is critical for:
+        // - Garbage collection of tombstones
+        // - Full resync snapshot generation
+        //
+        // Temporary: Return empty vec (disables GC for now)
+        Vec::new()
     }
 }
 
@@ -133,6 +168,17 @@ pub(crate) mod mocked {
                     .borrow_mut()
                     .insert((SCOPE, key), value.to_vec())
                     .is_some()
+            })
+        }
+
+        fn storage_iter_keys() -> Vec<Key> {
+            STORAGE.with(|storage| {
+                storage
+                    .borrow()
+                    .keys()
+                    .filter(|(scope, _)| *scope == SCOPE)
+                    .map(|(_, key)| *key)
+                    .collect()
             })
         }
     }

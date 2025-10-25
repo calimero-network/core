@@ -46,6 +46,7 @@ use sha2::{Digest, Sha256};
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data, Metadata};
+use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::sync;
@@ -188,6 +189,53 @@ pub struct ComparisonData {
 
     /// The metadata of the entity.
     metadata: Metadata,
+}
+
+/// Tracks synchronization state with a remote node.
+///
+/// Used to determine when full resync is needed vs incremental sync.
+/// Persisted per remote node ID in storage under Key::SyncState.
+///
+#[derive(Clone, Debug, BorshDeserialize, BorshSerialize, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SyncState {
+    /// ID of the remote node this sync state tracks.
+    pub node_id: Id,
+
+    /// Timestamp of last successful sync (nanoseconds since epoch).
+    pub last_sync_time: u64,
+
+    /// Root hash at last sync (for validation).
+    pub last_sync_root_hash: [u8; 32],
+
+    /// Number of successful syncs with this node.
+    pub sync_count: u64,
+}
+
+impl SyncState {
+    /// Creates a new sync state for a node.
+    pub fn new(node_id: Id) -> Self {
+        Self {
+            node_id,
+            last_sync_time: time_now(),
+            last_sync_root_hash: [0; 32],
+            sync_count: 0,
+        }
+    }
+
+    /// Checks if full resync is needed based on offline duration.
+    ///
+    /// Returns true if node has been offline longer than tombstone retention.
+    pub fn needs_full_resync(&self, tombstone_retention_nanos: u64) -> bool {
+        let offline_duration = time_now().saturating_sub(self.last_sync_time);
+        offline_duration > tombstone_retention_nanos
+    }
+
+    /// Updates sync state after successful sync.
+    pub fn update(&mut self, root_hash: [u8; 32]) {
+        self.last_sync_time = time_now();
+        self.last_sync_root_hash = root_hash;
+        self.sync_count += 1;
+    }
 }
 
 /// The primary interface for the storage system.
@@ -918,5 +966,140 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn full_resync_placeholder() {
         // TODO: Implement full resync protocol
         unimplemented!("Full resync not yet implemented - see TODOs")
+    }
+
+    /// Gets the sync state for a remote node.
+    ///
+    /// Returns None if never synced with this node before.
+    pub fn get_sync_state(node_id: Id) -> Result<Option<SyncState>, StorageError> {
+        match S::storage_read(Key::SyncState(node_id)) {
+            Some(data) => Ok(Some(
+                SyncState::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Saves sync state for a remote node.
+    pub fn save_sync_state(state: &SyncState) -> Result<(), StorageError> {
+        let data = to_vec(state).map_err(StorageError::SerializationError)?;
+        let _ignored = S::storage_write(Key::SyncState(state.node_id), &data);
+        Ok(())
+    }
+
+    /// Checks if full resync is needed with a remote node.
+    ///
+    /// # Parameters
+    ///
+    /// * `node_id` - Remote node to check
+    /// * `tombstone_retention_nanos` - Tombstone retention period (e.g., 86_400_000_000_000 for 1 day)
+    ///
+    /// # Returns
+    ///
+    /// * `true` - Full resync needed (node offline > retention period)
+    /// * `false` - Incremental sync OK
+    ///
+    pub fn needs_full_resync(
+        node_id: Id,
+        tombstone_retention_nanos: u64,
+    ) -> Result<bool, StorageError> {
+        match Self::get_sync_state(node_id)? {
+            Some(state) => Ok(state.needs_full_resync(tombstone_retention_nanos)),
+            None => Ok(false), // Never synced = not offline, can do incremental
+        }
+    }
+
+    /// Full resync protocol (scaffold).
+    ///
+    /// Completely rebuilds local state from remote node snapshot.
+    ///
+    /// # Implementation Steps
+    ///
+    /// 1. **Validate prerequisites**
+    ///    - Check node_id is valid
+    ///    - Verify we're not in the middle of another resync
+    ///
+    /// 2. **Request snapshot from remote**
+    ///    - TODO: Define snapshot transfer protocol
+    ///    - TODO: Handle large snapshots (streaming/chunking)
+    ///    - TODO: Add progress reporting
+    ///
+    /// 3. **Clear local storage**
+    ///    - Remove all Entry and Index keys
+    ///    - Preserve SyncState metadata
+    ///    - TODO: Add safety confirmation mechanism
+    ///
+    /// 4. **Rebuild from snapshot**
+    ///    - Write all entities from snapshot
+    ///    - Rebuild indexes
+    ///    - Recalculate Merkle tree
+    ///
+    /// 5. **Verify integrity**
+    ///    - Compare root hash with remote
+    ///    - Retry if mismatch
+    ///    - TODO: Add retry limits and exponential backoff
+    ///
+    /// 6. **Update sync state**
+    ///    - Record successful resync
+    ///    - Update last_sync_time
+    ///    - Increment sync_count
+    ///
+    /// # TODO List
+    ///
+    /// - [ ] Define `Snapshot` struct for data transfer
+    /// - [ ] Implement `clear_all_storage()` safely
+    /// - [ ] Add network protocol for snapshot transfer
+    /// - [ ] Handle "split brain" (both nodes want full resync)
+    /// - [ ] Add streaming for large snapshots
+    /// - [ ] Add progress callbacks
+    /// - [ ] Add rollback on failure
+    /// - [ ] Add comprehensive integration tests
+    ///
+    #[allow(dead_code, reason = "Scaffolding for future implementation")]
+    pub fn full_resync(_remote_node_id: Id) -> Result<(), StorageError> {
+        // TODO: Implement full resync protocol
+        // See comprehensive implementation plan above
+        unimplemented!("Full resync not yet implemented - see inline TODOs")
+    }
+
+    /// Generates a full snapshot for resync.
+    ///
+    /// Exports all entities and indexes for transfer to a remote node.
+    ///
+    /// # TODO
+    ///
+    /// - [ ] Implement snapshot generation
+    /// - [ ] Add compression
+    /// - [ ] Support streaming for large datasets
+    /// - [ ] Include schema version for compatibility checks
+    ///
+    #[allow(dead_code, reason = "Scaffolding for future implementation")]
+    pub fn generate_snapshot() -> Result<Vec<u8>, StorageError> {
+        // TODO: Implement snapshot generation
+        // 1. Iterate all Entry and Index keys
+        // 2. Serialize into compact format
+        // 3. Include root hash for verification
+        // 4. Add metadata (timestamp, version, etc.)
+        unimplemented!("Snapshot generation not yet implemented")
+    }
+
+    /// Applies a snapshot during full resync.
+    ///
+    /// # TODO
+    ///
+    /// - [ ] Implement snapshot application
+    /// - [ ] Add validation before clearing storage
+    /// - [ ] Support incremental application for large snapshots
+    /// - [ ] Add rollback on errors
+    ///
+    #[allow(dead_code, reason = "Scaffolding for future implementation")]
+    pub fn apply_snapshot(_snapshot_data: &[u8]) -> Result<(), StorageError> {
+        // TODO: Implement snapshot application
+        // 1. Validate snapshot format and integrity
+        // 2. Clear local storage (with confirmation)
+        // 3. Deserialize and write all entities
+        // 4. Rebuild indexes
+        // 5. Verify root hash matches
+        unimplemented!("Snapshot application not yet implemented")
     }
 }

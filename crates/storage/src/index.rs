@@ -364,24 +364,44 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// Number of tombstones garbage collected
     ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // GC tombstones older than 1 day
+    /// const ONE_DAY_NANOS: u64 = 86_400_000_000_000;
+    /// let collected = Index::<MainStorage>::garbage_collect_tombstones(ONE_DAY_NANOS)?;
+    /// println!("Garbage collected {} tombstones", collected);
+    /// ```
+    ///
     /// # TODO
     ///
-    /// - [ ] Make this iterate over all indexes efficiently (need iterator over storage keys)
     /// - [ ] Add metrics/logging for GC operations
-    /// - [ ] Consider partial GC (limit number of items per run)
+    /// - [ ] Consider partial GC (limit number of items per run to avoid blocking)
     /// - [ ] Add GC scheduling mechanism (auto-run periodically)
+    /// - [ ] Add GC configuration (min age, batch size, etc.)
     ///
-    #[allow(dead_code, reason = "Will be called by GC scheduler - TODO")]
     pub(crate) fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError> {
         let cutoff_time = time_now().saturating_sub(retention_nanos);
         let mut collected = 0;
 
-        // TODO: This is a placeholder implementation
-        // Need to iterate over all index keys in storage
-        // For now, this would need to be called with specific IDs
-        //
-        // Future: Add storage_iter_keys() to StorageAdaptor trait
-        // to enable efficient iteration over all indexes
+        // Iterate over all keys in storage
+        let all_keys = S::storage_iter_keys();
+
+        for key in all_keys {
+            // Only process Index keys (not Entry keys)
+            if let Key::Index(id) = key {
+                // Check if this index is a tombstone older than cutoff
+                if let Some(index) = Self::get_index(id)? {
+                    if let Some(deleted_at) = index.deleted_at {
+                        if deleted_at < cutoff_time {
+                            // Tombstone is old enough - remove it
+                            let _ignored = S::storage_remove(Key::Index(id));
+                            collected += 1;
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(collected)
     }

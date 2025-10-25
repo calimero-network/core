@@ -58,6 +58,7 @@
 
 pub mod address;
 pub mod collections;
+pub mod constants;
 pub mod entities;
 pub mod env;
 pub mod error;
