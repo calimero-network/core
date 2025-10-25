@@ -60,6 +60,7 @@ pub mod address;
 pub mod collections;
 pub mod entities;
 pub mod env;
+pub mod error;
 pub mod index;
 pub mod integration;
 pub mod interface;
@@ -74,6 +75,9 @@ pub mod exports {
 
 /// Re-export the storage macros
 pub use calimero_storage_macros::{AtomicUnit, Collection};
+
+// Re-export commonly used types
+pub use error::StorageError;
 
 /// Shared test functionality.
 #[cfg(test)]
