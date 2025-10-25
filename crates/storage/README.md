@@ -55,17 +55,17 @@ graph TB
         I -->|Key::Entry| K[Borsh-serialized Data]
     end
     
-    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style B fill:#FADBD8,stroke:#C0392B,stroke-width:2px
-    style C fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style D fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style E fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style F fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style G fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style H fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style I fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px
-    style J fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px
-    style K fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px
+    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style B fill:#FADBD8,stroke:#C0392B,stroke-width:2px,color:#000
+    style C fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style D fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style E fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style F fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style G fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style H fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style I fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px,color:#000
+    style J fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px,color:#000
+    style K fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px,color:#000
 ```
 
 ### Hybrid CRDT Model
@@ -121,14 +121,14 @@ graph TB
     Note1["Own Hash = SHA256(data)"]
     Note2["Full Hash = SHA256(own_hash + child_hashes)"]
     
-    style Root fill:#FADBD8,stroke:#C0392B,stroke-width:2px
-    style Coll1 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style Coll2 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style Item1 fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style Item2 fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style Item3 fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style Note1 fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style Note2 fill:#FCF3CF,stroke:#D68910,stroke-width:2px
+    style Root fill:#FADBD8,stroke:#C0392B,stroke-width:2px,color:#000
+    style Coll1 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style Coll2 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style Item1 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style Item2 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style Item3 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style Note1 fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style Note2 fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
 ```
 
 Each entity maintains two hashes:
@@ -154,10 +154,10 @@ graph LR
     K1 -.->|stores| V1
     K2 -.->|stores| V2
     
-    style K1 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style K2 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style V1 fill:#FADBD8,stroke:#C0392B,stroke-width:2px
-    style V2 fill:#D5F4E6,stroke:#229954,stroke-width:2px
+    style K1 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style K2 fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style V1 fill:#FADBD8,stroke:#C0392B,stroke-width:2px,color:#000
+    style V2 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
 ```
 
 **Two-tier key structure:**
@@ -173,11 +173,11 @@ graph LR
     C --> D[Direct RocksDB lookup]
     D --> E[Return value]
     
-    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style B fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style C fill:#FADBD8,stroke:#C0392B,stroke-width:2px
-    style D fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px
-    style E fill:#D5F4E6,stroke:#229954,stroke-width:2px
+    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style B fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style C fill:#FADBD8,stroke:#C0392B,stroke-width:2px,color:#000
+    style D fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px,color:#000
+    style E fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
 ```
 
 **Tradeoff**: Hashed IDs prevent RocksDB range scans. Iteration fetches child IDs from the index, then point-lookups each item.
@@ -239,16 +239,16 @@ flowchart TD
     H --> I[Push to sync queue]
     I --> J[Propagate to peers]
     
-    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style B fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style C fill:#FADBD8,stroke:#C0392B,stroke-width:2px
-    style D fill:#FADBD8,stroke:#C0392B,stroke-width:2px
-    style E fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style F fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px
-    style G fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style H fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style I fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style J fill:#D5F4E6,stroke:#229954,stroke-width:2px
+    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style B fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style C fill:#FADBD8,stroke:#C0392B,stroke-width:2px,color:#000
+    style D fill:#FADBD8,stroke:#C0392B,stroke-width:2px,color:#000
+    style E fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style F fill:#E8DAEF,stroke:#7D3C98,stroke-width:2px,color:#000
+    style G fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style H fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style I fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style J fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
 ```
 
 **Comparison Flow:**
@@ -267,18 +267,18 @@ flowchart TD
     H -->|No| J[Check next child]
     I --> K[Apply actions]
     
-    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style B fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style C fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style D fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style E fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style F fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style G fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style H fill:#FCF3CF,stroke:#D68910,stroke-width:2px
-    style I fill:#FADBD8,stroke:#C0392B,stroke-width:2px
-    style J fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style K fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style Z fill:#D5F4E6,stroke:#229954,stroke-width:2px
+    style A fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style B fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style C fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style D fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style E fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style F fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style G fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style H fill:#FCF3CF,stroke:#D68910,stroke-width:2px,color:#000
+    style I fill:#FADBD8,stroke:#C0392B,stroke-width:2px,color:#000
+    style J fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style K fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style Z fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
 ```
 
 **Conflict Resolution**:
@@ -311,14 +311,14 @@ graph TD
     CollB --> SubColl
     SubColl --> Item4
     
-    style Root fill:#FADBD8,stroke:#C0392B,stroke-width:3px
-    style CollA fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style CollB fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style SubColl fill:#D6EAF8,stroke:#2874A6,stroke-width:2px
-    style Item1 fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style Item2 fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style Item3 fill:#D5F4E6,stroke:#229954,stroke-width:2px
-    style Item4 fill:#D5F4E6,stroke:#229954,stroke-width:2px
+    style Root fill:#FADBD8,stroke:#C0392B,stroke-width:3px,color:#000
+    style CollA fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style CollB fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style SubColl fill:#D6EAF8,stroke:#2874A6,stroke-width:2px,color:#000
+    style Item1 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style Item2 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style Item3 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
+    style Item4 fill:#D5F4E6,stroke:#229954,stroke-width:2px,color:#000
 ```
 
 **Each entity stores:**
