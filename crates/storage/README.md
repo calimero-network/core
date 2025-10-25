@@ -132,10 +132,21 @@ graph TB
 ```
 
 Each entity maintains two hashes:
-- **Own hash**: SHA-256 of immediate data
-- **Full hash**: Combined hash including all descendants
+- **Own hashMenuSHA-256 of immediate data only
+- **Full hash**: SHA-256 of (own_hash + all child hashes)
 
-This enables efficient tree comparison—only subtrees with differing hashes need examination.
+**Why two hashes?**
+
+This two-level hashing enables efficient sync optimization:
+
+1. Compare `full_hash` → Detect **if anything changed** in subtree
+2. If differs, compare `own_hash` → Determine **what changed**:
+   - `own_hash` differs → Entity data changed → Transfer entity
+   - `own_hash` same → Only children changed → Skip entity, recurse children
+
+**Example**: If a leaf deep in a tree changes, only that leaf's data needs to be
+transferred. All ancestor nodes have matching `own_hash`, so their data is skipped.
+Without `own_hash`, every ancestor's data would need to be sent and compared.
 
 ### Storage Layout
 

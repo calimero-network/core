@@ -139,15 +139,24 @@ pub enum Action {
 }
 
 /// Data that is used for comparison between two nodes.
+///
+/// Uses two-level hashing to optimize sync:
+/// - `full_hash` - Detects if **anything** in subtree changed
+/// - `own_hash` - Detects if **this entity's data** changed (vs. children)
+///
+/// This enables skipping unchanged entity data during sync, only transferring
+/// full data when the entity itself changed, not just its descendants.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ComparisonData {
     /// The unique identifier of the entity being compared.
     id: Id,
 
-    /// The Merkle hash of the entity's own data, without any descendants.
+    /// Hash of entity's immediate data only (excludes children).
+    /// Used to determine if entity itself changed vs. just its children.
     own_hash: [u8; 32],
 
-    /// The Merkle hash of the entity's complete data, including child hashes.
+    /// Hash of entity + all descendants.
+    /// Used to quickly detect if any changes exist in subtree.
     full_hash: [u8; 32],
 
     /// The list of ancestors of the entity, with their IDs and hashes. The
