@@ -1,0 +1,322 @@
+name: "KV Store - Ethereum"
+description: "Basic KV Store test on Ethereum protocol with custom outputs"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: kv-eth
+
+steps:
+  # ============================================================================
+  # Phase 1: Application Installation with Custom Outputs
+  # ============================================================================
+  - name: Install Application on Node 1
+    type: install_application
+    node: kv-eth-1
+    path: "apps/kv-store/res/kv_store.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+      app_id_node1:
+        field: applicationId
+        target: app_id_{node_name}
+
+  # ============================================================================
+  # Phase 2: Context Creation with Custom Outputs
+  # ============================================================================
+  - name: Create Context on Node 1
+    type: create_context
+    node: kv-eth-1
+    application_id: "{{app_id}}"
+    protocol: ethereum
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+      ctx_id_node1:
+        field: contextId
+        target: context_id_{node_name}
+
+  # ============================================================================
+  # Phase 3: Generate Identities with Custom Outputs
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: kv-eth-2
+    outputs:
+      public_key_2: publicKey
+      key_node2:
+        field: publicKey
+        target: public_key_{node_name}
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: kv-eth-3
+    outputs:
+      public_key_3: publicKey
+      key_node3:
+        field: publicKey
+        target: public_key_{node_name}
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  # ============================================================================
+  # Phase 4: Invite and Join with Custom Outputs
+  # ============================================================================
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: kv-eth-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_2}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Join Context from Node 2
+    type: join_context
+    node: kv-eth-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_2}}"
+    invitation: "{{invitation_2}}"
+
+  - name: Invite Node 3 from Node 1
+    type: invite_identity
+    node: kv-eth-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_3}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: kv-eth-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_3}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for Consensus After Join
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 5: Test KV Operations with Custom Outputs
+  # ============================================================================
+  - name: Set Key-Value Pair from Node 1
+    type: call
+    node: kv-eth-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "test_value"
+    outputs:
+      set_result_1: result
+
+  - name: Wait for Set Operation
+    type: wait
+    seconds: 3
+
+  - name: Get Value from Node 1
+    type: call
+    node: kv-eth-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      get_result_1: result
+
+  - name: Get Value from Node 2
+    type: call
+    node: kv-eth-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      get_result_2: result
+
+  - name: Get Value from Node 3
+    type: call
+    node: kv-eth-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      get_result_3: result
+
+  # ============================================================================
+  # Phase 6: Update and Verify Propagation
+  # ============================================================================
+  - name: Update Value from Node 2
+    type: call
+    node: kv-eth-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "updated_value"
+    outputs:
+      update_result: result
+
+  - name: Wait for Update Broadcast
+    type: wait
+    seconds: 3
+
+  - name: Verify Updated Value on Node 1
+    type: call
+    node: kv-eth-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      updated_result_1: result
+
+  - name: Verify Updated Value on Node 3
+    type: call
+    node: kv-eth-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      updated_result_3: result
+
+  # ============================================================================
+  # Phase 7: Test Remove Operation with Repeat
+  # ============================================================================
+  - name: Test Multiple Set-Remove Operations
+    type: repeat
+    count: 2
+    outputs:
+      current_iteration: iteration
+      total_count: total_iterations
+    steps:
+      - name: Set Iteration Key
+        type: call
+        node: kv-eth-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{public_key_3}}"
+        method: set
+        args:
+          key: "key_{{current_iteration}}"
+          value: "value_{{current_iteration}}"
+        outputs:
+          iter_set_result: result
+
+      - name: Wait for Consensus
+        type: wait
+        seconds: 2
+
+      - name: Verify Key on Node 1
+        type: call
+        node: kv-eth-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: get
+        args:
+          key: "key_{{current_iteration}}"
+        outputs:
+          iter_get_result: result
+
+      - name: Remove Key from Node 2
+        type: call
+        node: kv-eth-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{public_key_2}}"
+        method: remove
+        args:
+          key: "key_{{current_iteration}}"
+        outputs:
+          iter_remove_result: result
+
+      - name: Wait for Removal Broadcast
+        type: wait
+        seconds: 2
+
+      - name: Verify Key Removed on Node 3
+        type: call
+        node: kv-eth-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{public_key_3}}"
+        method: get
+        args:
+          key: "key_{{current_iteration}}"
+        outputs:
+          iter_removed_result: result
+
+  # ============================================================================
+  # Phase 8: Final Verification
+  # ============================================================================
+  - name: Set Final Key
+    type: call
+    node: kv-eth-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: "final_key"
+      value: "final_value"
+    outputs:
+      final_set_result: result
+
+  - name: Wait for Final Consensus
+    type: wait
+    seconds: 3
+
+  - name: Verify Final Key on All Nodes - Node 1
+    type: call
+    node: kv-eth-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "final_key"
+    outputs:
+      final_result_1: result
+
+  - name: Verify Final Key on All Nodes - Node 2
+    type: call
+    node: kv-eth-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "final_key"
+    outputs:
+      final_result_2: result
+
+  - name: Verify Final Key on All Nodes - Node 3
+    type: call
+    node: kv-eth-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "final_key"
+    outputs:
+      final_result_3: result
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 60
+nuke_on_end: true
