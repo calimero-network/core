@@ -65,12 +65,12 @@ pub type MainInterface = Interface<MainStorage>;
 ///   - **Direct change**: When a direct change is made, in other words, when
 ///     there is local activity that results in data modification to propagate
 ///     to other nodes, the possible resulting actions are [`Add`](Action::Add),
-///     [`Delete`](Action::Delete), and [`Update`](Action::Update). A comparison
+///     [`DeleteRef`](Action::DeleteRef), and [`Update`](Action::Update). A comparison
 ///     is not needed in this case, as the deltas are known, and assuming all of
 ///     the actions are carried out, the nodes will be in sync.
 ///
 ///   - **Comparison**: When a comparison is made between two nodes, the
-///     possible resulting actions are [`Add`](Action::Add), [`Delete`](Action::Delete),
+///     possible resulting actions are [`Add`](Action::Add), [`DeleteRef`](Action::DeleteRef),
 ///     [`Update`](Action::Update), and [`Compare`](Action::Compare). The extra
 ///     comparison action arises in the case of tree traversal, where a child
 ///     entity is found to differ between the two nodes. In this case, the child
@@ -112,18 +112,6 @@ pub enum Action {
     Compare {
         /// Unique identifier of the entity.
         id: Id,
-    },
-
-    /// Delete an entity with the given ID.
-    ///
-    /// TODO: Deprecated in favor of DeleteRef. This variant carries full ancestor
-    /// data which is inefficient. Kept for backward compatibility during migration.
-    Delete {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
     },
 
     /// Delete reference (tombstone-based deletion).
@@ -371,16 +359,6 @@ impl<S: StorageAdaptor> Interface<S> {
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
-            }
-            Action::Delete {
-                id, ancestors: _, ..
-            } => {
-                // TODO: Legacy Delete action - needs parent_id and collection to properly call remove_child_from
-                // For now, just delete the entry and mark index as deleted
-                // This is incomplete - parent's children list won't be updated!
-                // Migrate to DeleteRef variant for proper handling
-                let _ignored = S::storage_remove(Key::Entry(id));
-                let _ignored = <Index<S>>::mark_deleted(id, crate::env::time_now());
             }
             Action::DeleteRef { id, deleted_at } => {
                 Self::apply_delete_ref_action(id, deleted_at)?;
@@ -795,20 +773,16 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
+        let deleted_at = time_now();
+        
         <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
 
-        let (parent_full_hash, _) =
-            <Index<S>>::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
-        let mut ancestors = <Index<S>>::get_ancestors_of(parent_id)?;
-        let metadata =
-            <Index<S>>::get_metadata(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
-        ancestors.insert(0, ChildInfo::new(parent_id, parent_full_hash, metadata));
-
-        _ = S::storage_remove(Key::Entry(child_id));
-
-        sync::push_action(Action::Delete {
+        // Use DeleteRef for efficient tombstone-based deletion
+        // More efficient than Delete: only sends ID + timestamp vs full ancestor tree
+        // The tombstone is created by remove_child_from, we just broadcast the deletion
+        sync::push_action(Action::DeleteRef {
             id: child_id,
-            ancestors,
+            deleted_at,
         });
 
         Ok(true)

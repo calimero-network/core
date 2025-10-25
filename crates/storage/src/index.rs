@@ -18,7 +18,7 @@ use crate::store::{IterableStorage, Key, StorageAdaptor};
 
 /// Index entry for an entity.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct EntityIndex {
+pub struct EntityIndex {
     /// Entity ID.
     id: Id,
 
@@ -35,12 +35,12 @@ struct EntityIndex {
     own_hash: [u8; 32],
 
     /// Entity metadata.
-    pub(crate) metadata: Metadata,
+    pub metadata: Metadata,
 
     /// Tombstone marker. When set, entity data is deleted but index kept for CRDT sync.
     /// Enables proper conflict resolution (delete vs update) in distributed scenarios.
     /// Garbage collected after retention period (default: 1 day).
-    pub(crate) deleted_at: Option<u64>,
+    pub deleted_at: Option<u64>,
 }
 
 /// Entity index manager.

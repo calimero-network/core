@@ -17,8 +17,10 @@ use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tracing::error;
 
+pub mod gc;
 pub mod handlers;
 mod run;
+pub mod snapshot;
 pub mod sync;
 mod utils;
 

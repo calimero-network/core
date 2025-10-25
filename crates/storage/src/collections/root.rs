@@ -141,7 +141,6 @@ where
                         }
                         Action::Add { .. }
                         | Action::Update { .. }
-                        | Action::Delete { .. }
                         | Action::DeleteRef { .. } => {
                             <Interface<S>>::apply_action(action)?;
                         }

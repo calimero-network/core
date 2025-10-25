@@ -200,9 +200,9 @@ mod interface__apply_actions {
         let mut page = Page::new_from_element("Test Page", Element::root());
         assert!(MainInterface::save(&mut page).unwrap());
 
-        let action = Action::Delete {
+        let action = Action::DeleteRef {
             id: page.id(),
-            ancestors: vec![],
+            deleted_at: time_now(),
         };
 
         assert!(MainInterface::apply_action(action).is_ok());
