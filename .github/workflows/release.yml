@@ -7,11 +7,15 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - .github/workflows/integration-tests.yml
+      - .github/workflows/release.yml
       - "crates/**"
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - .github/workflows/integration-tests.yml
+      - .github/workflows/release.yml
       - "crates/**"
 
 permissions:
@@ -230,7 +234,7 @@ jobs:
       group: ${{ github.workflow }}-${{ github.job }}-merod-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
-      contents: read
+      contents: write
       packages: write
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 120
@@ -251,6 +255,7 @@ jobs:
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
 
   release-mero-auth-container:
     name: Release Mero Auth container
@@ -280,6 +285,24 @@ jobs:
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  trigger-integration-tests:
+    name: Trigger Integration Tests
+    needs: [release-merod-container, release-mero-auth-container]
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Repository Dispatch
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          event-type: merod_container_released
+          client-payload: |
+            {
+              "head_sha": "${{ github.event.pull_request.head.sha || github.sha }}",
+              "version": "${{ github.event.pull_request.head.sha || github.sha }}"
+            }
 
   brew-update:
     name: Update Homebrew Tap
