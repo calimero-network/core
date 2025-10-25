@@ -11,9 +11,9 @@ use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::manager::{NetworkSyncManager, Sequencer};
+use super::manager::{SyncManager, Sequencer};
 
-impl NetworkSyncManager {
+impl SyncManager {
     pub(super) async fn initiate_blob_share_process(
         &self,
         context: &Context,

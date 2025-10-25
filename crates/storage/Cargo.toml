@@ -31,7 +31,6 @@ hex.workspace = true
 velcro.workspace = true
 
 calimero-sdk.workspace = true
-calimero-sync.workspace = true
 
 [features]
 default = []

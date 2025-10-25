@@ -12,9 +12,9 @@ use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
 use tracing::{debug, info};
 
-use super::manager::{NetworkSyncManager, Sequencer};
+use super::manager::{SyncManager, Sequencer};
 
-impl NetworkSyncManager {
+impl SyncManager {
     pub(super) async fn initiate_state_sync_process(
         &self,
         context: &mut Context,

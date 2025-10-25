@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
 use crate::gc::GarbageCollector;
-use calimero_sync::{NetworkSyncManager, SyncConfig};
+use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
 #[derive(Debug)]
@@ -153,7 +153,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_manager
     });
 
-    let sync_manager = NetworkSyncManager::new(
+    let sync_manager = SyncManager::new(
         config.sync,
         node_client.clone(),
         context_client.clone(),

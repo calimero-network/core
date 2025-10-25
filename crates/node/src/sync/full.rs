@@ -13,9 +13,9 @@ use rand::thread_rng;
 use rand::Rng;
 use tracing::{debug, info};
 
-use super::manager::{NetworkSyncManager, Sequencer};
+use super::manager::{SyncManager, Sequencer};
 
-impl NetworkSyncManager {
+impl SyncManager {
     pub(super) async fn initiate_full_resync_process(
         &self,
         context: &mut Context,
@@ -166,7 +166,7 @@ impl NetworkSyncManager {
         }
 
         // Deserialize snapshot
-        let snapshot = borsh::from_slice::<crate::Snapshot>(&snapshot_bytes)?;
+        let snapshot = borsh::from_slice::<calimero_storage::snapshot::Snapshot>(&snapshot_bytes)?;
 
         info!(
             context_id=%context.id,

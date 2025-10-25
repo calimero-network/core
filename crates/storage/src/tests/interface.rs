@@ -595,7 +595,7 @@ mod snapshot_and_resync {
         TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
 
         // Generate snapshot
-        let snapshot = calimero_sync::full::generate_snapshot::<TestStorage>().unwrap();
+        let snapshot = generate_snapshot::<TestStorage>().unwrap();
 
         // Verify snapshot contains data
         assert!(snapshot.entity_count > 0);
@@ -636,7 +636,7 @@ mod snapshot_and_resync {
         let snapshot = ForeignInterface::generate_snapshot().unwrap();
 
         // Apply snapshot to TestInterface (which is empty)
-        assert!(calimero_sync::full::apply_snapshot::<TestStorage>(&snapshot).is_ok());
+        assert!(apply_snapshot::<TestStorage>(&snapshot).is_ok());
 
         // Verify data was restored
         let retrieved_page = TestInterface::find_by_id::<Page>(foreign_page.id()).unwrap();
@@ -680,7 +680,7 @@ mod snapshot_and_resync {
         Index::<TestStorage>::mark_deleted(para1.id(), crate::env::time_now()).unwrap();
 
         // Generate snapshot
-        let snapshot = calimero_sync::full::generate_snapshot::<TestStorage>().unwrap();
+        let snapshot = generate_snapshot::<TestStorage>().unwrap();
 
         // Verify para1 (tombstone) is NOT in snapshot
         let entry_ids: Vec<Id> = snapshot.entries.iter().map(|(id, _)| *id).collect();
@@ -729,7 +729,8 @@ mod snapshot_and_resync {
 
         // Perform full resync
         let remote_node_id = Id::random();
-        assert!(calimero_sync::full::full_resync::<TestStorage>(remote_node_id, snapshot).is_ok());
+        // Full resync is now in node crate, just test snapshot application
+        assert!(apply_snapshot::<TestStorage>(&snapshot).is_ok());
 
         // Verify local data was replaced with foreign data
         // Note: Root page has same ID on both, so title will be from foreign

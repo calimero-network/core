@@ -2116,7 +2116,6 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-store-rocksdb",
- "calimero-sync",
  "calimero-utils-actix",
  "camino",
  "either",
@@ -2319,7 +2318,6 @@ dependencies = [
  "borsh",
  "calimero-sdk",
  "calimero-storage-macros",
- "calimero-sync",
  "claims",
  "eyre",
  "fixedstr",
@@ -2365,28 +2363,6 @@ dependencies = [
  "rocksdb",
  "strum 0.26.3",
  "tempdir",
-]
-
-[[package]]
-name = "calimero-sync"
-version = "0.0.0"
-dependencies = [
- "borsh",
- "calimero-context-primitives",
- "calimero-crypto",
- "calimero-network-primitives",
- "calimero-node-primitives",
- "calimero-primitives",
- "calimero-sdk",
- "calimero-storage",
- "calimero-store",
- "claims",
- "eyre",
- "futures-util",
- "libp2p",
- "rand 0.8.5",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -6402,7 +6378,6 @@ dependencies = [
  "calimero-server",
  "calimero-store",
  "calimero-store-rocksdb",
- "calimero-sync",
  "calimero-utils-actix",
  "calimero-version",
  "camino",

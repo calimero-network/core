@@ -1,3 +1,8 @@
+//! Delta synchronization protocol using Merkle tree comparisons.
+//!
+//! **Single Responsibility**: Handles incremental state sync by comparing
+//! Merkle trees and exchanging only the differences.
+
 use std::num::NonZeroUsize;
 use std::pin::pin;
 
@@ -14,7 +19,7 @@ use futures_util::TryStreamExt;
 use rand::{thread_rng, Rng};
 use tracing::{debug, info};
 
-use super::manager::{NetworkSyncManager, Sequencer};
+use super::manager::{SyncManager, Sequencer};
 
 /// Maximum delta gap threshold for attempting delta-based synchronization.
 /// If a node is behind by more than this many deltas, delta sync will fail and
@@ -22,7 +27,7 @@ use super::manager::{NetworkSyncManager, Sequencer};
 /// to ensure deltas are still available on peers.
 const DELTA_SYNC_THRESHOLD: usize = 128;
 
-impl NetworkSyncManager {
+impl SyncManager {
     pub(super) async fn initiate_delta_sync_process(
         &self,
         context: &mut Context,

@@ -52,7 +52,6 @@ members = [
     "./crates/server/primitives",
     "./crates/storage",
     "./crates/storage-macros",
-    "./crates/sync",
 
     "./crates/store",
     "./crates/store/blobs",
@@ -201,7 +200,6 @@ calimero-server = { path = "./crates/server" }
 calimero-server-primitives = { path = "./crates/server/primitives" }
 calimero-storage = { path = "./crates/storage" }
 calimero-storage-macros = { path = "./crates/storage-macros" }
-calimero-sync = { path = "./crates/sync" }
 calimero-store = { path = "./crates/store" }
 calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }

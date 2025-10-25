@@ -47,12 +47,11 @@ pub struct SyncConfig {
     pub frequency: time::Duration,
 }
 
-/// Network-level synchronization manager.
+/// Network synchronization manager.
 ///
-/// Handles network protocols, stream management, and coordination with peers.
-/// This is distinct from the storage-level `SyncManager` which decides strategy.
+/// Orchestrates sync protocols: full resync, delta sync, state sync.
 #[derive(Debug)]
-pub struct NetworkSyncManager {
+pub struct SyncManager {
     pub(super) sync_config: SyncConfig,
 
     pub(super) node_client: NodeClient,
@@ -62,7 +61,7 @@ pub struct NetworkSyncManager {
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
 }
 
-impl Clone for NetworkSyncManager {
+impl Clone for SyncManager {
     fn clone(&self) -> Self {
         Self {
             sync_config: self.sync_config.clone(),
@@ -80,16 +79,16 @@ struct SyncState {
 }
 
 #[derive(Default)]
-pub(super) struct Sequencer {
+pub(crate) struct Sequencer {
     current: usize,
 }
 
 impl Sequencer {
-    pub(super) fn current(&self) -> usize {
+    pub(crate) fn current(&self) -> usize {
         self.current
     }
 
-    pub(super) fn test(&mut self, idx: usize) -> eyre::Result<()> {
+    pub(crate) fn test(&mut self, idx: usize) -> eyre::Result<()> {
         if self.current != idx {
             bail!(
                 "out of sequence message: expected {}, got {}",
@@ -103,14 +102,14 @@ impl Sequencer {
         Ok(())
     }
 
-    pub(super) fn next(&mut self) -> usize {
+    pub(crate) fn next(&mut self) -> usize {
         let current = self.current;
         self.current += 1;
         current
     }
 }
 
-impl NetworkSyncManager {
+impl SyncManager {
     pub fn new(
         sync_config: SyncConfig,
         node_client: NodeClient,

@@ -43,7 +43,6 @@ calimero-network-primitives.workspace = true
 calimero-server.workspace = true
 calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
-calimero-sync.workspace = true
 calimero-utils-actix.workspace = true
 calimero-version.workspace = true
 

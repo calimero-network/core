@@ -1,3 +1,7 @@
+//! Key sharing protocol.
+//!
+//! **Single Responsibility**: Exchanges cryptographic keys between peers.
+
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
@@ -7,9 +11,9 @@ use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
 use tracing::{debug, info};
 
-use super::manager::{NetworkSyncManager, Sequencer};
+use super::manager::{SyncManager, Sequencer};
 
-impl NetworkSyncManager {
+impl SyncManager {
     pub(super) async fn initiate_key_share_process(
         &self,
         context: &mut Context,
