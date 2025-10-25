@@ -1,0 +1,231 @@
+name: e2e-tests-merobox
+
+on:
+  push:
+    branches:
+      - master
+      - feature/merobox-e2e-migration
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests-merobox/**"
+      - ".github/workflows/e2e-tests-merobox.yml"
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests-merobox/**"
+      - ".github/workflows/e2e-tests-merobox.yml"
+
+env:
+  CALIMERO_CONTRACTS_VERSION: "latest"
+
+jobs:
+  build:
+    name: Build Binaries & Apps
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-tests-merobox
+
+      - name: Build Apps & Binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./apps/kv-store/build.sh
+          ./apps/kv-store-with-handlers/build.sh
+          cargo build -p meroctl -p merod
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            target/debug/meroctl
+            target/debug/merod
+            apps/kv-store/res/kv_store.wasm
+            apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+          retention-days: 2
+
+  test-kv-store:
+    name: KV Store - ${{ matrix.protocol }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        protocol: [near, icp, ethereum]
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: .
+
+      - name: Set Permissions
+        run: |
+          chmod +x target/debug/merod target/debug/meroctl
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Merobox
+        run: |
+          pip install merobox
+
+      - name: Verify Merobox Installation
+        run: |
+          merobox --version
+
+      - name: Download Contracts
+        run: |
+          echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
+          ./scripts/download-contracts.sh
+
+      # ============================================================================
+      # ICP-specific setup
+      # ============================================================================
+      - name: Install dfx
+        if: matrix.protocol == 'icp'
+        uses: dfinity/setup-dfx@main
+
+      - name: Verify dfx installation
+        if: matrix.protocol == 'icp'
+        run: dfx --version
+
+      - name: Deploy ICP Devnet
+        if: matrix.protocol == 'icp'
+        env:
+          ICP_PORT: 4943
+        run: |
+          echo "ICP_PORT=$ICP_PORT"
+          ./scripts/icp/deploy-devnet.sh
+
+      # ============================================================================
+      # Ethereum-specific setup
+      # ============================================================================
+      - name: Install Foundry
+        if: matrix.protocol == 'ethereum'
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Verify Foundry installation
+        if: matrix.protocol == 'ethereum'
+        run: forge --version
+
+      - name: Deploy Ethereum Devnet
+        if: matrix.protocol == 'ethereum'
+        run: |
+          ./scripts/ethereum/deploy-devnet.sh
+
+      # ============================================================================
+      # Run Merobox Tests
+      # ============================================================================
+      - name: Run KV Store Tests
+        id: merobox-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          echo "Running merobox tests for ${{ matrix.protocol }}"
+
+          # Run merobox workflow with --no-docker mode (merobox 0.2.0+)
+          merobox bootstrap run \
+            e2e-tests-merobox/workflows/kv-store/${{ matrix.protocol }}.yml \
+            --no-docker \
+            --verbose
+
+      - name: Upload Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: merobox-kv-store-${{ matrix.protocol }}
+          path: e2e-tests-merobox/results/${{ matrix.protocol }}/
+          retention-days: 2
+
+      - name: Upload Test Logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: merobox-logs-${{ matrix.protocol }}
+          path: ~/.merobox/logs/
+          retention-days: 1
+
+  report:
+    name: Generate Test Report
+    needs: test-kv-store
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: merobox-kv-store-*
+          merge-multiple: false
+          path: results/
+
+      - name: Generate Summary Report
+        run: |
+          echo "# Merobox E2E Test Results" > report.md
+          echo "" >> report.md
+          echo "## KV Store Tests" >> report.md
+          echo "" >> report.md
+
+          for protocol in near icp ethereum; do
+            echo "### $protocol" >> report.md
+            if [ -d "results/merobox-kv-store-$protocol" ]; then
+              if [ -f "results/merobox-kv-store-$protocol/summary.json" ]; then
+                echo "✅ Tests completed" >> report.md
+                cat results/merobox-kv-store-$protocol/summary.json | \
+                  jq -r '"- Duration: \(.duration)s\n- Steps: \(.total_steps)\n- Passed: \(.passed_steps)\n- Failed: \(.failed_steps)"' >> report.md
+              else
+                echo "⚠️ No summary found" >> report.md
+              fi
+            else
+              echo "❌ Tests did not run" >> report.md
+            fi
+            echo "" >> report.md
+          done
+
+          echo "---" >> report.md
+          echo "Run ID: ${{ github.run_id }}" >> report.md
+
+      - name: Prepare PR Comment
+        run: >-
+          jq -n
+          --arg pr '${{ github.event.number }}'
+          --arg tag e2e-merobox-report
+          --arg mode recreate
+          --rawfile message report.md
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment Payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-merobox-payload
+          path: payload.json

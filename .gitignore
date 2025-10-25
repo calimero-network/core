@@ -14,6 +14,11 @@ target/
 .idea/
 .vscode/
 
+# python virtual environments
+.venv-merobox/
+venv/
+.venv/
+
 # typescript
 *.map
 coverage/
