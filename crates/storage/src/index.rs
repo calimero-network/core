@@ -84,8 +84,8 @@ impl<S: StorageAdaptor> Index<S> {
         });
         child_index.parent_id = Some(parent_id);
         child_index.own_hash = child.merkle_hash();
-        Self::save_index(&child_index)?;
-        child_index.full_hash = Self::calculate_full_merkle_hash_for(child.id(), false)?;
+        child_index.full_hash =
+            Self::calculate_full_hash_from(child_index.own_hash, &child_index.children, false)?;
         Self::save_index(&child_index)?;
 
         let children = parent_index
@@ -103,8 +103,8 @@ impl<S: StorageAdaptor> Index<S> {
 
         children.extend(ordered.into_iter());
 
-        Self::save_index(&parent_index)?;
-        parent_index.full_hash = Self::calculate_full_merkle_hash_for(parent_id, false)?;
+        parent_index.full_hash =
+            Self::calculate_full_hash_from(parent_index.own_hash, &parent_index.children, false)?;
         Self::save_index(&parent_index)?;
 
         Self::recalculate_ancestor_hashes_for(parent_id)?;
@@ -143,66 +143,20 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
-    /// Calculates the Merkle hash for the entity.
+    /// Calculates full Merkle hash from own hash and children.
     ///
-    /// This calculates the Merkle hash for the entity, which is a cryptographic
-    /// hash of the significant data in the "scope" of the entity, and is used
-    /// to determine whether the data has changed and is valid. It is calculated
-    /// by hashing the substantive data in the entity, along with the hashes of
-    /// the children of the entity, thereby representing the state of the entire
-    /// hierarchy below the entity.
-    ///
-    /// This method is called automatically when the entity is updated, but can
-    /// also be called manually if required.
-    ///
-    /// # Significant data
-    ///
-    /// The data considered "significant" to the state of the entity, and any
-    /// change to which is considered to constitute a change in the state of the
-    /// entity, is:
-    ///
-    ///   - The ID of the entity. This should never change. Arguably, this could
-    ///     be omitted, but at present it means that empty elements are given
-    ///     meaningful hashes.
-    ///   - The primary [`Data`] of the entity. This is the data that the
-    ///     consumer application has stored in the entity, and is the focus of
-    ///     the entity.
-    ///   - The metadata of the entity. This is the system-managed properties
-    ///     that are used to process the entity, but are not part of the primary
-    ///     data. Arguably the Merkle hash could be considered part of the
-    ///     metadata, but it is not included in the [`Data`] struct at present
-    ///     (as it obviously should not contribute to the hash, i.e. itself).
-    ///
-    /// Note that private data is not considered significant, as it is not part
-    /// of the shared state, and therefore does not contribute to the hash.
-    ///
-    /// # Parameters
-    ///
-    /// * `id`          - The unique identifier of the entity for which to
-    ///                   calculate the Merkle hash for.
-    /// * `recalculate` - Whether to recalculate or use the cached value for
-    ///                   child hashes. Under normal circumstances, the cached
-    ///                   value should be used, as it is more efficient. The
-    ///                   option to recalculate is provided for situations when
-    ///                   the entire subtree needs revalidating.
-    ///
-    /// # Errors
-    ///
-    /// If there is a problem in serialising the data, an error will be
-    /// returned.
-    ///
-    pub(crate) fn calculate_full_merkle_hash_for(
-        id: Id,
+    /// Combines entity's own hash with child hashes. More efficient than
+    /// `calculate_full_merkle_hash_for` when own_hash is already in memory.
+    fn calculate_full_hash_from(
+        own_hash: [u8; 32],
+        children: &BTreeMap<String, Vec<ChildInfo>>,
         recalculate: bool,
     ) -> Result<[u8; 32], StorageError> {
-        let own_hash = Self::get_hashes_for(id)?
-            .ok_or(StorageError::IndexNotFound(id))?
-            .1;
         let mut hasher = Sha256::new();
         hasher.update(own_hash);
 
-        for collection_name in Self::get_collection_names_for(id)? {
-            for child in Self::get_children_of(id, &collection_name)? {
+        for children_list in children.values() {
+            for child in children_list {
                 let child_hash = if recalculate {
                     Self::calculate_full_merkle_hash_for(child.id(), true)?
                 } else {
@@ -213,6 +167,18 @@ impl<S: StorageAdaptor> Index<S> {
         }
 
         Ok(hasher.finalize().into())
+    }
+
+    /// Calculates full Merkle hash by loading from storage.
+    ///
+    /// Reads own_hash from index. Use `calculate_full_hash_from` when own_hash
+    /// is already in memory to avoid redundant DB reads.
+    pub(crate) fn calculate_full_merkle_hash_for(
+        id: Id,
+        recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        Self::calculate_full_hash_from(index.own_hash, &index.children, recalculate)
     }
 
     /// Retrieves the ancestors of a given entity.
@@ -415,9 +381,11 @@ impl<S: StorageAdaptor> Index<S> {
             }
 
             // Recalculate the parent's full hash
-            Self::save_index(&parent_index)?;
-            let new_parent_hash = Self::calculate_full_merkle_hash_for(parent_id, false)?;
-            parent_index.full_hash = new_parent_hash;
+            parent_index.full_hash = Self::calculate_full_hash_from(
+                parent_index.own_hash,
+                &parent_index.children,
+                false,
+            )?;
             Self::save_index(&parent_index)?;
             current_id = parent_id;
         }
@@ -458,8 +426,8 @@ impl<S: StorageAdaptor> Index<S> {
             children.retain(|child| child.id() != child_id);
         }
 
-        Self::save_index(&parent_index)?;
-        parent_index.full_hash = Self::calculate_full_merkle_hash_for(parent_id, false)?;
+        parent_index.full_hash =
+            Self::calculate_full_hash_from(parent_index.own_hash, &parent_index.children, false)?;
         Self::save_index(&parent_index)?;
 
         Self::remove_index(child_id);
@@ -519,8 +487,7 @@ impl<S: StorageAdaptor> Index<S> {
     ) -> Result<[u8; 32], StorageError> {
         let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
         index.own_hash = merkle_hash;
-        Self::save_index(&index)?;
-        index.full_hash = Self::calculate_full_merkle_hash_for(id, false)?;
+        index.full_hash = Self::calculate_full_hash_from(index.own_hash, &index.children, false)?;
         if let Some(updated_at) = updated_at {
             index.metadata.updated_at = updated_at;
         }
