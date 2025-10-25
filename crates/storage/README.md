@@ -28,7 +28,63 @@ state.commit();
 
 ## Architecture Overview
 
+### System Architecture
+
+```mermaid
+graph TB
+    subgraph "Application Layer"
+        A[User Code] -->|uses| B[Collections: Vector, Map, Set]
+    end
+    
+    subgraph "Storage Layer"
+        B -->|backed by| C[Interface API]
+        C -->|manages| D[Entities: Element, Data]
+        D -->|persists to| E[Index + Entry Storage]
+    end
+    
+    subgraph "Sync Layer"
+        C -->|generates| F[CRDT Actions]
+        F -->|propagates| G[Remote Nodes]
+        G -->|sends| H[Comparison Data]
+        H -->|triggers| C
+    end
+    
+    subgraph "Database"
+        E -->|stored in| I[RocksDB]
+        I -->|Key::Index| J[Metadata + Merkle Hashes]
+        I -->|Key::Entry| K[Borsh-serialized Data]
+    end
+    
+    style A fill:#e1f5ff
+    style B fill:#ffe1e1
+    style C fill:#e1ffe1
+    style I fill:#fff4e1
+```
+
 ### Hybrid CRDT Model
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Local as Local Node
+    participant Sync as Sync Layer
+    participant Remote as Remote Node
+    
+    Note over Local,Remote: Primary: Operation-based (CmRDT)
+    User->>Local: Modify data
+    Local->>Local: Save + calculate hash
+    Local->>Sync: Generate Action
+    Sync->>Remote: Propagate Action
+    Remote->>Remote: Apply action
+    
+    Note over Local,Remote: Fallback: Comparison (CvRDT)
+    Remote->>Local: Request comparison
+    Local->>Local: Generate comparison data
+    Local->>Remote: Send hashes + metadata
+    Remote->>Remote: Compare Merkle trees
+    Remote->>Local: Send diff actions
+    Local->>Local: Apply actions
+```
 
 Calimero uses a **hybrid approach** combining operation-based and state-based CRDTs:
 
@@ -43,6 +99,31 @@ This provides:
 
 ### Merkle Hashing
 
+```mermaid
+graph TB
+    Root["Root Element<br/>full_hash = H(H1 + H456 + H789)<br/>own_hash = H1"]
+    
+    Root -->|child| Coll1["Collection A<br/>full_hash = H(H4 + H41 + H42)<br/>own_hash = H4"]
+    Root -->|child| Coll2["Collection B<br/>full_hash = H(H7 + H71)<br/>own_hash = H7"]
+    
+    Coll1 -->|child| Item1["Item 1<br/>full_hash = H41<br/>own_hash = H41"]
+    Coll1 -->|child| Item2["Item 2<br/>full_hash = H42<br/>own_hash = H42"]
+    
+    Coll2 -->|child| Item3["Item 3<br/>full_hash = H71<br/>own_hash = H71"]
+    
+    Note1["Own Hash = SHA256(data)"]
+    Note2["Full Hash = SHA256(own_hash + child_hashes)"]
+    
+    style Root fill:#ffe1e1
+    style Coll1 fill:#e1f5ff
+    style Coll2 fill:#e1f5ff
+    style Item1 fill:#e1ffe1
+    style Item2 fill:#e1ffe1
+    style Item3 fill:#e1ffe1
+    style Note1 fill:#fff4e1
+    style Note2 fill:#fff4e1
+```
+
 Each entity maintains two hashes:
 - **Own hash**: SHA-256 of immediate data
 - **Full hash**: Combined hash including all descendants
@@ -51,16 +132,43 @@ This enables efficient tree comparison—only subtrees with differing hashes nee
 
 ### Storage Layout
 
-Data is stored in RocksDB with a two-tier key structure:
+```mermaid
+graph LR
+    subgraph "RocksDB Keys"
+        K1["Key::Index(id)<br/>SHA256(0x00 + id)"]
+        K2["Key::Entry(id)<br/>SHA256(0x01 + id)"]
+    end
+    
+    subgraph "Stored Values"
+        V1["EntityIndex {<br/>  parent_id,<br/>  children: Map,<br/>  full_hash,<br/>  own_hash,<br/>  metadata<br/>}"]
+        V2["Borsh-serialized<br/>user data"]
+    end
+    
+    K1 -.->|stores| V1
+    K2 -.->|stores| V2
+    
+    style K1 fill:#e1f5ff
+    style K2 fill:#e1f5ff
+    style V1 fill:#ffe1e1
+    style V2 fill:#e1ffe1
+```
 
-```
-Key::Index(id)  → EntityIndex { parent_id, children, hashes, metadata }
-Key::Entry(id)  → Borsh-serialized user data
-```
+**Two-tier key structure:**
+- `Key::Index(id)` → Metadata, parent/child relationships, Merkle hashes
+- `Key::Entry(id)` → Actual user data (Borsh-serialized)
 
 **Deterministic IDs**: Collection items use `SHA256(parent_id + key)` for O(1) lookups:
-```rust
-map.get("user_123") → lookup at SHA256(collection_id + b"user_123")
+
+```mermaid
+graph LR
+    A["map.get('user_123')"] --> B[Compute ID]
+    B --> C["SHA256(collection_id + 'user_123')"]
+    C --> D[Direct RocksDB lookup]
+    D --> E[Return value]
+    
+    style A fill:#e1f5ff
+    style C fill:#ffe1e1
+    style E fill:#e1ffe1
 ```
 
 **Tradeoff**: Hashed IDs prevent RocksDB range scans. Iteration fetches child IDs from the index, then point-lookups each item.
@@ -108,22 +216,46 @@ All collections:
 
 ### CRDT Synchronization
 
-**Direct Changes** (local modifications):
-```
-1. User modifies data
-2. Generate Action::Add/Update/Delete
-3. Save to local storage
-4. Propagate action to peers
-5. Update Merkle hashes up the tree
+**Direct Changes Flow:**
+
+```mermaid
+flowchart TD
+    A[User modifies data] --> B[Mark element dirty]
+    B --> C[Interface.save]
+    C --> D[Serialize with Borsh]
+    D --> E[Calculate own_hash = SHA256 data]
+    E --> F[Update index + entry in DB]
+    F --> G[Calculate full_hash recursively]
+    G --> H[Generate Action Add/Update/Delete]
+    H --> I[Push to sync queue]
+    I --> J[Propagate to peers]
+    
+    style A fill:#e1f5ff
+    style C fill:#ffe1e1
+    style F fill:#fff4e1
+    style I fill:#e1ffe1
 ```
 
-**Comparison** (catch-up/reconciliation):
-```
-1. Compare Merkle hashes
-2. If differs, compare metadata timestamps
-3. Generate actions to sync (Add/Update/Delete/Compare)
-4. Recurse into differing children
-5. Apply actions on both sides
+**Comparison Flow:**
+
+```mermaid
+flowchart TD
+    A[Receive comparison data] --> B{Compare full hashes}
+    B -->|Match| Z[Done - in sync]
+    B -->|Differ| C{Compare own hashes}
+    C -->|Differ| D{Compare timestamps}
+    D -->|Remote newer| E[Action: Update local]
+    D -->|Local newer| F[Action: Update remote]
+    C -->|Same| G[Check children]
+    G --> H{Child hash differs?}
+    H -->|Yes| I[Action: Compare child recursively]
+    H -->|No| J[Check next child]
+    I --> K[Apply actions]
+    
+    style A fill:#e1f5ff
+    style B fill:#ffe1e1
+    style D fill:#fff4e1
+    style K fill:#e1ffe1
 ```
 
 **Conflict Resolution**:
@@ -133,24 +265,46 @@ All collections:
 
 ### Entity Hierarchy
 
-```
-Root (ID: special root ID)
-├─ Collection A (random ID)
-│  ├─ Item 1 (SHA256(collection_id + key1))
-│  └─ Item 2 (SHA256(collection_id + key2))
-└─ Collection B (random ID)
-   ├─ Item 3 (SHA256(collection_id + key3))
-   └─ SubCollection
-      └─ Item 4 (SHA256(sub_id + key4))
+```mermaid
+graph TD
+    Root["🏠 Root<br/>ID: root_id<br/>Path: ::root"]
+    
+    CollA["📦 Collection A<br/>ID: random()<br/>Path: ::root::coll_a"]
+    CollB["📦 Collection B<br/>ID: random()<br/>Path: ::root::coll_b"]
+    
+    Item1["📄 Item 1<br/>ID: SHA256(coll_a + key1)<br/>Path: ::root::coll_a::item1"]
+    Item2["📄 Item 2<br/>ID: SHA256(coll_a + key2)<br/>Path: ::root::coll_a::item2"]
+    
+    Item3["📄 Item 3<br/>ID: SHA256(coll_b + key3)<br/>Path: ::root::coll_b::item3"]
+    
+    SubColl["📦 SubCollection<br/>ID: random()<br/>Path: ::root::coll_b::sub"]
+    Item4["📄 Item 4<br/>ID: SHA256(sub + key4)<br/>Path: ::root::coll_b::sub::item4"]
+    
+    Root --> CollA
+    Root --> CollB
+    CollA --> Item1
+    CollA --> Item2
+    CollB --> Item3
+    CollB --> SubColl
+    SubColl --> Item4
+    
+    style Root fill:#ffe1e1
+    style CollA fill:#e1f5ff
+    style CollB fill:#e1f5ff
+    style SubColl fill:#e1f5ff
+    style Item1 fill:#e1ffe1
+    style Item2 fill:#e1ffe1
+    style Item3 fill:#e1ffe1
+    style Item4 fill:#e1ffe1
 ```
 
-Each entity stores:
-- Unique ID (32-byte)
-- Parent ID (for hierarchy)
+**Each entity stores:**
+- Unique ID (32-byte) - Random for collections, deterministic for map/set items
+- Parent ID (in EntityIndex)
 - Children list (by collection name)
-- Own hash (data only)
-- Full hash (data + descendants)
-- Metadata (created_at, updated_at)
+- Own hash (SHA256 of data)
+- Full hash (SHA256 of own_hash + child_hashes)
+- Metadata (created_at, updated_at timestamps)
 
 
 ## Background and Purpose
@@ -267,17 +421,43 @@ The storage system handles:
 
 ### Iteration
 
-Collections use index-based iteration (not RocksDB scans):
-```
-1. Fetch EntityIndex from storage
-2. Extract child ID list
-3. Cache IDs in memory (IndexSet)
-4. Point-lookup each item individually
+Collections use index-based iteration (not RocksDB scans due to hashed IDs):
+
+```mermaid
+sequenceDiagram
+    participant Code as User Code
+    participant Coll as Collection
+    participant DB as RocksDB
+    
+    Code->>Coll: iter()
+    
+    Note over Coll: First call
+    Coll->>DB: Get Index(collection_id)
+    DB-->>Coll: EntityIndex with child IDs
+    Coll->>Coll: Cache child IDs in IndexSet
+    
+    loop For each child ID
+        Coll->>DB: Get Entry(child_id)
+        DB-->>Coll: Item data
+        Coll-->>Code: Yield item
+    end
+    
+    Note over Coll: Subsequent calls
+    Code->>Coll: iter() again
+    Coll->>Coll: Use cached IDs
+    
+    loop For each cached ID
+        Coll->>DB: Get Entry(child_id)
+        DB-->>Coll: Item data
+        Coll-->>Code: Yield item
+    end
 ```
 
-For 1000 items: 1 index lookup + 1000 individual gets (vs. 1 scan with sequential keys)
+**Cost for 1000 items:**
+- 1 index lookup + 1000 individual gets
+- (vs. 1 scan with sequential keys)
 
-**Mitigation**: Child IDs are cached after first access.
+**Mitigation**: Child IDs cached in memory after first access.
 
 ### Merkle Updates
 
