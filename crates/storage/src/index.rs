@@ -171,6 +171,8 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Checks if an entity is deleted (tombstone marker set).
+    ///
+    /// Returns false if entity has no index (not found).
     pub(crate) fn is_deleted(id: Id) -> Result<bool, StorageError> {
         Ok(Self::get_index(id)?
             .and_then(|index| index.deleted_at)
