@@ -44,7 +44,8 @@ pub struct EntityIndex {
 }
 
 /// Entity index manager.
-pub(crate) struct Index<S: StorageAdaptor>(PhantomData<S>);
+#[derive(Debug)]
+pub struct Index<S: StorageAdaptor>(PhantomData<S>);
 
 impl<S: StorageAdaptor> Index<S> {
     /// Adds a child to a parent's collection.
@@ -173,7 +174,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// Checks if an entity is deleted (tombstone marker set).
     ///
     /// Returns false if entity has no index (not found).
-    pub(crate) fn is_deleted(id: Id) -> Result<bool, StorageError> {
+    pub fn is_deleted(id: Id) -> Result<bool, StorageError> {
         Ok(Self::get_index(id)?
             .and_then(|index| index.deleted_at)
             .is_some())
@@ -212,7 +213,7 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Returns (full_hash, own_hash) tuple for an entity.
     #[expect(clippy::type_complexity, reason = "Not too complex")]
-    pub(crate) fn get_hashes_for(id: Id) -> Result<Option<([u8; 32], [u8; 32])>, StorageError> {
+    pub fn get_hashes_for(id: Id) -> Result<Option<([u8; 32], [u8; 32])>, StorageError> {
         Ok(Self::get_index(id)?.map(|index| (index.full_hash, index.own_hash)))
     }
 

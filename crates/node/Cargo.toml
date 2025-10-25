@@ -34,6 +34,7 @@ calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-server.workspace = true
 calimero-storage.workspace = true
+calimero-sync.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true

@@ -40,7 +40,7 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
-use borsh::{from_slice, to_vec, BorshDeserialize, BorshSerialize};
+use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
@@ -48,209 +48,14 @@ use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data, Metadata};
 use crate::env::time_now;
 use crate::index::Index;
-use crate::store::{IterableStorage, Key, MainStorage, StorageAdaptor};
-use crate::sync;
+use crate::store::{Key, MainStorage, StorageAdaptor};
 
-// Re-export for backward compatibility
+// Re-export types for convenience
+pub use crate::action::{Action, ComparisonData};
 pub use crate::error::StorageError;
 
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
-
-/// Actions to be taken during synchronisation.
-///
-/// The following variants represent the possible actions arising from either a
-/// direct change or a comparison between two nodes.
-///
-///   - **Direct change**: When a direct change is made, in other words, when
-///     there is local activity that results in data modification to propagate
-///     to other nodes, the possible resulting actions are [`Add`](Action::Add),
-///     [`DeleteRef`](Action::DeleteRef), and [`Update`](Action::Update). A comparison
-///     is not needed in this case, as the deltas are known, and assuming all of
-///     the actions are carried out, the nodes will be in sync.
-///
-///   - **Comparison**: When a comparison is made between two nodes, the
-///     possible resulting actions are [`Add`](Action::Add), [`DeleteRef`](Action::DeleteRef),
-///     [`Update`](Action::Update), and [`Compare`](Action::Compare). The extra
-///     comparison action arises in the case of tree traversal, where a child
-///     entity is found to differ between the two nodes. In this case, the child
-///     entity is compared, and the resulting actions are added to the list of
-///     actions to be taken. This process is recursive.
-///
-/// Note: Some actions contain the full entity, and not just the entity ID, as
-/// the actions will often be in context of data that is not available locally
-/// and cannot be sourced otherwise. The actions are stored in serialised form
-/// because of type restrictions, and they are due to be sent around the network
-/// anyway.
-///
-/// Note: This enum contains the entity type, for passing to the guest for
-/// processing along with the ID and data.
-///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[expect(clippy::exhaustive_enums, reason = "Exhaustive")]
-pub enum Action {
-    /// Add an entity with the given ID, type, and data.
-    Add {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Serialised data of the entity.
-        data: Vec<u8>,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-
-        /// The metadata of the entity.
-        metadata: Metadata,
-    },
-
-    /// Compare the entity with the given ID and type. Note that this results in
-    /// a direct comparison of the specific entity in question, including data
-    /// that is immediately available to it, such as the hashes of its children.
-    /// This may well result in further actions being generated if children
-    /// differ, leading to a recursive comparison.
-    Compare {
-        /// Unique identifier of the entity.
-        id: Id,
-    },
-
-    /// Delete reference (tombstone-based deletion).
-    ///
-    /// More efficient than Delete variant - only sends ID and timestamp.
-    /// Uses tombstone mechanism for proper CRDT semantics:
-    /// - Handles delete vs update conflicts via timestamp comparison
-    /// - Supports out-of-order message delivery
-    /// - Enables 1-day retention + full resync strategy
-    DeleteRef {
-        /// Unique identifier of the entity to delete.
-        id: Id,
-
-        /// Timestamp when deletion occurred (for conflict resolution).
-        deleted_at: u64,
-    },
-
-    /// Update the entity with the given ID and type to have the supplied data.
-    Update {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Serialised data of the entity.
-        data: Vec<u8>,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-
-        /// The metadata of the entity.
-        metadata: Metadata,
-    },
-}
-
-/// Data that is used for comparison between two nodes.
-///
-/// Uses two-level hashing to optimize sync:
-/// - `full_hash` - Detects if **anything** in subtree changed
-/// - `own_hash` - Detects if **this entity's data** changed (vs. children)
-///
-/// This enables skipping unchanged entity data during sync, only transferring
-/// full data when the entity itself changed, not just its descendants.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ComparisonData {
-    /// The unique identifier of the entity being compared.
-    id: Id,
-
-    /// Hash of entity's immediate data only (excludes children).
-    /// Used to determine if entity itself changed vs. just its children.
-    own_hash: [u8; 32],
-
-    /// Hash of entity + all descendants.
-    /// Used to quickly detect if any changes exist in subtree.
-    full_hash: [u8; 32],
-
-    /// The list of ancestors of the entity, with their IDs and hashes. The
-    /// order is from the immediate parent to the root, so index zero will be
-    /// the parent, and the last index will be the root.
-    ancestors: Vec<ChildInfo>,
-
-    /// The list of children of the entity, with their IDs and hashes,
-    /// organised by collection name.
-    children: BTreeMap<String, Vec<ChildInfo>>,
-
-    /// The metadata of the entity.
-    metadata: Metadata,
-}
-
-/// Snapshot of complete storage state for full resync.
-///
-/// Contains all entities and indexes, root hash for verification,
-/// and metadata about the snapshot itself.
-///
-#[derive(Clone, Debug, BorshDeserialize, BorshSerialize)]
-pub struct Snapshot {
-    /// All entity data (Key::Entry).
-    pub entries: Vec<(Id, Vec<u8>)>,
-
-    /// All index data (Key::Index).
-    pub indexes: Vec<(Id, Vec<u8>)>,
-
-    /// Root Merkle hash for verification.
-    pub root_hash: [u8; 32],
-
-    /// When the snapshot was created (nanoseconds since epoch).
-    pub timestamp: u64,
-
-    /// Number of entities in snapshot.
-    pub entity_count: usize,
-
-    /// Number of indexes in snapshot.
-    pub index_count: usize,
-}
-
-/// Tracks synchronization state with a remote node.
-///
-/// Used to determine when full resync is needed vs incremental sync.
-/// Persisted per remote node ID in storage under Key::SyncState.
-///
-#[derive(Copy, Clone, Debug, BorshDeserialize, BorshSerialize, Eq, Ord, PartialEq, PartialOrd)]
-pub struct SyncState {
-    /// ID of the remote node this sync state tracks.
-    pub node_id: Id,
-
-    /// Timestamp of last successful sync (nanoseconds since epoch).
-    pub last_sync_time: u64,
-
-    /// Root hash at last sync (for validation).
-    pub last_sync_root_hash: [u8; 32],
-
-    /// Number of successful syncs with this node.
-    pub sync_count: u64,
-}
-
-impl SyncState {
-    /// Creates a new sync state for a node.
-    pub fn new(node_id: Id) -> Self {
-        Self {
-            node_id,
-            last_sync_time: time_now(),
-            last_sync_root_hash: [0; 32],
-            sync_count: 0,
-        }
-    }
-
-    /// Checks if full resync is needed based on offline duration.
-    ///
-    /// Returns true if node has been offline longer than tombstone retention.
-    pub fn needs_full_resync(&self, tombstone_retention_nanos: u64) -> bool {
-        let offline_duration = time_now().saturating_sub(self.last_sync_time);
-        offline_duration > tombstone_retention_nanos
-    }
-
-    /// Updates sync state after successful sync.
-    pub fn update(&mut self, root_hash: [u8; 32]) {
-        self.last_sync_time = time_now();
-        self.last_sync_root_hash = root_hash;
-        self.sync_count += 1;
-    }
-}
 
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
@@ -355,7 +160,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     return Ok(());
                 }
 
-                sync::push_action(Action::Compare { id });
+                crate::delta::push_action(Action::Compare { id });
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
@@ -617,7 +422,7 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         for action in remote {
-            sync::push_action(action);
+            crate::delta::push_action(action);
         }
 
         Ok(())
@@ -780,7 +585,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // Use DeleteRef for efficient tombstone-based deletion
         // More efficient than Delete: only sends ID + timestamp vs full ancestor tree
         // The tombstone is created by remove_child_from, we just broadcast the deletion
-        sync::push_action(Action::DeleteRef {
+        crate::delta::push_action(Action::DeleteRef {
             id: child_id,
             deleted_at,
         });
@@ -825,7 +630,7 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         if let Some(hash) = hash {
-            sync::commit_root(&hash)?;
+            crate::delta::commit_root(&hash)?;
         }
 
         Ok(())
@@ -936,7 +741,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         };
 
-        sync::push_action(action);
+        crate::delta::push_action(action);
 
         Ok(Some(full_hash))
     }
@@ -980,297 +785,4 @@ impl<S: StorageAdaptor> Interface<S> {
     // }
     // ```
 
-    /// Gets the sync state for a remote node.
-    ///
-    /// Returns None if never synced with this node before.
-    pub fn get_sync_state(node_id: Id) -> Result<Option<SyncState>, StorageError> {
-        match S::storage_read(Key::SyncState(node_id)) {
-            Some(data) => Ok(Some(
-                SyncState::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
-            )),
-            None => Ok(None),
-        }
-    }
-
-    /// Saves sync state for a remote node.
-    pub fn save_sync_state(state: &SyncState) -> Result<(), StorageError> {
-        let data = to_vec(state).map_err(StorageError::SerializationError)?;
-        let _ignored = S::storage_write(Key::SyncState(state.node_id), &data);
-        Ok(())
-    }
-
-    /// Checks if full resync is needed with a remote node.
-    ///
-    /// # Parameters
-    ///
-    /// * `node_id` - Remote node to check
-    /// * `tombstone_retention_nanos` - Tombstone retention period (e.g., 86_400_000_000_000 for 1 day)
-    ///
-    /// # Returns
-    ///
-    /// * `true` - Full resync needed (node offline > retention period)
-    /// * `false` - Incremental sync OK
-    ///
-    pub fn needs_full_resync(
-        node_id: Id,
-        tombstone_retention_nanos: u64,
-    ) -> Result<bool, StorageError> {
-        match Self::get_sync_state(node_id)? {
-            Some(state) => Ok(state.needs_full_resync(tombstone_retention_nanos)),
-            None => Ok(false), // Never synced = not offline, can do incremental
-        }
-    }
-
-    /// Full resync protocol.
-    ///
-    /// Only available for storage backends that implement `IterableStorage`.
-    /// Completely rebuilds local state from remote node snapshot.
-    /// Used when node has been offline longer than tombstone retention period.
-    ///
-    /// # Parameters
-    ///
-    /// * `remote_node_id` - ID of remote node to resync from
-    /// * `snapshot` - Full snapshot data from remote node
-    ///
-    /// # Process
-    ///
-    /// 1. Validate snapshot integrity
-    /// 2. Clear local storage (except SyncState)
-    /// 3. Rebuild from snapshot
-    /// 4. Verify Merkle root matches
-    /// 5. Update sync state
-    ///
-    /// # Safety
-    ///
-    /// This function deletes all local data. Only call during controlled resync.
-    ///
-    /// # TODO
-    ///
-    /// - [ ] Add network protocol for fetching snapshot from remote
-    /// - [ ] Handle "split brain" (both nodes want full resync - need coordinator)
-    /// - [ ] Add streaming for large snapshots
-    /// - [ ] Add progress callbacks
-    /// - [ ] Add retry logic with exponential backoff
-    /// - [ ] Add pre-resync backup for rollback
-    ///
-    /// # Example Usage
-    ///
-    /// ```ignore
-    /// // Check if full resync is needed
-    /// if Interface::needs_full_resync(remote_id, TOMBSTONE_RETENTION_NANOS)? {
-    ///     // Fetch snapshot from remote (network call - not yet implemented)
-    ///     let snapshot = fetch_snapshot_from_remote(remote_id)?;
-    ///     
-    ///     // Apply it locally
-    ///     Interface::full_resync(remote_id, snapshot)?;
-    /// }
-    /// ```
-    ///
-    pub fn full_resync(remote_node_id: Id, snapshot: Snapshot) -> Result<(), StorageError>
-    where
-        S: IterableStorage,
-    {
-        // Step 1: Validate snapshot
-        // TODO: Add more validation (age check, size limits, etc.)
-        if snapshot.entity_count == 0 && snapshot.index_count == 0 {
-            return Err(StorageError::InvalidData(
-                "Snapshot is empty".to_owned(),
-            ));
-        }
-
-        // Step 2: Apply snapshot (clears local storage)
-        Self::apply_snapshot(&snapshot)?;
-
-        // Step 3: Update sync state
-        let mut sync_state = Self::get_sync_state(remote_node_id)?
-            .unwrap_or_else(|| SyncState::new(remote_node_id));
-
-        sync_state.update(snapshot.root_hash);
-        Self::save_sync_state(&sync_state)?;
-
-        Ok(())
-    }
-
-    // NOTE: Snapshot fetching removed (YAGNI violation)
-    //
-    // Snapshot fetching is a network layer concern, not storage layer.
-    // When implementing network protocol, call generate_snapshot() directly
-    // from the network handler and transfer the result.
-    //
-    // Example network layer implementation:
-    //
-    // ```rust
-    // async fn handle_snapshot_request(peer_id: NodeId) -> Result<()> {
-    //     let snapshot = Interface::<MainStorage>::generate_snapshot()?;
-    //     network::send_snapshot(peer_id, snapshot).await
-    // }
-    // ```
-
-    /// Generates a full snapshot for resync.
-    ///
-    /// Only available for storage backends that implement `IterableStorage`.
-    /// Exports all entities and indexes for transfer to a remote node.
-    /// Excludes tombstones and SyncState (those are node-specific).
-    ///
-    /// # TODO
-    ///
-    /// - [ ] Add compression (gzip/zstd)
-    /// - [ ] Support streaming for large datasets
-    /// - [ ] Include schema version for compatibility checks
-    /// - [ ] Add progress reporting callback
-    ///
-    pub fn generate_snapshot() -> Result<Snapshot, StorageError>
-    where
-        S: IterableStorage,
-    {
-        let mut entries = Vec::new();
-        let mut indexes = Vec::new();
-
-        // Iterate all storage keys
-        let all_keys = S::storage_iter_keys();
-
-        for key in all_keys {
-            match key {
-                Key::Entry(id) => {
-                    // Only include entity data if not deleted
-                    // If is_deleted returns an error, skip this entry to be safe
-                    match <Index<S>>::is_deleted(id) {
-                        Ok(false) => {
-                            // Not deleted, include it
-                            if let Some(data) = S::storage_read(key) {
-                                entries.push((id, data));
-                            }
-                        }
-                        Ok(true) => {
-                            // Deleted (tombstone), skip
-                        }
-                        Err(_) => {
-                            // No index found - orphaned entry, skip for safety
-                        }
-                    }
-                }
-                Key::Index(id) => {
-                    // Only include non-deleted indexes
-                    match <Index<S>>::is_deleted(id) {
-                        Ok(false) => {
-                            // Not a tombstone, include raw index data
-                            if let Some(data) = S::storage_read(key) {
-                                indexes.push((id, data));
-                            }
-                        }
-                        Ok(true) => {
-                            // Tombstone, skip
-                        }
-                        Err(_) => {
-                            // Error reading index, skip
-                        }
-                    }
-                }
-                Key::SyncState(_) => {
-                    // Skip sync state (node-specific metadata)
-                }
-            }
-        }
-
-        // Calculate root hash
-        let root_hash = <Index<S>>::get_hashes_for(Id::root())?
-            .map(|(full_hash, _)| full_hash)
-            .unwrap_or([0; 32]);
-
-        Ok(Snapshot {
-            entity_count: entries.len(),
-            index_count: indexes.len(),
-            entries,
-            indexes,
-            root_hash,
-            timestamp: time_now(),
-        })
-    }
-
-    /// Applies a snapshot during full resync.
-    ///
-    /// Only available for storage backends that implement `IterableStorage`.
-    /// Clears local storage and rebuilds from snapshot.
-    /// Verifies Merkle root matches after rebuild.
-    ///
-    /// # Safety
-    ///
-    /// This function **deletes all local data** except SyncState.
-    /// Only call during controlled resync operations.
-    ///
-    /// # TODO
-    ///
-    /// - [ ] Add validation before clearing storage
-    /// - [ ] Support incremental application for large snapshots
-    /// - [ ] Add rollback on errors
-    /// - [ ] Add confirmation mechanism (prevent accidental wipes)
-    ///
-    pub fn apply_snapshot(snapshot: &Snapshot) -> Result<(), StorageError>
-    where
-        S: IterableStorage,
-    {
-        // Step 1: Clear all entity and index data
-        // Preserve SyncState to track resync history
-        Self::clear_all_storage_except_sync_state()?;
-
-        // Step 2: Write all indexes first (needed for entry validation)
-        for (id, index_data) in &snapshot.indexes {
-            let _written = S::storage_write(Key::Index(*id), index_data);
-        }
-
-        // Step 3: Write all entities
-        for (id, entry_data) in &snapshot.entries {
-            let _written = S::storage_write(Key::Entry(*id), entry_data);
-        }
-
-        // Step 4: Verify root hash matches
-        let local_root_hash = <Index<S>>::get_hashes_for(Id::root())?
-            .map(|(full_hash, _)| full_hash)
-            .unwrap_or([0; 32]);
-
-        if local_root_hash != snapshot.root_hash {
-            // TODO: Add rollback here - restore from backup or re-attempt
-            return Err(StorageError::InvalidData(
-                "Snapshot root hash mismatch after application".to_owned(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Clears all storage except SyncState.
-    ///
-    /// Only available for storage backends that implement `IterableStorage`.
-    /// Used during full resync to wipe local data while preserving sync history.
-    ///
-    /// # Safety
-    ///
-    /// This deletes all entity and index data. Only call during controlled resync.
-    ///
-    /// # TODO
-    ///
-    /// - [ ] Add confirmation mechanism
-    /// - [ ] Add backup before clear (for rollback)
-    /// - [ ] Add progress reporting for large clears
-    ///
-    fn clear_all_storage_except_sync_state() -> Result<(), StorageError>
-    where
-        S: IterableStorage,
-    {
-        let all_keys = S::storage_iter_keys();
-
-        for key in all_keys {
-            match key {
-                Key::Entry(_) | Key::Index(_) => {
-                    // Remove entity and index data
-                    let _removed = S::storage_remove(key);
-                }
-                Key::SyncState(_) => {
-                    // Preserve sync state to track resync history
-                }
-            }
-        }
-
-        Ok(())
-    }
 }

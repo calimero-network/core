@@ -14,7 +14,7 @@ use futures_util::TryStreamExt;
 use rand::{thread_rng, Rng};
 use tracing::{debug, info};
 
-use super::{Sequencer, SyncManager};
+use super::manager::{NetworkSyncManager, Sequencer};
 
 /// Maximum delta gap threshold for attempting delta-based synchronization.
 /// If a node is behind by more than this many deltas, delta sync will fail and
@@ -22,7 +22,7 @@ use super::{Sequencer, SyncManager};
 /// to ensure deltas are still available on peers.
 const DELTA_SYNC_THRESHOLD: usize = 128;
 
-impl SyncManager {
+impl NetworkSyncManager {
     pub(super) async fn initiate_delta_sync_process(
         &self,
         context: &mut Context,

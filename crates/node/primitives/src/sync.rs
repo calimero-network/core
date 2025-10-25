@@ -59,6 +59,9 @@ pub enum InitPayload {
         root_hash: Hash,
         application_id: ApplicationId,
     },
+    FullSync {
+        application_id: ApplicationId,
+    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -76,5 +79,8 @@ pub enum MessagePayload<'a> {
         member: PublicKey,
         height: NonZeroUsize,
         delta: Option<Cow<'a, [u8]>>,
+    },
+    Snapshot {
+        chunk: Cow<'a, [u8]>,
     },
 }

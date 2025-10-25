@@ -20,17 +20,14 @@ use tracing::error;
 pub mod gc;
 pub mod handlers;
 mod run;
-pub mod snapshot;
-pub mod sync;
 mod utils;
 
 pub use run::{start, NodeConfig};
-use sync::SyncManager;
 
 #[derive(Debug)]
 pub struct NodeManager {
     blobstore: BlobManager,
-    sync_manager: SyncManager,
+    sync_manager: calimero_sync::NetworkSyncManager,
 
     context_client: ContextClient,
     node_client: NodeClient,
@@ -45,7 +42,7 @@ pub struct NodeManager {
 impl NodeManager {
     pub(crate) fn new(
         blobstore: BlobManager,
-        sync_manager: SyncManager,
+        sync_manager: calimero_sync::NetworkSyncManager,
         context_client: ContextClient,
         node_client: NodeClient,
     ) -> Self {

@@ -7,9 +7,9 @@ use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
 use tracing::{debug, info};
 
-use super::{Sequencer, SyncManager};
+use super::manager::{NetworkSyncManager, Sequencer};
 
-impl SyncManager {
+impl NetworkSyncManager {
     pub(super) async fn initiate_key_share_process(
         &self,
         context: &mut Context,

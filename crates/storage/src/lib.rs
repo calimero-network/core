@@ -56,18 +56,19 @@
     )
 )]
 
+pub mod action;
 pub mod address;
 pub mod collections;
 pub mod constants;
+pub mod delta;
 pub mod entities;
 pub mod env;
 pub mod error;
 pub mod index;
 pub mod integration;
 pub mod interface;
-
+pub mod snapshot;
 pub mod store;
-pub mod sync;
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
@@ -78,7 +79,9 @@ pub mod exports {
 pub use calimero_storage_macros::{AtomicUnit, Collection};
 
 // Re-export commonly used types
+pub use entities::{Data, Element};
 pub use error::StorageError;
+pub use interface::Interface;
 
 /// Shared test functionality.
 #[cfg(test)]
