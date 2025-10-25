@@ -85,10 +85,7 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
     clippy::too_many_lines,
     reason = "Okay for now - will be restructured later"
 )]
-#[proc_macro_derive(
-    AtomicUnit,
-    attributes(collection, storage)
-)]
+#[proc_macro_derive(AtomicUnit, attributes(collection, storage))]
 pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;

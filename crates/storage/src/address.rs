@@ -1,9 +1,4 @@
-//! Addressing of elements in the storage system.
-//!
-//! This module provides the types and functionality needed for addressing
-//! [`Element`](crate::entities::Element)s in the storage system. This includes
-//! identification by [`Id`] and [`Path`].
-//!
+//! Element addressing via unique IDs and hierarchical paths.
 
 #[cfg(test)]
 #[path = "tests/address.rs"]
@@ -18,21 +13,7 @@ use thiserror::Error as ThisError;
 
 use crate::env::{context_id, random_bytes};
 
-/// Globally-unique identifier for an [`Element`](crate::entities::Element).
-///
-/// This is unique across the entire context, across all devices and all time.
-/// We use UUIDv4 for this, which provides a 128-bit value designed to be unique
-/// across time and space, and uses randomness to help ensure this. Critically,
-/// there is no need to coordinate with other systems to ensure uniqueness, or
-/// to have any central authority to allocate these. The possibility of having a
-/// collision is technically non-zero, but is so astronomically low that it can
-/// be considered negligible.
-///
-/// We use a newtype pattern here to give semantic meaning to the identifier,
-/// and to be able to add specific functionality to the IDs that we need for the
-/// system operation. Abstracting the true type away provides a level of
-/// insulation that is useful for any future changes.
-///
+/// Globally-unique 32-byte identifier (random bytes, UUIDv4-style).
 #[derive(
     BorshSerialize,
     BorshDeserialize,
@@ -47,42 +28,20 @@ use crate::env::{context_id, random_bytes};
     Default,
 )]
 pub struct Id {
-    /// The byte array representation of the ID.
     bytes: [u8; 32],
 }
 
 impl Id {
-    /// Creates a new globally-unique identifier.
-    ///
-    /// Returns the byte array representation of the ID.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Id;
-    /// let id = Id::new([0; 32]);
-    /// assert_eq!(id.as_bytes(), &[0; 32]);
-    /// ```
     #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
-        // random_bytes(&mut bytes);
         Self { bytes }
     }
 
-    /// Root ID which is set to the context ID.
     #[must_use]
     pub fn root() -> Self {
         Self::new(context_id())
     }
 
-    /// Creates a new random globally-unique identifier.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Id;
-    /// let id = Id::random();
-    /// ```
     #[must_use]
     pub fn random() -> Self {
         let mut bytes = [0_u8; 32];
@@ -90,21 +49,11 @@ impl Id {
         Self::new(bytes)
     }
 
-    /// Returns the byte array representation of the ID.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Id;
-    /// let id = Id::new([0; 32]);
-    /// assert_eq!(id.as_bytes(), &[0; 32]);
-    /// ```
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
 
-    /// Checks if the ID is the root.
     pub fn is_root(&self) -> bool {
         self.bytes == context_id()
     }
@@ -129,58 +78,24 @@ impl From<Id> for [u8; 32] {
     }
 }
 
-/// Path to an [`Element`](crate::entities::Element).
+/// Hierarchical path (e.g., `::root::node::leaf`).
 ///
-/// [`Element`](crate::entities::Element)s are stored in a hierarchical
-/// structure, and their path represents their location within that structure.
-/// Path segments are separated by a double-colon `::`, and all paths are
-/// absolute, and should start with a leading separator to enforce the clarity
-/// of this plus allow for future expansion of functionality.
-///
-/// [`Path`]s are case-sensitive, support Unicode, and are limited to 255
-/// characters in length. Note, the separators do NOT count towards this limit.
-///
-/// [`Path`]s are not allowed to be empty.
-///
-/// There is no formal limit to the levels of hierarchy allowed, but in practice
-/// this is limited to 255 levels (assuming a single byte per segment name).
-///
+/// Segments separated by `::`. Max 255 chars. Must be absolute (start with `::`).
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Path {
-    /// A list of path segment offsets, where offset `0` is assumed, and not
-    /// stored.
     offsets: Vec<u8>,
-
-    /// The path to the element. This is a string of up to 255 characters in
-    /// length, and is case-sensitive. Internally the segments are stored
-    /// without the separators.
     path: Flexstr<256>,
 }
 
 impl Path {
-    /// Creates a new [`Path`] from a string.
-    ///
-    /// # Parameters
-    ///
-    /// * `path` - The path to the [`Element`](crate::entities::Element).
+    /// Creates path from string.
     ///
     /// # Errors
-    ///
-    /// An error will be returned if:
-    ///
-    ///   - The path is empty, including if it contains only separators.
-    ///   - The path is too long (the maximum length allowed is 255 characters).
-    ///   - Any of the path segments are empty.
-    ///   - The path is not absolute, i.e. it does not start with a double colon
-    ///     separator `::`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// Path::new("::root::node::leaf").unwrap();
-    /// ```
-    ///
+    /// - `Empty` if path is empty or only separators
+    /// - `NotAbsolute` if doesn't start with `::`
+    /// - `EmptySegment` if any segment is empty
+    /// - `Overflow` if longer than 255 chars
     pub fn new<S: AsRef<str>>(path: S) -> Result<Self, PathError> {
         let string = path.as_ref();
 
@@ -218,37 +133,11 @@ impl Path {
         Ok(Self { offsets, path: str })
     }
 
-    /// The number of segments in the [`Path`].
-    ///
-    /// Returns the depth of the path, which is one less than the number of
-    /// segments, because the roots are level 0.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path = Path::new("::root::node::leaf").unwrap();
-    /// assert_eq!(path.depth(), 2);
-    /// ```
-    ///
     #[must_use]
     pub fn depth(&self) -> usize {
         self.offsets.len()
     }
 
-    /// The first segment of the [`Path`].
-    ///
-    /// Returns the first segment of the path, which is the top-most in the
-    /// hierarchy expressed by the path.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path = Path::new("::root::node::leaf").unwrap();
-    /// assert_eq!(path.first(), "root");
-    /// ```
-    ///
     #[must_use]
     pub fn first(&self) -> &str {
         if self.offsets.is_empty() {
@@ -258,25 +147,6 @@ impl Path {
         }
     }
 
-    /// Checks if the [`Path`] is an ancestor of another [`Path`].
-    ///
-    /// Returns `true` if the [`Path`] is an ancestor of the other [`Path`], and
-    /// `false` otherwise. In order to be counted as an ancestor, the path must
-    /// be strictly shorter than the other path, and all segments must match.
-    ///
-    /// # Parameters
-    ///
-    /// * `other` - The other [`Path`] to check against.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path1 = Path::new("::root::node").unwrap();
-    /// let path2 = Path::new("::root::node::leaf").unwrap();
-    /// assert!(path1.is_ancestor_of(&path2));
-    /// ```
-    ///
     #[must_use]
     pub fn is_ancestor_of(&self, other: &Self) -> bool {
         if self.depth() >= other.depth() {
@@ -294,70 +164,21 @@ impl Path {
         true
     }
 
-    /// Checks if the [`Path`] is a descendant of another [`Path`].
-    ///
-    /// Returns `true` if the [`Path`] is a descendant of the other [`Path`],
-    /// and `false` otherwise. In order to be counted as a descendant, the path
-    /// must be strictly longer than the other path, and all segments must
-    /// match.
-    ///
-    /// # Parameters
-    ///
-    /// * `other` - The other [`Path`] to check against.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path1 = Path::new("::root::node::leaf").unwrap();
-    /// let path2 = Path::new("::root::node").unwrap();
-    /// assert!(path1.is_descendant_of(&path2));
-    /// ```
-    ///
     #[must_use]
     pub fn is_descendant_of(&self, other: &Self) -> bool {
         other.is_ancestor_of(self)
     }
 
-    /// Checks if the [`Path`] is the root.
-    ///
-    /// Returns `true` if the [`Path`] is the root, and `false` otherwise.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// assert!(Path::new("::root").unwrap().is_root());
-    /// assert!(!Path::new("::root::node").unwrap().is_root());
-    /// ```
-    ///
     #[must_use]
     pub fn is_root(&self) -> bool {
         self.depth() == 0
     }
 
-    /// Joins two [`Path`]s.
-    ///
-    /// Joins the [`Path`] with another [`Path`], returning a new [`Path`] that
-    /// is the concatenation of the two.
-    ///
-    /// # Parameters
-    ///
-    /// * `other` - The other [`Path`] to join with.
+    /// Joins two paths.
     ///
     /// # Errors
-    ///
     /// An error will be returned if the resulting path would be too long.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path1 = Path::new("::root::node").unwrap();
-    /// let path2 = Path::new("::leaf").unwrap();
-    /// let joined = path1.join(&path2).unwrap();
-    /// assert_eq!(joined.to_string(), "::root::node::leaf");
-    /// ```
     ///
     pub fn join(&self, other: &Self) -> Result<Self, PathError> {
         if self.path.len().saturating_add(other.path.len()) > 255 {
@@ -384,13 +205,6 @@ impl Path {
     /// Returns the last segment of the path, which is the bottom-most in the
     /// hierarchy expressed by the path.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path = Path::new("::root::node::leaf").unwrap();
-    /// assert_eq!(path.last(), "leaf");
-    /// ```
     ///
     #[must_use]
     pub fn last(&self) -> &str {
@@ -409,14 +223,6 @@ impl Path {
     /// segment removed. If the path is already at the root, then `None` is
     /// returned.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path = Path::new("::root::node::leaf").unwrap();
-    /// assert_eq!(path.parent().unwrap().to_string(), "::root::node");
-    /// assert_eq!(Path::new("::root").unwrap().parent(), None);
-    /// ```
     ///
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
@@ -431,18 +237,8 @@ impl Path {
     /// Returns the segment at the given index, or `None` if the index is out of
     /// bounds. Note that the root is at index 0.
     ///
-    /// # Parameters
-    ///
     /// * `index` - The index of the segment to retrieve.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path = Path::new("::root::node::leaf").unwrap();
-    /// assert_eq!(path.segment(1).unwrap(), "node");
-    /// assert_eq!(path.segment(3), None);
-    /// ```
     ///
     #[must_use]
     pub fn segment(&self, index: usize) -> Option<&str> {
@@ -463,13 +259,6 @@ impl Path {
     ///
     /// Returns the segments of the path as a vector of strings.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use calimero_storage::address::Path;
-    /// let path = Path::new("::root::node::leaf").unwrap();
-    /// assert_eq!(path.segments().collect::<Vec<_>>(), vec!["root", "node", "leaf"]);
-    /// ```
     ///
     pub fn segments(&self) -> impl Iterator<Item = &str> {
         (0..=self.depth()).filter_map(|i| self.segment(i))
