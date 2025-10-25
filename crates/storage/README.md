@@ -374,21 +374,23 @@ mechanisms to share and propagate the data over the network.
 - Fallback: CvRDT comparison for reliability
 - Result: Best of both worlds
 
-### CRDT Types
+### CRDT Implementation
 
-Base types (internal use):
-- **GCounter**: Grow-only counter
-- **PNCounter**: Increment/decrement counter
-- **GSet**: Grow-only set
-- **TwoPSet**: Two-phase set (add/remove)
-- **LWWElementSet**: Last-write-wins set (our foundation)
-- **ORSet**: Observed-remove set
-- **Sequence/List/OrderedSet**: Ordered collections
+Calimero does **not** expose traditional academic CRDT types (GCounter, PNCounter, GSet, TwoPSet, ORSet). Instead, it provides **general-purpose collections** with CRDT semantics built-in:
 
-Calimero primarily uses **LWWElementSet** enhanced with:
-- Unique IDs (ORSet-style tagging)
-- Timestamp-based resolution
-- Hierarchical organization
+**Implemented collections:**
+- `Vector<T>` - Ordered list with LWW semantics
+- `UnorderedMap<K, V>` - Key-value map with deterministic IDs
+- `UnorderedSet<T>` - Unique values set
+- `Root<T>` - Root state container
+
+**CRDT properties:**
+- Last-write-wins conflict resolution (timestamp-based)
+- Unique IDs for elements (ORSet-style tagging)
+- Merkle tree validation
+- Automatic sync via Actions
+
+The underlying mechanism is inspired by **LWWElementSet** but provides a more ergonomic API for application developers.
 
 ## Developer Interface
 
