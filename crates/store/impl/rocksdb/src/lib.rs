@@ -36,6 +36,15 @@ impl Database<'_> for RocksDB {
         options.create_if_missing(true);
         options.create_missing_column_families(true);
 
+        // Configure block cache for better performance
+        // Default: 128MB LRU cache for frequently accessed blocks
+        const DEFAULT_BLOCK_CACHE_SIZE: usize = 128 * 1024 * 1024; // 128MB
+
+        let cache = rocksdb::Cache::new_lru_cache(DEFAULT_BLOCK_CACHE_SIZE);
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        block_opts.set_block_cache(&cache);
+        options.set_block_based_table_factory(&block_opts);
+
         Ok(Self {
             db: DB::open_cf(&options, &config.path, Column::iter())?,
         })

@@ -11883,6 +11883,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "xcall-example"
+version = "0.0.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "xml-rs"
 version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
