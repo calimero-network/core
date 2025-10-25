@@ -107,7 +107,13 @@ impl ContextClient {
                     let app_id = match source.scheme() {
                         "http" | "https" => self
                             .node_client
-                            .install_application_from_url(source.clone(), metadata.clone(), None)
+                            .install_application_from_url(
+                                source.clone(),
+                                metadata.clone(),
+                                None,
+                                "unknown",
+                                "0.0.0",
+                            )
                             .await
                             .ok(),
                         _ => None,
@@ -120,6 +126,8 @@ impl ContextClient {
                             application.size,
                             &source.into(),
                             metadata,
+                            "unknown",
+                            "0.0.0",
                         )?,
                     }
                 };

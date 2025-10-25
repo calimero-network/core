@@ -30,6 +30,16 @@ pub struct InstallCommand {
 
     #[clap(long, short = 'w', requires = "path")]
     pub watch: bool,
+
+    #[clap(
+        long,
+        help = "Package name (e.g., com.example.myapp)",
+        default_value = "unknown"
+    )]
+    pub package: String,
+
+    #[clap(long, help = "Version (e.g., 1.0.0)", default_value = "0.0.0")]
+    pub version: String,
 }
 
 impl InstallCommand {
@@ -51,12 +61,21 @@ impl InstallCommand {
         let client = environment.client()?;
 
         let response = if let Some(app_path) = self.path.as_ref() {
-            let request =
-                InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
+            let request = InstallDevApplicationRequest::new(
+                app_path.canonicalize_utf8()?,
+                metadata,
+                self.package.clone(),
+                self.version.clone(),
+            );
             client.install_dev_application(request).await?
         } else if let Some(app_url) = self.url.as_ref() {
-            let request =
-                InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
+            let request = InstallApplicationRequest::new(
+                Url::parse(&app_url)?,
+                self.hash,
+                metadata,
+                self.package.clone(),
+                self.version.clone(),
+            );
             client.install_application(request).await?
         } else {
             bail!("Either path or url must be provided");
@@ -114,6 +133,8 @@ impl InstallCommand {
                 metadata: self.metadata.clone(),
                 hash: None,
                 watch: false,
+                package: self.package.clone(),
+                version: self.version.clone(),
             }
             .install_app(environment)
             .await?;
