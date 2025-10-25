@@ -14,7 +14,7 @@ use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
 use crate::env::time_now;
 use crate::interface::StorageError;
-use crate::store::{Key, StorageAdaptor};
+use crate::store::{IterableStorage, Key, StorageAdaptor};
 
 /// Index entry for an entity.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -281,41 +281,51 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Removes and deletes a child from a collection.
     ///
-    /// Uses tombstone-based deletion:
-    /// 1. Deletes actual entity data (Key::Entry) immediately to save space
-    /// 2. Marks index as deleted (tombstone) for CRDT sync
-    /// 3. Updates parent's children list and hashes
-    ///
-    /// Note: To move a child to a different parent, just add it to the new parent.
+    /// Uses tombstone-based deletion. To move a child to a different parent,
+    /// just add it to the new parent instead.
     pub(crate) fn remove_child_from(
         parent_id: Id,
         collection: &str,
         child_id: Id,
     ) -> Result<(), StorageError> {
-        // 1. Delete the actual entity data immediately (save storage space)
-        let _ignored = S::storage_remove(Key::Entry(child_id));
+        Self::delete_entity_and_create_tombstone(child_id)?;
+        Self::update_parent_after_child_removal(parent_id, collection, child_id)?;
+        Self::recalculate_ancestor_hashes_for(parent_id)?;
+        Ok(())
+    }
 
-        // 2. Mark child index as deleted (tombstone for CRDT sync)
-        if let Some(mut child_index) = Self::get_index(child_id)? {
-            child_index.deleted_at = Some(time_now());
-            Self::save_index(&child_index)?;
-        }
+    /// Deletes entity data and creates tombstone marker.
+    ///
+    /// Step 1 of deletion: Remove actual data, keep index for CRDT sync.
+    fn delete_entity_and_create_tombstone(id: Id) -> Result<(), StorageError> {
+        // Delete the actual entity data immediately (save storage space)
+        let _ignored = S::storage_remove(Key::Entry(id));
 
-        // 3. Update parent's children list
+        // Mark child index as deleted (tombstone for CRDT sync)
+        Self::mark_deleted(id, time_now())
+    }
+
+    /// Updates parent's children list and hash after child removal.
+    ///
+    /// Step 2 of deletion: Remove child from parent's index and recalculate hash.
+    fn update_parent_after_child_removal(
+        parent_id: Id,
+        collection: &str,
+        child_id: Id,
+    ) -> Result<(), StorageError> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
+        // Remove child from collection
         if let Some(children) = parent_index.children.get_mut(collection) {
             children.retain(|child| child.id() != child_id);
         }
 
-        // 4. Recalculate parent's hash
+        // Recalculate parent's hash
         parent_index.full_hash =
             Self::calculate_full_hash_from(parent_index.own_hash, &parent_index.children, false)?;
         Self::save_index(&parent_index)?;
 
-        // 5. Update ancestor hashes
-        Self::recalculate_ancestor_hashes_for(parent_id)?;
         Ok(())
     }
 
@@ -354,6 +364,7 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Garbage collects tombstones older than the retention period.
     ///
+    /// Only available for storage backends that implement `IterableStorage`.
     /// Removes index entries marked as deleted that are older than the specified
     /// retention period. This reclaims storage space while maintaining CRDT semantics
     /// for recent deletions.
@@ -369,9 +380,10 @@ impl<S: StorageAdaptor> Index<S> {
     /// # Example
     ///
     /// ```ignore
-    /// // GC tombstones older than 1 day
+    /// // GC tombstones older than 1 day (requires IterableStorage)
+    /// type MyStorage = MockedStorage<1>;
     /// const ONE_DAY_NANOS: u64 = 86_400_000_000_000;
-    /// let collected = Index::<MainStorage>::garbage_collect_tombstones(ONE_DAY_NANOS)?;
+    /// let collected = Index::<MyStorage>::garbage_collect_tombstones(ONE_DAY_NANOS)?;
     /// println!("Garbage collected {} tombstones", collected);
     /// ```
     ///
@@ -382,7 +394,10 @@ impl<S: StorageAdaptor> Index<S> {
     /// - [ ] Add GC scheduling mechanism (auto-run periodically)
     /// - [ ] Add GC configuration (min age, batch size, etc.)
     ///
-    pub(crate) fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError> {
+    pub(crate) fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError>
+    where
+        S: IterableStorage,
+    {
         let cutoff_time = time_now().saturating_sub(retention_nanos);
         let mut collected = 0;
 

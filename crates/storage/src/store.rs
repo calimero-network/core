@@ -42,50 +42,46 @@ impl Key {
     }
 }
 
-/// Determines where the ultimate storage system is located.
+/// Core storage operations (read, write, remove).
 ///
-/// This trait is mainly used to allow for a different storage location to be
-/// used for key operations during testing, such as modelling a foreign node's
-/// data store.
+/// Base trait for all storage backends. Provides fundamental CRUD operations
+/// without requiring iteration support.
 ///
 pub trait StorageAdaptor {
     /// Reads data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to read data from.
-    ///
     fn storage_read(key: Key) -> Option<Vec<u8>>;
 
     /// Removes data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to remove.
-    ///
     fn storage_remove(key: Key) -> bool;
 
     /// Writes data to persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key`   - The key to write data to.
-    /// * `value` - The data to write.
-    ///
     fn storage_write(key: Key, value: &[u8]) -> bool;
+}
 
+/// Storage iteration support for GC and snapshots.
+///
+/// Optional trait for storage backends that support key iteration.
+/// Required for garbage collection and full resync snapshot generation.
+///
+/// # ISP (Interface Segregation Principle)
+///
+/// This trait is separate from `StorageAdaptor` to avoid forcing all
+/// implementations to support iteration. Some storage backends (e.g., WASM
+/// environment without backend access) may not be able to efficiently iterate
+/// all keys.
+///
+pub trait IterableStorage: StorageAdaptor {
     /// Iterates over all keys in storage.
     ///
-    /// Returns an iterator over all keys currently in storage.
-    /// Used primarily for garbage collection and full resync.
+    /// Returns all keys currently in storage. Used for:
+    /// - Garbage collection of old tombstones
+    /// - Full resync snapshot generation
     ///
     /// # Implementation Note
     ///
-    /// For production (MainStorage), this may need to be implemented
-    /// via the underlying storage backend (RocksDB, etc.).
-    ///
-    /// TODO: For WASM/production environments, this needs backend support.
-    /// Currently only implemented for MockedStorage (testing).
+    /// For large datasets, consider returning an iterator instead of Vec
+    /// to avoid memory overhead. This would require changing the return type
+    /// to `Box<dyn Iterator<Item = Key>>`.
     ///
     fn storage_iter_keys() -> Vec<Key>;
 }
@@ -115,20 +111,16 @@ impl StorageAdaptor for MainStorage {
     fn storage_write(key: Key, value: &[u8]) -> bool {
         storage_write(key, value)
     }
-
-    fn storage_iter_keys() -> Vec<Key> {
-        // TODO: Implement this via the underlying storage backend
-        // For RocksDB: iterate over all keys in the database
-        // For WASM: may need to maintain a separate key index
-        //
-        // This is critical for:
-        // - Garbage collection of tombstones
-        // - Full resync snapshot generation
-        //
-        // Temporary: Return empty vec (disables GC for now)
-        Vec::new()
-    }
 }
+
+// TODO: Implement IterableStorage for MainStorage when backend supports it
+// This requires adding iteration support to the underlying storage backend (RocksDB, etc.)
+//
+// impl IterableStorage for MainStorage {
+//     fn storage_iter_keys() -> Vec<Key> {
+//         // Implement via backend iterator
+//     }
+// }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) use mocked::MockedStorage;
@@ -139,7 +131,7 @@ pub(crate) mod mocked {
     use core::cell::RefCell;
     use std::collections::BTreeMap;
 
-    use super::{Key, StorageAdaptor};
+    use super::{IterableStorage, Key, StorageAdaptor};
 
     /// The scope of the storage system, which allows for multiple storage
     /// systems to be used in parallel.
@@ -170,7 +162,10 @@ pub(crate) mod mocked {
                     .is_some()
             })
         }
+    }
 
+    // MockedStorage supports iteration for testing
+    impl<const SCOPE: usize> IterableStorage for MockedStorage<SCOPE> {
         fn storage_iter_keys() -> Vec<Key> {
             STORAGE.with(|storage| {
                 storage

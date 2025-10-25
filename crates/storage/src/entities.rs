@@ -267,6 +267,22 @@ impl Element {
     pub fn updated_at(&self) -> u64 {
         *self.metadata.updated_at
     }
+
+    /// Sets the updated timestamp.
+    ///
+    /// Helper to avoid Law of Demeter violations.
+    /// Instead of `element.metadata.updated_at = time`, use `element.set_updated_at(time)`.
+    pub fn set_updated_at(&mut self, timestamp: u64) {
+        *self.metadata.updated_at = timestamp;
+    }
+
+    /// Returns mutable reference to updated_at for direct manipulation.
+    ///
+    /// Use sparingly - prefer `set_updated_at()` for Law of Demeter compliance.
+    #[must_use]
+    pub fn updated_at_mut(&mut self) -> &mut u64 {
+        &mut *self.metadata.updated_at
+    }
 }
 
 #[cfg(test)]

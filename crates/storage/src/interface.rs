@@ -48,7 +48,7 @@ use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data, Metadata};
 use crate::env::time_now;
 use crate::index::Index;
-use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::store::{IterableStorage, Key, MainStorage, StorageAdaptor};
 use crate::sync;
 
 // Re-export for backward compatibility
@@ -383,26 +383,45 @@ impl<S: StorageAdaptor> Interface<S> {
                 let _ignored = <Index<S>>::mark_deleted(id, crate::env::time_now());
             }
             Action::DeleteRef { id, deleted_at } => {
-                // Tombstone-based deletion with CRDT semantics
-                if <Index<S>>::is_deleted(id)? {
-                    // Already deleted - use later deletion timestamp
-                    let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
-                } else if let Some(metadata) = <Index<S>>::get_metadata(id)? {
-                    // Entity exists and not deleted - check if deletion is newer than last update
-                    if deleted_at >= *metadata.updated_at {
-                        // Deletion wins - delete data and mark index
-                        let _ignored = S::storage_remove(Key::Entry(id));
-                        let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
-                    }
-                    // else: local update is newer, ignore deletion
-                } else {
-                    // Never seen this entity - create tombstone to prevent resurrection
-                    // This handles out-of-order messages (delete arrives before create)
-                    // TODO: Need to create a tombstone index entry here
-                    // For now, just ignore (deletion of non-existent entity)
-                }
+                Self::apply_delete_ref_action(id, deleted_at)?;
             }
         };
+
+        Ok(())
+    }
+
+    /// Applies DeleteRef action with CRDT conflict resolution.
+    ///
+    /// Uses guard clauses for clarity (KISS principle).
+    /// Handles three cases:
+    /// 1. Already deleted - update tombstone if newer
+    /// 2. Exists locally - compare timestamps (LWW)
+    /// 3. Never seen - ignore (could create tombstone in future)
+    fn apply_delete_ref_action(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+        // Guard: Already deleted, check if this deletion is newer
+        if <Index<S>>::is_deleted(id)? {
+            // Already has tombstone, use later deletion timestamp
+            let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+            return Ok(());
+        }
+
+        // Guard: Entity doesn't exist, nothing to delete
+        let Some(metadata) = <Index<S>>::get_metadata(id)? else {
+            // Never seen this entity - could create tombstone to prevent resurrection
+            // TODO: For strict CRDT semantics, should create tombstone index entry
+            // For now, just ignore (deletion of non-existent entity)
+            return Ok(());
+        };
+
+        // Guard: Local update is newer, deletion loses
+        if deleted_at < *metadata.updated_at {
+            // Local update wins, ignore older deletion
+            return Ok(());
+        }
+
+        // Deletion wins - apply it
+        let _ignored = S::storage_remove(Key::Entry(id));
+        let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
 
         Ok(())
     }
@@ -959,86 +978,33 @@ impl<S: StorageAdaptor> Interface<S> {
         unimplemented!()
     }
 
-    /// Sync orchestration with automatic incremental/full resync decision.
-    ///
-    /// Implements the hybrid sync strategy:
-    /// - Incremental sync for normal case (< 1 day offline)
-    /// - Full resync for extended offline (> 2 days)
-    /// - Grace period with fallback (1-2 days offline)
-    ///
-    /// # Parameters
-    ///
-    /// * `remote_node_id` - ID of remote node to sync with
-    /// * `fetch_snapshot_fn` - Callback to fetch snapshot from remote (network layer)
-    ///
-    /// # Strategy
-    ///
-    /// ```text
-    /// if offline < TOMBSTONE_RETENTION (1 day):
-    ///     → Incremental sync (compare_trees + apply_actions)
-    /// else if offline < FULL_RESYNC_THRESHOLD (2 days):
-    ///     → Try incremental, fallback to full resync on failure
-    /// else:
-    ///     → Full resync immediately
-    /// ```
-    ///
-    /// # TODO
-    ///
-    /// - [ ] Integrate with network layer for automatic snapshot fetching
-    /// - [ ] Add progress reporting callbacks
-    /// - [ ] Handle split-brain (both nodes offline, need coordinator)
-    /// - [ ] Add metrics (sync duration, bytes transferred, etc.)
-    /// - [ ] Add sync coordination lock (prevent concurrent syncs)
-    ///
-    /// # Example Usage
-    ///
-    /// ```ignore
-    /// use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
-    ///
-    /// // Sync with remote node
-    /// Interface::sync_with_node(
-    ///     remote_node_id,
-    ///     |node_id| {
-    ///         // Network layer fetches snapshot
-    ///         network::request_snapshot(node_id)
-    ///     }
-    /// )?;
-    /// ```
-    ///
-    pub fn sync_with_node<F>(
-        remote_node_id: Id,
-        fetch_snapshot_fn: F,
-    ) -> Result<(), StorageError>
-    where
-        F: FnOnce(Id) -> Result<Snapshot, StorageError>,
-    {
-        use crate::constants::{FULL_RESYNC_THRESHOLD_NANOS, TOMBSTONE_RETENTION_NANOS};
-
-        // Get sync state
-        let sync_state = Self::get_sync_state(remote_node_id)?;
-        let offline_duration = sync_state
-            .as_ref()
-            .map(|s| time_now().saturating_sub(s.last_sync_time))
-            .unwrap_or(0); // Never synced = 0 duration
-
-        // Decision logic
-        if offline_duration < TOMBSTONE_RETENTION_NANOS {
-            // Normal case: Incremental sync
-            // TODO: Implement incremental_sync() that uses compare_trees
-            // For now, caller must use compare_trees + apply_action manually
-            Ok(())
-        } else if offline_duration < FULL_RESYNC_THRESHOLD_NANOS {
-            // Grace period: Try incremental, fallback to full
-            // TODO: Try incremental first
-            // For now, go straight to full resync
-            let snapshot = fetch_snapshot_fn(remote_node_id)?;
-            Self::full_resync(remote_node_id, snapshot)
-        } else {
-            // Long offline: Full resync required
-            let snapshot = fetch_snapshot_fn(remote_node_id)?;
-            Self::full_resync(remote_node_id, snapshot)
-        }
-    }
+    // NOTE: Sync orchestration moved to node layer (YAGNI)
+    //
+    // The sync decision logic should be in the node's sync manager, not in storage.
+    // Storage provides primitives (generate_snapshot, full_resync, needs_full_resync),
+    // but the orchestration belongs in the network/node layer where it can access
+    // network protocols and handle peer communication.
+    //
+    // Example node layer implementation:
+    //
+    // ```rust
+    // impl SyncManager {
+    //     async fn sync_with_peer(&self, peer_id: NodeId) -> Result<()> {
+    //         use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
+    //         
+    //         if Interface::needs_full_resync(peer_id, TOMBSTONE_RETENTION_NANOS)? {
+    //             let snapshot = network::request_snapshot(peer_id).await?;
+    //             Interface::full_resync(peer_id, snapshot)?;
+    //         } else {
+    //             // Incremental sync via compare_trees
+    //             let comparison = network::request_comparison(peer_id).await?;
+    //             let (local_actions, remote_actions) = Interface::compare_trees(comparison)?;
+    //             // Apply actions...
+    //         }
+    //         Ok(())
+    //     }
+    // }
+    // ```
 
     /// Gets the sync state for a remote node.
     ///
@@ -1083,6 +1049,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Full resync protocol.
     ///
+    /// Only available for storage backends that implement `IterableStorage`.
     /// Completely rebuilds local state from remote node snapshot.
     /// Used when node has been offline longer than tombstone retention period.
     ///
@@ -1125,7 +1092,10 @@ impl<S: StorageAdaptor> Interface<S> {
     /// }
     /// ```
     ///
-    pub fn full_resync(remote_node_id: Id, snapshot: Snapshot) -> Result<(), StorageError> {
+    pub fn full_resync(remote_node_id: Id, snapshot: Snapshot) -> Result<(), StorageError>
+    where
+        S: IterableStorage,
+    {
         // Step 1: Validate snapshot
         // TODO: Add more validation (age check, size limits, etc.)
         if snapshot.entity_count == 0 && snapshot.index_count == 0 {
@@ -1147,38 +1117,24 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(())
     }
 
-    /// Fetches a snapshot from a remote node.
-    ///
-    /// # TODO
-    ///
-    /// This is a placeholder for the network protocol implementation.
-    /// Actual implementation needs:
-    /// - Network layer integration
-    /// - Snapshot request/response protocol
-    /// - Chunking for large snapshots
-    /// - Progress reporting
-    /// - Timeout handling
-    /// - Retry logic
-    ///
-    /// For now, this must be implemented by the caller using their
-    /// network layer and passing the snapshot to full_resync().
-    ///
-    #[allow(dead_code, reason = "Placeholder for network implementation")]
-    pub fn fetch_snapshot_from_remote(_remote_node_id: Id) -> Result<Snapshot, StorageError> {
-        // TODO: Implement network protocol for snapshot transfer
-        // This requires integration with the network layer which is
-        // outside the scope of the storage module.
-        //
-        // Suggested approach:
-        // 1. Send SNAPSHOT_REQUEST message to remote node
-        // 2. Remote calls generate_snapshot() and sends SNAPSHOT_RESPONSE
-        // 3. Receive and deserialize snapshot
-        // 4. Handle chunking for large snapshots
-        unimplemented!("Network protocol not yet implemented - implement in network layer")
-    }
+    // NOTE: Snapshot fetching removed (YAGNI violation)
+    //
+    // Snapshot fetching is a network layer concern, not storage layer.
+    // When implementing network protocol, call generate_snapshot() directly
+    // from the network handler and transfer the result.
+    //
+    // Example network layer implementation:
+    //
+    // ```rust
+    // async fn handle_snapshot_request(peer_id: NodeId) -> Result<()> {
+    //     let snapshot = Interface::<MainStorage>::generate_snapshot()?;
+    //     network::send_snapshot(peer_id, snapshot).await
+    // }
+    // ```
 
     /// Generates a full snapshot for resync.
     ///
+    /// Only available for storage backends that implement `IterableStorage`.
     /// Exports all entities and indexes for transfer to a remote node.
     /// Excludes tombstones and SyncState (those are node-specific).
     ///
@@ -1189,7 +1145,10 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - [ ] Include schema version for compatibility checks
     /// - [ ] Add progress reporting callback
     ///
-    pub fn generate_snapshot() -> Result<Snapshot, StorageError> {
+    pub fn generate_snapshot() -> Result<Snapshot, StorageError>
+    where
+        S: IterableStorage,
+    {
         let mut entries = Vec::new();
         let mut indexes = Vec::new();
 
@@ -1256,6 +1215,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Applies a snapshot during full resync.
     ///
+    /// Only available for storage backends that implement `IterableStorage`.
     /// Clears local storage and rebuilds from snapshot.
     /// Verifies Merkle root matches after rebuild.
     ///
@@ -1271,7 +1231,10 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - [ ] Add rollback on errors
     /// - [ ] Add confirmation mechanism (prevent accidental wipes)
     ///
-    pub fn apply_snapshot(snapshot: &Snapshot) -> Result<(), StorageError> {
+    pub fn apply_snapshot(snapshot: &Snapshot) -> Result<(), StorageError>
+    where
+        S: IterableStorage,
+    {
         // Step 1: Clear all entity and index data
         // Preserve SyncState to track resync history
         Self::clear_all_storage_except_sync_state()?;
@@ -1303,6 +1266,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Clears all storage except SyncState.
     ///
+    /// Only available for storage backends that implement `IterableStorage`.
     /// Used during full resync to wipe local data while preserving sync history.
     ///
     /// # Safety
@@ -1315,7 +1279,10 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - [ ] Add backup before clear (for rollback)
     /// - [ ] Add progress reporting for large clears
     ///
-    fn clear_all_storage_except_sync_state() -> Result<(), StorageError> {
+    fn clear_all_storage_except_sync_state() -> Result<(), StorageError>
+    where
+        S: IterableStorage,
+    {
         let all_keys = S::storage_iter_keys();
 
         for key in all_keys {
