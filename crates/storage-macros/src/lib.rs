@@ -26,40 +26,10 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 ///     will be implemented for the struct, so they should be omitted from the
 ///     struct definition.
 ///
-/// # Struct attributes
-///
-/// * `#[root]`       - Indicates that the type represents a root in the
-///                     hierarchy, and doesn't have a parent. This is an
-///                     optional attribute.
-/// * `#[type_id(n)]` - Indicates the type ID for the struct. This is a
-///                     mandatory attribute, and the value `n` must be a `u8`.
-///                     This is used to differentiate between different types
-///                     of structs when deserialising, and each type should have
-///                     a unique ID.
-///
 /// # Field attributes
 ///
-/// * `#[collection]` - Indicates that the field is a collection of other `Data` types.
-/// * `#[private]`    - Designates fields that are local-only, and so should not
-///                     be shared with other nodes in the network. These fields
-///                     will not be serialised or included in the Merkle hash
-///                     calculation. Note that being local-only is not the same
-///                     as applying permissions via ACLs to share with only the
-///                     current user — these fields are not shared at all.
-/// * `#[skip]`       - Can be applied to fields that should not be serialised
-///                     or included in the Merkle hash calculation. These fields
-///                     will be completely ignored by the storage system, and
-///                     not even have getters and setters implemented.
-/// * `#[storage]`    - Indicates that the field is the storage element for the
-///                     struct. This is a mandatory field, and if it is missing,
-///                     there will be a panic during compilation. The name is
-///                     arbitrary, but the type has to be an `Element`.
-///
-/// Note that fields marked with `#[private]` or `#[skip]` must have [`Default`]
-/// implemented so that they can be initialised when deserialising.
-///
-/// TODO: The `#[private]` attribute is implemented with the same functionality
-///       as `#[skip]`, but in future these will be differentiated.
+/// * `#[collection]` - Marks a field as a collection of child `Data` types.
+/// * `#[storage]`    - **Required**. Marks the `Element` field containing storage metadata.
 ///
 /// # Getters and setters
 ///
@@ -88,12 +58,9 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 /// use calimero_storage_macros::AtomicUnit;
 /// use borsh::{BorshSerialize, BorshDeserialize};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
-/// #[type_id(43)]
+/// #[derive(AtomicUnit, BorshSerialize, BorshDeserialize)]
 /// struct Page {
 ///     title: String,
-///     #[private]
-///     secret: String,
 ///     #[storage]
 ///     storage: Element,
 /// }
@@ -102,12 +69,10 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 ///
 /// # Panics
 ///
-/// This macro will panic during compilation if:
-///
-///   - It is applied to anything other than a struct
-///   - The struct has unnamed fields
-///   - The `#[storage]` attribute is missing or invalid
-///   - The `#[type_id(n)]` attribute is missing or invalid
+/// Panics at compile time if:
+/// - Applied to non-struct types (enums, unions)
+/// - Struct has unnamed fields
+/// - Missing `#[storage]` attribute
 ///
 /// # See also
 ///
@@ -122,7 +87,7 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 )]
 #[proc_macro_derive(
     AtomicUnit,
-    attributes(children, collection, private, root, skip, storage, type_id)
+    attributes(collection, storage)
 )]
 pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as DeriveInput);
