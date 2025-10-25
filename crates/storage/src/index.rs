@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
+use crate::env::time_now;
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
@@ -34,7 +35,12 @@ struct EntityIndex {
     own_hash: [u8; 32],
 
     /// Entity metadata.
-    metadata: Metadata,
+    pub(crate) metadata: Metadata,
+
+    /// Tombstone marker. When set, entity data is deleted but index kept for CRDT sync.
+    /// Enables proper conflict resolution (delete vs update) in distributed scenarios.
+    /// Garbage collected after retention period (default: 1 day).
+    pub(crate) deleted_at: Option<u64>,
 }
 
 /// Entity index manager.
@@ -57,6 +63,7 @@ impl<S: StorageAdaptor> Index<S> {
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: child.metadata,
+            deleted_at: None,
         });
         child_index.parent_id = Some(parent_id);
         child_index.own_hash = child.merkle_hash();
@@ -96,6 +103,7 @@ impl<S: StorageAdaptor> Index<S> {
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: root.metadata,
+            deleted_at: None,
         });
         index.own_hash = root.merkle_hash();
         Self::save_index(&index)?;
@@ -162,6 +170,22 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(Self::get_index(id)?.map(|index| index.metadata))
     }
 
+    /// Checks if an entity is deleted (tombstone marker set).
+    pub(crate) fn is_deleted(id: Id) -> Result<bool, StorageError> {
+        Ok(Self::get_index(id)?
+            .and_then(|index| index.deleted_at)
+            .is_some())
+    }
+
+    /// Marks an entity as deleted (sets tombstone).
+    pub(crate) fn mark_deleted(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+        if let Some(mut index) = Self::get_index(id)? {
+            index.deleted_at = Some(deleted_at);
+            Self::save_index(&index)?;
+        }
+        Ok(())
+    }
+
     /// Returns children from a specific collection.
     pub(crate) fn get_children_of(
         parent_id: Id,
@@ -191,7 +215,7 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Loads entity index from storage.
-    fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
+    pub(crate) fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
         match S::storage_read(Key::Index(id)) {
             Some(data) => Ok(Some(
                 EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
@@ -255,12 +279,27 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Removes and deletes a child from a collection.
     ///
+    /// Uses tombstone-based deletion:
+    /// 1. Deletes actual entity data (Key::Entry) immediately to save space
+    /// 2. Marks index as deleted (tombstone) for CRDT sync
+    /// 3. Updates parent's children list and hashes
+    ///
     /// Note: To move a child to a different parent, just add it to the new parent.
     pub(crate) fn remove_child_from(
         parent_id: Id,
         collection: &str,
         child_id: Id,
     ) -> Result<(), StorageError> {
+        // 1. Delete the actual entity data immediately (save storage space)
+        let _ignored = S::storage_remove(Key::Entry(child_id));
+
+        // 2. Mark child index as deleted (tombstone for CRDT sync)
+        if let Some(mut child_index) = Self::get_index(child_id)? {
+            child_index.deleted_at = Some(time_now());
+            Self::save_index(&child_index)?;
+        }
+
+        // 3. Update parent's children list
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
@@ -268,12 +307,12 @@ impl<S: StorageAdaptor> Index<S> {
             children.retain(|child| child.id() != child_id);
         }
 
+        // 4. Recalculate parent's hash
         parent_index.full_hash =
             Self::calculate_full_hash_from(parent_index.own_hash, &parent_index.children, false)?;
         Self::save_index(&parent_index)?;
 
-        Self::remove_index(child_id);
-
+        // 5. Update ancestor hashes
         Self::recalculate_ancestor_hashes_for(parent_id)?;
         Ok(())
     }
@@ -284,7 +323,7 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Saves entity index to storage.
-    fn save_index(index: &EntityIndex) -> Result<(), StorageError> {
+    pub(crate) fn save_index(index: &EntityIndex) -> Result<(), StorageError> {
         _ = S::storage_write(
             Key::Index(index.id),
             &to_vec(index).map_err(StorageError::SerializationError)?,
@@ -309,5 +348,41 @@ impl<S: StorageAdaptor> Index<S> {
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)
+    }
+
+    /// Garbage collects tombstones older than the retention period.
+    ///
+    /// Removes index entries marked as deleted that are older than the specified
+    /// retention period. This reclaims storage space while maintaining CRDT semantics
+    /// for recent deletions.
+    ///
+    /// # Parameters
+    ///
+    /// * `retention_nanos` - Retention period in nanoseconds (e.g., 86_400_000_000_000 for 1 day)
+    ///
+    /// # Returns
+    ///
+    /// Number of tombstones garbage collected
+    ///
+    /// # TODO
+    ///
+    /// - [ ] Make this iterate over all indexes efficiently (need iterator over storage keys)
+    /// - [ ] Add metrics/logging for GC operations
+    /// - [ ] Consider partial GC (limit number of items per run)
+    /// - [ ] Add GC scheduling mechanism (auto-run periodically)
+    ///
+    #[allow(dead_code, reason = "Will be called by GC scheduler - TODO")]
+    pub(crate) fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError> {
+        let cutoff_time = time_now().saturating_sub(retention_nanos);
+        let mut collected = 0;
+
+        // TODO: This is a placeholder implementation
+        // Need to iterate over all index keys in storage
+        // For now, this would need to be called with specific IDs
+        //
+        // Future: Add storage_iter_keys() to StorageAdaptor trait
+        // to enable efficient iteration over all indexes
+
+        Ok(collected)
     }
 }

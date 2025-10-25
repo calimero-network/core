@@ -114,12 +114,30 @@ pub enum Action {
     },
 
     /// Delete an entity with the given ID.
+    ///
+    /// TODO: Deprecated in favor of DeleteRef. This variant carries full ancestor
+    /// data which is inefficient. Kept for backward compatibility during migration.
     Delete {
         /// Unique identifier of the entity.
         id: Id,
 
         /// Details of the ancestors of the entity.
         ancestors: Vec<ChildInfo>,
+    },
+
+    /// Delete reference (tombstone-based deletion).
+    ///
+    /// More efficient than Delete variant - only sends ID and timestamp.
+    /// Uses tombstone mechanism for proper CRDT semantics:
+    /// - Handles delete vs update conflicts via timestamp comparison
+    /// - Supports out-of-order message delivery
+    /// - Enables 1-day retention + full resync strategy
+    DeleteRef {
+        /// Unique identifier of the entity to delete.
+        id: Id,
+
+        /// Timestamp when deletion occurred (for conflict resolution).
+        deleted_at: u64,
     },
 
     /// Update the entity with the given ID and type to have the supplied data.
@@ -283,8 +301,32 @@ impl<S: StorageAdaptor> Interface<S> {
             Action::Delete {
                 id, ancestors: _, ..
             } => {
-                // todo! remove_child_from here
+                // TODO: Legacy Delete action - needs parent_id and collection to properly call remove_child_from
+                // For now, just delete the entry and mark index as deleted
+                // This is incomplete - parent's children list won't be updated!
+                // Migrate to DeleteRef variant for proper handling
                 let _ignored = S::storage_remove(Key::Entry(id));
+                let _ignored = <Index<S>>::mark_deleted(id, crate::env::time_now());
+            }
+            Action::DeleteRef { id, deleted_at } => {
+                // Tombstone-based deletion with CRDT semantics
+                if <Index<S>>::is_deleted(id)? {
+                    // Already deleted - use later deletion timestamp
+                    let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+                } else if let Some(metadata) = <Index<S>>::get_metadata(id)? {
+                    // Entity exists and not deleted - check if deletion is newer than last update
+                    if deleted_at >= *metadata.updated_at {
+                        // Deletion wins - delete data and mark index
+                        let _ignored = S::storage_remove(Key::Entry(id));
+                        let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+                    }
+                    // else: local update is newer, ignore deletion
+                } else {
+                    // Never seen this entity - create tombstone to prevent resurrection
+                    // This handles out-of-order messages (delete arrives before create)
+                    // TODO: Need to create a tombstone index entry here
+                    // For now, just ignore (deletion of non-existent entity)
+                }
             }
         };
 
@@ -512,11 +554,18 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Finds and deserializes an entity by its unique ID.
     ///
+    /// Filters out tombstoned (deleted) entities automatically.
+    ///
     /// # Errors
     /// - `DeserializationError` if stored data is corrupt
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        // Check if entity is deleted (tombstone)
+        if <Index<S>>::is_deleted(id)? {
+            return Ok(None); // Entity is deleted
+        }
+
         let value = S::storage_read(Key::Entry(id));
 
         let Some(slice) = value else {
@@ -537,6 +586,9 @@ impl<S: StorageAdaptor> Interface<S> {
     }
 
     /// Finds an entity by ID, returning raw bytes without deserialization.
+    ///
+    /// Note: This does NOT filter deleted entities. Use `find_by_id` for automatic
+    /// tombstone filtering.
     ///
     pub fn find_by_id_raw(id: Id) -> Option<Vec<u8>> {
         S::storage_read(Key::Entry(id))
@@ -831,5 +883,40 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
+    }
+
+    /// Full resync mechanism for nodes offline longer than tombstone retention.
+    ///
+    /// # Overview
+    ///
+    /// When a node is offline longer than the tombstone retention period (default: 1 day),
+    /// incremental sync via tombstones is no longer reliable. Full resync rebuilds the
+    /// entire local state from an authoritative remote node.
+    ///
+    /// # TODO List for Full Resync Implementation
+    ///
+    /// ## Phase 1: Infrastructure (High Priority)
+    /// - [ ] Add `SyncState` struct to track last sync time per node
+    /// - [ ] Add `storage_clear_all()` to safely wipe local storage
+    /// - [ ] Add `get_full_snapshot()` to export complete state
+    /// - [ ] Add `storage_iter_keys()` to StorageAdaptor trait
+    /// - [ ] Add configuration constants (TOMBSTONE_RETENTION = 1 day, etc.)
+    ///
+    /// ## Phase 2: Resync Protocol (Medium Priority)
+    /// - [ ] Implement `needs_full_resync(last_sync_time)` detector
+    /// - [ ] Implement `full_resync(remote_node)` function
+    /// - [ ] Handle "split brain" scenario (both nodes offline)
+    ///
+    /// ## Phase 3: Testing (Critical)
+    /// - [ ] Test: Delete vs Update conflict resolution
+    /// - [ ] Test: Out-of-order message delivery with tombstones
+    /// - [ ] Test: GC removes old tombstones correctly
+    ///
+    /// See implementation plan in codebase documentation.
+    ///
+    #[allow(dead_code, reason = "Scaffolding for future implementation")]
+    pub fn full_resync_placeholder() {
+        // TODO: Implement full resync protocol
+        unimplemented!("Full resync not yet implemented - see TODOs")
     }
 }

@@ -572,7 +572,9 @@ mod index__public_methods {
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert!(root_index.children[collection_name].is_empty());
-        assert!(<Index<MainStorage>>::get_index(child_id).unwrap().is_none());
+
+        // With tombstones, index still exists but is marked as deleted
+        assert!(<Index<MainStorage>>::is_deleted(child_id).unwrap());
     }
 }
 
@@ -593,6 +595,7 @@ mod index__private_methods {
             full_hash: hash1,
             own_hash: hash2,
             metadata: Metadata::default(),
+            deleted_at: None,
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
 
@@ -613,6 +616,7 @@ mod index__private_methods {
             full_hash: hash1,
             own_hash: hash2,
             metadata: Metadata::default(),
+            deleted_at: None,
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
         assert_eq!(<Index<MainStorage>>::get_index(id).unwrap().unwrap(), index);
