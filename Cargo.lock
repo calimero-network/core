@@ -2113,6 +2113,7 @@ dependencies = [
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server",
+ "calimero-storage",
  "calimero-store",
  "calimero-store-rocksdb",
  "calimero-utils-actix",

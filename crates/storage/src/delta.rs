@@ -1,32 +1,38 @@
-//! Synchronisation utilities for external runtimes.
+//! Storage delta for synchronization.
+//!
+//! Represents the output of storage operations that needs to be synchronized
+//! across nodes.
 
 use core::cell::RefCell;
 use std::io;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 
+use crate::action::Action;
 use crate::env;
 use crate::integration::Comparison;
-use crate::interface::Action;
 
-/// An artifact to aid synchronisation with an external runtime.
+/// Delta produced by storage operations for synchronization.
+///
+/// Contains either a list of actions (operation-based CRDT) or comparisons
+/// (state-based CRDT for Merkle tree reconciliation).
 #[derive(Debug, BorshSerialize)]
-pub enum SyncArtifact {
-    /// A list of actions.
+pub enum StorageDelta {
+    /// A list of actions from direct operations.
     Actions(Vec<Action>),
-    /// A list of comparisons.
+    /// A list of comparisons for Merkle tree sync.
     Comparisons(Vec<Comparison>),
 }
 
-impl BorshDeserialize for SyncArtifact {
+impl BorshDeserialize for StorageDelta {
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let Ok(tag) = u8::deserialize_reader(reader) else {
-            return Ok(SyncArtifact::Comparisons(vec![]));
+            return Ok(StorageDelta::Comparisons(vec![]));
         };
 
         match tag {
-            0 => Ok(SyncArtifact::Actions(Vec::deserialize_reader(reader)?)),
-            1 => Ok(SyncArtifact::Comparisons(Vec::deserialize_reader(reader)?)),
+            0 => Ok(StorageDelta::Actions(Vec::deserialize_reader(reader)?)),
+            1 => Ok(StorageDelta::Comparisons(Vec::deserialize_reader(reader)?)),
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
         }
     }
@@ -73,8 +79,8 @@ pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
 
     let artifact = match (&*actions, &*comparison) {
         (&[], &[]) => vec![],
-        (&[], _) => to_vec(&SyncArtifact::Comparisons(comparison))?,
-        (_, &[]) => to_vec(&SyncArtifact::Actions(actions))?,
+        (&[], _) => to_vec(&StorageDelta::Comparisons(comparison))?,
+        (_, &[]) => to_vec(&StorageDelta::Actions(actions))?,
         _ => eyre::bail!("both actions and comparison are present"),
     };
 
@@ -82,3 +88,4 @@ pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
 
     Ok(())
 }
+

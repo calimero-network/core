@@ -32,5 +32,9 @@ velcro.workspace = true
 
 calimero-sdk.workspace = true
 
+[features]
+default = []
+testing = []  # Exposes test utilities for dependent crates
+
 [lints]
 workspace = true

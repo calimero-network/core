@@ -12,7 +12,7 @@ use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
 use tracing::{debug, info};
 
-use super::{Sequencer, SyncManager};
+use super::manager::{SyncManager, Sequencer};
 
 impl SyncManager {
     pub(super) async fn initiate_state_sync_process(

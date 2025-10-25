@@ -124,6 +124,7 @@ impl PartialOrd for ChildInfo {
 }
 
 impl ChildInfo {
+    /// Creates a new ChildInfo.
     #[must_use]
     pub const fn new(id: Id, merkle_hash: [u8; 32], metadata: Metadata) -> Self {
         Self {
@@ -133,21 +134,25 @@ impl ChildInfo {
         }
     }
 
+    /// Returns the entity ID.
     #[must_use]
     pub const fn id(&self) -> Id {
         self.id
     }
 
+    /// Returns the Merkle hash.
     #[must_use]
     pub const fn merkle_hash(&self) -> [u8; 32] {
         self.merkle_hash
     }
 
+    /// Returns the creation timestamp.
     #[must_use]
     pub const fn created_at(&self) -> u64 {
         self.metadata.created_at
     }
 
+    /// Returns the last update timestamp.
     #[must_use]
     pub fn updated_at(&self) -> u64 {
         *self.metadata.updated_at
@@ -215,31 +220,37 @@ impl Element {
         }
     }
 
+    /// Returns the creation timestamp.
     #[must_use]
     pub const fn created_at(&self) -> u64 {
         self.metadata.created_at
     }
 
+    /// Returns the entity ID.
     #[must_use]
     pub const fn id(&self) -> Id {
         self.id
     }
 
+    /// Checks if the entity has unsaved changes.
     #[must_use]
     pub const fn is_dirty(&self) -> bool {
         self.is_dirty
     }
 
+    /// Returns the Merkle hash.
     #[must_use]
     pub const fn merkle_hash(&self) -> [u8; 32] {
         self.merkle_hash
     }
 
+    /// Returns the entity metadata.
     #[must_use]
     pub const fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 
+    /// Returns the entity path.
     #[must_use]
     pub fn path(&self) -> Path {
         self.path.clone()
@@ -251,9 +262,26 @@ impl Element {
         *self.metadata.updated_at = time_now();
     }
 
+    /// Returns the last update timestamp.
     #[must_use]
     pub fn updated_at(&self) -> u64 {
         *self.metadata.updated_at
+    }
+
+    /// Sets the updated timestamp.
+    ///
+    /// Helper to avoid Law of Demeter violations.
+    /// Instead of `element.metadata.updated_at = time`, use `element.set_updated_at(time)`.
+    pub fn set_updated_at(&mut self, timestamp: u64) {
+        *self.metadata.updated_at = timestamp;
+    }
+
+    /// Returns mutable reference to updated_at for direct manipulation.
+    ///
+    /// Use sparingly - prefer `set_updated_at()` for Law of Demeter compliance.
+    #[must_use]
+    pub fn updated_at_mut(&mut self) -> &mut u64 {
+        &mut *self.metadata.updated_at
     }
 }
 

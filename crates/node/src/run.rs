@@ -1,4 +1,5 @@
 use std::pin::{pin, Pin};
+use std::time::Duration;
 
 use actix::{Actor, Arbiter, System};
 use calimero_blobstore::config::BlobStoreConfig;
@@ -25,6 +26,7 @@ use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
+use crate::gc::GarbageCollector;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
@@ -38,6 +40,7 @@ pub struct NodeConfig {
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
     pub server: ServerConfig,
+    pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 12 hours)
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -179,8 +182,18 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         registry,
     );
 
+    // Start garbage collection actor
+    let gc_interval = Duration::from_secs(
+        config.gc_interval_secs.unwrap_or(12 * 3600) // Default: 12 hours
+    );
+    let gc = GarbageCollector::new(datastore.clone(), gc_interval);
+    
+    let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |_ctx| gc);
+
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
+
+    info!("Node started successfully");
 
     loop {
         tokio::select! {

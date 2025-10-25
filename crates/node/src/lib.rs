@@ -17,13 +17,14 @@ use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tracing::error;
 
+pub mod gc;
 pub mod handlers;
 mod run;
 pub mod sync;
 mod utils;
 
 pub use run::{start, NodeConfig};
-use sync::SyncManager;
+pub use sync::SyncManager;
 
 #[derive(Debug)]
 pub struct NodeManager {

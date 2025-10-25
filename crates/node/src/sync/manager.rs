@@ -18,12 +18,27 @@ use tokio::sync::mpsc;
 use tokio::time::{self, timeout, timeout_at, Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
-use crate::utils::choose_stream;
+// Submodules are declared in mod.rs
 
-mod blobs;
-mod delta;
-mod key;
-mod state;
+// Utility function for reservoir sampling from a stream
+async fn choose_stream<T>(stream: impl futures_util::Stream<Item = T>, rng: &mut impl rand::Rng) -> Option<T> {
+    use std::pin::pin;
+    use futures_util::StreamExt;
+
+    let mut stream = pin!(stream);
+
+    let mut item = stream.next().await;
+
+    let mut stream = stream.enumerate();
+
+    while let Some((idx, this)) = stream.next().await {
+        if rng.gen_range(0..idx + 1) == 0 {
+            item = Some(this);
+        }
+    }
+
+    item
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct SyncConfig {
@@ -32,15 +47,18 @@ pub struct SyncConfig {
     pub frequency: time::Duration,
 }
 
+/// Network synchronization manager.
+///
+/// Orchestrates sync protocols: full resync, delta sync, state sync.
 #[derive(Debug)]
-pub(crate) struct SyncManager {
-    sync_config: SyncConfig,
+pub struct SyncManager {
+    pub(super) sync_config: SyncConfig,
 
-    node_client: NodeClient,
-    context_client: ContextClient,
-    network_client: NetworkClient,
+    pub(super) node_client: NodeClient,
+    pub(super) context_client: ContextClient,
+    pub(super) network_client: NetworkClient,
 
-    ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+    pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
 }
 
 impl Clone for SyncManager {
@@ -61,16 +79,16 @@ struct SyncState {
 }
 
 #[derive(Default)]
-struct Sequencer {
+pub(crate) struct Sequencer {
     current: usize,
 }
 
 impl Sequencer {
-    fn current(&self) -> usize {
+    pub(crate) fn current(&self) -> usize {
         self.current
     }
 
-    fn test(&mut self, idx: usize) -> eyre::Result<()> {
+    pub(crate) fn test(&mut self, idx: usize) -> eyre::Result<()> {
         if self.current != idx {
             bail!(
                 "out of sequence message: expected {}, got {}",
@@ -84,7 +102,7 @@ impl Sequencer {
         Ok(())
     }
 
-    fn next(&mut self) -> usize {
+    pub(crate) fn next(&mut self) -> usize {
         let current = self.current;
         self.current += 1;
         current
@@ -295,7 +313,7 @@ impl SyncManager {
         false
     }
 
-    async fn send(
+    pub(super) async fn send(
         &self,
         stream: &mut Stream,
         message: &StreamMessage<'_>,
@@ -315,7 +333,7 @@ impl SyncManager {
         Ok(())
     }
 
-    async fn recv(
+    pub(super) async fn recv(
         &self,
         stream: &mut Stream,
         shared_key: Option<(SharedKey, Nonce)>,
@@ -386,8 +404,8 @@ impl SyncManager {
             .await?;
         }
 
-        // Try delta sync first, fall back to state sync on failure
-        // This is simpler and more efficient than checking all members upfront
+        // Use calimero-sync to determine the right strategy
+        // Delta sync for recent changes, full resync for long-offline nodes
         match self
             .initiate_delta_sync_process(&mut context, our_identity, &mut stream)
             .await
@@ -397,8 +415,10 @@ impl SyncManager {
                 warn!(
                     context_id=%context.id,
                     error=%e,
-                    "Delta sync failed, falling back to state sync"
+                    "Delta sync failed, falling back to full state sync"
                 );
+                // TODO: Use calimero-sync::SyncManager to decide between delta/full
+                // For now, fall back to state sync (will be full resync later)
                 self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
                     .await
             }
@@ -546,6 +566,31 @@ impl SyncManager {
                     our_identity,
                     their_identity,
                     their_root_hash,
+                    their_application_id,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::FullSync {
+                application_id: their_application_id,
+            } => {
+                if updated.is_none() && context.application_id != their_application_id {
+                    updated = Some(
+                        self.context_client
+                            .sync_context_config(context_id, None)
+                            .await?,
+                    );
+                }
+
+                if let Some(updated) = updated {
+                    context = updated;
+                }
+
+                self.handle_full_resync_request(
+                    &mut context,
+                    our_identity,
+                    their_identity,
                     their_application_id,
                     stream,
                     nonce,
