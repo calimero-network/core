@@ -19,6 +19,12 @@ target/
 venv/
 .venv/
 
+# merobox source clone
+.merobox-src/
+
+# e2e test results
+e2e-tests-merobox/results/
+
 # typescript
 *.map
 coverage/

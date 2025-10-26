@@ -1,5 +1,8 @@
 name: e2e-tests-merobox
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -62,10 +65,12 @@ jobs:
             apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
           retention-days: 2
 
-  test-kv-store:
-    name: KV Store - ${{ matrix.protocol }}
+  test:
+    name: E2E Tests - ${{ matrix.protocol }}
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         protocol: [near, icp, ethereum]
@@ -84,14 +89,29 @@ jobs:
         run: |
           chmod +x target/debug/merod target/debug/meroctl
 
+      - name: Add Binaries to PATH
+        run: |
+          echo "$GITHUB_WORKSPACE/target/debug" >> $GITHUB_PATH
+
+      - name: Verify Binaries
+        run: |
+          which merod
+          which meroctl
+          merod --version
+          meroctl --version
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Merobox
+      - name: Clone Merobox from Source
         run: |
-          pip install merobox
+          git clone https://github.com/calimero-network/merobox.git
+
+      - name: Install Merobox from Source
+        run: |
+          pip install -e ./merobox
 
       - name: Verify Merobox Installation
         run: |
@@ -140,80 +160,218 @@ jobs:
           ./scripts/ethereum/deploy-devnet.sh
 
       # ============================================================================
-      # Run Merobox Tests
+      # Run Merobox Tests - KV Store
       # ============================================================================
       - name: Run KV Store Tests
-        id: merobox-test
+        id: kv-store-test
         env:
           NO_COLOR: 1
           RUST_LOG: calimero_=debug
           CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
         run: |
-          echo "Running merobox tests for ${{ matrix.protocol }}"
+          echo "=========================================="
+          echo "Running KV Store tests for ${{ matrix.protocol }}"
+          echo "=========================================="
 
-          # Run merobox workflow with --no-docker mode (merobox 0.2.0+)
           merobox bootstrap run \
             e2e-tests-merobox/workflows/kv-store/${{ matrix.protocol }}.yml \
             --no-docker \
             --verbose
 
-      - name: Upload Test Results
+      - name: Upload KV Store Test Results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: merobox-kv-store-${{ matrix.protocol }}
+          name: kv-store-${{ matrix.protocol }}
           path: e2e-tests-merobox/results/${{ matrix.protocol }}/
           retention-days: 2
 
+      # ============================================================================
+      # Run Merobox Tests - Proposals
+      # ============================================================================
+      - name: Run Proposals Tests
+        id: proposals-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          echo "=========================================="
+          echo "Running Proposals tests for ${{ matrix.protocol }}"
+          echo "=========================================="
+
+          merobox bootstrap run \
+            e2e-tests-merobox/workflows/proposals/${{ matrix.protocol }}-proposals.yml \
+            --no-docker \
+            --verbose
+
+      - name: Upload Proposals Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: proposals-${{ matrix.protocol }}
+          path: e2e-tests-merobox/results/${{ matrix.protocol }}-proposals/
+          retention-days: 2
+
+      # ============================================================================
+      # Upload Logs (Combined for both tests)
+      # ============================================================================
       - name: Upload Test Logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: merobox-logs-${{ matrix.protocol }}
+          name: test-logs-${{ matrix.protocol }}
           path: ~/.merobox/logs/
           retention-days: 1
 
   report:
     name: Generate Test Report
-    needs: test-kv-store
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download Test Results
+      - name: Download All Test Results
         uses: actions/download-artifact@v4
         with:
-          pattern: merobox-kv-store-*
+          pattern: kv-store-*
           merge-multiple: false
           path: results/
 
-      - name: Generate Summary Report
+      - name: Download Proposals Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: proposals-*
+          merge-multiple: false
+          path: results/
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Generate Comprehensive Test Report
         run: |
-          echo "# Merobox E2E Test Results" > report.md
+          echo "# 🧪 Merobox E2E Test Results" > report.md
           echo "" >> report.md
-          echo "## KV Store Tests" >> report.md
+          echo "**Workflow Run:** [\`${{ github.run_id }}\`](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> report.md
+          echo "" >> report.md
+
+          # Summary counters
+          total_tests=0
+          passed_tests=0
+          failed_tests=0
+
+          # ============================================================================
+          # KV Store Tests Section
+          # ============================================================================
+          echo "## 📦 KV Store Tests" >> report.md
           echo "" >> report.md
 
           for protocol in near icp ethereum; do
-            echo "### $protocol" >> report.md
-            if [ -d "results/merobox-kv-store-$protocol" ]; then
-              if [ -f "results/merobox-kv-store-$protocol/summary.json" ]; then
-                echo "✅ Tests completed" >> report.md
-                cat results/merobox-kv-store-$protocol/summary.json | \
-                  jq -r '"- Duration: \(.duration)s\n- Steps: \(.total_steps)\n- Passed: \(.passed_steps)\n- Failed: \(.failed_steps)"' >> report.md
+            echo "### 🔹 ${protocol^^}" >> report.md
+            
+            if [ -d "results/kv-store-$protocol" ]; then
+              if [ -f "results/kv-store-$protocol/summary.json" ]; then
+                status=$(jq -r '.status' results/kv-store-$protocol/summary.json)
+                duration=$(jq -r '.duration' results/kv-store-$protocol/summary.json)
+                total_steps=$(jq -r '.total_steps // 0' results/kv-store-$protocol/summary.json)
+                passed_steps=$(jq -r '.passed_steps // 0' results/kv-store-$protocol/summary.json)
+                failed_steps=$(jq -r '.failed_steps // 0' results/kv-store-$protocol/summary.json)
+                
+                total_tests=$((total_tests + 1))
+                
+                if [ "$status" = "passed" ]; then
+                  echo "✅ **Status:** Passed" >> report.md
+                  passed_tests=$((passed_tests + 1))
+                else
+                  echo "❌ **Status:** Failed" >> report.md
+                  failed_tests=$((failed_tests + 1))
+                fi
+                
+                echo "- **Duration:** ${duration}s" >> report.md
+                echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
               else
-                echo "⚠️ No summary found" >> report.md
+                echo "⚠️ **Status:** No summary found" >> report.md
+                total_tests=$((total_tests + 1))
+                failed_tests=$((failed_tests + 1))
               fi
             else
-              echo "❌ Tests did not run" >> report.md
+              echo "❌ **Status:** Tests did not run" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
             fi
             echo "" >> report.md
           done
 
+          # ============================================================================
+          # Proposals Tests Section
+          # ============================================================================
+          echo "## 📋 Proposals Tests" >> report.md
+          echo "" >> report.md
+
+          for protocol in near icp ethereum; do
+            echo "### 🔹 ${protocol^^}" >> report.md
+            
+            if [ -d "results/proposals-$protocol" ]; then
+              if [ -f "results/proposals-$protocol/summary.json" ]; then
+                status=$(jq -r '.status' results/proposals-$protocol/summary.json)
+                duration=$(jq -r '.duration' results/proposals-$protocol/summary.json)
+                total_steps=$(jq -r '.total_steps // 0' results/proposals-$protocol/summary.json)
+                passed_steps=$(jq -r '.passed_steps // 0' results/proposals-$protocol/summary.json)
+                failed_steps=$(jq -r '.failed_steps // 0' results/proposals-$protocol/summary.json)
+                
+                total_tests=$((total_tests + 1))
+                
+                if [ "$status" = "passed" ]; then
+                  echo "✅ **Status:** Passed" >> report.md
+                  passed_tests=$((passed_tests + 1))
+                else
+                  echo "❌ **Status:** Failed" >> report.md
+                  failed_tests=$((failed_tests + 1))
+                fi
+                
+                echo "- **Duration:** ${duration}s" >> report.md
+                echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+              else
+                echo "⚠️ **Status:** No summary found" >> report.md
+                total_tests=$((total_tests + 1))
+                failed_tests=$((failed_tests + 1))
+              fi
+            else
+              echo "❌ **Status:** Tests did not run" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+            echo "" >> report.md
+          done
+
+          # ============================================================================
+          # Overall Summary
+          # ============================================================================
           echo "---" >> report.md
-          echo "Run ID: ${{ github.run_id }}" >> report.md
+          echo "" >> report.md
+          echo "## 📊 Overall Summary" >> report.md
+          echo "" >> report.md
+          echo "- **Total Test Suites:** ${total_tests}" >> report.md
+          echo "- **✅ Passed:** ${passed_tests}" >> report.md
+          echo "- **❌ Failed:** ${failed_tests}" >> report.md
+          echo "" >> report.md
+
+          if [ $failed_tests -eq 0 ]; then
+            echo "### 🎉 All tests passed!" >> report.md
+          else
+            echo "### ⚠️ Some tests failed. Please review the logs above." >> report.md
+          fi
+
+          echo "" >> report.md
+          echo "---" >> report.md
+          echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> report.md
+
+      - name: Display Report
+        run: cat report.md
 
       - name: Prepare PR Comment
         run: >-

@@ -1,6 +1,6 @@
 # Proposals Workflows
 
-Comprehensive testing workflows for the Calimero proposals API.
+Comprehensive testing workflows for the Calimero proposals API across different blockchain protocols.
 
 ## 📁 Workflows
 
@@ -20,6 +20,28 @@ Tests the complete proposals lifecycle including:
 **Steps**: 70+ comprehensive test steps  
 **Nodes**: 3 nodes (1 inviter + 2 invitees)  
 **Duration**: ~2-3 minutes
+
+### `icp-proposals.yml`
+
+**Comprehensive ICP Blockchain Integration Proposals Test**
+
+Same comprehensive proposals testing as NEAR, but configured for the ICP protocol.
+
+**Steps**: 70+ comprehensive test steps  
+**Nodes**: 3 nodes (prefix: `icp-prop`)  
+**Duration**: ~2-3 minutes  
+**Requirements**: ICP devnet (dfx) must be running
+
+### `ethereum-proposals.yml`
+
+**Comprehensive Ethereum Blockchain Integration Proposals Test**
+
+Same comprehensive proposals testing as NEAR, but configured for the Ethereum protocol.
+
+**Steps**: 70+ comprehensive test steps  
+**Nodes**: 3 nodes (prefix: `eth-prop`)  
+**Duration**: ~2-3 minutes  
+**Requirements**: Ethereum devnet (anvil) must be running
 
 ## 🚀 Quick Start
 
@@ -44,6 +66,38 @@ cd /path/to/Calimero/core
 # If you already have binaries built
 merobox bootstrap run \
   e2e-tests-merobox/workflows/proposals/near-proposals.yml \
+  --no-docker \
+  --verbose
+```
+
+### Run ICP Proposals Test
+
+```bash
+# 1. Deploy ICP devnet
+./scripts/icp/deploy-devnet.sh
+
+# 2. Run ICP proposals test
+./e2e-tests-merobox/run-local.sh --protocol icp-proposals --build --build-apps
+
+# Or directly with merobox
+merobox bootstrap run \
+  e2e-tests-merobox/workflows/proposals/icp-proposals.yml \
+  --no-docker \
+  --verbose
+```
+
+### Run Ethereum Proposals Test
+
+```bash
+# 1. Deploy Ethereum devnet
+./scripts/ethereum/deploy-devnet.sh
+
+# 2. Run Ethereum proposals test
+./e2e-tests-merobox/run-local.sh --protocol ethereum-proposals --build --build-apps
+
+# Or directly with merobox
+merobox bootstrap run \
+  e2e-tests-merobox/workflows/proposals/ethereum-proposals.yml \
   --no-docker \
   --verbose
 ```
@@ -209,53 +263,3 @@ cat e2e-tests-merobox/results/near-proposals/summary.json | jq
 ### Issue: Message not received on other nodes
 
 **Solution**: Check logs for consensus/broadcast issues. Increase wait times after `send_proposal_messages`.
-
-## 🔗 Related Tests
-
-- **KV Store Tests**: Basic consensus and state propagation
-  - `workflows/kv-store/near.yml`
-  - `workflows/kv-store/icp.yml`
-  - `workflows/kv-store/ethereum.yml`
-
-## 📚 Resources
-
-- **Merobox Documentation**: https://github.com/calimero-network/merobox
-- **Calimero Proposals API**: Check the main Calimero docs
-- **Original Rust Test**: `e2e-tests/config/protocols/near/demo-blockchain-integrations.json`
-
-## 🎓 Learning Path
-
-1. **Start with KV Store tests** to understand basic merobox workflow
-2. **Run this proposals test** to see complete proposals lifecycle
-3. **Study the workflow YAML** to understand step structure
-4. **Modify wait times** to optimize for your environment
-5. **Add more proposal types** as needed for your testing
-
-## 🚧 Future Enhancements
-
-### High Priority
-
-- [ ] **Add ExternalFunctionCall proposal testing** (requires NEAR devnet setup)
-  - See: `e2e-tests-merobox/.github-issues/add-external-function-call-proposals-testing.md`
-  - Need to set up NEAR sandbox/devnet in CI
-  - Deploy test contracts for external state verification
-  - Add external state verification steps
-
-### Medium Priority
-
-- [ ] Add ICP proposals workflow
-- [ ] Add Ethereum proposals workflow
-- [ ] Add proposal rejection testing
-- [ ] Add proposal expiration testing
-
-### Low Priority
-
-- [ ] Add concurrent proposal creation testing
-- [ ] Add stress testing for large proposal batches
-- [ ] Add proposal conflict resolution testing
-
----
-
-**Status**: ✅ Ready for Testing  
-**Last Updated**: October 2025  
-**Maintainers**: Calimero Core Team

@@ -1,18 +1,6 @@
 # Merobox E2E Tests
 
-This directory contains the next-generation E2E tests for Calimero, powered by **Merobox** with `--no-docker` mode.
-
-## 🎯 Overview
-
-These tests use [Merobox](https://github.com/calimero-network/merobox), a Python-based workflow orchestrator that manages Calimero nodes natively (without Docker containers), making tests faster and simpler to run both locally and in CI.
-
-### Key Benefits
-
-- ✅ **Fast**: Native processes, no Docker overhead
-- ✅ **Simple**: YAML-based workflow definitions
-- ✅ **Maintainable**: Declarative syntax, easy to understand
-- ✅ **CI-friendly**: Quick startup, clean shutdown
-- ✅ **Local-first**: Same experience locally and in CI
+These tests use [Merobox](https://github.com/calimero-network/merobox) for e2e test of Calimere core.
 
 ## 📁 Directory Structure
 
@@ -37,8 +25,11 @@ e2e-tests-merobox/
 
 1. **Python 3.11+** (for Merobox)
 2. **Rust toolchain** (for building binaries)
-3. **Merobox** - No manual installation needed!
-   - The test script automatically creates a virtual environment and installs merobox
+3. **Git** (for cloning merobox source)
+4. **Merobox** - No manual installation needed!
+   - The test script automatically creates a virtual environment
+   - Clones merobox from source (https://github.com/calimero-network/merobox)
+   - Installs merobox in editable mode (`pip install -e`)
    - This avoids Python GIL errors and environment conflicts
    - Currently tested with merobox >= 0.2.0
    - Use `--no-venv` flag if you want to use a manually installed merobox (not recommended)
@@ -56,17 +47,30 @@ cargo build -p merod -p meroctl
 ### Run Tests Locally
 
 ```bash
-# Run NEAR KV store tests (automatically sets up venv + merobox)
-./e2e-tests-merobox/run-local.sh --protocol near
+# Run NEAR tests (no devnet needed)
+./e2e-tests-merobox/run-local.sh --protocol near --build
 
 # Run NEAR proposals comprehensive test
 ./e2e-tests-merobox/run-local.sh --protocol near-proposals --build --build-apps
 
-# Run with auto-build (builds binaries + apps automatically)
-./e2e-tests-merobox/run-local.sh --protocol near --build --build-apps
+# Run ICP proposals comprehensive test
+./e2e-tests-merobox/run-local.sh --protocol icp-proposals --build --build-apps --check-devnets
 
-# Build everything and run all KV store protocols
-./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps --verbose
+# Run Ethereum proposals comprehensive test
+./e2e-tests-merobox/run-local.sh --protocol ethereum-proposals --build --build-apps --check-devnets
+
+# Run ICP tests (with devnet check)
+./e2e-tests-merobox/run-local.sh --protocol icp --build --check-devnets
+
+# Run Ethereum tests (with devnet check)
+./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
+
+# Run all protocols (KV Store + Proposals)
+./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
+
+# Note: This runs 6 test suites:
+# - KV Store: near, icp (if dfx running), ethereum (if anvil running)
+# - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 
 # Run custom workflow
 ./e2e-tests-merobox/run-local.sh --workflow path/to/custom.yml
@@ -74,19 +78,33 @@ cargo build -p merod -p meroctl
 
 **What Happens Automatically**:
 
-1. 🔄 Creates fresh virtual environment at `.venv-merobox/`
-2. 📦 Installs merobox in the virtual environment
-3. ✅ Runs tests with isolated Python environment
-4. 🧹 Cleans up after completion
+1. Creates fresh virtual environment at `.venv-merobox/`
+2. Installs merobox in the virtual environment
+3. Checks devnet status (if `--check-devnets` used)
+4. Runs tests with isolated Python environment
+5. Cleans up after completion
 
 **Available Flags**:
 
-- `-p, --protocol`: Protocol to test (near, icp, ethereum, or all)
+- `-p, --protocol`: Protocol to test (near, icp, ethereum, all, or near-proposals)
 - `-w, --workflow`: Path to custom workflow YAML file
 - `-b, --build`: Build merod and meroctl binaries before testing
 - `-a, --build-apps`: Build WASM applications before testing
+- `-c, --check-devnets`: Check if devnets are running (shows setup instructions if not)
 - `-v, --verbose`: Enable verbose output
 - `--no-venv`: Don't use virtual environment (not recommended)
+
+### Setup Devnets (Required for ICP/Ethereum)
+
+Before running ICP or Ethereum tests, deploy the respective devnets:
+
+```bash
+# Deploy ICP devnet (requires dfx)
+./scripts/icp/deploy-devnet.sh
+
+# Deploy Ethereum devnet (requires Foundry)
+./scripts/ethereum/deploy-devnet.sh
+```
 
 ## 📝 Writing Tests
 
@@ -241,6 +259,47 @@ merobox bootstrap run \
   --verbose
 ```
 
+## 📝 Test Results & Logs
+
+After running tests locally, results are automatically saved to:
+
+```
+e2e-tests-merobox/results/{protocol}/
+├── test.log        # Full test output (stdout + stderr)
+└── summary.json    # Test summary with duration, steps, status
+```
+
+### Example Summary
+
+```json
+{
+  "status": "passed",
+  "protocol": "near",
+  "duration": 45,
+  "total_steps": 48,
+  "passed_steps": 48,
+  "failed_steps": 0,
+  "workflow": "e2e-tests-merobox/workflows/kv-store/near.yml",
+  "timestamp": "2025-10-26T12:30:00Z"
+}
+```
+
+### Viewing Results
+
+```bash
+# View test log
+cat e2e-tests-merobox/results/near/test.log
+
+# View summary (with jq for pretty formatting)
+cat e2e-tests-merobox/results/near/summary.json | jq
+
+# List all test results
+ls -la e2e-tests-merobox/results/
+
+# View recent logs
+tail -f e2e-tests-merobox/results/near/test.log
+```
+
 ## 🤖 CI/CD Integration
 
 Tests run automatically on GitHub Actions via `.github/workflows/e2e-tests-merobox.yml`.
@@ -270,16 +329,15 @@ The CI workflow uploads:
 
 ### Current Tests
 
-| Test Suite    | Protocols           | Steps | Status         |
-| ------------- | ------------------- | ----- | -------------- |
-| **KV Store**  | NEAR, ICP, Ethereum | ~48   | ✅ Implemented |
-| **Proposals** | NEAR                | 70+   | ✅ Implemented |
+| Test Suite    | Protocols           | Steps | Status      |
+| ------------- | ------------------- | ----- | ----------- |
+| **KV Store**  | NEAR, ICP, Ethereum | ~48   | Implemented |
+| **Proposals** | NEAR, ICP, Ethereum | 70+   | Implemented |
 
 ### Planned Tests
 
 - KV Store with Handlers (NEAR)
 - Open Invitations (NEAR)
-- Proposals API (ICP, Ethereum)
 - External State Verification (all protocols)
 
 ## 🔄 Migration Status
@@ -288,13 +346,11 @@ This is a **parallel implementation** of the existing Rust-based e2e tests. Both
 
 ### Migration Phases
 
-1. **Phase 1** (Current): KV Store tests for NEAR, ICP, Ethereum
-2. **Phase 2**: Proposals API comprehensive testing
-3. **Phase 3**: Advanced features (handlers, open invitations)
-4. **Phase 4**: Complete feature parity + new tests
-5. **Phase 5**: Deprecate Rust tests
-
-See `MEROBOX_MIGRATION_PLAN.md` and related docs in the project root for details.
+- [x] **Phase 1**: KV Store tests for NEAR, ICP, Ethereum
+- [x] **Phase 2**: Proposals API comprehensive testing
+- [ ] **Phase 3**: Advanced features (handlers, open invitations)
+- [ ] **Phase 4**: Complete feature parity + new tests
+- [ ] **Phase 5**: Deprecate Rust tests
 
 ## 🐛 Troubleshooting
 
@@ -381,45 +437,3 @@ pgrep anvil
 ./scripts/ethereum/nuke-devnet.sh
 ./scripts/ethereum/deploy-devnet.sh
 ```
-
-## 📚 Additional Resources
-
-- [Merobox Documentation](https://github.com/calimero-network/merobox)
-- [Migration Plan](../MEROBOX_MIGRATION_PLAN.md)
-- [Migration Index](../MEROBOX_MIGRATION_INDEX.md)
-- [No-Docker Mode Guide](../MEROBOX_MIGRATION_NO_DOCKER.md)
-- [Proposals Testing Guide](../MEROBOX_MIGRATION_PROPOSALS_GUIDE.md)
-- [Current E2E Tests Inventory](../CURRENT_E2E_TESTS_INVENTORY.md)
-
-## 🤝 Contributing
-
-When adding new tests:
-
-1. Create workflow YAML in `workflows/`
-2. Follow existing naming conventions
-3. Add comprehensive comments
-4. Test locally before pushing
-5. Update this README with new test coverage
-
-### Workflow Best Practices
-
-- ✅ Use descriptive step names
-- ✅ Group related steps with comments
-- ✅ Add `outputs:` to capture important values
-- ✅ Use `expected_output` for verification
-- ✅ Add appropriate `wait` steps for consensus
-- ✅ Test with `--verbose` locally first
-
-## 📞 Support
-
-For issues, questions, or contributions:
-
-- Open an issue on GitHub
-- Check existing migration documentation
-- Review merobox documentation
-
----
-
-**Status**: 🚧 Active Development  
-**Last Updated**: October 2025  
-**Maintainers**: Calimero Core Team

@@ -21,6 +21,7 @@ WORKFLOW=""
 VERBOSE=""
 BUILD_BINARIES=false
 BUILD_APPS=false
+CHECK_DEVNETS=false
 USE_VENV=true
 VENV_DIR="${PROJECT_ROOT}/.venv-merobox"
 
@@ -29,19 +30,27 @@ usage() {
     echo -e "${BLUE}Usage:${NC} $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -p, --protocol PROTOCOL    Protocol to test (near, icp, ethereum, all, or near-proposals)"
+    echo "  -p, --protocol PROTOCOL    Protocol to test:"
+    echo "                             - near, icp, ethereum (KV Store only)"
+    echo "                             - near-proposals, icp-proposals, ethereum-proposals"
+    echo "                             - all (runs all KV Store + Proposals tests)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
     echo "  -b, --build                Build merod and meroctl binaries before testing"
     echo "  -a, --build-apps           Build WASM applications before testing"
+    echo "  -c, --check-devnets        Check if devnets are running (shows setup instructions if not)"
     echo "  --no-venv                  Don't use virtual environment (not recommended)"
     echo "  -h, --help                 Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 --protocol near                    # Run NEAR KV store tests"
-    echo "  $0 --protocol near --build            # Build binaries, then test"
-    echo "  $0 --protocol all --build --build-apps # Build everything, then test all"
-    echo "  $0 --workflow path/to/custom.yml      # Run custom workflow"
+    echo "  $0 --protocol near --build                     # Run NEAR tests"
+    echo "  $0 --protocol icp --check-devnets --build      # Check ICP devnet and test"
+    echo "  $0 --protocol all --build --build-apps         # Build and test all protocols"
+    echo "  $0 --workflow path/to/custom.yml               # Run custom workflow"
+    echo ""
+    echo "Devnet Setup (run separately before testing):"
+    echo "  ./scripts/icp/deploy-devnet.sh                 # Deploy ICP devnet"
+    echo "  ./scripts/ethereum/deploy-devnet.sh            # Deploy Ethereum devnet"
     echo ""
 }
 
@@ -66,6 +75,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -a|--build-apps)
             BUILD_APPS=true
+            shift
+            ;;
+        -c|--check-devnets)
+            CHECK_DEVNETS=true
             shift
             ;;
         --no-venv)
@@ -117,12 +130,29 @@ if [ "$USE_VENV" = true ]; then
     echo -e "${BLUE}Upgrading pip...${NC}"
     pip install --upgrade pip > /dev/null 2>&1
     
-    # Install merobox in the virtual environment
-    echo -e "${BLUE}Installing merobox in virtual environment...${NC}"
-    if pip install merobox; then
-        echo -e "${GREEN}✓ Merobox installed successfully${NC}"
+    # Clone or update merobox from source
+    MEROBOX_DIR="${PROJECT_ROOT}/.merobox-src"
+    if [ -d "$MEROBOX_DIR" ]; then
+        echo -e "${BLUE}Updating merobox from source...${NC}"
+        cd "$MEROBOX_DIR"
+        git pull origin master > /dev/null 2>&1 || true
+        cd "$PROJECT_ROOT"
     else
-        echo -e "${RED}Error: Failed to install merobox${NC}"
+        echo -e "${BLUE}Cloning merobox from source...${NC}"
+        if git clone https://github.com/calimero-network/merobox.git "$MEROBOX_DIR"; then
+            echo -e "${GREEN}✓ Merobox cloned successfully${NC}"
+        else
+            echo -e "${RED}Error: Failed to clone merobox${NC}"
+            exit 1
+        fi
+    fi
+    
+    # Install merobox from source (editable mode)
+    echo -e "${BLUE}Installing merobox from source (editable mode)...${NC}"
+    if pip install -e "$MEROBOX_DIR"; then
+        echo -e "${GREEN}✓ Merobox installed successfully from source${NC}"
+    else
+        echo -e "${RED}Error: Failed to install merobox from source${NC}"
         exit 1
     fi
     
@@ -153,6 +183,58 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${RED}Error: Failed to build kv-store app${NC}"
         exit 1
     fi
+    echo ""
+fi
+
+# Check devnet status if requested
+if [ "$CHECK_DEVNETS" = true ]; then
+    echo -e "${BLUE}Checking devnet status...${NC}"
+    echo ""
+    
+    # Check ICP devnet
+    if [[ "$PROTOCOL" == "icp" || "$PROTOCOL" == "all" ]]; then
+        echo -e "${BLUE}Checking ICP devnet...${NC}"
+        
+        if pgrep -f "dfx" > /dev/null; then
+            echo -e "${GREEN}✓ ICP devnet is running (dfx process found)${NC}"
+        else
+            echo -e "${YELLOW}✗ ICP devnet is NOT running${NC}"
+            echo -e "${BLUE}To deploy ICP devnet:${NC}"
+            echo -e "  1. Install dfx: ${YELLOW}sh -ci \"\$(curl -fsSL https://internetcomputer.org/install.sh)\"${NC}"
+            echo -e "  2. Deploy devnet: ${YELLOW}./scripts/icp/deploy-devnet.sh${NC}"
+            echo ""
+            
+            if [[ "$PROTOCOL" == "icp" ]]; then
+                echo -e "${RED}Error: ICP devnet required for ICP tests${NC}"
+                exit 1
+            fi
+        fi
+        echo ""
+    fi
+    
+    # Check Ethereum devnet
+    if [[ "$PROTOCOL" == "ethereum" || "$PROTOCOL" == "all" ]]; then
+        echo -e "${BLUE}Checking Ethereum devnet...${NC}"
+        
+        if pgrep -f "anvil" > /dev/null; then
+            echo -e "${GREEN}✓ Ethereum devnet is running (anvil process found)${NC}"
+        else
+            echo -e "${YELLOW}✗ Ethereum devnet is NOT running${NC}"
+            echo -e "${BLUE}To deploy Ethereum devnet:${NC}"
+            echo -e "  1. Install Foundry: ${YELLOW}curl -L https://foundry.paradigm.xyz | bash${NC}"
+            echo -e "  2. Setup Foundry: ${YELLOW}foundryup${NC}"
+            echo -e "  3. Deploy devnet: ${YELLOW}./scripts/ethereum/deploy-devnet.sh${NC}"
+            echo ""
+            
+            if [[ "$PROTOCOL" == "ethereum" ]]; then
+                echo -e "${RED}Error: Ethereum devnet required for Ethereum tests${NC}"
+                exit 1
+            fi
+        fi
+        echo ""
+    fi
+    
+    echo -e "${GREEN}✓ Devnet status check complete${NC}"
     echo ""
 fi
 
@@ -220,19 +302,81 @@ run_test() {
     local output_dir="${RESULTS_DIR}/${protocol_name}"
     mkdir -p "$output_dir"
     
-    # Run merobox workflow
+    local log_file="${output_dir}/test.log"
+    local summary_file="${output_dir}/summary.json"
+    local start_time=$(date +%s)
+    
+    echo -e "${BLUE}Logs will be saved to: ${log_file}${NC}"
+    echo ""
+    
+    # Run merobox workflow and capture output
     # Command: merobox bootstrap run [config_file] --no-docker
-    if merobox bootstrap run \
+    # Use pipefail to capture exit code even when piped through tee
+    set -o pipefail
+    merobox bootstrap run \
         "$workflow_file" \
         --no-docker \
-        $VERBOSE; then
+        $VERBOSE 2>&1 | tee "$log_file"
+    local exit_code=${PIPESTATUS[0]}
+    set +o pipefail
+    
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    
+    # Extract step counts from log
+    local total_steps=$(grep -c "Step " "$log_file" || echo "0")
+    local passed_steps=$(grep -c "✓\|✅\|succeeded\|completed" "$log_file" || echo "0")
+    local failed_steps=$(grep -c "✗\|❌\|failed\|error" "$log_file" || echo "0")
+    
+    # Check for failure indicators in the log
+    local has_failure=false
+    if grep -q "Workflow failed\|Step.*failed\|ERROR\|Error:" "$log_file"; then
+        has_failure=true
+    fi
+    
+    # Determine if test passed (exit code 0 AND no failure indicators)
+    if [ "$exit_code" -eq 0 ] && [ "$has_failure" = false ]; then
+        # Test PASSED
+        cat > "$summary_file" <<EOF
+{
+  "status": "passed",
+  "protocol": "${protocol_name}",
+  "duration": ${duration},
+  "total_steps": ${total_steps},
+  "passed_steps": ${passed_steps},
+  "failed_steps": ${failed_steps},
+  "workflow": "${workflow_file}",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+        
         echo ""
         echo -e "${GREEN}✓ $protocol_name: PASSED${NC}"
+        echo -e "${BLUE}Duration: ${duration}s${NC}"
+        echo -e "${BLUE}Results saved to: ${output_dir}${NC}"
         echo ""
         return 0
     else
+        # Test FAILED
+        cat > "$summary_file" <<EOF
+{
+  "status": "failed",
+  "protocol": "${protocol_name}",
+  "duration": ${duration},
+  "exit_code": ${exit_code},
+  "total_steps": ${total_steps},
+  "passed_steps": ${passed_steps},
+  "failed_steps": ${failed_steps},
+  "workflow": "${workflow_file}",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+        
         echo ""
         echo -e "${RED}✗ $protocol_name: FAILED${NC}"
+        echo -e "${BLUE}Duration: ${duration}s${NC}"
+        echo -e "${BLUE}Exit code: ${exit_code}${NC}"
+        echo -e "${BLUE}Logs saved to: ${log_file}${NC}"
         echo ""
         return 1
     fi
@@ -276,33 +420,78 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/proposals/near-proposals.yml" "near-proposals"
             FAILED=$?
             ;;
+        icp-proposals)
+            echo -e "${YELLOW}Running ICP proposals comprehensive test...${NC}"
+            echo -e "${YELLOW}Note: Requires ICP devnet (dfx) to be running${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/proposals/icp-proposals.yml" "icp-proposals"
+            FAILED=$?
+            ;;
+        ethereum-proposals)
+            echo -e "${YELLOW}Running Ethereum proposals comprehensive test...${NC}"
+            echo -e "${YELLOW}Note: Requires Ethereum devnet (anvil) to be running${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/proposals/ethereum-proposals.yml" "ethereum-proposals"
+            FAILED=$?
+            ;;
         all)
-            echo -e "${YELLOW}Running all protocols...${NC}"
+            echo -e "${YELLOW}Running all protocols (KV Store + Proposals)...${NC}"
             echo ""
             
-            # Run NEAR (doesn't need devnet)
+            # === KV Store Tests ===
+            echo -e "${BLUE}━━━ KV Store Tests ━━━${NC}"
+            echo ""
+            
+            # Run NEAR KV Store 
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near.yml" "near"
-            NEAR_RESULT=$?
+            NEAR_KV_RESULT=$?
             
             # Check if ICP devnet is available
             if pgrep -f "dfx" > /dev/null; then
                 run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/icp.yml" "icp"
-                ICP_RESULT=$?
+                ICP_KV_RESULT=$?
             else
-                echo -e "${YELLOW}⊘ ICP: SKIPPED (dfx not running)${NC}"
-                ICP_RESULT=0
+                echo -e "${YELLOW}⊘ ICP KV Store: SKIPPED (dfx not running)${NC}"
+                ICP_KV_RESULT=0
             fi
             
             # Check if Ethereum devnet is available
             if pgrep -f "anvil" > /dev/null; then
                 run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/ethereum.yml" "ethereum"
-                ETH_RESULT=$?
+                ETH_KV_RESULT=$?
             else
-                echo -e "${YELLOW}⊘ Ethereum: SKIPPED (anvil not running)${NC}"
-                ETH_RESULT=0
+                echo -e "${YELLOW}⊘ Ethereum KV Store: SKIPPED (anvil not running)${NC}"
+                ETH_KV_RESULT=0
             fi
             
-            FAILED=$((NEAR_RESULT + ICP_RESULT + ETH_RESULT))
+            # === Proposals Tests ===
+            echo ""
+            echo -e "${BLUE}━━━ Proposals Tests ━━━${NC}"
+            echo ""
+            
+            # Run NEAR Proposals (doesn't need devnet)
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/proposals/near-proposals.yml" "near-proposals"
+            NEAR_PROP_RESULT=$?
+            
+            # Run ICP Proposals if devnet available
+            if pgrep -f "dfx" > /dev/null; then
+                run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/proposals/icp-proposals.yml" "icp-proposals"
+                ICP_PROP_RESULT=$?
+            else
+                echo -e "${YELLOW}⊘ ICP Proposals: SKIPPED (dfx not running)${NC}"
+                ICP_PROP_RESULT=0
+            fi
+            
+            # Run Ethereum Proposals if devnet available
+            if pgrep -f "anvil" > /dev/null; then
+                run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/proposals/ethereum-proposals.yml" "ethereum-proposals"
+                ETH_PROP_RESULT=$?
+            else
+                echo -e "${YELLOW}⊘ Ethereum Proposals: SKIPPED (anvil not running)${NC}"
+                ETH_PROP_RESULT=0
+            fi
+            
+            FAILED=$((NEAR_KV_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
             ;;
         "")
             echo -e "${RED}Error: Protocol not specified${NC}"
