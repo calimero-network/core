@@ -116,6 +116,11 @@ impl Merod {
     ) -> EyreResult<Child> {
         let mut command = Command::new(&self.binary);
 
+        // Enable debug logging for merod run command
+        if log_suffix == "run" {
+            command.env("RUST_LOG", "calimero_node=debug,calimero_context=debug,calimero_storage=debug,calimero_dag=debug");
+        }
+
         let mut command_line = format!("Command: '{}", &self.binary);
 
         let root_args = ["--home", self.home_dir.as_str(), "--node-name", &self.name];

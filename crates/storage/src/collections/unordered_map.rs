@@ -37,8 +37,8 @@ where
     V: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    /// Create a new map collection.
-    fn new_internal() -> Self {
+    /// Create a new map collection (internal, shared with Counter).
+    pub(super) fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
         }

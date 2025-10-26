@@ -34,7 +34,7 @@ impl fmt::Display for HttpMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HttpMethod::Any => write!(f, "*"),
-            _ => write!(f, "{:?}", self),
+            _ => write!(f, "{self:?}"),
         }
     }
 }
@@ -50,7 +50,7 @@ impl fmt::Display for UserScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UserScope::Any => write!(f, "*"),
-            UserScope::Specific(user_id) => write!(f, "<{}>", user_id),
+            UserScope::Specific(user_id) => write!(f, "<{user_id}>"),
         }
     }
 }
@@ -169,7 +169,7 @@ fn parse_permission_params(s: &str) -> (ResourceScope, UserScope, Option<String>
                 let params: Vec<&str> = params_str.split(',').collect();
 
                 // Parse context_ids (first parameter)
-                let context_scope = if let Some(&context_param) = params.get(0) {
+                let context_scope = if let Some(&context_param) = params.first() {
                     let context_param = context_param.trim();
                     if context_param.is_empty() {
                         ResourceScope::Global
@@ -288,7 +288,7 @@ impl FromStr for Permission {
         };
 
         let parts: Vec<&str> = main_part.split(':').collect();
-        let category = parts.get(0).ok_or("Empty permission string")?;
+        let category = parts.first().ok_or("Empty permission string")?;
 
         match *category {
             "admin" => Ok(Permission::Admin(AdminPermission)),
@@ -306,7 +306,7 @@ impl FromStr for Permission {
                         scope,
                     ))),
                     "" => Ok(Permission::Application(ApplicationPermission::All)),
-                    _ => Err(format!("Unknown application action: {}", action)),
+                    _ => Err(format!("Unknown application action: {action}")),
                 }
             }
 
@@ -321,7 +321,7 @@ impl FromStr for Permission {
                             "file" => AddBlobPermission::File,
                             "url" => AddBlobPermission::Url,
                             "" => AddBlobPermission::All,
-                            _ => return Err(format!("Unknown blob add action: {}", subaction)),
+                            _ => return Err(format!("Unknown blob add action: {subaction}")),
                         };
                         Ok(Permission::Blob(BlobPermission::Add(add_perm)))
                     }
@@ -330,7 +330,7 @@ impl FromStr for Permission {
                         Ok(Permission::Blob(BlobPermission::Remove(scope)))
                     }
                     "" => Ok(Permission::Blob(BlobPermission::All)),
-                    _ => Err(format!("Unknown blob action: {}", action)),
+                    _ => Err(format!("Unknown blob action: {action}")),
                 }
             }
 
@@ -360,16 +360,13 @@ impl FromStr for Permission {
                         "revoke" => Ok(Permission::Context(ContextPermission::Capabilities(
                             CapabilityPermission::Revoke(scope),
                         ))),
-                        _ => Err(format!(
-                            "Unknown context capabilities action: {}",
-                            subaction
-                        )),
+                        _ => Err(format!("Unknown context capabilities action: {subaction}")),
                     },
                     "application" => match *subaction {
                         "update" => Ok(Permission::Context(ContextPermission::Application(
                             ContextApplicationPermission::Update(scope),
                         ))),
-                        _ => Err(format!("Unknown context application action: {}", subaction)),
+                        _ => Err(format!("Unknown context application action: {subaction}")),
                     },
                     "alias" => match *subaction {
                         "create" => {
@@ -377,7 +374,7 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
-                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                                _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
                                 AliasPermission::Create(alias_type, scope),
@@ -388,7 +385,7 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
-                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                                _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
                                 AliasPermission::List(alias_type, scope),
@@ -399,7 +396,7 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
-                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                                _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
                                 AliasPermission::Lookup(alias_type, scope),
@@ -410,16 +407,16 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
-                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                                _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
                                 AliasPermission::Delete(alias_type, scope),
                             )))
                         }
-                        _ => Err(format!("Unknown context alias action: {}", subaction)),
+                        _ => Err(format!("Unknown context alias action: {subaction}")),
                     },
                     "" => Ok(Permission::Context(ContextPermission::All(scope))),
-                    _ => Err(format!("Unknown context action: {}", action)),
+                    _ => Err(format!("Unknown context action: {action}")),
                 }
             }
 
@@ -436,20 +433,20 @@ impl FromStr for Permission {
                         "list" => Ok(Permission::Keys(KeyPermission::ListClients)),
                         "delete" => Ok(Permission::Keys(KeyPermission::DeleteClient)),
                         "" => Ok(Permission::Keys(KeyPermission::ListClients)), // Default for /keys/clients
-                        _ => Err(format!("Unknown keys clients action: {}", subaction)),
+                        _ => Err(format!("Unknown keys clients action: {subaction}")),
                     },
                     "permissions" => match *subaction {
                         "get" => Ok(Permission::Keys(KeyPermission::GetPermissions(scope))),
                         "update" => Ok(Permission::Keys(KeyPermission::UpdatePermissions(scope))),
                         "" => Ok(Permission::Keys(KeyPermission::GetPermissions(scope))), // Default for GET
-                        _ => Err(format!("Unknown keys permissions action: {}", subaction)),
+                        _ => Err(format!("Unknown keys permissions action: {subaction}")),
                     },
                     "" => Ok(Permission::Keys(KeyPermission::All)),
-                    _ => Err(format!("Unknown keys action: {}", action)),
+                    _ => Err(format!("Unknown keys action: {action}")),
                 }
             }
 
-            _ => Err(format!("Unknown permission category: {}", category)),
+            _ => Err(format!("Unknown permission category: {category}")),
         }
     }
 }
@@ -462,15 +459,15 @@ impl fmt::Display for Permission {
                 ApplicationPermission::All => write!(f, "application"),
                 ApplicationPermission::List(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "application:list{}", params)
+                    write!(f, "application:list{params}")
                 }
                 ApplicationPermission::Install(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "application:install{}", params)
+                    write!(f, "application:install{params}")
                 }
                 ApplicationPermission::Uninstall(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "application:uninstall{}", params)
+                    write!(f, "application:uninstall{params}")
                 }
             },
             Permission::Blob(blob_perm) => match blob_perm {
@@ -483,37 +480,37 @@ impl fmt::Display for Permission {
                 },
                 BlobPermission::Remove(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "blob:remove{}", params)
+                    write!(f, "blob:remove{params}")
                 }
             },
             Permission::Context(ctx_perm) => match ctx_perm {
                 ContextPermission::All(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "context{}", params)
+                    write!(f, "context{params}")
                 }
                 ContextPermission::Create(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "context:create{}", params)
+                    write!(f, "context:create{params}")
                 }
                 ContextPermission::List(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "context:list{}", params)
+                    write!(f, "context:list{params}")
                 }
                 ContextPermission::Delete(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "context:delete{}", params)
+                    write!(f, "context:delete{params}")
                 }
                 ContextPermission::Leave(scope, user) => {
                     let params = format_params(scope, user, &None);
-                    write!(f, "context:leave{}", params)
+                    write!(f, "context:leave{params}")
                 }
                 ContextPermission::Invite(scope, user) => {
                     let params = format_params(scope, user, &None);
-                    write!(f, "context:invite{}", params)
+                    write!(f, "context:invite{params}")
                 }
                 ContextPermission::Execute(scope, user, method) => {
                     let params = format_params(scope, user, method);
-                    write!(f, "context:execute{}", params)
+                    write!(f, "context:execute{params}")
                 }
                 ContextPermission::Alias(alias_perm) => match alias_perm {
                     AliasPermission::Create(alias_type, scope) => {
@@ -523,7 +520,7 @@ impl fmt::Display for Permission {
                             AliasType::Identity => "identity",
                         };
                         let params = format_simple_params(scope);
-                        write!(f, "context:alias:create:{}{}", type_str, params)
+                        write!(f, "context:alias:create:{type_str}{params}")
                     }
                     AliasPermission::List(alias_type, scope) => {
                         let type_str = match alias_type {
@@ -532,7 +529,7 @@ impl fmt::Display for Permission {
                             AliasType::Identity => "identity",
                         };
                         let params = format_simple_params(scope);
-                        write!(f, "context:alias:list:{}{}", type_str, params)
+                        write!(f, "context:alias:list:{type_str}{params}")
                     }
                     AliasPermission::Lookup(alias_type, scope) => {
                         let type_str = match alias_type {
@@ -541,7 +538,7 @@ impl fmt::Display for Permission {
                             AliasType::Identity => "identity",
                         };
                         let params = format_simple_params(scope);
-                        write!(f, "context:alias:lookup:{}{}", type_str, params)
+                        write!(f, "context:alias:lookup:{type_str}{params}")
                     }
                     AliasPermission::Delete(alias_type, scope) => {
                         let type_str = match alias_type {
@@ -550,7 +547,7 @@ impl fmt::Display for Permission {
                             AliasType::Identity => "identity",
                         };
                         let params = format_simple_params(scope);
-                        write!(f, "context:alias:delete:{}{}", type_str, params)
+                        write!(f, "context:alias:delete:{type_str}{params}")
                     }
                 },
                 ContextPermission::Capabilities(cap_perm) => match cap_perm {
@@ -582,11 +579,11 @@ impl fmt::Display for Permission {
                 KeyPermission::DeleteClient => write!(f, "keys:clients:delete"),
                 KeyPermission::GetPermissions(scope) => {
                     let params = format_simple_params(scope);
-                    write!(f, "keys:permissions:get{}", params)
+                    write!(f, "keys:permissions:get{params}")
                 }
                 KeyPermission::UpdatePermissions(scope) => {
                     let params = format_simple_params(scope);
-                    write!(f, "keys:permissions:update{}", params)
+                    write!(f, "keys:permissions:update{params}")
                 }
             },
         }

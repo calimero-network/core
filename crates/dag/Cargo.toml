@@ -1,0 +1,19 @@
+[package]
+name = "calimero-dag"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+borsh.workspace = true
+eyre.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+calimero-storage = { workspace = true, features = ["testing"] }
+rand.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
+

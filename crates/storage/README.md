@@ -387,13 +387,14 @@ mechanisms to share and propagate the data over the network.
 
 ### CRDT Implementation
 
-Calimero does **not** expose traditional academic CRDT types (GCounter, PNCounter, GSet, TwoPSet, ORSet). Instead, it provides **general-purpose collections** with CRDT semantics built-in:
+Calimero provides **general-purpose collections** with CRDT semantics built-in for automatic conflict resolution:
 
 **Implemented collections:**
 - `Vector<T>` - Ordered list with LWW semantics
 - `UnorderedMap<K, V>` - Key-value map with deterministic IDs
 - `UnorderedSet<T>` - Unique values set
 - `Root<T>` - Root state container
+- `Counter` - G-Counter for distributed counting (special CRDT type)
 
 **CRDT properties:**
 - Last-write-wins conflict resolution (timestamp-based)
@@ -402,6 +403,79 @@ Calimero does **not** expose traditional academic CRDT types (GCounter, PNCounte
 - Automatic sync via Actions
 
 The underlying mechanism is inspired by **LWWElementSet** but provides a more ergonomic API for application developers.
+
+### Fork Resolution with G-Counter
+
+**Problem**: When multiple nodes concurrently increment a counter, simple LWW loses updates.
+
+**Example without G-Counter**:
+```
+Initial: counter = 0
+Node A: counter++ → 1 (broadcast)
+Node B: counter++ → 1 (broadcast)
+Both nodes: counter = 1 (should be 2!) ❌
+```
+
+**Solution**: G-Counter (Grow-only Counter)
+
+The `Counter` collection stores **per-node increments** separately:
+
+```rust
+// Internal structure
+Collection<(String, u64), S> {
+    ("node_a", 0): 5,  // Node A contributed 5
+    ("node_b", 0): 3,  // Node B contributed 3
+    ("node_c", 0): 2,  // Node C contributed 2
+}
+
+// get() sums all contributions = 10
+```
+
+**How it works**:
+```rust
+use calimero_storage::collections::Counter;
+
+let mut counter = Counter::new();
+
+// Each node only increments its own entry
+counter.increment();  // Uses node's identity as key
+
+// Read returns sum of all nodes' contributions
+let total = counter.get();  // Returns sum: 5 + 3 + 2 = 10
+```
+
+**Benefits**:
+- ✅ **No conflicts**: Each node has unique storage ID
+- ✅ **Automatic merge**: Sum aggregation on read
+- ✅ **DAG-friendly**: Each increment creates separate delta
+- ✅ **Eventually consistent**: All nodes converge to same sum
+
+**Fork Resolution Example**:
+```
+Initial state: counter = 0, DAG head = [D0]
+
+Node A increments:
+  ("node_a", 0): 1
+  Creates D1A with parents: [D0]
+  
+Node B increments (concurrently):
+  ("node_b", 0): 1  
+  Creates D1B with parents: [D0]
+
+DAG now has 2 heads: [D1A, D1B] (fork detected!)
+
+Both nodes receive each other's deltas:
+  Node A applies D1B → ("node_a", 0): 1, ("node_b", 0): 1
+  Node B applies D1A → ("node_a", 0): 1, ("node_b", 0): 1
+  
+Both nodes: counter.get() = 2 ✅
+
+Next operation creates merge delta:
+  Delta with parents: [D1A, D1B]
+  DAG head becomes: [D2] (fork resolved)
+```
+
+**File**: `crates/storage/src/collections/counter.rs`
 
 ## Developer Interface
 
@@ -545,7 +619,6 @@ cargo test -p calimero-storage -- --nocapture
 - [ ] Add validation framework
 - [ ] Handle edge case: child added offline while parent updated remotely
 - [ ] Implement sharding for large child collections
-- [ ] Add garbage collection for deleted entities
 
 See inline comments and issues for details.
 

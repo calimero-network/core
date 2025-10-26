@@ -21,7 +21,7 @@
     },
     {
       "wait": {
-        "durationMs": 5000,
+        "durationMs": 1000,
         "for": "consensus",
         "description": "Wait for nodes to join and reach consensus"
       }
@@ -40,18 +40,17 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "durationMs": 3000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value"
-        ],
-        "target": "inviter"
+        "expectedResultJson": 2,
+        "target": "inviter",
+        "description": "Global G-Counter shows 2 (both nodes executed insert_handler)"
       }
     },
     {
@@ -68,19 +67,17 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "durationMs": 3000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'update_handler' called: key=test_key, value=updated_value"
-        ],
-        "target": "invitees"
+        "expectedResultJson": 4,
+        "target": "invitees",
+        "description": "Global G-Counter shows 4 (both nodes execute × 2 sets)"
       }
     },
     {
@@ -96,20 +93,17 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "durationMs": 3000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'remove_handler' called: key=test_key",
-          "Handler 'update_handler' called: key=test_key, value=updated_value"
-        ],
-        "target": "invitees"
+        "expectedResultJson": 6,
+        "target": "invitees",
+        "description": "Global G-Counter shows 6 (both nodes execute: 2 sets + 1 remove)"
       }
     },
     {
@@ -126,8 +120,8 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "durationMs": 3000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
@@ -141,22 +135,17 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "durationMs": 3000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'clear_handler' called: all items cleared",
-          "Handler 'insert_handler' called: key=another_key, value=another_value",
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'remove_handler' called: key=test_key",
-          "Handler 'update_handler' called: key=test_key, value=updated_value"
-        ],
-        "target": "invitees"
+        "expectedResultJson": 10,
+        "target": "invitees",
+        "description": "Global G-Counter shows 10 (both nodes execute: 2 sets + 1 remove + 1 set + 1 clear)"
       }
     }
   ]

@@ -1,43 +1,124 @@
+//! Calimero node orchestration and coordination.
+//!
+//! **Purpose**: Main node runtime that coordinates sync, storage, networking, and event handling.
+//! **Key Components**:
+//! - `NodeManager`: Main actor coordinating all services
+//! - `NodeClients`: External service clients (context, node)
+//! - `NodeManagers`: Service managers (blobstore, sync)
+//! - `NodeState`: Runtime state (caches)
+
 #![allow(clippy::print_stdout, reason = "Acceptable for CLI")]
 #![allow(
     clippy::multiple_inherent_impl,
     reason = "TODO: Check if this is necessary"
 )]
 
-use std::collections::BTreeMap;
 use std::pin::pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
+use dashmap::DashMap;
 use futures_util::StreamExt;
-use tokio::sync::Mutex;
-use tracing::error;
+use tracing::{debug, error, warn};
 
+use crate::delta_store::DeltaStore;
+
+mod arbiter_pool;
+mod delta_store;
+pub mod gc;
 pub mod handlers;
 mod run;
 pub mod sync;
 mod utils;
 
 pub use run::{start, NodeConfig};
-use sync::SyncManager;
+pub use sync::SyncManager;
 
+/// Cached blob with access tracking for eviction
+#[derive(Debug, Clone)]
+pub struct CachedBlob {
+    pub data: Arc<[u8]>,
+    pub last_accessed: Instant,
+}
+
+impl CachedBlob {
+    pub fn new(data: Arc<[u8]>) -> Self {
+        Self {
+            data,
+            last_accessed: Instant::now(),
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.last_accessed = Instant::now();
+    }
+}
+
+/// External service clients (injected dependencies)
+#[derive(Debug, Clone)]
+pub(crate) struct NodeClients {
+    pub(crate) context: ContextClient,
+    pub(crate) node: NodeClient,
+}
+
+/// Service managers (injected dependencies)
+#[derive(Clone)]
+#[derive(Debug)]
+pub(crate) struct NodeManagers {
+    pub(crate) blobstore: BlobManager,
+    pub(crate) sync: SyncManager,
+}
+
+/// Mutable runtime state
+#[derive(Clone)]
+#[derive(Debug)]
+pub(crate) struct NodeState {
+    pub(crate) blob_cache: Arc<DashMap<BlobId, CachedBlob>>,
+    pub(crate) delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
+}
+
+impl NodeState {
+    fn new() -> Self {
+        Self {
+            blob_cache: Arc::new(DashMap::new()),
+            delta_stores: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Evict blobs not accessed recently from cache
+    fn evict_old_blobs(&self) {
+        const MAX_BLOB_AGE: Duration = Duration::from_secs(300); // 5 minutes
+
+        let now = Instant::now();
+        let before_count = self.blob_cache.len();
+
+        self.blob_cache
+            .retain(|_, cached_blob| now.duration_since(cached_blob.last_accessed) < MAX_BLOB_AGE);
+
+        let evicted = before_count.saturating_sub(self.blob_cache.len());
+        if evicted > 0 {
+            tracing::debug!(evicted, "Evicted old blobs from cache");
+        }
+    }
+}
+
+/// Main node orchestrator.
+///
+/// **SRP Applied**: Clear separation of:
+/// - `clients`: External service clients (context, node)
+/// - `managers`: Service managers (blobstore, sync)
+/// - `state`: Mutable runtime state (caches)
 #[derive(Debug)]
 pub struct NodeManager {
-    blobstore: BlobManager,
-    sync_manager: SyncManager,
-
-    context_client: ContextClient,
-    node_client: NodeClient,
-
-    // -- blobs --
-    // todo! potentially make this a dashmap::DashMap
-    // todo! use cached::TimedSizedCache with a gc task
-    blob_cache: BTreeMap<BlobId, Arc<Mutex<Option<Arc<[u8]>>>>>,
-    // fixme! this should be opaque, so we can permit mmapping blobs
+    pub(crate) clients: NodeClients,
+    pub(crate) managers: NodeManagers,
+    pub(crate) state: NodeState,
 }
 
 impl NodeManager {
@@ -46,14 +127,18 @@ impl NodeManager {
         sync_manager: SyncManager,
         context_client: ContextClient,
         node_client: NodeClient,
+        state: NodeState,
     ) -> Self {
         Self {
-            blobstore,
-            sync_manager,
-            context_client,
-            node_client,
-
-            blob_cache: BTreeMap::new(),
+            clients: NodeClients {
+                context: context_client,
+                node: node_client,
+            },
+            managers: NodeManagers {
+                blobstore,
+                sync: sync_manager,
+            },
+            state,
         }
     }
 }
@@ -62,23 +147,124 @@ impl Actor for NodeManager {
     type Context = actix::Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        let node_client = self.node_client.clone();
+        let node_client = self.clients.node.clone();
+        let contexts = self.clients.context.get_context_ids(None);
 
-        let contexts = self.context_client.get_context_ids(None);
-
-        let _ignored = ctx.spawn(
+        // Subscribe to all contexts
+        let _handle = ctx.spawn(
             async move {
                 let mut contexts = pin!(contexts);
 
                 while let Some(context_id) = contexts.next().await {
-                    let Ok(context_id) = context_id else { continue };
+                    let Ok(context_id) = context_id else {
+                        error!("Failed to get context ID");
+                        continue;
+                    };
 
                     if let Err(err) = node_client.subscribe(&context_id).await {
-                        error!("Failed to subscribe to context {}: {}", context_id, err);
+                        error!(%context_id, %err, "Failed to subscribe to context");
                     }
                 }
             }
             .into_actor(self),
         );
+
+        // Periodic blob cache eviction (every 5 minutes)
+        let _handle = ctx.run_interval(Duration::from_secs(300), |act, _ctx| {
+            act.state.evict_old_blobs();
+        });
+
+        // Periodic cleanup of stale pending deltas (every 60 seconds)
+        let _handle = ctx.run_interval(Duration::from_secs(60), |act, ctx| {
+            let max_age = Duration::from_secs(300); // 5 minutes timeout
+            let delta_stores = act.state.delta_stores.clone();
+
+            let _ignored = ctx.spawn(
+                async move {
+                    for entry in delta_stores.iter() {
+                        let context_id = *entry.key();
+                        let delta_store = entry.value();
+
+                        // Evict stale deltas
+                        let evicted = delta_store.cleanup_stale(max_age).await;
+
+                        if evicted > 0 {
+                            warn!(
+                                %context_id,
+                                evicted_count = evicted,
+                                "Evicted stale pending deltas (timed out after 5 min)"
+                            );
+                        }
+
+                        // Log stats for monitoring
+                        let stats = delta_store.pending_stats().await;
+                        if stats.count > 0 {
+                            debug!(
+                                %context_id,
+                                pending_count = stats.count,
+                                oldest_age_secs = stats.oldest_age_secs,
+                                missing_parents = stats.total_missing_parents,
+                                "Pending delta statistics"
+                            );
+
+                            // Trigger snapshot fallback if too many pending
+                            const SNAPSHOT_THRESHOLD: usize = 100;
+                            if stats.count > SNAPSHOT_THRESHOLD {
+                                warn!(
+                                    %context_id,
+                                    pending_count = stats.count,
+                                    threshold = SNAPSHOT_THRESHOLD,
+                                    "Too many pending deltas - state sync will recover on next periodic sync"
+                                );
+                            }
+                        }
+                    }
+                }
+                .into_actor(act),
+            );
+        });
+
+        // Periodic hash heartbeat broadcast (every 30 seconds)
+        // Allows peers to detect silent divergence
+        let _handle = ctx.run_interval(Duration::from_secs(30), |act, ctx| {
+            let context_client = act.clients.context.clone();
+            let node_client = act.clients.node.clone();
+
+            let _ignored = ctx.spawn(
+                async move {
+                    // Get all context IDs
+                    let contexts = context_client.get_context_ids(None);
+
+                    let mut contexts_stream = pin!(contexts);
+                    while let Some(context_id_result) = contexts_stream.next().await {
+                        let Ok(context_id) = context_id_result else {
+                            continue;
+                        };
+
+                        // Get context metadata
+                        let Ok(Some(context)) = context_client.get_context(&context_id) else {
+                            continue;
+                        };
+
+                        // Broadcast hash heartbeat
+                        if let Err(e) = node_client
+                            .broadcast_heartbeat(
+                                &context_id,
+                                context.root_hash,
+                                context.dag_heads.clone(),
+                            )
+                            .await
+                        {
+                            debug!(
+                                %context_id,
+                                error = %e,
+                                "Failed to broadcast hash heartbeat"
+                            );
+                        }
+                    }
+                }
+                .into_actor(act),
+            );
+        });
     }
 }

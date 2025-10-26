@@ -85,7 +85,7 @@ impl UserPasswordProvider {
     /// * `String` - The generated key ID
     fn generate_key_id(&self, username: &str, password: &str) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(format!("user_password:{}:{}", username, password).as_bytes());
+        hasher.update(format!("user_password:{username}:{password}").as_bytes());
         let hash = hasher.finalize();
         hex::encode(hash)
     }

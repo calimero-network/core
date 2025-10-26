@@ -572,7 +572,9 @@ mod index__public_methods {
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert!(root_index.children[collection_name].is_empty());
-        assert!(<Index<MainStorage>>::get_index(child_id).unwrap().is_none());
+
+        // With tombstones, index still exists but is marked as deleted
+        assert!(<Index<MainStorage>>::is_deleted(child_id).unwrap());
     }
 }
 
@@ -593,6 +595,7 @@ mod index__private_methods {
             full_hash: hash1,
             own_hash: hash2,
             metadata: Metadata::default(),
+            deleted_at: None,
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
 
@@ -613,12 +616,93 @@ mod index__private_methods {
             full_hash: hash1,
             own_hash: hash2,
             metadata: Metadata::default(),
+            deleted_at: None,
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
         assert_eq!(<Index<MainStorage>>::get_index(id).unwrap().unwrap(), index);
 
         <Index<MainStorage>>::remove_index(id);
         assert!(<Index<MainStorage>>::get_index(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn garbage_collect_tombstones() {
+        use crate::env::time_now;
+        use crate::store::MockedStorage;
+
+        // Use MockedStorage which has working storage_iter_keys()
+        type TestStorage = MockedStorage<2000>;
+
+        // Create some entities
+        let root_id = Id::random();
+        let child1_id = Id::random();
+        let child2_id = Id::random();
+        let child3_id = Id::random();
+
+        <Index<TestStorage>>::add_root(ChildInfo::new(root_id, [1; 32], Metadata::default()))
+            .unwrap();
+
+        let collection = "children";
+
+        // Add children
+        <Index<TestStorage>>::add_child_to(
+            root_id,
+            collection,
+            ChildInfo::new(child1_id, [2; 32], Metadata::default()),
+        )
+        .unwrap();
+
+        <Index<TestStorage>>::add_child_to(
+            root_id,
+            collection,
+            ChildInfo::new(child2_id, [3; 32], Metadata::default()),
+        )
+        .unwrap();
+
+        <Index<TestStorage>>::add_child_to(
+            root_id,
+            collection,
+            ChildInfo::new(child3_id, [4; 32], Metadata::default()),
+        )
+        .unwrap();
+
+        // Mark children as deleted at different times
+        let now = time_now();
+        let old_time = now - 2 * 86_400_000_000_000; // 2 days ago
+        let recent_time = now - 12 * 3_600_000_000_000; // 12 hours ago
+
+        <Index<TestStorage>>::mark_deleted(child1_id, old_time).unwrap(); // Old tombstone
+        <Index<TestStorage>>::mark_deleted(child2_id, recent_time).unwrap(); // Recent tombstone
+                                                                             // child3 not deleted
+
+        // Verify all exist before GC
+        assert!(<Index<TestStorage>>::get_index(child1_id)
+            .unwrap()
+            .is_some());
+        assert!(<Index<TestStorage>>::get_index(child2_id)
+            .unwrap()
+            .is_some());
+        assert!(<Index<TestStorage>>::get_index(child3_id)
+            .unwrap()
+            .is_some());
+
+        // Run GC with 1-day retention
+        let one_day = 86_400_000_000_000;
+        let collected = <Index<TestStorage>>::garbage_collect_tombstones(one_day).unwrap();
+
+        // Should have collected 1 tombstone (child1, which is 2 days old)
+        assert_eq!(collected, 1);
+
+        // Verify results
+        assert!(<Index<TestStorage>>::get_index(child1_id)
+            .unwrap()
+            .is_none()); // GC'd
+        assert!(<Index<TestStorage>>::get_index(child2_id)
+            .unwrap()
+            .is_some()); // Too recent
+        assert!(<Index<TestStorage>>::get_index(child3_id)
+            .unwrap()
+            .is_some()); // Not deleted
     }
 }
 

@@ -60,7 +60,7 @@ impl VMHostFunctions<'_> {
         let headers: Vec<(String, String)> =
             from_borsh_slice(headers).map_err(|_| HostError::DeserializationError)?;
 
-        let mut request = ureq::request(&method, &url);
+        let mut request = ureq::request(method, url);
 
         for (key, value) in &headers {
             request = request.set(key, value);

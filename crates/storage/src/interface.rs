@@ -40,137 +40,22 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
-use borsh::{from_slice, to_vec, BorshDeserialize, BorshSerialize};
+use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data, Metadata};
+use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
-use crate::sync;
 
-// Re-export for backward compatibility
+// Re-export types for convenience
+pub use crate::action::{Action, ComparisonData};
 pub use crate::error::StorageError;
 
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
-
-/// Actions to be taken during synchronisation.
-///
-/// The following variants represent the possible actions arising from either a
-/// direct change or a comparison between two nodes.
-///
-///   - **Direct change**: When a direct change is made, in other words, when
-///     there is local activity that results in data modification to propagate
-///     to other nodes, the possible resulting actions are [`Add`](Action::Add),
-///     [`Delete`](Action::Delete), and [`Update`](Action::Update). A comparison
-///     is not needed in this case, as the deltas are known, and assuming all of
-///     the actions are carried out, the nodes will be in sync.
-///
-///   - **Comparison**: When a comparison is made between two nodes, the
-///     possible resulting actions are [`Add`](Action::Add), [`Delete`](Action::Delete),
-///     [`Update`](Action::Update), and [`Compare`](Action::Compare). The extra
-///     comparison action arises in the case of tree traversal, where a child
-///     entity is found to differ between the two nodes. In this case, the child
-///     entity is compared, and the resulting actions are added to the list of
-///     actions to be taken. This process is recursive.
-///
-/// Note: Some actions contain the full entity, and not just the entity ID, as
-/// the actions will often be in context of data that is not available locally
-/// and cannot be sourced otherwise. The actions are stored in serialised form
-/// because of type restrictions, and they are due to be sent around the network
-/// anyway.
-///
-/// Note: This enum contains the entity type, for passing to the guest for
-/// processing along with the ID and data.
-///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[expect(clippy::exhaustive_enums, reason = "Exhaustive")]
-pub enum Action {
-    /// Add an entity with the given ID, type, and data.
-    Add {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Serialised data of the entity.
-        data: Vec<u8>,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-
-        /// The metadata of the entity.
-        metadata: Metadata,
-    },
-
-    /// Compare the entity with the given ID and type. Note that this results in
-    /// a direct comparison of the specific entity in question, including data
-    /// that is immediately available to it, such as the hashes of its children.
-    /// This may well result in further actions being generated if children
-    /// differ, leading to a recursive comparison.
-    Compare {
-        /// Unique identifier of the entity.
-        id: Id,
-    },
-
-    /// Delete an entity with the given ID.
-    Delete {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-    },
-
-    /// Update the entity with the given ID and type to have the supplied data.
-    Update {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Serialised data of the entity.
-        data: Vec<u8>,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-
-        /// The metadata of the entity.
-        metadata: Metadata,
-    },
-}
-
-/// Data that is used for comparison between two nodes.
-///
-/// Uses two-level hashing to optimize sync:
-/// - `full_hash` - Detects if **anything** in subtree changed
-/// - `own_hash` - Detects if **this entity's data** changed (vs. children)
-///
-/// This enables skipping unchanged entity data during sync, only transferring
-/// full data when the entity itself changed, not just its descendants.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ComparisonData {
-    /// The unique identifier of the entity being compared.
-    id: Id,
-
-    /// Hash of entity's immediate data only (excludes children).
-    /// Used to determine if entity itself changed vs. just its children.
-    own_hash: [u8; 32],
-
-    /// Hash of entity + all descendants.
-    /// Used to quickly detect if any changes exist in subtree.
-    full_hash: [u8; 32],
-
-    /// The list of ancestors of the entity, with their IDs and hashes. The
-    /// order is from the immediate parent to the root, so index zero will be
-    /// the parent, and the last index will be the root.
-    ancestors: Vec<ChildInfo>,
-
-    /// The list of children of the entity, with their IDs and hashes,
-    /// organised by collection name.
-    children: BTreeMap<String, Vec<ChildInfo>>,
-
-    /// The metadata of the entity.
-    metadata: Metadata,
-}
 
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
@@ -229,7 +114,8 @@ impl<S: StorageAdaptor> Interface<S> {
             Action::Add {
                 id,
                 data,
-                // todo! we only need parent_id
+                // Note: We track both parent and collection for full metadata,
+                // though parent_id alone would suffice for tree structure
                 ancestors,
                 metadata,
             }
@@ -275,18 +161,54 @@ impl<S: StorageAdaptor> Interface<S> {
                     return Ok(());
                 }
 
-                sync::push_action(Action::Compare { id });
+                crate::delta::push_action(Action::Compare { id });
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
-            Action::Delete {
-                id, ancestors: _, ..
-            } => {
-                // todo! remove_child_from here
-                let _ignored = S::storage_remove(Key::Entry(id));
+            Action::DeleteRef { id, deleted_at } => {
+                Self::apply_delete_ref_action(id, deleted_at)?;
             }
         };
+
+        Ok(())
+    }
+
+    /// Applies DeleteRef action with CRDT conflict resolution.
+    ///
+    /// Uses guard clauses for clarity (KISS principle).
+    /// Handles three cases:
+    /// 1. Already deleted - update tombstone if newer
+    /// 2. Exists locally - compare timestamps (LWW)
+    /// 3. Never seen - ignore (could create tombstone in future)
+    fn apply_delete_ref_action(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+        // Guard: Already deleted, check if this deletion is newer
+        if <Index<S>>::is_deleted(id)? {
+            // Already has tombstone, use later deletion timestamp
+            let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+            return Ok(());
+        }
+
+        // Guard: Entity doesn't exist, nothing to delete
+        let Some(metadata) = <Index<S>>::get_metadata(id)? else {
+            // Entity doesn't exist - no tombstone needed
+            // CRDT rationale: Deleting non-existent entity is idempotent no-op.
+            // We don't create "preventive tombstones" because:
+            // - Storage efficiency: Avoid bloat from phantom deletions
+            // - CRDT convergence: If entity never existed, all peers agree (empty set)
+            // - Idempotency: Safe to call remove_child_from multiple times
+            return Ok(());
+        };
+
+        // Guard: Local update is newer, deletion loses
+        if deleted_at < *metadata.updated_at {
+            // Local update wins, ignore older deletion
+            return Ok(());
+        }
+
+        // Deletion wins - apply it
+        let _ignored = S::storage_remove(Key::Entry(id));
+        let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
 
         Ok(())
     }
@@ -504,7 +426,7 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         for action in remote {
-            sync::push_action(action);
+            crate::delta::push_action(action);
         }
 
         Ok(())
@@ -512,11 +434,18 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Finds and deserializes an entity by its unique ID.
     ///
+    /// Filters out tombstoned (deleted) entities automatically.
+    ///
     /// # Errors
     /// - `DeserializationError` if stored data is corrupt
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        // Check if entity is deleted (tombstone)
+        if <Index<S>>::is_deleted(id)? {
+            return Ok(None); // Entity is deleted
+        }
+
         let value = S::storage_read(Key::Entry(id));
 
         let Some(slice) = value else {
@@ -538,8 +467,22 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Finds an entity by ID, returning raw bytes without deserialization.
     ///
+    /// Note: This does NOT filter deleted entities. Use `find_by_id` for automatic
+    /// tombstone filtering.
+    ///
     pub fn find_by_id_raw(id: Id) -> Option<Vec<u8>> {
         S::storage_read(Key::Entry(id))
+    }
+
+    /// Gets raw entity data by ID.
+    ///
+    /// This is a simple alias for `find_by_id_raw` for convenience in tests.
+    ///
+    /// # Errors
+    /// Returns `IndexNotFound` if entity doesn't exist.
+    ///
+    pub fn get(id: Id) -> Result<Vec<u8>, StorageError> {
+        Self::find_by_id_raw(id).ok_or(StorageError::IndexNotFound(id))
     }
 
     /// Finds entities by hierarchical path.
@@ -650,20 +593,16 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
+        let deleted_at = time_now();
+
         <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
 
-        let (parent_full_hash, _) =
-            <Index<S>>::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
-        let mut ancestors = <Index<S>>::get_ancestors_of(parent_id)?;
-        let metadata =
-            <Index<S>>::get_metadata(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
-        ancestors.insert(0, ChildInfo::new(parent_id, parent_full_hash, metadata));
-
-        _ = S::storage_remove(Key::Entry(child_id));
-
-        sync::push_action(Action::Delete {
+        // Use DeleteRef for efficient tombstone-based deletion
+        // More efficient than Delete: only sends ID + timestamp vs full ancestor tree
+        // The tombstone is created by remove_child_from, we just broadcast the deletion
+        crate::delta::push_action(Action::DeleteRef {
             id: child_id,
-            ancestors,
+            deleted_at,
         });
 
         Ok(true)
@@ -706,7 +645,7 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         if let Some(hash) = hash {
-            sync::commit_root(&hash)?;
+            crate::delta::commit_root(&hash)?;
         }
 
         Ok(())
@@ -762,23 +701,83 @@ impl<S: StorageAdaptor> Interface<S> {
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
         let last_metadata = <Index<S>>::get_metadata(id)?;
 
-        if let Some(last_metadata) = &last_metadata {
+        let final_data = if let Some(last_metadata) = &last_metadata {
             if last_metadata.updated_at > metadata.updated_at {
+                // Incoming is older - skip completely
                 return Ok(None);
+            } else if id.is_root() {
+                // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
+                // Even if incoming is newer, we merge to avoid losing concurrent updates
+                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                    Self::try_merge_data(
+                        id,
+                        &existing_data,
+                        data,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?
+                } else {
+                    data.to_vec()
+                }
+            } else if last_metadata.updated_at == metadata.updated_at {
+                // Concurrent update (same timestamp) - try to merge
+                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                    Self::try_merge_data(
+                        id,
+                        &existing_data,
+                        data,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?
+                } else {
+                    data.to_vec()
+                }
+            } else {
+                // Incoming is newer - use it (LWW for non-root entities)
+                data.to_vec()
             }
-        } else if id.is_root() {
-            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata))?;
-        }
+        } else {
+            if id.is_root() {
+                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata))?;
+            }
+            data.to_vec()
+        };
 
-        let own_hash = Sha256::digest(data).into();
+        let own_hash = Sha256::digest(&final_data).into();
 
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
-        _ = S::storage_write(Key::Entry(id), data);
+        _ = S::storage_write(Key::Entry(id), &final_data);
 
         let is_new = metadata.created_at == *metadata.updated_at;
 
         Ok(Some((is_new, full_hash)))
+    }
+
+    /// Attempt to merge two versions of data using CRDT semantics.
+    ///
+    /// Returns the merged data, falling back to LWW (newer data) on failure.
+    fn try_merge_data(
+        _id: Id,
+        existing: &[u8],
+        incoming: &[u8],
+        existing_timestamp: u64,
+        incoming_timestamp: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        use crate::merge::merge_root_state;
+
+        // Attempt CRDT merge
+        match merge_root_state(existing, incoming, existing_timestamp, incoming_timestamp) {
+            Ok(merged) => Ok(merged),
+            Err(_) => {
+                // Merge failed - fall back to LWW
+                if incoming_timestamp >= existing_timestamp {
+                    Ok(incoming.to_vec())
+                } else {
+                    Ok(existing.to_vec())
+                }
+            }
+        }
     }
 
     /// Saves raw serialized data with orphan checking.
@@ -817,7 +816,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         };
 
-        sync::push_action(action);
+        crate::delta::push_action(action);
 
         Ok(Some(full_hash))
     }
@@ -832,4 +831,32 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
+
+    // NOTE: Sync orchestration moved to node layer (YAGNI)
+    //
+    // The sync decision logic should be in the node's sync manager, not in storage.
+    // Storage provides primitives (generate_snapshot, full_resync, needs_full_resync),
+    // but the orchestration belongs in the network/node layer where it can access
+    // network protocols and handle peer communication.
+    //
+    // Example node layer implementation:
+    //
+    // ```rust
+    // impl SyncManager {
+    //     async fn sync_with_peer(&self, peer_id: NodeId) -> Result<()> {
+    //         use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
+    //
+    //         if Interface::needs_full_resync(peer_id, TOMBSTONE_RETENTION_NANOS)? {
+    //             let snapshot = network::request_snapshot(peer_id).await?;
+    //             Interface::full_resync(peer_id, snapshot)?;
+    //         } else {
+    //             // Incremental sync via compare_trees
+    //             let comparison = network::request_comparison(peer_id).await?;
+    //             let (local_actions, remote_actions) = Interface::compare_trees(comparison)?;
+    //             // Apply actions...
+    //         }
+    //         Ok(())
+    //     }
+    // }
+    // ```
 }

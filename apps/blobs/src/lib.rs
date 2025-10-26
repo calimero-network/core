@@ -7,7 +7,7 @@
 #![allow(clippy::len_without_is_empty)]
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::serde::{Deserialize, Serialize};
+use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env};
 use calimero_storage::collections::UnorderedMap;
 
@@ -50,7 +50,7 @@ fn parse_blob_id_base58(blob_id_str: &str) -> Result<[u8; BLOB_ID_SIZE], String>
             blob_id.copy_from_slice(&bytes);
             Ok(blob_id)
         }
-        Err(e) => Err(format!("Failed to decode blob ID '{}': {}", blob_id_str, e)),
+        Err(e) => Err(format!("Failed to decode blob ID '{blob_id_str}': {e}")),
     }
 }
 
@@ -217,7 +217,7 @@ impl FileShareState {
         // Store the file record
         self.files
             .insert(file_id.clone(), file_record)
-            .map_err(|e| format!("Failed to store file record: {:?}", e))?;
+            .map_err(|e| format!("Failed to store file record: {e:?}"))?;
 
         // Emit event
         app::emit!(FileShareEvent::FileUploaded {
@@ -249,8 +249,8 @@ impl FileShareState {
         let file_record = self
             .files
             .get(&file_id)
-            .map_err(|e| format!("Failed to access file: {:?}", e))?
-            .ok_or_else(|| format!("File not found: {}", file_id))?;
+            .map_err(|e| format!("Failed to access file: {e:?}"))?
+            .ok_or_else(|| format!("File not found: {file_id}"))?;
 
         let file_name = file_record.name.clone();
 
@@ -258,7 +258,7 @@ impl FileShareState {
         // NOTE: The underlying blob is not deleted from blob storage
         self.files
             .remove(&file_id)
-            .map_err(|e| format!("Failed to delete file: {:?}", e))?;
+            .map_err(|e| format!("Failed to delete file: {e:?}"))?;
 
         // Emit event
         app::emit!(FileShareEvent::FileDeleted {
@@ -301,8 +301,8 @@ impl FileShareState {
     pub fn get_file(&self, file_id: String) -> Result<FileRecord, String> {
         match self.files.get(&file_id) {
             Ok(Some(file_record)) => Ok(file_record.clone()),
-            Ok(None) => Err(format!("File not found: {}", file_id)),
-            Err(e) => Err(format!("Failed to retrieve file: {:?}", e)),
+            Ok(None) => Err(format!("File not found: {file_id}")),
+            Err(e) => Err(format!("Failed to retrieve file: {e:?}")),
         }
     }
 
@@ -387,7 +387,7 @@ impl FileShareState {
         let file_count = self
             .files
             .len()
-            .map_err(|e| format!("Failed to get file count: {:?}", e))?;
+            .map_err(|e| format!("Failed to get file count: {e:?}"))?;
 
         let total_size = self.get_total_files_size()?;
 

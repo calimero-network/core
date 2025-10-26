@@ -1965,6 +1965,7 @@ dependencies = [
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-runtime",
+ "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
  "either",
@@ -2053,6 +2054,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-dag"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "calimero-storage",
+ "eyre",
+ "rand 0.8.5",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "calimero-network"
 version = "0.0.0"
 dependencies = [
@@ -2102,22 +2117,25 @@ name = "calimero-node"
 version = "0.0.0"
 dependencies = [
  "actix",
+ "async-trait",
  "borsh",
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-crypto",
+ "calimero-dag",
  "calimero-network",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server",
+ "calimero-storage",
  "calimero-store",
  "calimero-store-rocksdb",
  "calimero-utils-actix",
  "camino",
- "either",
+ "dashmap 6.1.0",
  "eyre",
  "futures-util",
  "libp2p",
@@ -6332,7 +6350,6 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
- "borsh",
  "calimero-client",
  "calimero-config",
  "calimero-context-config",

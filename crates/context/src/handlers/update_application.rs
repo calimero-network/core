@@ -22,9 +22,9 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         }: UpdateApplicationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let context = self.contexts.get(&context_id).map(|c| c.meta);
+        let context_meta = self.contexts.get(&context_id).map(|c| c.meta.clone());
 
-        if let Some(context) = context {
+        if let Some(ref context) = context_meta {
             if application_id == context.application_id {
                 return ActorResponse::reply(Ok(()));
             }
@@ -37,7 +37,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             self.node_client.clone(),
             self.context_client.clone(),
             context_id,
-            context,
+            context_meta,
             application_id,
             application,
             public_key,
@@ -109,6 +109,7 @@ pub async fn update_application_id(
         &types::ContextMeta::new(
             key::ApplicationMeta::new(application.id),
             *context.root_hash,
+            context.dag_heads.clone(),
         ),
     )?;
 

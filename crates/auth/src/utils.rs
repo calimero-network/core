@@ -26,6 +26,12 @@ pub struct AuthMetrics {
     start_time: Arc<Instant>,
 }
 
+impl Default for AuthMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuthMetrics {
     /// Create a new metrics collector
     pub fn new() -> Self {

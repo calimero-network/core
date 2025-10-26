@@ -1,7 +1,7 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
 use std::borrow::Cow;
-use std::num::NonZeroUsize;
+// Removed: NonZeroUsize (no longer using height)
 
 use async_stream::stream;
 use calimero_blobstore::BlobManager;
@@ -38,7 +38,8 @@ pub struct NodeClient {
 }
 
 impl NodeClient {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         datastore: Store,
         blobstore: BlobManager,
         network_client: NetworkClient,
@@ -92,13 +93,16 @@ impl NodeClient {
         sender: &PublicKey,
         sender_key: &PrivateKey,
         artifact: Vec<u8>,
-        height: NonZeroUsize,
+        delta_id: [u8; 32],
+        parent_ids: Vec<[u8; 32]>,
         events: Option<Vec<u8>>,
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
             %sender,
             root_hash=%context.root_hash,
+            delta_id=?delta_id,
+            parent_count=parent_ids.len(),
             "Sending state delta"
         );
 
@@ -116,9 +120,10 @@ impl NodeClient {
         let payload = BroadcastMessage::StateDelta {
             context_id: context.id,
             author_id: *sender,
+            delta_id,
+            parent_ids,
             root_hash: context.root_hash,
             artifact: encrypted.into(),
-            height,
             nonce,
             events: events.map(Cow::from),
         };
@@ -126,6 +131,30 @@ impl NodeClient {
         let payload = borsh::to_vec(&payload)?;
 
         let topic = TopicHash::from_raw(context.id);
+
+        let _ignored = self.network_client.publish(topic, payload).await?;
+
+        Ok(())
+    }
+
+    pub async fn broadcast_heartbeat(
+        &self,
+        context_id: &ContextId,
+        root_hash: calimero_primitives::hash::Hash,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        if self.get_peers_count(Some(context_id)).await == 0 {
+            return Ok(());
+        }
+
+        let payload = BroadcastMessage::HashHeartbeat {
+            context_id: *context_id,
+            root_hash,
+            dag_heads,
+        };
+
+        let payload = borsh::to_vec(&payload)?;
+        let topic = TopicHash::from_raw(*context_id);
 
         let _ignored = self.network_client.publish(topic, payload).await?;
 
