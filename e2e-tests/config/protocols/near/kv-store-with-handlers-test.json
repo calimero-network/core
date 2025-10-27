@@ -50,7 +50,9 @@
         "argsJson": {},
         "expectedResultJson": 2,
         "target": "inviter",
-        "description": "Global G-Counter shows 2 (both nodes executed insert_handler)"
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 2 (both nodes executed insert_handler). Retries for G-Counter CRDT merge."
       }
     },
     {
@@ -77,7 +79,9 @@
         "argsJson": {},
         "expectedResultJson": 4,
         "target": "invitees",
-        "description": "Global G-Counter shows 4 (both nodes execute × 2 sets)"
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 4 (both nodes execute × 2 sets). Retries for G-Counter CRDT merge."
       }
     },
     {
@@ -103,7 +107,9 @@
         "argsJson": {},
         "expectedResultJson": 6,
         "target": "invitees",
-        "description": "Global G-Counter shows 6 (both nodes execute: 2 sets + 1 remove)"
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 6 (both nodes execute: 2 sets + 1 remove). Retries for G-Counter CRDT merge."
       }
     },
     {
@@ -145,7 +151,9 @@
         "argsJson": {},
         "expectedResultJson": 10,
         "target": "invitees",
-        "description": "Global G-Counter shows 10 (both nodes execute: 2 sets + 1 remove + 1 set + 1 clear)"
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 10 (both nodes execute: 2 sets + 1 remove + 1 set + 1 clear). Retries for G-Counter CRDT merge."
       }
     }
   ]
