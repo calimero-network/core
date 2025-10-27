@@ -79,8 +79,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 }
 
 /// Node-level delta store that wraps calimero-dag
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DeltaStore {
     /// Core DAG logic (topology, ordering, buffering)
     dag: Arc<RwLock<CoreDagStore<Vec<Action>>>>,

@@ -68,16 +68,14 @@ pub(crate) struct NodeClients {
 }
 
 /// Service managers (injected dependencies)
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct NodeManagers {
     pub(crate) blobstore: BlobManager,
     pub(crate) sync: SyncManager,
 }
 
 /// Mutable runtime state
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct NodeState {
     pub(crate) blob_cache: Arc<DashMap<BlobId, CachedBlob>>,
     pub(crate) delta_stores: Arc<DashMap<ContextId, DeltaStore>>,

@@ -19,7 +19,6 @@ pub fn validate_application_id(ours: &ApplicationId, theirs: &ApplicationId) -> 
     Ok(())
 }
 
-
 /// Generates a random nonce for message encryption.
 #[must_use]
 pub fn generate_nonce() -> calimero_crypto::Nonce {

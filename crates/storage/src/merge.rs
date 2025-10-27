@@ -20,6 +20,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 ///
 /// # Returns
 /// Merged data as Borsh-serialized bytes
+///
+/// # Errors
+/// Currently does not return errors as it uses LWW (Last-Write-Wins) strategy.
 pub fn merge_root_state(
     existing: &[u8],
     incoming: &[u8],
