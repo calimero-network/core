@@ -76,7 +76,7 @@
 //! ### Examples
 //!
 //! **✅ SAFE Handler** (CRDT-only):
-//! ```rust
+//! ```rust,ignore
 //! fn my_handler(&mut self, user_id: &str) {
 //!     // Each handler uses a unique key (safe for parallel execution)
 //!     self.handler_counter.increment();  // G-Counter is commutative
@@ -84,7 +84,7 @@
 //! ```
 //!
 //! **❌ UNSAFE Handler** (ordering dependency):
-//! ```rust
+//! ```rust,ignore
 //! fn create_handler(&mut self, id: &str) {
 //!     self.items.insert(id, "created");
 //! }
@@ -96,7 +96,7 @@
 //! ```
 //!
 //! **❌ UNSAFE Handler** (external side effects):
-//! ```rust
+//! ```rust,ignore
 //! fn payment_handler(&mut self, amount: u64) {
 //!     // DANGER: Non-idempotent external call!
 //!     external_api::charge_payment(amount);
