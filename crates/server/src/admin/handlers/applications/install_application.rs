@@ -21,8 +21,8 @@ pub async fn handler(
             req.url.clone(),
             req.metadata,
             req.hash.as_ref(),
-            &req.package,
-            &req.version,
+            req.package.as_deref().unwrap_or("unknown"),
+            req.version.as_deref().unwrap_or("0.0.0"),
         )
         .await
     {
