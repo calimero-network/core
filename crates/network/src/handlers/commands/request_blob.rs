@@ -1,4 +1,4 @@
-use std::time::Duration;
+use core::time::Duration;
 
 use actix::{Context, Handler, Message, ResponseFuture};
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -66,7 +66,7 @@ impl Handler<RequestBlob> for NetworkManager {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
-                            error: format!("Failed to open stream: {}", e),
+                            error: format!("Failed to open stream: {e}"),
                         });
                         return Err(e).wrap_err("Failed to open stream to peer");
                     }
@@ -89,7 +89,7 @@ impl Handler<RequestBlob> for NetworkManager {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
-                            error: format!("Failed to serialize request: {}", e),
+                            error: format!("Failed to serialize request: {e}"),
                         });
                         return Err(e).wrap_err("Failed to serialize blob request");
                     }
@@ -101,7 +101,7 @@ impl Handler<RequestBlob> for NetworkManager {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
                         from_peer: request.peer_id,
-                        error: format!("Failed to send request: {}", e),
+                        error: format!("Failed to send request: {e}"),
                     });
                     return Err(e).wrap_err("Failed to send blob request");
                 }
@@ -115,7 +115,7 @@ impl Handler<RequestBlob> for NetworkManager {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
-                            error: format!("Failed to receive response: {}", e),
+                            error: format!("Failed to receive response: {e}"),
                         });
                         return Err(e).wrap_err("Failed to receive response");
                     }
@@ -149,7 +149,7 @@ impl Handler<RequestBlob> for NetworkManager {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
-                            error: format!("Failed to deserialize response: {}", e),
+                            error: format!("Failed to deserialize response: {e}"),
                         });
                         return Err(e).wrap_err("Failed to deserialize blob response");
                     }
@@ -209,7 +209,7 @@ impl Handler<RequestBlob> for NetworkManager {
                                     blob_id: request.blob_id,
                                     context_id: request.context_id,
                                     from_peer: request.peer_id,
-                                    error: format!("Stream error while receiving chunk: {}", e),
+                                    error: format!("Stream error while receiving chunk: {e}"),
                                 });
                                 return Err(e).wrap_err("Stream error while receiving chunk");
                             }
@@ -253,7 +253,7 @@ impl Handler<RequestBlob> for NetworkManager {
                                     peer_id = %request.peer_id,
                                     chunk_number = chunk_count + 1,
                                     raw_data_size = chunk_msg.data.len(),
-                                    raw_data_hex = hex::encode(&chunk_msg.data[..std::cmp::min(100, chunk_msg.data.len())]),
+                                    raw_data_hex = hex::encode(&chunk_msg.data[..core::cmp::min(100, chunk_msg.data.len())]),
                                     error = %e,
                                     "Failed to parse chunk"
                                 );
@@ -261,7 +261,7 @@ impl Handler<RequestBlob> for NetworkManager {
                                     blob_id: request.blob_id,
                                     context_id: request.context_id,
                                     from_peer: request.peer_id,
-                                    error: format!("Failed to parse chunk: {}", e),
+                                    error: format!("Failed to parse chunk: {e}"),
                                 });
                                 return Err(eyre::eyre!("Failed to parse blob chunk: {}", e));
                             }
@@ -326,21 +326,20 @@ impl Handler<RequestBlob> for NetworkManager {
             }).await;
 
             // Handle timeout result
-            match transfer_result {
-                Ok(result) => result,
-                Err(_) => {
-                    // Overall transfer timeout
-                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                        blob_id: request.blob_id,
-                        context_id: request.context_id,
-                        from_peer: request.peer_id,
-                        error: format!(
-                            "Blob transfer timed out after {} seconds",
-                            BLOB_TRANSFER_TIMEOUT.as_secs()
-                        ),
-                    });
-                    Err(eyre!("Blob transfer timed out"))
-                }
+            if let Ok(result) = transfer_result {
+                result
+            } else {
+                // Overall transfer timeout
+                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                    blob_id: request.blob_id,
+                    context_id: request.context_id,
+                    from_peer: request.peer_id,
+                    error: format!(
+                        "Blob transfer timed out after {} seconds",
+                        BLOB_TRANSFER_TIMEOUT.as_secs()
+                    ),
+                });
+                Err(eyre!("Blob transfer timed out"))
             }
         })
     }

@@ -64,20 +64,20 @@ impl DiscoveryState {
             if protocol == &HOP_PROTOCOL_NAME {
                 let _ = self.relay_index.insert(*peer_id);
 
-                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let peer_info = self.peers.entry(*peer_id).or_default();
                 let _ignored = peer_info.relay.get_or_insert_with(Default::default);
             }
             if protocol == &RENDEZVOUS_PROTOCOL_NAME {
                 let _ = self.rendezvous_index.insert(*peer_id);
 
-                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let peer_info = self.peers.entry(*peer_id).or_default();
                 let _ignored = peer_info.rendezvous.get_or_insert_with(Default::default);
             }
 
             if protocol == &AUTONAT_PROTOCOL_NAME {
                 let _ = self.autonat_index.insert(*peer_id);
 
-                let _peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let _peer_info = self.peers.entry(*peer_id).or_default();
             }
         }
     }
@@ -89,7 +89,7 @@ impl DiscoveryState {
     ) -> bool {
         self.peers
             .get(peer_id)
-            .map_or(false, |info| info.discoveries.contains(&mechanism))
+            .is_some_and(|info| info.discoveries.contains(&mechanism))
     }
 
     pub(crate) fn add_peer_discovery_mechanism(
@@ -264,10 +264,9 @@ impl PeerInfo {
     }
 
     pub(crate) fn is_rendezvous_discover_throttled(&self, rpm: f32) -> bool {
-        self.rendezvous.as_ref().map_or(false, |info| {
-            info.last_discovery_at().map_or(false, |instant| {
-                instant.elapsed() < Duration::from_secs_f32(60.0 / rpm)
-            })
+        self.rendezvous.as_ref().is_some_and(|info| {
+            info.last_discovery_at()
+                .is_some_and(|instant| instant.elapsed() < Duration::from_secs_f32(60.0 / rpm))
         })
     }
 
@@ -289,13 +288,16 @@ impl PeerInfo {
         }
     }
 
-    fn update_relay_reservation_status(&mut self, status: RelayReservationStatus) {
+    const fn update_relay_reservation_status(&mut self, status: RelayReservationStatus) {
         if let Some(ref mut info) = self.relay {
             info.update_reservation_status(status);
         }
     }
 
-    fn update_rendezvous_registartion_status(&mut self, status: RendezvousRegistrationStatus) {
+    const fn update_rendezvous_registartion_status(
+        &mut self,
+        status: RendezvousRegistrationStatus,
+    ) {
         if let Some(ref mut info) = self.rendezvous {
             info.update_registration_status(status);
         }
@@ -318,7 +320,7 @@ impl PeerRelayInfo {
         self.reservation_status
     }
 
-    fn update_reservation_status(&mut self, status: RelayReservationStatus) {
+    const fn update_reservation_status(&mut self, status: RelayReservationStatus) {
         self.reservation_status = status;
     }
 }
@@ -366,7 +368,7 @@ impl PeerRendezvousInfo {
         self.registration_status
     }
 
-    fn update_registration_status(&mut self, status: RendezvousRegistrationStatus) {
+    const fn update_registration_status(&mut self, status: RendezvousRegistrationStatus) {
         self.registration_status = status;
     }
 }

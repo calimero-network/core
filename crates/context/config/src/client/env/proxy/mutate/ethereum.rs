@@ -78,7 +78,7 @@ impl Method<Ethereum> for Mutate {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded: super::super::ethereum::SolProposalWithApprovals =
-            SolValue::abi_decode(&response, false)?;
+            SolValue::abi_decode(&response)?;
 
         let proposal = ProposalWithApprovals {
             proposal_id: decoded.proposalId.rt().wrap_err("infallible conversion")?,

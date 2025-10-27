@@ -153,7 +153,7 @@ async fn main() -> Result<()> {
     tokio::select! {
         result = start_server(auth_service, storage, config) => {
             if let Err(err) = result {
-                eprintln!("Server error: {}", err);
+                eprintln!("Server error: {err}");
                 return Err(err);
             }
         }

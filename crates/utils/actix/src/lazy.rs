@@ -2,11 +2,11 @@
 #[path = "lazy_tests.rs"]
 mod lazy_tests;
 
+use core::any::{type_name, TypeId};
 use core::future::Future;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{fmt, mem};
-use std::any::{type_name, TypeId};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 use std::thread;
 
@@ -29,11 +29,11 @@ pub trait IntoRef<T> {
     fn into_ref(self) -> T;
 }
 
-impl<M> IntoRef<Recipient<M>> for Recipient<M>
+impl<M> IntoRef<Self> for Recipient<M>
 where
     M: Message<Result: Send> + Send,
 {
-    fn into_ref(self) -> Recipient<M> {
+    fn into_ref(self) -> Self {
         self
     }
 }
@@ -48,11 +48,11 @@ where
     }
 }
 
-impl<A> IntoRef<Addr<A>> for Addr<A>
+impl<A> IntoRef<Self> for Addr<A>
 where
     A: Actor,
 {
-    fn into_ref(self) -> Addr<A> {
+    fn into_ref(self) -> Self {
         self
     }
 }
@@ -110,7 +110,7 @@ impl<A> IntoEnvelope<A> for Envelope<A>
 where
     A: Actor,
 {
-    fn into_envelope(self) -> Envelope<A> {
+    fn into_envelope(self) -> Self {
         self
     }
 }
@@ -142,7 +142,7 @@ where
     }
 
     fn do_send(&self, msg: M) {
-        self.do_send(msg)
+        self.do_send(msg);
     }
 
     fn try_send(&self, msg: M) -> Result<(), SendError<M>> {
@@ -165,7 +165,7 @@ where
     }
 
     fn do_send(&self, msg: M) {
-        self.do_send(msg)
+        self.do_send(msg);
     }
 
     fn try_send(&self, msg: M) -> Result<(), SendError<M>> {
@@ -213,7 +213,7 @@ const _: () = {
     // this should be consistent since futures
     // equally rely on the same vtable layout
 
-    use std::mem::size_of;
+    use core::mem::size_of;
 
     trait Trait {
         fn method(&self);
@@ -239,11 +239,11 @@ const _: () = {
     let size_of_dyn = size_of::<DynErased>() - size_of::<&dyn Trait>();
     let ptr_is_good = {
         let ptr = erased.data.cast::<u8>();
-        let cmp = unsafe { ptr.offset_from(&raw const item as _) };
+        let cmp = unsafe { ptr.offset_from((&raw const item).cast()) };
         cmp as usize
     };
 
-    [[()][size_of_dyn]][ptr_is_good]
+    [[()][size_of_dyn]][ptr_is_good];
 };
 
 // pub struct DynResolve {
@@ -309,8 +309,8 @@ pub struct Lazy<T: Receiver> {
 }
 
 impl LazyStore {
-    fn new(items: VecDeque<(TypeId, DynErased)>) -> Self {
-        LazyStore {
+    const fn new(items: VecDeque<(TypeId, DynErased)>) -> Self {
+        Self {
             state: AtomicBool::new(false),
             event: None,
             items,
@@ -332,7 +332,7 @@ impl LazyStore {
 
 impl<T: Receiver> LazyInner<T> {
     fn new(recvr: Option<T>) -> Self {
-        LazyInner {
+        Self {
             recvr,
             queue: Default::default(),
         }
@@ -352,7 +352,13 @@ impl<T: Receiver> fmt::Debug for Lazy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let path = type_name::<Self>();
         let path = utils::compact_path(path).format("");
-        write!(f, "{}", path)
+        write!(f, "{path}")
+    }
+}
+
+impl<T: Receiver> Default for Lazy<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -379,6 +385,7 @@ impl<A> Lazy<Addr<A>>
 where
     A: Actor<Context: AsyncContext<A>>,
 {
+    #[must_use]
     pub fn recipient<M>(&self) -> Lazy<Recipient<M>>
     where
         A: Handler<M>,
@@ -410,7 +417,7 @@ where
             };
 
             if let Some((store, this_id)) = &mut store {
-                for (that_id, item) in store.items.iter() {
+                for (that_id, item) in &store.items {
                     if this_id == that_id {
                         if let Some(weak) = item.downcast_ref::<A>().upgrade() {
                             if let Ok(resolver) = weak.downcast_arc::<LazyResolver<Recipient<M>>>()
@@ -459,7 +466,7 @@ impl<T: Receiver + 'static> Lazy<T> {
             if !store.get_mut().initialize() {
                 return false;
             }
-        };
+        }
 
         let mut store = store.clone().spin_lock_owned();
 
@@ -506,6 +513,7 @@ impl<T: Receiver + Clone> Lazy<T> {
         inner.recvr.clone()
     }
 
+    #[must_use]
     pub fn try_get(&self) -> Option<T> {
         let inner = self.inner.spin_lock();
 
@@ -629,7 +637,7 @@ trait SpinLock<T> {
 }
 
 static AVAILABLE_PARALLELISM: LazyLock<usize> =
-    LazyLock::new(|| thread::available_parallelism().map_or(4, |t| t.get()));
+    LazyLock::new(|| thread::available_parallelism().map_or(4, core::num::NonZero::get));
 
 static SPIN_BUDGET: LazyLock<usize> = LazyLock::new(|| *AVAILABLE_PARALLELISM * 100);
 

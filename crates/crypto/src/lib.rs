@@ -12,8 +12,9 @@ pub struct SharedKey {
 }
 
 impl SharedKey {
+    #[must_use]
     pub fn new(sk: &PrivateKey, pk: &PublicKey) -> Self {
-        SharedKey {
+        Self {
             key: (SigningKey::from_bytes(sk).to_scalar()
                 * curve25519_dalek::edwards::CompressedEdwardsY(**pk)
                     .decompress()
@@ -23,10 +24,12 @@ impl SharedKey {
         }
     }
 
+    #[must_use]
     pub fn from_sk(sk: &PrivateKey) -> Self {
-        SharedKey { key: **sk }
+        Self { key: **sk }
     }
 
+    #[must_use]
     pub fn encrypt(&self, payload: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let encryption_key =
             aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.key).ok()?);
@@ -43,6 +46,7 @@ impl SharedKey {
         Some(cipher_text)
     }
 
+    #[must_use]
     pub fn decrypt(&self, cipher_text: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let decryption_key =
             aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.key).ok()?);

@@ -102,6 +102,12 @@ pub enum HostError {
     EventKindSizeOverflow,
     #[error("event data size overflow")]
     EventDataSizeOverflow,
+    #[error("xcalls overflow")]
+    XCallsOverflow,
+    #[error("xcall function size overflow")]
+    XCallFunctionSizeOverflow,
+    #[error("xcall params size overflow")]
+    XCallParamsSizeOverflow,
     #[error("blob operations not supported (NodeClient not available)")]
     BlobsNotSupported,
     #[error("invalid blob handle")]

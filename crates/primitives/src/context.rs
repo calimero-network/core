@@ -55,8 +55,9 @@ impl ContextId {
     /// This is useful as some modules use the zero context for special functions.
     /// For example, when the new identity is created and it's not assigned to any specific
     /// context, it's associated with the zero context.
+    #[must_use]
     pub fn zero() -> Self {
-        Self::from([0u8; DIGEST_SIZE])
+        Self::from([0_u8; DIGEST_SIZE])
     }
 }
 
@@ -230,8 +231,9 @@ const _: () = {
 /// Represents the core metadata of a Context.
 ///
 /// This struct provides a snapshot of the context's essential properties,
-/// including its unique ID, the application it's running, and its current state's root hash.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+/// including its unique ID, the application it's running, its current state's root hash,
+/// and the current DAG heads for causal delta tracking.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Context {
@@ -241,6 +243,10 @@ pub struct Context {
     pub application_id: ApplicationId,
     /// The root hash of the context's state Merkle tree.
     pub root_hash: Hash,
+    /// Current DAG heads (delta IDs with no children yet)
+    /// Used to track causal dependencies when creating new deltas
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub dag_heads: Vec<[u8; 32]>,
 }
 
 impl Context {
@@ -257,6 +263,23 @@ impl Context {
             id,
             application_id,
             root_hash,
+            dag_heads: Vec::new(),
+        }
+    }
+
+    /// Constructs a new `Context` with DAG heads.
+    #[must_use]
+    pub const fn with_dag_heads(
+        id: ContextId,
+        application_id: ApplicationId,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> Self {
+        Self {
+            id,
+            application_id,
+            root_hash,
+            dag_heads,
         }
     }
 }
