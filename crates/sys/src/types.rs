@@ -5,6 +5,7 @@ mod location;
 mod pointer;
 mod r#ref;
 mod register;
+mod xcall;
 
 pub use bool::*;
 pub use buffer::*;
@@ -13,6 +14,7 @@ pub use location::*;
 pub use pointer::*;
 pub use r#ref::*;
 pub use register::*;
+pub use xcall::*;
 
 #[repr(C, u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

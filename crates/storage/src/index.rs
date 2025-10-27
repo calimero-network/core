@@ -28,11 +28,11 @@ struct EntityIndex {
     /// hashes, organised by collection name.
     children: BTreeMap<String, Vec<ChildInfo>>,
 
-    /// Merkle hash of the entity and its descendants.
+    /// Full Merkle hash (entity + descendants). Used to detect any changes in subtree.
     full_hash: [u8; 32],
 
-    /// Merkle hash of the entity's immediate data only. This gets combined with
-    /// the hashes of its children to form the full hash.
+    /// Own Merkle hash (entity data only). Used to determine if entity itself changed
+    /// vs. just its children, enabling bandwidth optimization during sync.
     own_hash: [u8; 32],
 
     /// Metadata about the entity.

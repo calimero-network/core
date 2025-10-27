@@ -95,4 +95,6 @@ pub struct UnsubscribeResponse {
 pub enum Command {
     Close(u16, String),
     Send(Response),
+    Ping(Vec<u8>),
+    Pong(Vec<u8>),
 }
