@@ -36,7 +36,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             .get_context(&self.context_id)
             .map_err(|e| ApplyError::Application(format!("Failed to get context: {}", e)))?
         else {
-            return Err(ApplyError::Application("Context not found".to_string()));
+            return Err(ApplyError::Application("Context not found".to_owned()));
         };
 
         // Execute __calimero_sync_next via WASM to apply actions to storage

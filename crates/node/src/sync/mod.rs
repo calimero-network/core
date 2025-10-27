@@ -1,3 +1,5 @@
+#![allow(clippy::mod_module_files, reason = "sync module has multiple submodules")]
+
 //! Peer synchronization protocols and coordination.
 //!
 //! This module handles all aspects of state synchronization between nodes:

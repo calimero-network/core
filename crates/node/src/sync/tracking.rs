@@ -86,21 +86,6 @@ impl SyncState {
         time::Duration::from_secs(backoff_secs.min(300))
     }
 
-    /// Should we skip this sync due to backoff?
-    #[allow(dead_code)]
-    pub(crate) fn should_skip_due_to_backoff(&self) -> bool {
-        if self.failure_count == 0 {
-            return false;
-        }
-
-        let Some(last_sync) = self.last_sync else {
-            return false; // In progress
-        };
-
-        let elapsed = Instant::now().duration_since(last_sync);
-        elapsed < self.backoff_delay()
-    }
-
     /// Get last sync time
     pub(crate) fn last_sync(&self) -> Option<Instant> {
         self.last_sync
