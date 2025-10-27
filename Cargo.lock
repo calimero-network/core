@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.4"
+version = "0.10.0-rc.5"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
@@ -5478,6 +5478,17 @@ dependencies = [
 
 [[package]]
 name = "kv-store"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "kv-store-init"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",

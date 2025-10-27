@@ -704,6 +704,19 @@ async fn internal_execute(
             context.dag_heads = vec![delta.id];
 
             causal_delta = Some(delta);
+        } else if !is_state_op {
+            // No delta created (empty artifact), but state changed
+            // Use root_hash as dag_head fallback to enable sync
+            // This happens when init() creates state but doesn't generate actions
+            if context.dag_heads.is_empty() {
+                warn!(
+                    context_id = %context.id,
+                    root_hash = ?root_hash,
+                    artifact_empty = outcome.artifact.is_empty(),
+                    "State changed but no delta created - using root_hash as dag_head fallback"
+                );
+                context.dag_heads = vec![root_hash];
+            }
         }
 
         // CRITICAL: Always persist context metadata when root_hash changes
