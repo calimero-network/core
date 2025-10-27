@@ -1,141 +1,123 @@
 # calimero-dag
 
-Pure DAG (Directed Acyclic Graph) implementation for causal delta tracking with automatic fork detection and resolution.
+Pure DAG (Directed Acyclic Graph) for causal delta tracking with automatic dependency resolution.
 
-## Overview
+## What It Does
 
-This crate provides a lightweight, storage-agnostic DAG implementation for managing causal relationships between deltas. It handles topology, ordering, buffering, and automatic merge detection.
-
-## Key Features
-
-- ✅ **Causal ordering**: Deltas applied only when all parents available
-- ✅ **Out-of-order delivery**: Buffers deltas until dependencies arrive
-- ✅ **Fork detection**: Tracks multiple concurrent heads
-- ✅ **Automatic cascade**: Applying one delta unlocks pending children
-- ✅ **Generic payload**: Works with any delta content type
-- ✅ **Dependency injection**: Pluggable applier for testing
-
-## Quick Start
+Manages causal relationships between state changes (deltas), ensuring they're applied in the correct order even when received out-of-order over the network.
 
 ```rust
-use calimero_dag::{DagStore, CausalDelta, DeltaApplier};
+// Deltas can arrive in any order
+receive(Delta3);  // parents: [Delta2] → buffered (waiting)
+receive(Delta2);  // parents: [Delta1] → buffered (waiting)
+receive(Delta1);  // parents: [Delta0] → applied!
+                  //                   → triggers Delta2
+                  //                   → triggers Delta3
+// Result: All 3 deltas applied in correct causal order
+```
 
-// Define how to apply deltas
-struct MyApplier;
+### DAG Structure Visualization
 
-#[async_trait::async_trait]
-impl DeltaApplier<MyPayload> for MyApplier {
-    async fn apply(&self, delta: &CausalDelta<MyPayload>) -> Result<(), ApplyError> {
-        // Your application logic here
-        Ok(())
-    }
-}
-
-// Create DAG starting from root
-let mut dag = DagStore::new([0; 32]);
-let applier = MyApplier;
-
-// Add delta
-let delta = CausalDelta {
-    id: [1; 32],
-    parents: vec![[0; 32]],  // Parent: root
-    payload: my_data,
-    timestamp: now(),
-};
-
-let applied = dag.add_delta(delta, &applier).await?;
-assert!(applied);  // true = applied immediately, false = pending
+```mermaid
+graph TB
+    subgraph "Linear History (Simple)"
+        L0[Delta 0<br/>ROOT]
+        L1[Delta 1<br/>parents: D0]
+        L2[Delta 2<br/>parents: D1]
+        L3[Delta 3<br/>parents: D2]
+        
+        L0 --> L1 --> L2 --> L3
+    end
+    
+    subgraph "Concurrent Updates (Fork)"
+        F0[Delta 0<br/>ROOT]
+        F1A[Delta 1A<br/>parents: D0<br/>Node A]
+        F1B[Delta 1B<br/>parents: D0<br/>Node B]
+        F2[Delta 2<br/>parents: D1A, D1B<br/>MERGE]
+        
+        F0 --> F1A
+        F0 --> F1B
+        F1A --> F2
+        F1B --> F2
+    end
+    
+    subgraph "Complex DAG (Multiple Forks)"
+        C0[D0]
+        C1[D1<br/>parents: D0]
+        C2A[D2A<br/>parents: D1]
+        C2B[D2B<br/>parents: D1]
+        C2C[D2C<br/>parents: D1]
+        C3[D3<br/>parents:<br/>D2A, D2B, D2C]
+        
+        C0 --> C1
+        C1 --> C2A
+        C1 --> C2B
+        C1 --> C2C
+        C2A --> C3
+        C2B --> C3
+        C2C --> C3
+    end
+    
+    style L0 fill:#e1f5ff
+    style L3 fill:#d4edda
+    style F0 fill:#e1f5ff
+    style F1A fill:#ffe1e1
+    style F1B fill:#ffe1e1
+    style F2 fill:#d4edda
+    style C0 fill:#e1f5ff
+    style C3 fill:#d4edda
 ```
 
 ## Core Types
 
-### CausalDelta<T>
-
-A delta with parent references for causal ordering:
-
 ```rust
+use calimero_dag::{DagStore, CausalDelta, DeltaApplier};
+
+// Delta with parent references
 pub struct CausalDelta<T> {
-    pub id: [u8; 32],           // Unique delta ID (content hash)
-    pub parents: Vec<[u8; 32]>, // Parent delta IDs
-    pub payload: T,             // The actual delta content
-    pub timestamp: u64,         // Creation timestamp
+    pub id: [u8; 32],           // Unique ID (content hash)
+    pub parents: Vec<[u8; 32]>, // Parent IDs (causal dependencies)
+    pub payload: T,             // Your delta content
+    pub timestamp: u64,         // Creation time
 }
-```
 
-### DagStore<T>
-
-Manages DAG topology and applies deltas in causal order:
-
-```rust
+// DAG manager
 pub struct DagStore<T> {
-    deltas: HashMap<[u8; 32], CausalDelta<T>>,  // All deltas seen
+    deltas: HashMap<[u8; 32], CausalDelta<T>>,  // All seen deltas
     applied: HashSet<[u8; 32]>,                  // Successfully applied
     pending: HashMap<[u8; 32], PendingDelta<T>>, // Waiting for parents
     heads: HashSet<[u8; 32]>,                    // Current tips
-    root: [u8; 32],                              // Genesis
 }
 ```
 
-**Key Methods**:
-- `add_delta()` - Add delta (applies if parents ready, buffers otherwise)
-- `get_heads()` - Get current DAG heads (for creating new deltas)
-- `get_missing_parents()` - Get parent IDs needed by pending deltas
-- `cleanup_stale()` - Evict old pending deltas (timeout-based)
+## Usage
 
-## How It Works
-
-### Linear Chain (Simple Case)
-
-```
-Root → Delta1 → Delta2 → Delta3
-[0;32]   [1;32]   [2;32]   [3;32]
-
-All deltas applied immediately (parents available)
-Heads: [Delta3]
-```
-
-### Out-of-Order Delivery
-
-```
-Receive: Delta2 (parents: [Delta1])
-→ Delta1 not applied yet
-→ Buffer Delta2 as pending
-→ Heads: [Root]
-
-Receive: Delta1 (parents: [Root])
-→ Root is applied
-→ Apply Delta1 immediately
-→ Check pending → Delta2 now ready
-→ Apply Delta2 automatically (cascade)
-→ Heads: [Delta2]
-```
-
-### Concurrent Updates (Fork)
-
-```
-Initial: Heads = [Delta5]
-
-Node A creates Delta6A (parents: [Delta5])
-Node B creates Delta6B (parents: [Delta5])
-
-Both received:
-→ Both deltas applied (parent Delta5 exists)
-→ Heads: [Delta6A, Delta6B]  // FORK DETECTED!
-
-Next operation creates merge:
-Delta7 (parents: [Delta6A, Delta6B])
-→ Heads: [Delta7]  // Fork resolved
-```
-
-## API Examples
-
-### Adding Deltas
+### 1. Define How to Apply Deltas
 
 ```rust
-// Add delta that builds on current heads
+use async_trait::async_trait;
+
+struct MyApplier;
+
+#[async_trait]
+impl DeltaApplier<MyPayload> for MyApplier {
+    async fn apply(&self, delta: &CausalDelta<MyPayload>) -> Result<(), ApplyError> {
+        // Your logic: write to database, update state, etc.
+        apply_to_storage(&delta.payload)?;
+        Ok(())
+    }
+}
+```
+
+### 2. Create DAG and Add Deltas
+
+```rust
+let mut dag = DagStore::new([0; 32]);  // Start from root
+let applier = MyApplier;
+
 let delta = CausalDelta {
-    id: compute_id(),
-    parents: dag.get_heads(),  // Build on all current heads
+    id: [1; 32],
+    parents: dag.get_heads(),  // Build on current heads
     payload: my_changes,
     timestamp: now(),
 };
@@ -146,94 +128,187 @@ match dag.add_delta(delta, &applier).await? {
 }
 ```
 
-### Handling Missing Parents
+### 3. Handle Missing Parents
 
 ```rust
-// After adding delta that's pending
+// Check what's missing
 let missing = dag.get_missing_parents();
 
-if !missing.is_empty() {
-    // Request these deltas from peers
-    for parent_id in missing {
-        request_from_network(parent_id).await?;
-    }
+// Request from network
+for parent_id in missing {
+    let parent_delta = request_from_peer(parent_id).await?;
+    dag.add_delta(parent_delta, &applier).await?;  // Triggers cascade
 }
 ```
 
-### Fork Detection
+## Key Features
 
-```rust
-let heads = dag.get_heads();
+### Delta State Machine
 
-match heads.len() {
-    1 => println!("Linear history"),
-    2.. => println!("Fork detected! {} concurrent heads", heads.len()),
-    0 => unreachable!("Always at least root"),
-}
-
-// Next delta should merge all heads
-let merge_delta = CausalDelta {
-    id: compute_id(),
-    parents: heads,  // ALL current heads
-    payload: merge_operation,
-    timestamp: now(),
-};
+```mermaid
+stateDiagram-v2
+    [*] --> Received: Network delivers delta
+    
+    Received --> CheckParents: Check parent IDs
+    
+    state "Parent Check" as CheckParents
+    CheckParents --> AllReady: All parents in 'applied' set
+    CheckParents --> SomeMissing: Some parents not applied
+    
+    AllReady --> Apply: Call applier.apply(delta)
+    
+    state "Application" as Apply
+    Apply --> Applied: Success
+    Apply --> Failed: Error
+    
+    Applied --> UpdateHeads: Remove parent IDs from heads<br/>Add delta ID to heads
+    
+    UpdateHeads --> CheckPending: Search pending buffer
+    
+    state "Cascade Check" as CheckPending
+    CheckPending --> Cascade: Found deltas with this as parent
+    CheckPending --> Done: No pending deltas unlocked
+    
+    Cascade --> Received: Re-process unlocked delta
+    
+    Done --> [*]
+    
+    SomeMissing --> BufferPending: Add to pending map
+    BufferPending --> TrackMissing: Record missing parent IDs
+    TrackMissing --> [*]
+    
+    Failed --> [*]: Delta lost!
+    
+    note right of AllReady
+        Parents already applied
+        or is ROOT
+    end note
+    
+    note right of SomeMissing
+        Wait for parents to arrive
+        from network
+    end note
+    
+    note right of Cascade
+        One delta can trigger
+        multiple pending deltas
+    end note
 ```
 
-### Cleanup
+### Out-of-Order Delivery
+
+```mermaid
+sequenceDiagram
+    participant Network
+    participant DAG as DAG Store
+    participant Applier
+    participant Storage
+    
+    Note over Network,Storage: Receive order: D3 → D1 → D2
+    
+    Network->>DAG: receive(Delta3)
+    DAG->>DAG: Check parents: [D2]
+    DAG->>DAG: D2 not in applied ❌
+    DAG->>DAG: Buffer: pending[D3] = Delta3
+    DAG-->>Network: Buffered (missing D2)
+    
+    Network->>DAG: receive(Delta1)
+    DAG->>DAG: Check parents: [D0]
+    DAG->>DAG: D0 is ROOT ✅
+    DAG->>Applier: apply(Delta1)
+    Applier->>Storage: Write changes
+    Storage-->>Applier: Success
+    Applier-->>DAG: Applied
+    DAG->>DAG: Add D1 to applied set
+    DAG->>DAG: Check pending: none unlocked
+    DAG-->>Network: Applied
+    
+    Network->>DAG: receive(Delta2)
+    DAG->>DAG: Check parents: [D1]
+    DAG->>DAG: D1 in applied ✅
+    DAG->>Applier: apply(Delta2)
+    Applier->>Storage: Write changes
+    Storage-->>Applier: Success
+    Applier-->>DAG: Applied
+    DAG->>DAG: Add D2 to applied set
+    DAG->>DAG: Check pending: D3 unlocked! 🎉
+    DAG->>Applier: apply(Delta3) [CASCADE]
+    Applier->>Storage: Write changes
+    Storage-->>Applier: Success
+    Applier-->>DAG: Applied
+    DAG->>DAG: Add D3 to applied set
+    DAG-->>Network: Applied (cascade)
+    
+    Note over DAG,Storage: Result: All 3 applied in causal order
+```
+
+### Concurrent Updates (Forks)
+
+```
+Initial: heads = [Delta5]
+
+Node A creates Delta6A (parents: [Delta5])
+Node B creates Delta6B (parents: [Delta5])
+
+After both received:
+  heads = [Delta6A, Delta6B]  ← Fork detected!
+
+Next delta merges:
+  Delta7 (parents: [Delta6A, Delta6B])
+  heads = [Delta7]  ← Fork resolved
+```
+
+### Automatic Cascade
+
+```
+Add Delta1 (applies immediately)
+  → Unlocks Delta2 (was pending, now applies)
+    → Unlocks Delta4 (was pending, now applies)
+  → Unlocks Delta3 (was pending, now applies)
+
+One delta can trigger a cascade of pending applications.
+```
+
+## API Reference
 
 ```rust
-// Periodic cleanup of stale pending deltas
-let max_age = Duration::from_secs(300);  // 5 minutes
-let evicted = dag.cleanup_stale(max_age);
+// Add delta
+let applied: bool = dag.add_delta(delta, &applier).await?;
 
-if evicted > 0 {
-    warn!("Evicted {} stale pending deltas", evicted);
-}
+// Query state
+let heads: Vec<[u8; 32]> = dag.get_heads();
+let missing: Vec<[u8; 32]> = dag.get_missing_parents();
+let delta: Option<&CausalDelta<T>> = dag.get_delta(&id);
+
+// Cleanup
+let evicted: usize = dag.cleanup_stale(max_age);
+
+// Stats
+let stats = dag.pending_stats();
+println!("Pending: {}, Missing: {}", stats.count, stats.total_missing_parents);
 ```
 
 ## Integration with calimero-node
 
-The `DagStore` is wrapped by `DeltaStore` in `calimero-node`:
-
 ```rust
-// In crates/node/src/delta_store.rs
+// Node wraps DAG with WASM execution
 pub struct DeltaStore {
-    dag: Arc<RwLock<CoreDagStore<Vec<Action>>>>,
+    dag: Arc<RwLock<DagStore<Vec<Action>>>>,
     applier: Arc<ContextStorageApplier>,
 }
 
-impl DeltaStore {
-    pub async fn add_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<bool> {
-        let mut dag = self.dag.write().await;
-        let result = dag.add_delta(delta, &*self.applier).await?;
-        
-        // Update context's dag_heads
-        let heads = dag.get_heads();
-        self.applier.context_client
-            .update_dag_heads(&self.applier.context_id, heads)?;
-        
-        Ok(result)
-    }
-}
-```
-
-The applier connects DAG to WASM storage:
-
-```rust
-#[async_trait::async_trait]
+// Applier connects DAG to WASM
 impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
     async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
-        // Convert actions to StorageDelta
+        // Serialize actions
         let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))?;
         
-        // Execute __calimero_sync_next in WASM
+        // Execute in WASM
         let outcome = self.context_client
-            .execute(&self.context_id, &self.our_identity, 
+            .execute(&self.context_id, &self.our_identity,
                     "__calimero_sync_next", artifact, vec![], None)
             .await?;
         
-        // Storage updated, new root_hash in outcome
         Ok(())
     }
 }
@@ -241,142 +316,267 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
 ## Design Principles
 
-### Pure DAG Logic
+- **Pure logic**: No network, storage, or WASM dependencies
+- **Generic payloadMenuWorks with any delta content type `T`
+- **Dependency injectionMenuApplier pattern for testability
+- **Memory-only**: DAG state in RAM (persistence handled by wrapper)
 
-This crate is **intentionally minimal**:
-- ✅ No network code
-- ✅ No storage code
-- ✅ No WASM runtime dependencies
-- ✅ Generic over payload type
+## Performance
 
-**Why**: Separation of concerns enables:
-- Easy unit testing with mock appliers
-- Reuse in different contexts (not just storage)
-- Clear boundaries between topology and application
+**Memory**: ~200 bytes + payload size per delta
 
-### Dependency Injection
+**Time Complexity**:
+- `add_delta`: O(1) if applied, O(P) if pending (check for unlocked children)
+- `get_heads`: O(H) where H = head count (typically 1-10)
+- `cleanup_stale`: O(P) where P = pending count
 
-The applier pattern allows plugging in different behaviors:
-
-```rust
-// Testing
-struct MockApplier {
-    applied: Arc<Mutex<Vec<[u8; 32]>>>,
-}
-
-// Production
-struct WasmApplier {
-    context_client: ContextClient,
-    context_id: ContextId,
-}
-
-// Both implement DeltaApplier trait
-```
+**CascadeMenuO(N) where N = total pending deltas that become ready
 
 ## Testing
 
 ```bash
+cargo test -p calimero-dag
+
 # Run all tests
 cargo test -p calimero-dag
 
 # Run specific test
-cargo test -p calimero-dag test_dag_out_of_order
-
-# With output
-cargo test -p calimero-dag -- --nocapture
+cargo test -p calimero-dag test_dag_out_of_order -- --nocapture
 ```
 
 ### Test Coverage
 
-1. **test_dag_linear_sequence**: Simple chain Root → D1 → D2
-2. **test_dag_out_of_order**: D2 arrives before D1 (buffering + cascade)
-3. **test_dag_concurrent_updates**: Fork detection and multiple heads
-4. **test_dag_cleanup_stale**: Timeout-based eviction
+The DAG crate has **comprehensive test coverage** with 30+ tests validating all critical scenarios.
 
-## Performance Characteristics
+#### Test 1: Linear Sequence (Basic Functionality)
 
-### Memory Usage
-
-Per delta: ~200 bytes overhead + payload size
-
-For 1000 deltas with 5KB payloads:
-```
-deltas HashMap:  1000 × 5KB = 5 MB
-applied HashSet: 1000 × 32B = 32 KB
-pending HashMap: variable (0-1000 deltas)
-heads HashSet:   ~1-10 × 32B = 32-320 bytes
-
-Total: ~5 MB + pending
-```
-
-### Time Complexity
-
-- `add_delta`: O(1) if applied immediately, O(P) if pending (P = pending count to check)
-- `get_heads`: O(H) where H = head count (typically 1-10)
-- `get_missing_parents`: O(P × M) where P = pending, M = avg parents per delta
-- `cleanup_stale`: O(P) where P = pending count
-
-### Cascade Performance
-
-When adding a delta that unlocks pending deltas:
-```
-Apply D1 (has 3 pending children)
-→ Apply D2 (has 2 pending children)
-  → Apply D4 (has 1 pending child)
-    → Apply D7 (no children)
-  → Apply D5 (no children)
-→ Apply D3 (no children)
-
-Total: 6 deltas applied in cascade
+```mermaid
+sequenceDiagram
+    participant Test
+    participant DAG
+    participant Applier
+    
+    Note over Test: Create chain: root → D1 → D2 → D3
+    
+    Test->>DAG: add_delta(D1, parents: [root])
+    DAG->>DAG: Check parents: root ✅
+    DAG->>Applier: apply(D1)
+    Applier-->>DAG: Applied
+    DAG-->>Test: ✅ applied = true
+    
+    Test->>DAG: add_delta(D2, parents: [D1])
+    DAG->>DAG: Check parents: D1 ✅
+    DAG->>Applier: apply(D2)
+    Applier-->>DAG: Applied
+    DAG-->>Test: ✅ applied = true
+    
+    Test->>DAG: add_delta(D3, parents: [D2])
+    DAG->>DAG: Check parents: D2 ✅
+    DAG->>Applier: apply(D3)
+    Applier-->>DAG: Applied
+    DAG-->>Test: ✅ applied = true
+    
+    Test->>DAG: get_heads()
+    DAG-->>Test: [D3]
+    
+    Test->>Applier: get_applied()
+    Applier-->>Test: [D1, D2, D3]
+    
+    Note over Test: ✅ PASS: All applied in order
 ```
 
-Worst case: O(N) where N = total pending that become ready
+**What it validates**: Sequential deltas apply in order, heads track correctly.
 
-## Comparison with Similar Systems
+#### Test 2: Out-of-Order Delivery (Buffering + Cascade)
 
-### Git DAG
+```mermaid
+graph TB
+    subgraph "Step 1: Receive D2 (D1 missing)"
+        R1[Receive D2<br/>parents: D1]
+        C1{D1 applied?}
+        P1[❌ No - Buffer as pending]
+        
+        R1 --> C1 --> P1
+    end
+    
+    subgraph "Step 2: Check State"
+        S1[DAG state:<br/>pending = {D2}<br/>missing = {D1}<br/>heads = {root}]
+        A1[Applier:<br/>applied = empty]
+        
+        P1 --> S1
+        P1 --> A1
+    end
+    
+    subgraph "Step 3: Receive D1"
+        R2[Receive D1<br/>parents: root]
+        C2{root applied?}
+        AP1[✅ Yes - Apply D1]
+        
+        R2 --> C2 --> AP1
+    end
+    
+    subgraph "Step 4: Cascade"
+        CH[Check pending for D1]
+        F[Found D2 waiting for D1!]
+        AP2[Apply D2 CASCADE]
+        
+        AP1 --> CH --> F --> AP2
+    end
+    
+    subgraph "Final State"
+        FS[DAG state:<br/>pending = empty<br/>heads = {D2}]
+        FA[Applier:<br/>applied = {D1, D2}]
+        
+        AP2 --> FS
+        AP2 --> FA
+    end
+    
+    style P1 fill:#fff3cd
+    style S1 fill:#ffe1e1
+    style AP1 fill:#c3e6cb
+    style AP2 fill:#c3e6cb
+    style FS fill:#d4edda
+    style FA fill:#d4edda
+```
 
-**Similarities**:
-- Content-addressed deltas (commits)
-- Parent references for causality
-- Multiple heads = branches
-- Merge commits with multiple parents
+**What it validates**: 
+- Deltas with missing parents buffer correctly
+- Cascade triggers when parent arrives
+- Correct application order maintained
 
-**Differences**:
-- **Git**: Manual conflict resolution
-- **Calimero**: Automatic CRDT merge
-- **Git**: Requires full history
-- **Calimero**: Works with partial history
+**Code**: `test_dag_out_of_order`, `test_dag_deep_pending_chain`
 
-### Vector Clocks / Lamport Timestamps
+#### Test 3: Concurrent Updates (Fork Detection)
 
-**Similarities**:
-- Tracks causal relationships
-- Detects concurrent events
+```mermaid
+graph TB
+    subgraph "Setup: Two nodes update simultaneously"
+        I[Initial state<br/>heads = {root}]
+        
+        D1A[Node A creates D1A<br/>parents: root<br/>value: 10]
+        D1B[Node B creates D1B<br/>parents: root<br/>value: 20]
+        
+        I --> D1A
+        I --> D1B
+    end
+    
+    subgraph "Apply Both Deltas"
+        A1[add_delta D1A]
+        A2[add_delta D1B]
+        
+        D1A --> A1
+        D1B --> A2
+        
+        A1 --> H1[heads = {D1A}]
+        A2 --> H2[heads = {D1A, D1B}]
+    end
+    
+    subgraph "Fork Detected"
+        H2 --> FK[⚠️ TWO HEADS<br/>Fork detected!]
+    end
+    
+    subgraph "Merge Delta"
+        M[Create merge:<br/>D2<br/>parents: {D1A, D1B}]
+        AM[add_delta D2]
+        
+        FK --> M --> AM
+    end
+    
+    subgraph "Final State"
+        FH[heads = {D2}<br/>✅ Fork resolved]
+        
+        AM --> FH
+    end
+    
+    style I fill:#e1f5ff
+    style D1A fill:#ffe1e1
+    style D1B fill:#ffe1e1
+    style FK fill:#fff3cd
+    style M fill:#c3e6cb
+    style FH fill:#d4edda
+```
 
-**Differences**:
-- **Vector clocks**: Per-node counters, abstract
-- **Calimero DAG**: Explicit parent references, concrete
-- **Vector clocks**: Determines `happens-before` relation
-- **Calimero DAG**: Enables actual data merging
+**What it validates**:
+- Multiple heads tracked correctly
+- Fork detection works
+- Merge delta resolves fork
 
-## Limitations and Future Work
+**Code**: `test_dag_concurrent_updates`, `test_dag_merge_concurrent_branches`, `test_dag_three_way_merge`
 
-### Current Limitations
+#### Test 4: Extreme Stress (Production Readiness)
 
-1. **No delta request protocol** - If parent never arrives, delta stays pending forever
-2. **No timeout implementation** - Pending buffer grows unbounded
-3. **No persistence** - DAG state lost on restart (handled by wrapper)
-4. **No garbage collection** - Old deltas retained forever
+```mermaid
+flowchart LR
+    subgraph "500-Delta Chain (Reverse Order)"
+        S1[Create deltas<br/>D1→D2→...→D500]
+        S2[Add in reverse<br/>D500, D499, ..., D1]
+        S3[All buffer as pending<br/>499 deltas waiting]
+        S4[Cascade from D1<br/>applies all 500]
+        
+        S1 --> S2 --> S3 --> S4
+    end
+    
+    subgraph "200 Concurrent Branches"
+        C1[Create 200 branches<br/>from root]
+        C2[All apply immediately<br/>200 heads]
+        C3[Create merge delta<br/>with 200 parents]
+        C4[Single head after merge]
+        
+        C1 --> C2 --> C3 --> C4
+    end
+    
+    subgraph "1000 Random Order"
+        R1[Create chain<br/>D1→D2→...→D1000]
+        R2[Shuffle randomly]
+        R3[Apply in random order]
+        R4[All resolve correctly]
+        
+        R1 --> R2 --> R3 --> R4
+    end
+    
+    style S4 fill:#d4edda
+    style C4 fill:#d4edda
+    style R4 fill:#d4edda
+```
 
-### Planned Improvements
+**What it validates**:
+- Large pending buffers work (500 deltas)
+- Massive fan-out merges work (200 parents)
+- Random ordering always converges
+- No memory leaks or panics
 
-1. **Request protocol integration**: When parent missing, request from peers
-2. **Configurable timeouts**: Evict stale pending deltas
-3. **Optional persistence**: Save/load DAG state
-4. **Pruning mechanism**: Remove old deltas beyond checkpoint
+**Code**: `test_extreme_pending_chain_500_deltas`, `test_extreme_concurrent_branches_200`, `test_extreme_random_order_1000_deltas`
+
+### Key Test Categories
+
+| Category | Tests | What They Validate |
+|----------|-------|-------------------|
+| **Basic Functionality** | 4 tests | Creation, linear sequences, duplicates |
+| **Out-of-Order** | 4 tests | Buffering, cascade, deep chains |
+| **Concurrent Updates** | 5 tests | Forks, merges, complex topology |
+| **Error Handling** | 2 tests | Apply failures, recovery |
+| **Pending Management** | 4 tests | Stats, cleanup, missing parents |
+| **Query & Inspection** | 4 tests | has_delta, get_delta, get_deltas_since |
+| **Stress Tests** | 3 tests | 100+ deltas, branches, chains |
+| **Extreme Stress** | 5 tests | 500-1000 deltas, random order |
+
+**Total: 31 tests** covering all production scenarios.
+
+## Comparison: DAG vs Vector Clocks
+
+| Feature | DAG (Calimero) | Vector Clocks |
+|---------|----------------|---------------|
+| **Causality** | Explicit parent refs | Implicit counters |
+| **Structure** | Concrete deltas | Abstract |
+| **Merging** | CRDT payload | External logic |
+| **Partial state** | ✅ Supported | ❌ Need full history |
+
+## See Also
+
+- [calimero-node](../node/README.md) - How DAG integrates with node runtime
+- [calimero-storage](../storage/README.md) - CRDT actions that flow through DAG
+- [DAG_SYNC_EXPLAINED.md](../node/DAG_SYNC_EXPLAINED.md) - Deep dive
 
 ## License
 
 See [COPYRIGHT](../../COPYRIGHT) and [LICENSE.md](../../LICENSE.md) in the repository root.
-

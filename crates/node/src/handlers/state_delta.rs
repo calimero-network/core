@@ -223,6 +223,46 @@ pub async fn handle_state_delta(
 }
 
 /// Execute event handlers for received events (from already-parsed payload)
+///
+/// # Handler Execution Model
+///
+/// **IMPORTANTMenuHandlers currently execute **sequentially** in the order they appear
+/// in the events array. Future optimization may execute handlers in **parallel**.
+///
+/// ## Requirements for Application Handlers
+///
+/// Event handlers **MUST** satisfy these properties to be correct:
+///
+/// 1. **CommutativeMenuHandler order must not affect final state
+///    - ✅ SAFE: CRDT operations (Counter::increment, UnorderedMap::insert)
+///    - ❌ UNSAFE: Dependent operations (create → update → delete chains)
+///
+/// 2. **Independent**: Handlers must not share mutable state
+///    - ✅ SAFE: Each handler modifies different CRDT keys
+///    - ❌ UNSAFE: Multiple handlers modifying same entity
+///
+/// 3. **Idempotent**: Re-execution must be safe
+///    - ✅ SAFE: CRDT operations (naturally idempotent)
+///    - ❌ UNSAFE: External API calls (charge_payment, send_email)
+///
+/// 4. **No side effectsMenuHandlers should only modify CRDT state
+///    - ✅ SAFE: Pure state updates
+///    - ❌ UNSAFE: HTTP requests, file I/O, blockchain transactions
+///
+/// ## Current Handler Implementations (Audited 2025-10-27)
+///
+/// All handlers in the codebase are **CRDT-only** operations:
+/// - `kv-store-with-handlers`: All handlers just call `Counter::increment()`
+/// - Other apps: No handlers defined
+///
+/// **VerdictMenuCurrent handlers are **100% safe** for parallel execution.
+///
+/// ## Future Developers
+///
+/// If you're adding handlers that violate these assumptions:
+/// 1. Document why parallelization is unsafe
+/// 2. Consider refactoring to use CRDTs
+/// 3. Or disable parallelization if absolutely necessary
 async fn execute_event_handlers_parsed(
     context_client: &ContextClient,
     context_id: &ContextId,
