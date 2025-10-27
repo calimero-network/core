@@ -5488,6 +5488,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kv-store-init"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "kv-store-with-handlers"
 version = "0.0.0"
 dependencies = [

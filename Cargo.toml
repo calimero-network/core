@@ -15,6 +15,7 @@ exclude = [
     "./apps/abi_conformance",
     "./apps/blobs",
     "./apps/kv-store",
+    "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
     "./apps/private_data",
     "./apps/xcall-example",
@@ -63,6 +64,7 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/kv-store",
+    "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
     "./apps/private_data",
     "./apps/blobs",
