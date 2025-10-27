@@ -80,11 +80,11 @@ flowchart TB
     
     G6B -.->|Eventually| P6
     
-    style G1 fill:#e1f5ff
-    style G6A fill:#d4edda
-    style G6B fill:#fff3cd
-    style P1 fill:#ffe1e1
-    style P8 fill:#d4edda
+    style G1 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style G6A fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style G6B fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style P1 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style P8 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **Why both paths?**
@@ -195,13 +195,13 @@ flowchart TD
     NewDelta --> EmitWS
     EmitWS --> Done([Complete])
     
-    style Start fill:#e1f5ff
-    style Applied fill:#fff3cd
-    style AuthorCheck fill:#fff3cd
-    style Skip fill:#ffe1e1
-    style ExecuteHandler fill:#d4edda
-    style Buffer fill:#fff3cd
-    style Done fill:#d4edda
+    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style Applied fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style AuthorCheck fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Skip fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style ExecuteHandler fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Buffer fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Done fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **Critical Rules**:
@@ -289,7 +289,7 @@ let applied = dag.add_delta(delta, &applier).await?;
 if !applied {
     // Delta pending - request missing parents
     let missing = dag.get_missing_parents();
-    for parent_id in missing {
+            for parent_id in missing {
         request_from_network(parent_id).await?;
     }
 }
@@ -500,10 +500,10 @@ graph TB
         T1 --> Q1 --> C2 --> S1 --> S2 --> S3
     end
     
-    style N1 fill:#e1f5ff
-    style N2 fill:#e1f5ff
-    style V1 fill:#d4edda
-    style S3 fill:#d4edda
+    style N1 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style N2 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style V1 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style S3 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **What it validates**:

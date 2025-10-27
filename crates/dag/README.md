@@ -58,14 +58,14 @@ graph TB
         C2C --> C3
     end
     
-    style L0 fill:#e1f5ff
-    style L3 fill:#d4edda
-    style F0 fill:#e1f5ff
-    style F1A fill:#ffe1e1
-    style F1B fill:#ffe1e1
-    style F2 fill:#d4edda
-    style C0 fill:#e1f5ff
-    style C3 fill:#d4edda
+    style L0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style L3 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style F0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style F1A fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style F1B fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style F2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style C0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style C3 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 ## Core Types
@@ -135,7 +135,7 @@ match dag.add_delta(delta, &applier).await? {
 let missing = dag.get_missing_parents();
 
 // Request from network
-for parent_id in missing {
+    for parent_id in missing {
     let parent_delta = request_from_peer(parent_id).await?;
     dag.add_delta(parent_delta, &applier).await?;  // Triggers cascade
 }
@@ -305,7 +305,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         
         // Execute in WASM
         let outcome = self.context_client
-            .execute(&self.context_id, &self.our_identity,
+            .execute(&self.context_id, &self.our_identity, 
                     "__calimero_sync_next", artifact, vec![], None)
             .await?;
         
@@ -431,12 +431,12 @@ graph TB
         AP2 --> FA
     end
     
-    style P1 fill:#fff3cd
-    style S1 fill:#ffe1e1
-    style AP1 fill:#c3e6cb
-    style AP2 fill:#c3e6cb
-    style FS fill:#d4edda
-    style FA fill:#d4edda
+    style P1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style S1 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style AP1 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style AP2 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style FS fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style FA fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **What it validates**: 
@@ -488,12 +488,12 @@ graph TB
         AM --> FH
     end
     
-    style I fill:#e1f5ff
-    style D1A fill:#ffe1e1
-    style D1B fill:#ffe1e1
-    style FK fill:#fff3cd
-    style M fill:#c3e6cb
-    style FH fill:#d4edda
+    style I fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style D1A fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style D1B fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style FK fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style M fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style FH fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **What it validates**:
@@ -534,9 +534,9 @@ flowchart LR
         R1 --> R2 --> R3 --> R4
     end
     
-    style S4 fill:#d4edda
-    style C4 fill:#d4edda
-    style R4 fill:#d4edda
+    style S4 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style C4 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style R4 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **What it validates**:

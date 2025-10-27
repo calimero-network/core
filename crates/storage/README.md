@@ -182,11 +182,11 @@ let total = counter.value()?;
 ```mermaid
 graph TB
     subgraph "Entity Structure"
-        E[Entity<br/>━━━━━━━━━━━]
-        OH[own_hash<br/>SHA256 data only]
-        FH[full_hash<br/>SHA256 own + children]
-        Data[User Data<br/>Borsh serialized]
-        Children[Child IDs<br/>collection → Set ID]
+        E["Entity"]
+        OH["own_hash<br/>SHA256 data only"]
+        FH["full_hash<br/>SHA256 own + children"]
+        Data["User Data<br/>Borsh serialized"]
+        Children["Child IDs<br/>collection to Set ID"]
         
         E --> OH
         E --> FH
@@ -220,12 +220,12 @@ graph TB
     CollB --> Item3
     end
     
-    style E fill:#e1f5ff
-    style OH fill:#ffe1e1
-    style FH fill:#fff3cd
-    style Root fill:#e1f5ff
-    style CollA fill:#c3e6cb
-    style CollB fill:#c3e6cb
+    style E fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style OH fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style FH fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Root fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style CollA fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style CollB fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **Why two hashes?**
@@ -249,12 +249,12 @@ flowchart TD
     CompareChildren --> Done
     Skip --> Done
     
-    style Start fill:#e1f5ff
-    style CompFull fill:#fff3cd
-    style CompOwn fill:#fff3cd
-    style Skip fill:#d4edda
-    style Transfer fill:#ffe1e1
-    style Recurse fill:#c3e6cb
+    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style CompFull fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style CompOwn fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Skip fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Transfer fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style Recurse fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **Example optimization**:
@@ -348,12 +348,12 @@ flowchart TB
     CreateDelta --> Clear[Clear DELTA_CONTEXT]
     Clear --> Return([Return delta])
     
-    style Start fill:#e1f5ff
-    style GenAction fill:#fff3cd
-    style ActionAdd fill:#ffe1e1
-    style ActionUpdate fill:#c3e6cb
-    style CreateDelta fill:#d4edda
-    style Return fill:#d4edda
+    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style GenAction fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style ActionAdd fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style ActionUpdate fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style CreateDelta fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Return fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 ### Creating a Delta
@@ -670,10 +670,10 @@ flowchart TB
         F1 --> F2
     end
     
-    style I fill:#e1f5ff
-    style A4 fill:#ffe1e1
-    style B4 fill:#ffe1e1
-    style F2 fill:#d4edda
+    style I fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style A4 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style B4 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style F2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **What it validates**:
@@ -733,10 +733,10 @@ graph TB
     
     C10 --> R
     
-    style AC2 fill:#ffe1e1
-    style BC2 fill:#fff3cd
-    style C10 fill:#c3e6cb
-    style R fill:#d4edda
+    style AC2 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style BC2 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style C10 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style R fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **What it validates**:

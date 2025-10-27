@@ -178,10 +178,10 @@ flowchart TB
     
     LWW --> Converge([Both nodes:<br/>key = 'value_B'])
     
-    style Fork fill:#ffe1e1
-    style Merge fill:#fff3cd
-    style LWW fill:#c3e6cb
-    style Converge fill:#d4edda
+    style Fork fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style Merge fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style LWW fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style Converge fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 ### G-Counter (Distributed Counter)
@@ -217,10 +217,10 @@ flowchart LR
     B3 --> S1
     S1 --> S2
     
-    style I fill:#e1f5ff
-    style A3 fill:#ffe1e1
-    style B3 fill:#ffe1e1
-    style S2 fill:#d4edda
+    style I fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style A3 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style B3 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style S2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 ### Events and Handlers
@@ -282,20 +282,20 @@ flowchart TD
     Fix3 --> Start
     Fix4 --> Start
     
-    style Start fill:#e1f5ff
-    style Q1 fill:#fff3cd
-    style Q2 fill:#fff3cd
-    style Q3 fill:#fff3cd
-    style Q4 fill:#fff3cd
-    style Safe fill:#d4edda
-    style Unsafe1 fill:#f8d7da
-    style Unsafe2 fill:#f8d7da
-    style Unsafe3 fill:#f8d7da
-    style Unsafe4 fill:#f8d7da
-    style Fix1 fill:#c3e6cb
-    style Fix2 fill:#c3e6cb
-    style Fix3 fill:#c3e6cb
-    style Fix4 fill:#c3e6cb
+    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style Q1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Q2 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Q3 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Q4 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Safe fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Unsafe1 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
+    style Unsafe2 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
+    style Unsafe3 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
+    style Unsafe4 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
+    style Fix1 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style Fix2 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style Fix3 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style Fix4 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
 ```
 
 Your handlers **MUST** be:
@@ -591,14 +591,14 @@ flowchart TB
     
     Cleanup --> Success([✅ Test Passed])
     
-    style Start fill:#e1f5ff
-    style Success fill:#d4edda
-    style Fail fill:#f8d7da
-    style Wait1 fill:#fff3cd
-    style Wait2 fill:#fff3cd
-    style Verify1 fill:#fff3cd
-    style Verify2 fill:#fff3cd
-    style Verify3 fill:#fff3cd
+    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style Success fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Fail fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
+    style Wait1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Wait2 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Verify1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Verify2 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Verify3 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **E2E Test Configuration**:

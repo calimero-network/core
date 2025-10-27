@@ -240,7 +240,7 @@ graph TB
     end
     
     subgraph "DAG Fork Detection"
-        F[After broadcast<br/>All nodes have:<br/>D1A, D1B, D1C<br/>━━━━━━━━━━━<br/>DAG heads: [D1A, D1B, D1C]<br/>⚠️ FORK DETECTED]
+        F["After broadcast<br/>All nodes have:<br/>D1A, D1B, D1C<br/>----------<br/>DAG heads: D1A, D1B, D1C<br/>FORK DETECTED!"]
     end
     
     C1A --> F
@@ -248,31 +248,31 @@ graph TB
     C1C --> F
     
     subgraph "CRDT Merge"
-        M1[CRDT storage:<br/>UnorderedSet union<br/>━━━━━━━━━━━<br/>todos = {<br/>  'Buy milk',<br/>  'Read book',<br/>  'Call mom'<br/>}]
+        M1["CRDT storage:<br/>UnorderedSet union<br/>----------<br/>todos = {<br/>Buy milk,<br/>Read book,<br/>Call mom<br/>}"]
     end
     
     F --> M1
     
     subgraph "Next Operation Creates Merge Delta"
-        M2[Any node's next op<br/>Create D2<br/>parents: [D1A, D1B, D1C]<br/>━━━━━━━━━━━<br/>DAG head: [D2]<br/>✅ FORK RESOLVED]
+        M2["Any node next op<br/>Create D2<br/>parents: D1A, D1B, D1C<br/>----------<br/>DAG head: D2<br/>FORK RESOLVED"]
     end
     
     M1 --> M2
     
     subgraph "Final Convergence"
-        FIN[All nodes converged:<br/>━━━━━━━━━━━<br/>todos = {<br/>  'Buy milk',<br/>  'Read book',<br/>  'Call mom'<br/>}<br/>DAG head: [D2]<br/>✅ CONSISTENT]
+        FIN["All nodes converged<br/>----------<br/>todos = {<br/>Buy milk,<br/>Read book,<br/>Call mom<br/>}<br/>DAG head: D2<br/>CONSISTENT"]
     end
     
     M2 --> FIN
     
-    style C0 fill:#e1f5ff
-    style C1A fill:#ffe1e1
-    style C1B fill:#ffe1e1
-    style C1C fill:#ffe1e1
-    style F fill:#fff3cd
-    style M1 fill:#c3e6cb
-    style M2 fill:#d4edda
-    style FIN fill:#d4edda
+    style C0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style C1A fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style C1B fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style C1C fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
+    style F fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style M1 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style M2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style FIN fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
 ```
 
 **Key Insight**: DAG tracks causality, CRDTs resolve conflicts automatically.
