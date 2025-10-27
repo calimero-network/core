@@ -21,10 +21,11 @@ use calimero_server_primitives::admin::{
     GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
-    InstallDevApplicationRequest, InviteToContextRequest, InviteToContextResponse,
-    JoinContextRequest, JoinContextResponse, ListAliasesResponse, ListApplicationsResponse,
-    LookupAliasResponse, RevokePermissionResponse, SyncContextResponse,
-    UninstallApplicationResponse, UpdateContextApplicationRequest,
+    InstallDevApplicationRequest, InviteToContextOpenInvitationRequest,
+    InviteToContextOpenInvitationResponse, InviteToContextRequest, InviteToContextResponse,
+    JoinContextByOpenInvitationRequest, JoinContextRequest, JoinContextResponse,
+    ListAliasesResponse, ListApplicationsResponse, LookupAliasResponse, RevokePermissionResponse,
+    SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
@@ -314,6 +315,17 @@ where
         Ok(response)
     }
 
+    pub async fn invite_to_context_by_open_invitation(
+        &self,
+        request: InviteToContextOpenInvitationRequest,
+    ) -> Result<InviteToContextOpenInvitationResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/invite_by_open_invitation", request)
+            .await?;
+        Ok(response)
+    }
+
     pub async fn update_context_application(
         &self,
         context_id: &ContextId,
@@ -355,6 +367,36 @@ where
                 "admin-api/contexts/{}/proposals/{}/approvals/users",
                 context_id, proposal_id
             ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn create_and_approve_proposal(
+        &self,
+        context_id: &ContextId,
+        request: calimero_server_primitives::admin::CreateAndApproveProposalRequest,
+    ) -> Result<calimero_server_primitives::admin::CreateAndApproveProposalResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/contexts/{context_id}/proposals/create-and-approve"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn approve_proposal(
+        &self,
+        context_id: &ContextId,
+        request: calimero_server_primitives::admin::ApproveProposalRequest,
+    ) -> Result<calimero_server_primitives::admin::ApproveProposalResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/contexts/{context_id}/proposals/approve"),
+                request,
+            )
             .await?;
         Ok(response)
     }
@@ -404,6 +446,17 @@ where
         let response = self
             .connection
             .post("admin-api/contexts/join", request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn join_context_by_open_invitation(
+        &self,
+        request: JoinContextByOpenInvitationRequest,
+    ) -> Result<JoinContextResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/join_by_open_invitation", request)
             .await?;
         Ok(response)
     }

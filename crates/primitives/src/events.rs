@@ -19,7 +19,7 @@ pub struct ContextEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "PascalCase")]
-#[expect(variant_size_differences, reason = "fine for now")]
+#[allow(variant_size_differences, reason = "fine for now")]
 pub enum ContextEventPayload {
     StateMutation(StateMutationPayload),
 }
@@ -45,4 +45,13 @@ impl StateMutationPayload {
 pub struct ExecutionEvent {
     pub kind: String,
     pub data: Vec<u8>,
+    pub handler: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionXCall {
+    pub target_context_id: ContextId,
+    pub function: String,
+    pub params: Vec<u8>,
 }

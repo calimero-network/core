@@ -1,260 +1,39 @@
-use std::num::NonZeroUsize;
-use std::time::Duration;
+//! Network event handlers
+//!
+//! **SRP Applied**: Each event type is handled in its own focused module:
+//! - `state_delta.rs` - BroadcastMessage::StateDelta processing
+//! - `stream_opened.rs` - Stream routing (blob vs sync)
+//! - `blob_protocol.rs` - Blob protocol implementation
+//! - This file - Simple event handlers (subscriptions, blobs, listening)
 
-use actix::{AsyncContext, Handler, Message, WrapFuture};
-use calimero_context_primitives::client::ContextClient;
-use calimero_crypto::{Nonce, SharedKey};
+use crate::handlers::{state_delta, stream_opened};
+
+use actix::{AsyncContext, Handler, WrapFuture};
 use calimero_network_primitives::messages::NetworkEvent;
-use calimero_network_primitives::stream::{Message as StreamMessage, Stream};
-use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
-use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
-};
-use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
-use eyre::bail;
-use futures_util::{SinkExt, StreamExt};
-use libp2p::PeerId;
-use serde::{Deserialize, Serialize};
-use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, warn};
 
-use crate::utils::choose_stream;
 use crate::NodeManager;
 
-// Timeout and flow control settings for blob serving
-const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
-const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
-const FLOW_CONTROL_DELAY: Duration = Duration::from_millis(10); // Small delay between chunks
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BlobRequest {
-    blob_id: BlobId,
-    context_id: ContextId,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BlobResponse {
-    found: bool,
-    size: Option<u64>, // Total size if found
-}
-
-// Use binary format for efficient chunk transfer
-use borsh::{BorshDeserialize, BorshSerialize};
-
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-struct BlobChunk {
-    data: Vec<u8>,
-}
-
-/// Handle blob requests that come over streams
-async fn handle_blob_request_stream(
-    node_client: NodeClient,
-    peer_id: PeerId,
-    blob_request: BlobRequest,
-    mut stream: Box<Stream>,
-) -> eyre::Result<()> {
-    info!(
-        %peer_id,
-        blob_id = blob_request.blob_id.as_str(),
-        context_id = blob_request.context_id.as_str(),
-        "Processing blob request stream using binary chunk protocol"
-    );
-
-    // Wrap the entire blob serving in a timeout
-    let serve_result = timeout(BLOB_SERVE_TIMEOUT, async {
-        // Try to get the blob as a stream (handles chunked blobs efficiently)
-        info!(%peer_id, blob_id = %blob_request.blob_id, "Attempting to get blob from local storage");
-        let blob_stream = node_client
-            .get_blob(&BlobId::from(blob_request.blob_id), None)
-            .await?;
-
-        let (response, blob_stream) = if let Some(blob_stream) = blob_stream {
-            info!(%peer_id, "Blob found, will stream chunks");
-
-            // Get blob metadata to determine size
-            let blob_metadata = node_client
-                .get_blob_info(BlobId::from(blob_request.blob_id))
-                .await?;
-
-            let total_size = blob_metadata.map(|meta| meta.size).unwrap_or(0);
-
-            let response = BlobResponse {
-                found: true,
-                size: Some(total_size),
-            };
-
-            (response, Some(blob_stream))
-        } else {
-            info!(%peer_id, "Blob not found");
-            let response = BlobResponse {
-                found: false,
-                size: None,
-            };
-            (response, None)
-        };
-
-        // Send initial response with timeout
-        let response_data = serde_json::to_vec(&response)
-            .map_err(|e| eyre::eyre!("Failed to serialize blob response: {}", e))?;
-
-        timeout(
-            CHUNK_SEND_TIMEOUT,
-            stream.send(StreamMessage::new(response_data)),
-        )
-        .await
-        .map_err(|_| eyre::eyre!("Timeout sending response"))?
-        .map_err(|e| eyre::eyre!("Failed to send blob response: {}", e))?;
-
-        // If blob was found, stream the chunks
-        if response.found {
-            let mut blob_stream = blob_stream.expect("Blob stream should exist since response.found is true");
-
-            debug!(%peer_id, "Starting to stream blob chunks");
-
-            let mut chunk_count = 0;
-            let mut total_bytes_sent = 0;
-
-            while let Some(chunk_result) = blob_stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        chunk_count += 1;
-                        total_bytes_sent += chunk.len();
-
-                        debug!(
-                            %peer_id,
-                            chunk_number = chunk_count,
-                            chunk_size = chunk.len(),
-                            total_sent = total_bytes_sent,
-                            "Sending blob chunk"
-                        );
-
-                        let blob_chunk = BlobChunk {
-                            data: chunk.to_vec(),
-                        };
-
-                        let chunk_data = borsh::to_vec(&blob_chunk)
-                            .map_err(|e| eyre::eyre!("Failed to serialize blob chunk: {}", e))?;
-
-                        debug!(
-                            %peer_id,
-                            chunk_number = chunk_count,
-                            original_chunk_size = chunk.len(),
-                            binary_message_size = chunk_data.len(),
-                            "Sending binary chunk data"
-                        );
-
-                        // Send chunk with timeout
-                        timeout(
-                            CHUNK_SEND_TIMEOUT,
-                            stream.send(StreamMessage::new(chunk_data)),
-                        )
-                        .await
-                        .map_err(|_| eyre::eyre!("Timeout sending chunk {}", chunk_count))?
-                        .map_err(|e| eyre::eyre!("Failed to send blob chunk: {}", e))?;
-
-                        // Add small delay for flow control to prevent overwhelming receiver
-                        if chunk_count % 10 == 0 {
-                            // Every 10 chunks (~10MB), add a small pause
-                            sleep(FLOW_CONTROL_DELAY).await;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%peer_id, error = %e, "Failed to read blob chunk");
-                        return Err(eyre::eyre!("Failed to read blob chunk: {}", e));
-                    }
-                }
-            }
-
-            // Send final empty chunk to signal end of stream
-            let final_chunk = BlobChunk {
-                data: Vec::new(),
-            };
-
-            let final_chunk_data = borsh::to_vec(&final_chunk)
-                .map_err(|e| eyre::eyre!("Failed to serialize final chunk: {}", e))?;
-
-            timeout(
-                CHUNK_SEND_TIMEOUT,
-                stream.send(StreamMessage::new(final_chunk_data)),
-            )
-            .await
-            .map_err(|_| eyre::eyre!("Timeout sending final chunk"))?
-            .map_err(|e| eyre::eyre!("Failed to send final blob chunk: {}", e))?;
-
-            debug!(
-                %peer_id,
-                total_chunks = chunk_count + 1, // +1 for final chunk
-                total_bytes = total_bytes_sent,
-                "Successfully streamed all blob chunks"
-            );
-        }
-
-        debug!(%peer_id, "Blob request stream handled successfully");
-        Ok(())
-    })
-    .await;
-
-    // Handle timeout result
-    match serve_result {
-        Ok(result) => result,
-        Err(_) => {
-            warn!(
-                %peer_id,
-                blob_id = blob_request.blob_id.as_str(),
-                timeout_secs = BLOB_SERVE_TIMEOUT.as_secs(),
-                "Blob serving timed out"
-            );
-            Err(eyre::eyre!("Blob serving timed out"))
-        }
-    }
-}
-
-/// Handle streams that arrived on the blob protocol
-async fn handle_blob_protocol_stream(
-    node_client: NodeClient,
-    peer_id: PeerId,
-    mut stream: Box<Stream>,
-) -> eyre::Result<()> {
-    info!(%peer_id, "Starting blob protocol stream handler");
-
-    // Read the first message which should be a blob request
-    let first_message = match stream.next().await {
-        Some(Ok(msg)) => msg,
-        Some(Err(e)) => {
-            debug!(%peer_id, error = %e, "Error reading blob request from stream");
-            return Err(e.into());
-        }
-        None => {
-            debug!(%peer_id, "Blob protocol stream closed immediately");
-            return Ok(());
-        }
-    };
-
-    // Parse as blob request
-    let blob_request = serde_json::from_slice::<BlobRequest>(&first_message.data)
-        .map_err(|e| eyre::eyre!("Failed to parse blob request: {}", e))?;
-
-    // Delegate to the existing handler
-    handle_blob_request_stream(node_client, peer_id, blob_request, stream).await
-}
-
 impl Handler<NetworkEvent> for NodeManager {
-    type Result = <NetworkEvent as Message>::Result;
+    type Result = <NetworkEvent as actix::Message>::Result;
 
     fn handle(&mut self, msg: NetworkEvent, ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            NetworkEvent::ListeningOn { address, .. } => info!("Listening on: {}", address),
+            // Simple events - just logging
+            NetworkEvent::ListeningOn { address, .. } => {
+                info!("Listening on: {}", address);
+            }
+
             NetworkEvent::Subscribed { peer_id, topic } => {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
                     return;
                 };
 
                 if !self
-                    .context_client
+                    .clients
+                    .context
                     .has_context(&context_id)
                     .unwrap_or_default()
                 {
@@ -268,6 +47,7 @@ impl Handler<NetworkEvent> for NodeManager {
 
                 info!("Peer '{}' subscribed to context '{}'", peer_id, context_id);
             }
+
             NetworkEvent::Unsubscribed { peer_id, topic } => {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
                     return;
@@ -278,13 +58,15 @@ impl Handler<NetworkEvent> for NodeManager {
                     peer_id, context_id
                 );
             }
+
+            // BroadcastMessage handling - delegate to state_delta module
             NetworkEvent::Message { message, .. } => {
                 let Some(source) = message.source else {
                     warn!(?message, "Received message without source");
                     return;
                 };
 
-                let message = match borsh::from_slice(&message.data) {
+                let message = match borsh::from_slice::<BroadcastMessage<'_>>(&message.data) {
                     Ok(message) => message,
                     Err(err) => {
                         debug!(?err, ?message, "Failed to deserialize message");
@@ -292,30 +74,47 @@ impl Handler<NetworkEvent> for NodeManager {
                     }
                 };
 
+                #[expect(clippy::match_same_arms, reason = "clearer separation")]
                 match message {
                     BroadcastMessage::StateDelta {
                         context_id,
                         author_id,
+                        delta_id,
+                        parent_ids,
                         root_hash,
                         artifact,
-                        height,
                         nonce,
                         events,
                     } => {
-                        let node_client = self.node_client.clone();
-                        let context_client = self.context_client.clone();
+                        info!(
+                            %context_id,
+                            %author_id,
+                            delta_id = ?delta_id,
+                            parent_count = parent_ids.len(),
+                            has_events = events.is_some(),
+                            "Matched StateDelta message"
+                        );
+
+                        // Clone the components we need
+                        let node_clients = self.clients.clone();
+                        let node_state = self.state.clone();
+                        let network_client = self.managers.sync.network_client.clone();
+                        let sync_config_timeout = self.managers.sync.sync_config.timeout;
 
                         let _ignored = ctx.spawn(
                             async move {
-                                if let Err(err) = handle_state_delta(
-                                    node_client,
-                                    context_client,
+                                if let Err(err) = state_delta::handle_state_delta(
+                                    node_clients,
+                                    node_state,
+                                    network_client,
+                                    sync_config_timeout,
                                     source,
                                     context_id,
                                     author_id,
+                                    delta_id,
+                                    parent_ids,
                                     root_hash,
                                     artifact.into_owned(),
-                                    height,
                                     nonce,
                                     events.map(|e| e.into_owned()),
                                 )
@@ -327,39 +126,69 @@ impl Handler<NetworkEvent> for NodeManager {
                             .into_actor(self),
                         );
                     }
+                    BroadcastMessage::HashHeartbeat {
+                        context_id,
+                        root_hash: their_root_hash,
+                        dag_heads: their_dag_heads,
+                    } => {
+                        let context_client = self.clients.context.clone();
+
+                        // Check for divergence
+                        if let Ok(Some(our_context)) = context_client.get_context(&context_id) {
+                            // Compare DAG heads
+                            let our_heads_set: std::collections::HashSet<_> =
+                                our_context.dag_heads.iter().collect();
+                            let their_heads_set: std::collections::HashSet<_> =
+                                their_dag_heads.iter().collect();
+
+                            // If we have the same DAG heads but different root hashes, we diverged!
+                            if our_heads_set == their_heads_set
+                                && our_context.root_hash != their_root_hash
+                            {
+                                error!(
+                                    %context_id,
+                                    ?source,
+                                    our_hash = ?our_context.root_hash,
+                                    their_hash = ?their_root_hash,
+                                    dag_heads = ?their_dag_heads,
+                                    "DIVERGENCE DETECTED: Same DAG heads but different root hash!"
+                                );
+
+                                // Trigger sync to recover from divergence
+                                // The periodic sync will eventually run state sync protocol
+                                warn!(
+                                    %context_id,
+                                    ?source,
+                                    their_heads = ?their_dag_heads,
+                                    "Divergence detected - periodic sync will recover"
+                                );
+                            } else if our_context.root_hash != their_root_hash {
+                                debug!(
+                                    %context_id,
+                                    ?source,
+                                    our_heads_count = our_context.dag_heads.len(),
+                                    their_heads_count = their_dag_heads.len(),
+                                    "Different root hash (normal - different DAG heads)"
+                                );
+                            }
+                        }
+                    }
                     _ => {
-                        debug!(?message, "Received unexpected message");
+                        warn!(?message, "Received unexpected broadcast message type (not StateDelta or HashHeartbeat)");
                     }
                 }
             }
+
+            // Stream routing - delegate to stream_opened module
             NetworkEvent::StreamOpened {
                 peer_id,
                 stream,
                 protocol,
             } => {
-                // Route streams based on protocol
-                if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
-                    info!(%peer_id, "Handling blob protocol stream - STREAM OPENED");
-                    let node_client = self.node_client.clone();
-                    let _ignored = ctx.spawn(
-                        async move {
-                            if let Err(err) = handle_blob_protocol_stream(node_client, peer_id, stream).await {
-                                debug!(%peer_id, error = %err, "Failed to handle blob protocol stream");
-                            }
-                        }
-                        .into_actor(self),
-                    );
-                } else {
-                    debug!(%peer_id, "Handling sync protocol stream");
-                    let sync_manager = self.sync_manager.clone();
-                    let _ignored = ctx.spawn(
-                        async move {
-                            sync_manager.handle_opened_stream(stream).await;
-                        }
-                        .into_actor(self),
-                    );
-                }
+                stream_opened::handle_stream_opened(self, ctx, peer_id, stream, protocol);
             }
+
+            // Blob events - simple logging (applications can listen to these)
             NetworkEvent::BlobRequested {
                 blob_id,
                 context_id,
@@ -371,9 +200,9 @@ impl Handler<NetworkEvent> for NodeManager {
                     requesting_peer = %requesting_peer,
                     "Blob requested by peer"
                 );
-                // For now, just log the request. Applications can listen to this event
-                // to implement custom logic when blobs are requested.
+                // Applications can listen to this event for custom logic
             }
+
             NetworkEvent::BlobProvidersFound {
                 blob_id,
                 context_id,
@@ -385,9 +214,9 @@ impl Handler<NetworkEvent> for NodeManager {
                     providers_count = providers.len(),
                     "Blob providers found in DHT"
                 );
-                // For now, just log the discovery. Applications can listen to this event
-                // to implement custom logic when providers are found.
+                // Applications can listen to this event for custom logic
             }
+
             NetworkEvent::BlobDownloaded {
                 blob_id,
                 context_id,
@@ -403,10 +232,10 @@ impl Handler<NetworkEvent> for NodeManager {
                 );
 
                 // Store the downloaded blob data to blobstore
-                let blobstore = self.blobstore.clone();
+                let blobstore = self.managers.blobstore.clone();
                 let blob_data = data.clone();
 
-                let _ = ctx.spawn(
+                let _ignored = ctx.spawn(
                     async move {
                         // Convert data to async reader for blobstore.put()
                         let reader = &blob_data[..];
@@ -432,6 +261,7 @@ impl Handler<NetworkEvent> for NodeManager {
                     .into_actor(self),
                 );
             }
+
             NetworkEvent::BlobDownloadFailed {
                 blob_id,
                 context_id,
@@ -445,128 +275,8 @@ impl Handler<NetworkEvent> for NodeManager {
                     error = %error,
                     "Blob download failed"
                 );
-                // For now, just log the failure. Applications can listen to this event
-                // to implement retry logic or fallback behavior.
+                // Applications can listen to this event for retry logic
             }
         }
     }
-}
-
-async fn handle_state_delta(
-    node_client: NodeClient,
-    context_client: ContextClient,
-    source: PeerId,
-    context_id: ContextId,
-    author_id: PublicKey,
-    root_hash: Hash,
-    artifact: Vec<u8>,
-    height: NonZeroUsize,
-    nonce: Nonce,
-    events: Option<Vec<u8>>,
-) -> eyre::Result<()> {
-    let Some(context) = context_client.get_context(&context_id)? else {
-        bail!("context '{}' not found", context_id);
-    };
-
-    info!(
-        %context_id, %author_id,
-        expected_root_hash = %root_hash,
-        current_root_hash = %context.root_hash,
-        "Received state delta"
-    );
-
-    if root_hash == context.root_hash {
-        debug!(%context_id, "Received state delta with same root hash, ignoring..");
-        return Ok(());
-    }
-
-    if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
-        if known_height >= height || height.get() - known_height.get() > 1 {
-            debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
-
-            node_client.sync(Some(&context_id), Some(&source)).await?;
-            return Ok(());
-        }
-    }
-
-    let Some(sender_key) = context_client
-        .get_identity(&context_id, &author_id)?
-        .and_then(|i| i.sender_key)
-    else {
-        debug!(%author_id, %context_id, "Missing sender key, initiating sync");
-
-        node_client.sync(Some(&context_id), Some(&source)).await?;
-        return Ok(());
-    };
-
-    let shared_key = SharedKey::from_sk(&sender_key);
-
-    let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
-        debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
-
-        node_client.sync(Some(&context_id), Some(&source)).await?;
-        return Ok(());
-    };
-
-    let identities = context_client.context_members(&context_id, Some(true));
-
-    let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-        .await
-        .transpose()?
-    else {
-        bail!("no owned identities found for context: {}", context_id);
-    };
-
-    context_client.put_state_delta(&context_id, &author_id, &height, &artifact)?;
-
-    let outcome = context_client
-        .execute(
-            &context_id,
-            &our_identity,
-            "__calimero_sync_next".to_owned(),
-            artifact,
-            vec![],
-            None,
-        )
-        .await?;
-
-    context_client.set_delta_height(&context_id, &author_id, height)?;
-
-    if outcome.root_hash != root_hash {
-        debug!(
-            %context_id,
-            %author_id,
-            expected_root_hash = %root_hash,
-            current_root_hash = %outcome.root_hash,
-            "State delta application led to root hash mismatch, ignoring for now"
-        );
-    }
-
-    // Process execution events if they were included: re-emit as unified StateMutation
-    debug!(
-        %context_id,
-        %author_id,
-        has_events = events.as_ref().map(|e| !e.is_empty()).unwrap_or(false),
-        "Received StateDelta; checking for bundled events"
-    );
-    if let Some(events_data) = events {
-        debug!(%context_id, raw_events_len = events_data.len(), "Raw events bytes received");
-        let events_payload: Vec<ExecutionEvent> =
-            serde_json::from_slice(&events_data).unwrap_or_else(|_| Vec::new());
-
-        // Only re-emit if there are actual events
-        if !events_payload.is_empty() {
-            debug!(%context_id, events_count = events_payload.len(), "Re-emitting events to WS as StateMutation");
-            node_client.send_event(NodeEvent::Context(ContextEvent {
-                context_id,
-                payload: ContextEventPayload::StateMutation(
-                    StateMutationPayload::with_root_and_events(root_hash, events_payload),
-                ),
-            }))?;
-        } else {
-            debug!(%context_id, "No events after deserialization; skipping WS emit");
-        }
-    }
-
-    Ok(())
 }

@@ -27,7 +27,7 @@ impl Method<Ethereum> for ApplicationRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let application: SolApplication = SolValue::abi_decode(&response, false)?;
+        let application: SolApplication = SolValue::abi_decode(&response)?;
         let application: Application<'static> = application.into();
 
         Ok(application)
@@ -46,7 +46,7 @@ impl Method<Ethereum> for ApplicationRevisionRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let revision: u64 = SolValue::abi_decode(&response, false)?;
+        let revision: u64 = SolValue::abi_decode(&response)?;
 
         Ok(revision)
     }
@@ -68,7 +68,7 @@ impl Method<Ethereum> for MembersRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         // Decode Vec<B256> directly from response
-        let decoded: Vec<alloy::primitives::B256> = SolValue::abi_decode(&response, false)?;
+        let decoded: Vec<alloy::primitives::B256> = SolValue::abi_decode(&response)?;
 
         // Convert each B256 to ContextIdentity
         Ok(decoded
@@ -91,7 +91,7 @@ impl Method<Ethereum> for HasMemberRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let result: bool = SolValue::abi_decode(&response, false)?;
+        let result: bool = SolValue::abi_decode(&response)?;
         Ok(result)
     }
 }
@@ -108,7 +108,7 @@ impl Method<Ethereum> for MembersRevisionRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let revision: u64 = SolValue::abi_decode(&response, false)?;
+        let revision: u64 = SolValue::abi_decode(&response)?;
 
         Ok(revision)
     }
@@ -132,7 +132,7 @@ impl<'a> Method<Ethereum> for PrivilegesRequest<'a> {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let user_caps: Vec<SolUserCapabilities> = SolValue::abi_decode(&response, false)?;
+        let user_caps: Vec<SolUserCapabilities> = SolValue::abi_decode(&response)?;
 
         let mut result = BTreeMap::new();
 
@@ -175,7 +175,7 @@ impl Method<Ethereum> for ProxyContractRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let contract_address: AlloyAddress = SolValue::abi_decode(&response, false)?;
+        let contract_address: AlloyAddress = SolValue::abi_decode(&response)?;
 
         Ok(contract_address.to_string())
     }
@@ -194,7 +194,7 @@ impl Method<Ethereum> for FetchNonceRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let nonce: u64 = SolValue::abi_decode(&response, false)?;
+        let nonce: u64 = SolValue::abi_decode(&response)?;
 
         Ok(Some(nonce))
     }

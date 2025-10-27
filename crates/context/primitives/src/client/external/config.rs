@@ -1,10 +1,11 @@
-use std::future::Future;
+use core::future::Future;
 
 use calimero_context_config::client::env::config::ContextConfig;
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
-use calimero_context_config::types::{self as types, Capability};
+use calimero_context_config::types::{self as types, BlockHeight, Capability, SignedRevealPayload};
 use calimero_primitives::application::{Application, ApplicationBlob};
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::{bail, OptionExt};
 
@@ -19,6 +20,7 @@ pub struct ExternalConfigClient<'a> {
 }
 
 impl ExternalClient<'_> {
+    #[must_use]
     pub const fn config(&self) -> ExternalConfigClient<'_> {
         ExternalConfigClient {
             nonce: None,
@@ -55,9 +57,9 @@ impl ExternalConfigClient<'_> {
         E: Into<eyre::Report>,
         F: Future<Output = Result<T, E>>,
     {
-        let retries = MAX_RETRIES + (self.nonce.is_none() as u8);
+        let retries = MAX_RETRIES + u8::from(self.nonce.is_none());
 
-        for _ in 0..(retries + 1) {
+        for _ in 0..=retries {
             let mut error = None;
 
             if let Some(nonce) = self.nonce {
@@ -195,6 +197,84 @@ impl ExternalConfigClient<'_> {
                 .await
         })
         .await?;
+
+        Ok(())
+    }
+
+    /// Calls the `commit_invitation` method on the NEAR contract.
+    /// This is the first step of the open invitation flow.
+    pub async fn join_context_commit_invitation(
+        &mut self,
+        public_key: &PublicKey,
+        commitment_hash: String,
+        expiration_block_height: BlockHeight,
+    ) -> eyre::Result<()> {
+        if self.client.config.protocol != "near" {
+            bail!("Only NEAR Protocol currently supports open invitaitons");
+        }
+
+        // At this step the identity should be at the zeroth context:
+        // it should exist on the node, but available to be assigned for a new context.
+        let identity = self
+            .client
+            .context_client()
+            .get_identity(&ContextId::zero(), public_key)?
+            .ok_or_eyre("identity not found")?;
+
+        let private_key = identity.private_key()?;
+
+        let client = self.client.mutate::<ContextConfig>(
+            self.client.config.protocol.as_ref().into(),
+            self.client.config.network_id.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
+        );
+
+        let context_id = self.client.context_id.rt().expect("infallible conversion");
+
+        let nonce = 0;
+        let _ignored = client
+            .commit_invitation(context_id, commitment_hash.clone(), expiration_block_height)
+            .send(**private_key, nonce)
+            .await;
+
+        Ok(())
+    }
+
+    /// Calls the `reveal_invitation` method on the NEAR contract.
+    /// This is the second and final step, which adds the new member.
+    pub async fn join_context_reveal_invitation(
+        &mut self,
+        public_key: &PublicKey,
+        payload: SignedRevealPayload,
+    ) -> eyre::Result<()> {
+        if self.client.config.protocol != "near" {
+            bail!("Only NEAR Protocol currently supports open invitaitons");
+        }
+
+        // At this step the identity should be at the zeroth context:
+        // it should exist on the node, but available to be assigned for a new context.
+        let identity = self
+            .client
+            .context_client()
+            .get_identity(&ContextId::zero(), public_key)?
+            .ok_or_eyre("identity not found")?;
+
+        let private_key = identity.private_key()?;
+
+        let client = self.client.mutate::<ContextConfig>(
+            self.client.config.protocol.as_ref().into(),
+            self.client.config.network_id.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
+        );
+
+        let context_id = self.client.context_id.rt().expect("infallible conversion");
+
+        let nonce = 0;
+        // Similar to commit, this is a public method call sent by the relayer.
+        let _ignored = client
+            .reveal_invitation(context_id, payload.clone())
+            .send(**private_key, nonce)
+            .await;
 
         Ok(())
     }

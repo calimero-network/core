@@ -1,6 +1,6 @@
 use std::collections::{btree_map, BTreeMap};
 use std::mem;
-use std::num::NonZeroUsize;
+// Removed: NonZeroUsize (DAG-based approach)
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
@@ -68,9 +68,12 @@ impl Handler<CreateContextRequest> for ContextManager {
             .try_lock_owned()
             .expect("logically exclusive");
 
-        let context = context.meta;
+        let context_meta = context.meta.clone();
 
         let module_task = self.get_module(application_id);
+
+        let context_meta_for_map_ok = context_meta.clone();
+        let context_meta_for_map_err = context_meta.clone();
 
         ActorResponse::r#async(
             module_task
@@ -81,7 +84,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         act.context_client.clone(),
                         module,
                         external_config,
-                        context,
+                        context_meta,
                         context_secret,
                         application,
                         identity,
@@ -93,7 +96,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                     .into_actor(act)
                 })
                 .map_ok(move |root_hash, act, _ctx| {
-                    if let Some(meta) = act.contexts.get_mut(&context.id) {
+                    if let Some(meta) = act.contexts.get_mut(&context_meta_for_map_ok.id) {
                         // this should almost always exist, but with an LruCache, it
                         // may not. And if it's been evicted, the next execution will
                         // re-create it with data from the store, so it's not a problem
@@ -102,12 +105,12 @@ impl Handler<CreateContextRequest> for ContextManager {
                     }
 
                     CreateContextResponse {
-                        context_id: context.id,
+                        context_id: context_meta_for_map_ok.id,
                         identity,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
-                    let _ignored = act.contexts.remove(&context.id);
+                    let _ignored = act.contexts.remove(&context_meta_for_map_err.id);
 
                     err
                 }),
@@ -286,11 +289,7 @@ async fn create_context(
 
     let datastore = storage.commit()?;
 
-    let height = NonZeroUsize::MIN;
-
-    context_client.put_state_delta(&context.id, &identity, &height, &outcome.artifact)?;
-
-    context_client.set_delta_height(&context.id, &identity, height)?;
+    // Height-based delta tracking removed - now using DAG-based approach
 
     let mut handle = datastore.handle();
 
@@ -311,6 +310,7 @@ async fn create_context(
         &types::ContextMeta::new(
             key::ApplicationMeta::new(application.id),
             *context.root_hash,
+            context.dag_heads.clone(),
         ),
     )?;
 

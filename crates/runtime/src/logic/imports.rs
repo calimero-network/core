@@ -33,6 +33,8 @@ impl VMLogic<'_> {
             fn value_return(value_ptr: u64);
             fn log_utf8(log_ptr: u64);
             fn emit(event_ptr: u64);
+            fn emit_with_handler(event_ptr: u64, handler_ptr: u64);
+            fn xcall(xcall_ptr: u64);
 
             fn commit(root_hash_ptr: u64, artifact_ptr: u64);
 

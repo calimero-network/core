@@ -39,75 +39,71 @@ fn try_main() -> eyre::Result<()> {
 
     let mut is_local_dir = false;
 
-    let src = match option_env!("CALIMERO_WEBUI_SRC") {
-        Some(src) => {
-            match reqwest::Url::parse(src) {
-                Ok(url) if !matches!(url.scheme(), "http" | "https") => {
-                    bail!(
-                        "CALIMERO_WEBUI_SRC must be an absolute path or a valid URL, got: {}",
-                        src
-                    );
-                }
-                Err(_) if !Path::new(src).is_absolute() => bail!(
+    let src = if let Some(src) = option_env!("CALIMERO_WEBUI_SRC") {
+        match reqwest::Url::parse(src) {
+            Ok(url) if !matches!(url.scheme(), "http" | "https") => {
+                bail!(
                     "CALIMERO_WEBUI_SRC must be an absolute path or a valid URL, got: {}",
                     src
-                ),
-                Err(_) => is_local_dir = fs::metadata(src)?.is_dir(),
-                _ => {}
+                );
             }
-
-            Cow::from(src)
+            Err(_) if !Path::new(src).is_absolute() => bail!(
+                "CALIMERO_WEBUI_SRC must be an absolute path or a valid URL, got: {}",
+                src
+            ),
+            Err(_) => is_local_dir = fs::metadata(src)?.is_dir(),
+            _ => {}
         }
-        None => {
-            let repo = option_env!("CALIMERO_WEBUI_REPO").unwrap_or(CALIMERO_WEBUI_REPO);
-            let version = option_env!("CALIMERO_WEBUI_VERSION").unwrap_or(CALIMERO_WEBUI_VERSION);
 
-            let release_url = replace(CALIMERO_WEBUI_SRC_URL.into(), |var| match var {
-                "repo" => Some(repo),
-                "version" => Some(version),
-                _ => None,
-            });
+        Cow::from(src)
+    } else {
+        let repo = option_env!("CALIMERO_WEBUI_REPO").unwrap_or(CALIMERO_WEBUI_REPO);
+        let version = option_env!("CALIMERO_WEBUI_VERSION").unwrap_or(CALIMERO_WEBUI_VERSION);
 
-            let builder = reqwest::blocking::Client::builder()
-                .user_agent(USER_AGENT)
-                .build()?;
+        let release_url = replace(CALIMERO_WEBUI_SRC_URL.into(), |var| match var {
+            "repo" => Some(repo),
+            "version" => Some(version),
+            _ => None,
+        });
 
-            let mut req = builder.get(&*release_url);
+        let builder = reqwest::blocking::Client::builder()
+            .user_agent(USER_AGENT)
+            .build()?;
 
-            if let Some(token) = token {
-                req = req.bearer_auth(token);
+        let mut req = builder.get(&*release_url);
+
+        if let Some(token) = token {
+            req = req.bearer_auth(token);
+        }
+
+        let res = req.send()?;
+
+        let Release { mut assets } = match Response::try_from(res)? {
+            Response::Json(value) => serde_json::from_value(value)?,
+            other => bail!("expected json response, got: {:?}", other),
+        };
+
+        let asset = match assets.pop() {
+            None => bail!("no assets found in release"),
+            Some(asset) if assets.is_empty() => asset,
+            Some(asset) => {
+                let file = option_env!("CALIMERO_WEBUI_ASSET");
+                let file = file.ok_or_eyre(
+                    "multiple assets found, but no `CALIMERO_WEBUI_ASSET` environment variable set",
+                )?;
+
+                let found = [asset]
+                    .into_iter()
+                    .chain(assets)
+                    .find(|asset| asset.name == file);
+
+                found.ok_or_eyre(format!(
+                    "no asset found with name `{file}` in release (env: CALIMERO_WEBUI_ASSET)"
+                ))?
             }
+        };
 
-            let res = req.send()?;
-
-            let Release { mut assets } = match Response::try_from(res)? {
-                Response::Json(value) => serde_json::from_value(value)?,
-                other => bail!("expected json response, got: {:?}", other),
-            };
-
-            let asset = match assets.pop() {
-                None => bail!("no assets found in release"),
-                Some(asset) if assets.is_empty() => asset,
-                Some(asset) => {
-                    let file = option_env!("CALIMERO_WEBUI_ASSET");
-                    let file = file.ok_or_eyre(
-                        "multiple assets found, but no `CALIMERO_WEBUI_ASSET` environment variable set"
-                    )?;
-
-                    let found = [asset]
-                        .into_iter()
-                        .chain(assets)
-                        .find(|asset| asset.name == file);
-
-                    found.ok_or_eyre(format!(
-                        "no asset found with name `{}` in release (env: CALIMERO_WEBUI_ASSET)",
-                        file
-                    ))?
-                }
-            };
-
-            asset.url.into()
-        }
+        asset.url.into()
     };
 
     let webui_dir = if is_local_dir {
@@ -142,7 +138,7 @@ fn try_main() -> eyre::Result<()> {
             options = options.force();
         }
 
-        let workdir = cache.cached_path_with_options(&*src, &options)?;
+        let workdir = cache.cached_path_with_options(&src, &options)?;
 
         workdir.into()
     };
@@ -234,25 +230,25 @@ impl TryFrom<reqwest::blocking::Response> for Response {
             }
         };
 
-        let res = match serde_json::from_slice(&*bytes) {
-            Ok(res) => Response::Json(res),
-            Err(_) => match std::str::from_utf8(&*bytes) {
-                Ok(str) => Response::String(str.to_owned()),
-                Err(_) => Response::Bytes(bytes),
+        let res = match serde_json::from_slice(&bytes) {
+            Ok(res) => Self::Json(res),
+            Err(_) => match core::str::from_utf8(&bytes) {
+                Ok(str) => Self::String(str.to_owned()),
+                Err(_) => Self::Bytes(bytes),
             },
         };
 
         if let Some(error) = error {
             let res = match res {
-                Response::Bytes(bytes) => {
+                Self::Bytes(bytes) => {
                     format!(
                         "failed with raw bytes of length {}: {:?}",
                         bytes.len(),
                         bytes
                     )
                 }
-                Response::String(str) => format!("failed with response: {str}"),
-                Response::Json(json) => format!("failed with json response: {json:#}"),
+                Self::String(str) => format!("failed with response: {str}"),
+                Self::Json(json) => format!("failed with json response: {json:#}"),
             };
 
             return Err(error).wrap_err(res);

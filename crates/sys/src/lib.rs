@@ -19,6 +19,9 @@ wasm_imports! {
         fn value_return(value: Ref<ValueReturn<'_>>);
         fn log_utf8(msg: Ref<Buffer<'_>>);
         fn emit(event: Ref<Event<'_>>);
+        fn emit_with_handler(event: Ref<Event<'_>>, handler: Ref<Buffer<'_>>);
+        // --
+        fn xcall(call: Ref<XCall<'_>>);
         // --
         fn commit(root: Ref<Buffer<'_>>, artifact: Ref<Buffer<'_>>);
         // --

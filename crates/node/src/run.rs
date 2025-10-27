@@ -1,6 +1,12 @@
-use std::pin::{pin, Pin};
+//! Node startup and initialization.
+//!
+//! **Purpose**: Bootstraps the node with all required services and actors.
+//! **Main Function**: `start(NodeConfig)` - initializes and runs the node.
 
-use actix::{Actor, Arbiter, System};
+use std::pin::pin;
+use std::time::Duration;
+
+use actix::Actor;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
@@ -17,14 +23,14 @@ use calimero_store::Store;
 use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
-use eyre::{OptionExt, WrapErr};
-use futures_util::{stream, StreamExt};
 use libp2p::gossipsub::IdentTopic;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
+use crate::arbiter_pool::ArbiterPool;
+use crate::gc::GarbageCollector;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
@@ -38,6 +44,7 @@ pub struct NodeConfig {
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
     pub server: ServerConfig,
+    pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 12 hours)
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -56,46 +63,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let context_recipient = LazyRecipient::new();
     let network_event_recipient = LazyRecipient::new();
 
-    let (tx, mut rx) = mpsc::channel(1);
-
-    let mut system = tokio::task::spawn_blocking(move || {
-        let system = System::new();
-
-        let _ignored = system.runtime().spawn({
-            let task = async move {
-                let mut arb = Arbiter::current();
-
-                loop {
-                    tx.send(Some(arb)).await?;
-
-                    tx.send(None).await?;
-                    tx.send(None).await?;
-
-                    arb = Arbiter::new().handle();
-                }
-            };
-
-            async {
-                let _ignored: eyre::Result<()> = task.await;
-
-                System::current().stop();
-            }
-        });
-
-        system
-            .run()
-            .wrap_err("the actix subsystem ran into an error")
-    });
-
-    let mut new_arbiter = {
-        let mut arbs = stream::poll_fn(|cx| rx.poll_recv(cx)).filter_map(async |t| t);
-
-        async move || {
-            let mut arbs = unsafe { Pin::new_unchecked(&mut arbs) };
-
-            arbs.next().await.ok_or_eyre("failed to get arbiter")
-        }
-    };
+    // Create arbiter pool for spawning actors across threads
+    let mut arbiter_pool = ArbiterPool::new().await?;
 
     let network_manager = NetworkManager::new(
         &config.network,
@@ -106,7 +75,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let network_client = NetworkClient::new(network_recipient.clone());
 
-    let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
+    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(network_recipient.init(ctx), "failed to initialize");
         network_manager
     });
@@ -115,9 +84,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         .subscribe(IdentTopic::new("meta_topic".to_owned()))
         .await?;
 
-    let (event_sender, _) = broadcast::channel(32);
+    // Increased buffer sizes for better burst handling and concurrency
+    // 256 events: supports more concurrent WebSocket clients
+    // 64 sync requests: handles burst context joins/syncs
+    let (event_sender, _) = broadcast::channel(256);
 
-    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(16);
+    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
 
     let node_client = NodeClient::new(
         datastore.clone(),
@@ -142,19 +114,22 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         config.context.client.clone(),
-        &mut registry,
+        Some(&mut registry),
     );
 
-    let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
+    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager
     });
+
+    let node_state = crate::NodeState::new();
 
     let sync_manager = SyncManager::new(
         config.sync,
         node_client.clone(),
         context_client.clone(),
         network_client.clone(),
+        node_state.clone(),
         ctx_sync_rx,
     );
 
@@ -163,9 +138,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         sync_manager.clone(),
         context_client.clone(),
         node_client.clone(),
+        node_state.clone(),
     );
 
-    let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
+    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(node_recipient.init(ctx), "failed to initialize");
         assert!(network_event_recipient.init(ctx), "failed to initialize");
         node_manager
@@ -179,14 +155,24 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         registry,
     );
 
+    // Start garbage collection actor
+    let gc_interval = Duration::from_secs(
+        config.gc_interval_secs.unwrap_or(12 * 3600), // Default: 12 hours
+    );
+    let gc = GarbageCollector::new(datastore.clone(), gc_interval);
+
+    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
+
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
+
+    info!("Node started successfully");
 
     loop {
         tokio::select! {
             _ = &mut sync => {},
             res = &mut server => res??,
-            res = &mut system => break res?,
+            res = &mut arbiter_pool.system_handle => break res?,
         }
     }
 }

@@ -153,7 +153,7 @@ pub async fn update_key_permissions_handler(
                         Err(e) => {
                             return error_response(
                                 StatusCode::BAD_REQUEST,
-                                format!("Invalid permission format: {}", e),
+                                format!("Invalid permission format: {e}"),
                                 None,
                             );
                         }

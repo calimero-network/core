@@ -192,8 +192,9 @@ pub struct AutonatConfig {
 }
 
 impl AutonatConfig {
-    pub fn new(confidence_threshold: usize) -> Self {
-        AutonatConfig {
+    #[must_use]
+    pub const fn new(confidence_threshold: usize) -> Self {
+        Self {
             confidence_threshold,
         }
     }

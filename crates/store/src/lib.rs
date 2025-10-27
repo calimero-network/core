@@ -5,7 +5,7 @@ use eyre::Result as EyreResult;
 pub mod config;
 pub mod db;
 pub mod entry;
-mod handle;
+pub mod handle;
 pub mod iter;
 pub mod key;
 pub mod layer;
@@ -14,7 +14,7 @@ pub mod tx;
 
 use config::StoreConfig;
 use db::Database;
-use handle::Handle;
+pub use handle::Handle;
 
 #[cfg(feature = "datatypes")]
 pub mod types;
@@ -25,6 +25,11 @@ pub struct Store {
 }
 
 impl Store {
+    /// Creates a new `Store` from an existing database instance. Useful for testing.
+    pub fn new(db: Arc<dyn for<'a> Database<'a>>) -> Self {
+        Self { db }
+    }
+
     pub fn open<T: for<'a> Database<'a>>(config: &StoreConfig) -> EyreResult<Self> {
         let db = T::open(config)?;
         Ok(Self { db: Arc::new(db) })

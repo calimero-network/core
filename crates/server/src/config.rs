@@ -5,6 +5,7 @@ use multiaddr::{Multiaddr, Protocol};
 
 use crate::admin::service::AdminConfig;
 use crate::jsonrpc::JsonRpcConfig;
+use crate::sse::SseConfig;
 use crate::ws::WsConfig;
 
 pub const DEFAULT_PORT: u16 = 2528; // (CHAT in T9) + 100
@@ -25,6 +26,8 @@ pub struct ServerConfig {
     pub jsonrpc: Option<JsonRpcConfig>,
 
     pub websocket: Option<WsConfig>,
+
+    pub sse: Option<SseConfig>,
 }
 
 impl ServerConfig {
@@ -35,6 +38,7 @@ impl ServerConfig {
         admin: Option<AdminConfig>,
         jsonrpc: Option<JsonRpcConfig>,
         websocket: Option<WsConfig>,
+        sse: Option<SseConfig>,
     ) -> Self {
         Self {
             listen,
@@ -42,6 +46,7 @@ impl ServerConfig {
             admin,
             jsonrpc,
             websocket,
+            sse,
         }
     }
 }

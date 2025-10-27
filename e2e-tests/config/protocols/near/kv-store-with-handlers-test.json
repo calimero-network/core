@@ -1,0 +1,152 @@
+{
+  "steps": [
+    {
+      "applicationInstall": {
+        "application": {
+          "localFile": "./apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm"
+        },
+        "target": "allMembers"
+      }
+    },
+    {
+      "contextCreate": null
+    },
+    {
+      "contextCreateAlias": {
+        "aliasName": "my_context_callback"
+      }
+    },
+    {
+      "contextInviteJoin": null
+    },
+    {
+      "wait": {
+        "durationMs": 1000,
+        "for": "consensus",
+        "description": "Wait for nodes to join and reach consensus"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "test_key",
+          "value": "test_value"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_handler_execution_count",
+        "argsJson": {},
+        "expectedResultJson": 2,
+        "target": "inviter",
+        "description": "Global G-Counter shows 2 (both nodes executed insert_handler)"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "test_key",
+          "value": "updated_value"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_handler_execution_count",
+        "argsJson": {},
+        "expectedResultJson": 4,
+        "target": "invitees",
+        "description": "Global G-Counter shows 4 (both nodes execute × 2 sets)"
+      }
+    },
+    {
+      "call": {
+        "methodName": "remove",
+        "argsJson": {
+          "key": "test_key"
+        },
+        "expectedResultJson": "updated_value",
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_handler_execution_count",
+        "argsJson": {},
+        "expectedResultJson": 6,
+        "target": "invitees",
+        "description": "Global G-Counter shows 6 (both nodes execute: 2 sets + 1 remove)"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "another_key",
+          "value": "another_value"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+      }
+    },
+    {
+      "call": {
+        "methodName": "clear",
+        "argsJson": {},
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_handler_execution_count",
+        "argsJson": {},
+        "expectedResultJson": 10,
+        "target": "invitees",
+        "description": "Global G-Counter shows 10 (both nodes execute: 2 sets + 1 remove + 1 set + 1 clear)"
+      }
+    }
+  ]
+}

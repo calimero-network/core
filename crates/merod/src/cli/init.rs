@@ -22,6 +22,7 @@ use calimero_network_primitives::config::{
 };
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
+use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::Store;
@@ -340,6 +341,7 @@ impl InitCommand {
                     Some(AdminConfig::new(true)),
                     Some(JsonRpcConfig::new(true)),
                     Some(WsConfig::new(true)),
+                    Some(SseConfig::new(true)),
                 ),
             ),
             SyncConfig {

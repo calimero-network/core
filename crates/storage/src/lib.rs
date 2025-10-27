@@ -56,16 +56,20 @@
     )
 )]
 
+pub mod action;
 pub mod address;
 pub mod collections;
+pub mod constants;
+pub mod delta;
 pub mod entities;
 pub mod env;
+pub mod error;
 pub mod index;
 pub mod integration;
 pub mod interface;
-
+pub mod merge;
+pub mod snapshot;
 pub mod store;
-pub mod sync;
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
@@ -75,11 +79,24 @@ pub mod exports {
 /// Re-export the storage macros
 pub use calimero_storage_macros::{AtomicUnit, Collection};
 
+// Re-export commonly used types
+pub use entities::{Data, Element};
+pub use error::StorageError;
+pub use interface::Interface;
+
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
+    /// CRDT collections (UnorderedMap, Vector, Counter) tests.
+    pub mod collections;
     /// Common test utilities and data structures.
     pub mod common;
+    /// Comprehensive CRDT behavior tests.
+    pub mod crdt;
+    /// Delta creation and commit tests.
+    pub mod delta;
+    /// Merkle hash propagation tests.
+    pub mod merkle;
 }
 
 #[cfg(test)]

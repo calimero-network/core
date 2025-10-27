@@ -13,7 +13,7 @@ impl Handler<QueryBlob> for NetworkManager {
     fn handle(&mut self, request: QueryBlob, _ctx: &mut Context<Self>) -> Self::Result {
         info!(
             blob_id = %request.blob_id,
-            context_id = ?request.context_id.as_ref().map(|id| id.to_string()),
+            context_id = ?request.context_id.as_ref().map(ToString::to_string),
             "Querying DHT for blob"
         );
 

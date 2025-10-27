@@ -1,9 +1,17 @@
+use core::cell::RefCell;
 use serde::Serialize;
 
 use crate::{
     errors::{HostError, Location, PanicContext},
-    logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE},
+    logic::{sys, VMHostFunctions, VMLogicResult},
 };
+use calimero_primitives::common::DIGEST_SIZE;
+
+thread_local! {
+    /// The name of the callback handler method to call when emitting events with handlers.
+    /// This is set temporarily by the SDK's `emit_with_handler` function and read by the runtime.
+    static CURRENT_CALLBACK_HANDLER: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 /// Represents a structured event emitted during the execution.
 #[derive(Debug, Serialize)]
@@ -13,6 +21,20 @@ pub struct Event {
     pub kind: String,
     /// The binary data payload associated with the event.
     pub data: Vec<u8>,
+    /// Optional handler name for the event.
+    pub handler: Option<String>,
+}
+
+/// Represents a cross-context call to be executed.
+#[derive(Debug, Serialize)]
+#[non_exhaustive]
+pub struct XCall {
+    /// The context ID to execute the call on.
+    pub context_id: [u8; DIGEST_SIZE],
+    /// The function name to call.
+    pub function: String,
+    /// The parameters to pass to the function.
+    pub params: Vec<u8>,
 }
 
 impl VMHostFunctions<'_> {
@@ -288,7 +310,145 @@ impl VMHostFunctions<'_> {
         let kind = self.read_guest_memory_str(event.kind())?.to_owned();
         let data = self.read_guest_memory_slice(event.data()).to_vec();
 
-        self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
+        // Read callback handler name from thread-local storage
+        let handler = CURRENT_CALLBACK_HANDLER.with(|name| name.borrow().clone());
+
+        self.with_logic_mut(|logic| {
+            logic.events.push(Event {
+                kind,
+                data,
+                handler,
+            });
+        });
+
+        Ok(())
+    }
+
+    /// Emits an event with an optional handler name.
+    ///
+    /// This function is similar to `emit` but includes handler information.
+    /// The handler name is read from the provided memory pointer.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_event_ptr` - Pointer to the event data in guest memory.
+    /// * `src_handler_ptr` - Pointer to the handler name in guest memory (can be 0 for no handler).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the event was successfully emitted.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::EventKindSizeOverflow` if the event kind is too long.
+    /// * `HostError::EventDataSizeOverflow` if the event data is too large.
+    /// * `HostError::EventsOverflow` if the maximum number of events has been reached.
+    /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
+    pub fn emit_with_handler(
+        &mut self,
+        src_event_ptr: u64,
+        src_handler_ptr: u64,
+    ) -> VMLogicResult<()> {
+        let event = unsafe { self.read_guest_memory_typed::<sys::Event<'_>>(src_event_ptr)? };
+
+        let kind_len = event.kind().len();
+        let data_len = event.data().len();
+
+        let logic = self.borrow_logic();
+
+        if kind_len > logic.limits.max_event_kind_size {
+            return Err(HostError::EventKindSizeOverflow.into());
+        }
+
+        if data_len > logic.limits.max_event_data_size {
+            return Err(HostError::EventDataSizeOverflow.into());
+        }
+
+        if logic.events.len()
+            >= usize::try_from(logic.limits.max_events).map_err(|_| HostError::IntegerOverflow)?
+        {
+            return Err(HostError::EventsOverflow.into());
+        }
+
+        let kind = self.read_guest_memory_str(event.kind())?.to_owned();
+        let data = self.read_guest_memory_slice(event.data()).to_vec();
+
+        // Parse handler name if provided (src_handler_ptr != 0)
+        let handler = if src_handler_ptr == 0 {
+            None
+        } else {
+            // Read the handler buffer from guest memory
+            let handler_buffer =
+                unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_handler_ptr)? };
+            match self.read_guest_memory_str(&handler_buffer) {
+                Ok(handler_str) => Some(handler_str.to_owned()),
+                Err(_) => None, // If we can't read the handler, just set to None
+            }
+        };
+
+        self.with_logic_mut(|logic| {
+            logic.events.push(Event {
+                kind,
+                data,
+                handler,
+            });
+        });
+
+        Ok(())
+    }
+
+    /// Queues a cross-context call to be executed after the current execution completes.
+    ///
+    /// This function collects cross-context calls that will be executed locally
+    /// on the specified contexts after the current execution finishes.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_xcall_ptr` - Pointer to the XCall data in guest memory.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the xcall was successfully queued.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::XCallFunctionSizeOverflow` if the function name is too long.
+    /// * `HostError::XCallParamsSizeOverflow` if the params data is too large.
+    /// * `HostError::XCallsOverflow` if the maximum number of xcalls has been reached.
+    /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
+    pub fn xcall(&mut self, src_xcall_ptr: u64) -> VMLogicResult<()> {
+        let xcall = unsafe { self.read_guest_memory_typed::<sys::XCall<'_>>(src_xcall_ptr)? };
+
+        let function_len = xcall.function().len();
+        let params_len = xcall.params().len();
+
+        let logic = self.borrow_logic();
+
+        if function_len > logic.limits.max_xcall_function_size {
+            return Err(HostError::XCallFunctionSizeOverflow.into());
+        }
+
+        if params_len > logic.limits.max_xcall_params_size {
+            return Err(HostError::XCallParamsSizeOverflow.into());
+        }
+
+        if logic.xcalls.len()
+            >= usize::try_from(logic.limits.max_xcalls).map_err(|_| HostError::IntegerOverflow)?
+        {
+            return Err(HostError::XCallsOverflow.into());
+        }
+
+        let context_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(xcall.context_id())?;
+        let function = self.read_guest_memory_str(xcall.function())?.to_owned();
+        let params = self.read_guest_memory_slice(xcall.params()).to_vec();
+
+        self.with_logic_mut(|logic| {
+            logic.xcalls.push(XCall {
+                context_id,
+                function,
+                params,
+            });
+        });
 
         Ok(())
     }

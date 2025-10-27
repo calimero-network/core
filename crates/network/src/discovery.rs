@@ -1,6 +1,6 @@
+use core::net::Ipv4Addr;
+use core::time::Duration;
 use std::collections::HashSet;
-use std::net::Ipv4Addr;
-use std::time::Duration;
 
 use calimero_network_primitives::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use eyre::{bail, ContextCompat, Result as EyreResult};
@@ -26,7 +26,7 @@ pub struct Discovery {
 }
 
 #[derive(Debug)]
-pub(crate) struct AdvertiseState {
+pub struct AdvertiseState {
     pub(crate) ip: Ipv4Addr,
     pub(crate) ports: HashSet<u16>,
 }

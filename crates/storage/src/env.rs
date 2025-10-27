@@ -64,11 +64,31 @@ pub fn time_now() -> u64 {
     imp::time_now()
 }
 
-/// Return the context id.
+/// Returns the current context ID.
+///
+/// In WASM, this calls the host function. In tests, returns a fixed value.
 #[must_use]
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn context_id() -> [u8; 32] {
     imp::context_id()
+}
+
+/// Returns the current executor ID (the public key of the transaction signer).
+///
+/// In WASM, this calls the host function. In tests, returns a fixed value.
+#[must_use]
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
+pub fn executor_id() -> [u8; 32] {
+    imp::executor_id()
+}
+
+/// Resets the environment state for testing.
+///
+/// This clears the thread-local ROOT_HASH, allowing multiple commits
+/// in the same test execution. Only available in test builds.
+#[cfg(test)]
+pub fn reset_for_testing() {
+    imp::reset_for_testing();
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -107,12 +127,23 @@ mod calimero_vm {
         env::context_id()
     }
 
+    /// Return the executor id.
+    pub(super) fn executor_id() -> [u8; 32] {
+        env::executor_id()
+    }
+
     /// Gets the current time.
     ///
     /// This function obtains the current time as a nanosecond timestamp.
     ///
     pub(super) fn time_now() -> u64 {
         env::time_now()
+    }
+
+    /// Resets the environment state for testing (no-op in WASM).
+    #[cfg(test)]
+    pub(super) fn reset_for_testing() {
+        // No-op for WASM - not needed since each execution is isolated
     }
 }
 
@@ -166,6 +197,11 @@ mod mocked {
         [236; 32]
     }
 
+    /// Return the executor id (for testing, returns a fixed value).
+    pub(super) const fn executor_id() -> [u8; 32] {
+        [237; 32]
+    }
+
     /// Gets the current time.
     ///
     /// This function obtains the current time as a nanosecond timestamp.
@@ -180,5 +216,16 @@ mod mocked {
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
             .as_nanos() as u64
+    }
+
+    /// Resets the environment state for testing.
+    ///
+    /// Clears the thread-local ROOT_HASH, allowing multiple commits
+    /// in the same test execution context.
+    #[cfg(test)]
+    pub(super) fn reset_for_testing() {
+        ROOT_HASH.with(|rh| {
+            *rh.borrow_mut() = None;
+        });
     }
 }

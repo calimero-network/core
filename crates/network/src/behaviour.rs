@@ -1,4 +1,4 @@
-use std::time::Duration;
+use core::time::Duration;
 
 use calimero_network_primitives::config::NetworkConfig;
 use eyre::WrapErr;
@@ -56,7 +56,7 @@ impl Behaviour {
             .with_quic()
             .with_relay_client(noise::Config::new, yamux::Config::default)?
             .with_behaviour(|key, relay_behaviour| {
-                let behaviour = Behaviour {
+                let behaviour = Self {
                     autonat: {
                         autonat::Behaviour::new(
                             peer_id,
@@ -95,7 +95,7 @@ impl Behaviour {
 
                         if let Err(err) = kad.bootstrap() {
                             warn!(%err, "Failed to bootstrap Kademlia");
-                        };
+                        }
 
                         kad
                     },
@@ -117,7 +117,7 @@ impl Behaviour {
         for addr in &config.swarm.listen {
             let _ignored = swarm
                 .listen_on(addr.clone())
-                .wrap_err_with(|| format!("failed to listen on '{}'", addr))?;
+                .wrap_err_with(|| format!("failed to listen on '{addr}'"))?;
         }
 
         Ok(swarm)

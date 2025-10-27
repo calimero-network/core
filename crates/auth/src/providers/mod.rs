@@ -34,6 +34,12 @@ pub struct ProviderFactory {
     registrations: HashMap<String, Arc<dyn ProviderRegistration>>,
 }
 
+impl Default for ProviderFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProviderFactory {
     /// Create a new provider factory with all registered providers
     pub fn new() -> Self {
