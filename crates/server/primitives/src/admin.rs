@@ -25,17 +25,17 @@ pub struct InstallApplicationRequest {
     pub url: Url,
     pub hash: Option<Hash>,
     pub metadata: Vec<u8>,
-    pub package: String,
-    pub version: String,
+    pub package: Option<String>,
+    pub version: Option<String>,
 }
 
 impl InstallApplicationRequest {
-    pub const fn new(
+    pub fn new(
         url: Url,
         hash: Option<Hash>,
         metadata: Vec<u8>,
-        package: String,
-        version: String,
+        package: Option<String>,
+        version: Option<String>,
     ) -> Self {
         Self {
             url,
@@ -72,16 +72,16 @@ impl InstallApplicationResponse {
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
     pub metadata: Vec<u8>,
-    pub package: String,
-    pub version: String,
+    pub package: Option<String>,
+    pub version: Option<String>,
 }
 
 impl InstallDevApplicationRequest {
-    pub const fn new(
+    pub fn new(
         path: Utf8PathBuf,
         metadata: Vec<u8>,
-        package: String,
-        version: String,
+        package: Option<String>,
+        version: Option<String>,
     ) -> Self {
         Self {
             path,

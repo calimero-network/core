@@ -64,8 +64,8 @@ impl InstallCommand {
             let request = InstallDevApplicationRequest::new(
                 app_path.canonicalize_utf8()?,
                 metadata,
-                self.package.clone(),
-                self.version.clone(),
+                Some(self.package.clone()),
+                Some(self.version.clone()),
             );
             client.install_dev_application(request).await?
         } else if let Some(app_url) = self.url.as_ref() {
@@ -73,8 +73,8 @@ impl InstallCommand {
                 Url::parse(&app_url)?,
                 self.hash,
                 metadata,
-                self.package.clone(),
-                self.version.clone(),
+                Some(self.package.clone()),
+                Some(self.version.clone()),
             );
             client.install_application(request).await?
         } else {

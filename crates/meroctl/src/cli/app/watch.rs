@@ -72,8 +72,8 @@ impl WatchCommand {
             .install_dev_application(InstallDevApplicationRequest::new(
                 self.path.clone(),
                 metadata.clone().unwrap_or_default(),
-                self.package.clone(),
-                self.version.clone(),
+                Some(self.package.clone()),
+                Some(self.version.clone()),
             ))
             .await?
             .data
@@ -162,8 +162,8 @@ async fn watch_app_and_update_contexts(
             .install_dev_application(InstallDevApplicationRequest::new(
                 path.clone(),
                 metadata.clone().unwrap_or_default(),
-                package.clone(),
-                version.clone(),
+                Some(package.clone()),
+                Some(version.clone()),
             ))
             .await?
             .data
