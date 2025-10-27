@@ -7,6 +7,8 @@ use clap::Parser;
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 
+mod abi;
+mod deserializer;
 mod export;
 mod schema;
 mod types;
@@ -45,6 +47,10 @@ struct Cli {
     /// Output file path (defaults to stdout if not specified)
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
+
+    /// WASM file for ABI-guided state deserialization (optional)
+    #[arg(long, value_name = "WASM_FILE")]
+    wasm_file: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -69,6 +75,27 @@ fn main() -> Result<()> {
     // Open the database in read-only mode
     let db = open_database(db_path)?;
 
+    // Load ABI manifest if WASM file is provided
+    let abi_manifest = if let Some(wasm_path) = &cli.wasm_file {
+        if !wasm_path.exists() {
+            eyre::bail!("WASM file does not exist: {}", wasm_path.display());
+        }
+        println!("Loading ABI from WASM file: {}", wasm_path.display());
+        match abi::extract_abi_from_wasm(wasm_path) {
+            Ok(manifest) => {
+                println!("ABI loaded successfully");
+                Some(manifest)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load ABI from WASM: {e}");
+                eprintln!("Falling back to raw hex output for State and Delta columns");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Handle different operations
     if cli.export {
         let columns = if cli.all {
@@ -79,7 +106,7 @@ fn main() -> Result<()> {
             eyre::bail!("Must specify either --all or --columns when using --export");
         };
 
-        let data = export::export_data(&db, &columns)?;
+        let data = export::export_data(&db, &columns, abi_manifest.as_ref())?;
         output_json(&data, cli.output.as_deref())?;
     } else if cli.validate {
         let validation_result = validation::validate_database(&db)?;

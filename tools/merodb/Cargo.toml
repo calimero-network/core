@@ -11,12 +11,13 @@ publish = false
 [dependencies]
 rocksdb = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 borsh = { workspace = true, features = ["derive"] }
 eyre = { workspace = true }
 hex = { workspace = true }
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-wasm-abi = { workspace = true }
+wasmparser = "0.118"
 
 [lints]
 workspace = true

@@ -6449,12 +6449,13 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "calimero-store",
+ "calimero-wasm-abi",
  "clap",
  "eyre",
  "hex",
  "rocksdb",
- "serde",
  "serde_json",
+ "wasmparser 0.118.2",
 ]
 
 [[package]]
