@@ -1,17 +1,36 @@
 //! Synchronization configuration with sensible defaults.
 //!
 //! **Convention over Configuration**: All magic numbers are extracted to named constants.
+//!
+//! ## Design Philosophy
+//!
+//! Our DAG-based CRDT system uses a **dual-path approach** for delta propagation:
+//!
+//! 1. **Primary Path: Gossipsub Broadcast** (instant, <1s)
+//!    - Deltas broadcast immediately when transactions complete
+//!    - Fast, reliable in good network conditions
+//!    - May fail due to network partitions, packet loss, etc.
+//!
+//! 2. **Fallback Path: Periodic Sync** (configurable, default 10s)
+//!    - Nodes periodically exchange DAG heads and fetch missing deltas
+//!    - Ensures eventual consistency even if broadcasts fail
+//!    - MUST be aggressive enough to prevent divergence
+//!
+//! **Critical**: If periodic sync is too slow (e.g., 60s), nodes can diverge for extended
+//! periods when broadcasts fail. The defaults below balance network overhead with convergence speed.
 
 use tokio::time;
 
-/// Default timeout for entire sync operation (5 minutes)
-pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 300;
+/// Default timeout for entire sync operation (30 seconds)
+pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;
 
-/// Default minimum interval between syncs for same context (30 seconds)
-pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 30;
+/// Default minimum interval between syncs for same context (5 seconds)
+/// This allows rapid re-sync if broadcasts fail, ensuring fast CRDT convergence
+pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 5;
 
-/// Default frequency of periodic sync checks (1 minute)
-pub const DEFAULT_SYNC_FREQUENCY_SECS: u64 = 60;
+/// Default frequency of periodic sync checks (10 seconds)
+/// Aggressive fallback for when gossipsub broadcasts fail or are delayed
+pub const DEFAULT_SYNC_FREQUENCY_SECS: u64 = 10;
 
 /// Default maximum concurrent sync operations
 pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 30;

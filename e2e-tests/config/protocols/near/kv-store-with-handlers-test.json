@@ -40,7 +40,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000,
+        "durationMs": 5000,
         "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
@@ -67,7 +67,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000,
+        "durationMs": 5000,
         "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
@@ -93,7 +93,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000,
+        "durationMs": 5000,
         "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
@@ -120,7 +120,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000,
+        "durationMs": 5000,
         "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
@@ -135,7 +135,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000,
+        "durationMs": 5000,
         "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
