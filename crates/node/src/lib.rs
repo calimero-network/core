@@ -89,19 +89,106 @@ impl NodeState {
         }
     }
 
-    /// Evict blobs not accessed recently from cache
+    /// Evict blobs from cache based on age, count, and memory limits
     fn evict_old_blobs(&self) {
         const MAX_BLOB_AGE: Duration = Duration::from_secs(300); // 5 minutes
+        const MAX_CACHE_COUNT: usize = 100; // Max number of blobs
+        const MAX_CACHE_BYTES: usize = 500 * 1024 * 1024; // 500MB total memory
 
         let now = Instant::now();
         let before_count = self.blob_cache.len();
 
+        // Phase 1: Remove blobs older than MAX_BLOB_AGE
         self.blob_cache
             .retain(|_, cached_blob| now.duration_since(cached_blob.last_accessed) < MAX_BLOB_AGE);
 
-        let evicted = before_count.saturating_sub(self.blob_cache.len());
-        if evicted > 0 {
-            tracing::debug!(evicted, "Evicted old blobs from cache");
+        let after_time_eviction = self.blob_cache.len();
+
+        // Phase 2: If still over count limit, remove least recently used
+        if self.blob_cache.len() > MAX_CACHE_COUNT {
+            let mut blobs: Vec<_> = self
+                .blob_cache
+                .iter()
+                .map(|entry| (*entry.key(), entry.value().last_accessed))
+                .collect();
+
+            // Sort by last_accessed (oldest first)
+            blobs.sort_by_key(|(_, accessed)| *accessed);
+
+            // Remove oldest until under count limit
+            let to_remove = self.blob_cache.len() - MAX_CACHE_COUNT;
+            for (blob_id, _) in blobs.iter().take(to_remove) {
+                let _removed = self.blob_cache.remove(&blob_id);
+            }
+        }
+
+        let after_count_eviction = self.blob_cache.len();
+
+        // Phase 3: If still over memory limit, remove by LRU until under budget
+        let total_size: usize = self
+            .blob_cache
+            .iter()
+            .map(|entry| entry.value().data.len())
+            .sum();
+
+        if total_size > MAX_CACHE_BYTES {
+            let mut blobs: Vec<_> = self
+                .blob_cache
+                .iter()
+                .map(|entry| {
+                    (
+                        *entry.key(),
+                        entry.value().last_accessed,
+                        entry.value().data.len(),
+                    )
+                })
+                .collect();
+
+            // Sort by last_accessed (oldest first)
+            blobs.sort_by_key(|(_, accessed, _)| *accessed);
+
+            let mut current_size = total_size;
+            let mut removed_count = 0;
+
+            for (blob_id, _, size) in blobs {
+                if current_size <= MAX_CACHE_BYTES {
+                    break;
+                }
+                let _removed = self.blob_cache.remove(&blob_id);
+                current_size = current_size.saturating_sub(size);
+                removed_count += 1;
+            }
+
+            if removed_count > 0 {
+                #[expect(
+                    clippy::integer_division,
+                    reason = "MB conversion for logging, precision not critical"
+                )]
+                let freed_mb = total_size.saturating_sub(current_size) / 1024 / 1024;
+                #[expect(
+                    clippy::integer_division,
+                    reason = "MB conversion for logging, precision not critical"
+                )]
+                let new_size_mb = current_size / 1024 / 1024;
+                tracing::debug!(
+                    removed_count,
+                    freed_mb,
+                    new_size_mb,
+                    "Evicted blobs to stay under memory limit"
+                );
+            }
+        }
+
+        let total_evicted = before_count.saturating_sub(self.blob_cache.len());
+        if total_evicted > 0 {
+            tracing::debug!(
+                total_evicted,
+                time_evicted = before_count.saturating_sub(after_time_eviction),
+                count_evicted = after_time_eviction.saturating_sub(after_count_eviction),
+                memory_evicted = after_count_eviction.saturating_sub(self.blob_cache.len()),
+                remaining_count = self.blob_cache.len(),
+                "Blob cache eviction completed"
+            );
         }
     }
 }

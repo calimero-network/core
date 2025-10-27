@@ -156,6 +156,23 @@ pub async fn handle_state_delta(
         }
     }
 
+    // Deserialize events ONCE if present (optimization: avoid double parse)
+    let events_payload = if let Some(ref events_data) = events {
+        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+            Ok(payload) => Some(payload),
+            Err(e) => {
+                warn!(
+                    %context_id,
+                    error = %e,
+                    "Failed to deserialize events, skipping handler execution and WebSocket emission"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Execute event handlers ONLY if the delta was actually applied
     // NOTE: Handlers are NEVER executed on the author node that produced the events.
     // They are only executed on receiving nodes to avoid infinite loops and ensure
@@ -165,7 +182,7 @@ pub async fn handle_state_delta(
     // will be lost because when the delta is applied later (via __calimero_sync_next),
     // the events data won't be available!
     if applied {
-        if let Some(events_data) = &events {
+        if let Some(ref payload) = events_payload {
             if author_id != our_identity {
                 info!(
                     %context_id,
@@ -173,11 +190,11 @@ pub async fn handle_state_delta(
                     %our_identity,
                     "Executing event handlers (delta applied, we are a receiving node)"
                 );
-                execute_event_handlers(
+                execute_event_handlers_parsed(
                     &node_clients.context,
                     &context_id,
                     &our_identity,
-                    events_data,
+                    payload,
                 )
                 .await?;
             } else {
@@ -188,7 +205,7 @@ pub async fn handle_state_delta(
                 );
             }
         }
-    } else if events.is_some() {
+    } else if events_payload.is_some() {
         warn!(
             %context_id,
             delta_id = ?delta_id,
@@ -197,65 +214,55 @@ pub async fn handle_state_delta(
     }
 
     // Emit state mutation to WebSocket clients (frontends)
-    if let Some(events_data) = events {
-        emit_state_mutation_event(&node_clients.node, &context_id, root_hash, events_data)?;
+    // Use already-parsed events (no re-deserialization!)
+    if let Some(payload) = events_payload {
+        emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
     }
 
     Ok(())
 }
 
-/// Execute event handlers for received events
-async fn execute_event_handlers(
+/// Execute event handlers for received events (from already-parsed payload)
+async fn execute_event_handlers_parsed(
     context_client: &ContextClient,
     context_id: &ContextId,
     our_identity: &PublicKey,
-    events_data: &[u8],
+    events_payload: &[ExecutionEvent],
 ) -> Result<()> {
-    match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-        Ok(events_payload) => {
-            for event in &events_payload {
-                if let Some(handler_name) = &event.handler {
-                    debug!(
-                    %context_id,
-                    event_kind = %event.kind,
-                    handler_name = %handler_name,
-                        "Executing handler for event"
-                    );
+    for event in events_payload {
+        if let Some(handler_name) = &event.handler {
+            debug!(
+                %context_id,
+                event_kind = %event.kind,
+                handler_name = %handler_name,
+                "Executing handler for event"
+            );
 
-                    match context_client
-                        .execute(
-                            context_id,
-                            our_identity,
-                            handler_name.clone(),
-                            event.data.clone(),
-                            vec![],
-                            None,
-                        )
-                        .await
-                    {
-                        Ok(_handler_response) => {
-                            debug!(
-                                handler_name = %handler_name,
-                                "Handler executed successfully"
-                            );
-                        }
-                        Err(err) => {
-                            warn!(
-                                handler_name = %handler_name,
-                                error = %err,
-                                "Handler execution failed"
-                            );
-                        }
-                    }
+            match context_client
+                .execute(
+                    context_id,
+                    our_identity,
+                    handler_name.clone(),
+                    event.data.clone(),
+                    vec![],
+                    None,
+                )
+                .await
+            {
+                Ok(_handler_response) => {
+                    debug!(
+                        handler_name = %handler_name,
+                        "Handler executed successfully"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        handler_name = %handler_name,
+                        error = %err,
+                        "Handler execution failed"
+                    );
                 }
             }
-        }
-        Err(e) => {
-            warn!(
-                %context_id,
-                error = %e,
-                "Failed to deserialize events"
-            );
         }
     }
 
@@ -267,36 +274,28 @@ async fn execute_event_handlers(
 /// Note: This is separate from node-to-node DAG synchronization.
 /// - DAG broadcast (BroadcastMessage::StateDelta) = node-to-node sync
 /// - WebSocket events (NodeEvent::Context) = node-to-frontend updates
-fn emit_state_mutation_event(
+///
+/// Takes already-parsed events to avoid redundant deserialization
+fn emit_state_mutation_event_parsed(
     node_client: &NodeClient,
     context_id: &ContextId,
     root_hash: Hash,
-    events_data: Vec<u8>,
+    events_payload: Vec<ExecutionEvent>,
 ) -> Result<()> {
-    match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
-        Ok(events_payload) => {
-            let state_mutation = ContextEvent {
-                context_id: *context_id,
-                payload: ContextEventPayload::StateMutation(
-                    StateMutationPayload::with_root_and_events(root_hash, events_payload),
-                ),
-            };
+    let state_mutation = ContextEvent {
+        context_id: *context_id,
+        payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
+            root_hash,
+            events_payload,
+        )),
+    };
 
-            if let Err(e) = node_client.send_event(NodeEvent::Context(state_mutation)) {
-                warn!(
-                    %context_id,
-                    error = %e,
-                    "Failed to emit state mutation event to WebSocket clients"
-                );
-            }
-        }
-        Err(e) => {
-            warn!(
-                %context_id,
-                error = %e,
-                "Failed to deserialize events for WebSocket emission"
-            );
-        }
+    if let Err(e) = node_client.send_event(NodeEvent::Context(state_mutation)) {
+        warn!(
+            %context_id,
+            error = %e,
+            "Failed to emit state mutation event to WebSocket clients"
+        );
     }
 
     Ok(())

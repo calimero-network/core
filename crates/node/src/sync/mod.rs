@@ -1,4 +1,7 @@
-#![allow(clippy::mod_module_files, reason = "sync module has multiple submodules")]
+#![expect(
+    clippy::mod_module_files,
+    reason = "sync module has multiple submodules"
+)]
 
 //! Peer synchronization protocols and coordination.
 //!

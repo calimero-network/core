@@ -84,9 +84,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         .subscribe(IdentTopic::new("meta_topic".to_owned()))
         .await?;
 
-    let (event_sender, _) = broadcast::channel(32);
+    // Increased buffer sizes for better burst handling and concurrency
+    // 256 events: supports more concurrent WebSocket clients
+    // 64 sync requests: handles burst context joins/syncs
+    let (event_sender, _) = broadcast::channel(256);
 
-    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(16);
+    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
 
     let node_client = NodeClient::new(
         datastore.clone(),
