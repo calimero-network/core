@@ -48,6 +48,7 @@ jobs:
         run: |
           ./apps/kv-store/build.sh
           ./apps/kv-store-with-handlers/build.sh
+          ./apps/kv-store-init/build.sh
           cargo build --release -p meroctl -p merod -p e2e-tests
 
       - name: Upload Build Artifacts (Binaries)
@@ -60,6 +61,7 @@ jobs:
             target/release/e2e-tests
             apps/kv-store/res/kv_store.wasm
             apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+            apps/kv-store-init/res/kv_store_init.wasm
           retention-days: 2
 
   test:
