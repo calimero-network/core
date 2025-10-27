@@ -1,6 +1,7 @@
 use calimero_primitives::application::Application;
 use calimero_server_primitives::admin::{
-    GetApplicationResponse, InstallApplicationResponse, ListApplicationsResponse,
+    GetApplicationResponse, GetLatestVersionResponse, InstallApplicationResponse,
+    ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse,
     UninstallApplicationResponse,
 };
 use comfy_table::{Cell, Color, Table};
@@ -98,6 +99,59 @@ impl Report for UninstallApplicationResponse {
             "Successfully uninstalled application '{}'",
             self.data.application_id
         )]);
+
+        println!("{table}");
+    }
+}
+
+impl Report for ListPackagesResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+
+        let _ = table.set_header(vec![Cell::new("Package").fg(Color::Blue)]);
+
+        for package in &self.packages {
+            let _ = table.add_row(vec![package.clone()]);
+        }
+
+        println!("{table}");
+    }
+}
+
+impl Report for ListVersionsResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+
+        let _ = table.set_header(vec![Cell::new("Version").fg(Color::Blue)]);
+
+        for version in &self.versions {
+            let _ = table.add_row(vec![version.clone()]);
+        }
+
+        println!("{table}");
+    }
+}
+
+impl Report for GetLatestVersionResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+
+        let _ = table.set_header(vec![Cell::new("Application ID").fg(Color::Blue)]);
+
+        match &self.application_id {
+            Some(id) => {
+                let _ = table.add_row(vec![id.to_string()]);
+            }
+            None => {
+                let _ = table.add_row(vec!["No latest version found".to_owned()]);
+            }
+        }
 
         println!("{table}");
     }

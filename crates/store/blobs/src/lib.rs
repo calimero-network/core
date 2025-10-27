@@ -87,6 +87,21 @@ impl BlobManager {
         }
     }
 
+    /// Get the package directory path
+    pub fn package_path(&self, package: &str) -> Utf8PathBuf {
+        self.blob_store.package_path(package)
+    }
+
+    /// Get the version directory path
+    pub fn version_path(&self, package: &str, version: &str) -> Utf8PathBuf {
+        self.blob_store.version_path(package, version)
+    }
+
+    /// Get the path for a blob stored in a package/version directory
+    pub fn application_blob_path(&self, package: &str, version: &str, id: BlobId) -> Utf8PathBuf {
+        self.blob_store.application_blob_path(package, version, id)
+    }
+
     pub fn has(&self, id: BlobId) -> EyreResult<bool> {
         Ok(self.data_store.handle().has(&BlobMetaKey::new(id))?)
     }
@@ -326,6 +341,26 @@ impl FileSystem {
 
     fn path(&self, id: BlobId) -> Utf8PathBuf {
         self.root.join(id.as_str())
+    }
+
+    /// Get the path for a blob stored in a package/version directory
+    pub fn application_blob_path(&self, package: &str, version: &str, id: BlobId) -> Utf8PathBuf {
+        self.root
+            .join("applications")
+            .join(package)
+            .join(version)
+            .join("blobs")
+            .join(id.as_str())
+    }
+
+    /// Get the package directory path
+    pub fn package_path(&self, package: &str) -> Utf8PathBuf {
+        self.root.join("applications").join(package)
+    }
+
+    /// Get the version directory path
+    pub fn version_path(&self, package: &str, version: &str) -> Utf8PathBuf {
+        self.package_path(package).join(version)
     }
 }
 

@@ -402,7 +402,9 @@ impl SyncManager {
                 ..
             } = response
             {
-                let has_state = !dag_heads.is_empty() && *root_hash != [0; 32];
+                // Peer has state if root_hash is not zeros
+                // (even if dag_heads is empty due to migration/legacy contexts)
+                let has_state = *root_hash != [0; 32];
 
                 debug!(
                     %context_id,
@@ -519,7 +521,7 @@ impl SyncManager {
             );
 
             let result = self
-                .request_dag_heads_and_sync(context_id, our_identity, &mut stream)
+                .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, &mut stream)
                 .await?;
 
             // If peer had no data (heads_count=0), return error to try next peer
@@ -539,6 +541,7 @@ impl SyncManager {
     async fn request_dag_heads_and_sync(
         &self,
         context_id: ContextId,
+        peer_id: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
@@ -576,8 +579,21 @@ impl SyncManager {
                     "Received DAG heads from peer, requesting deltas"
                 );
 
+                // Check if peer has state even without DAG heads
+                if dag_heads.is_empty() && *root_hash != [0; 32] {
+                    error!(
+                        %context_id,
+                        peer_root_hash = %root_hash,
+                        "Peer has state but no DAG heads!"
+                    );
+                    bail!(
+                        "Peer has state but no DAG heads (migration issue). \
+                         Clear data directories on both nodes and recreate context."
+                    );
+                }
+
                 if dag_heads.is_empty() {
-                    info!(%context_id, "Peer also has no deltas, will try next peer");
+                    info!(%context_id, "Peer also has no deltas and no state, will try next peer");
                     // Return None to signal caller to try next peer
                     return Ok(SyncProtocol::None);
                 }
