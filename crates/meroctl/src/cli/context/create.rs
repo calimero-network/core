@@ -113,8 +113,8 @@ impl CreateCommand {
                     .install_dev_application(InstallDevApplicationRequest::new(
                         path.clone(),
                         metadata.clone().unwrap_or_default(),
-                        "unknown".to_owned(),
-                        "0.0.0".to_owned(),
+                        Some("unknown".to_owned()),
+                        Some("0.0.0".to_owned()),
                     ))
                     .await?
                     .data
@@ -251,8 +251,8 @@ async fn watch_app_and_update_context(
             .install_dev_application(InstallDevApplicationRequest::new(
                 path.clone(),
                 metadata.clone().unwrap_or_default(),
-                "unknown".to_owned(),
-                "0.0.0".to_owned(),
+                Some("unknown".to_owned()),
+                Some("0.0.0".to_owned()),
             ))
             .await?
             .data
