@@ -72,7 +72,7 @@ impl KvStore {
         Ok(self.items.len()?)
     }
 
-    pub fn get<'a>(&self, key: &'a str) -> app::Result<Option<String>> {
+    pub fn get(&self, key: &str) -> app::Result<Option<String>> {
         app::log!("Getting key: {:?}", key);
 
         self.items.get(key).map_err(Into::into)
@@ -85,7 +85,7 @@ impl KvStore {
         Ok(self.items.get(key)?.expect("key not found"))
     }
 
-    pub fn get_result<'a>(&self, key: &'a str) -> app::Result<String> {
+    pub fn get_result(&self, key: &str) -> app::Result<String> {
         app::log!("Getting key, possibly failing: {:?}", key);
 
         let Some(value) = self.get(key)? else {

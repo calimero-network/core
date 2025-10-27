@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::UnorderedMap;
+use calimero_storage::collections::{Counter, UnorderedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
@@ -13,8 +13,8 @@ use thiserror::Error;
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     items: UnorderedMap<String, String>,
-    handlers_called: UnorderedMap<String, String>, // Track handlers called with counter
-    handler_counter: u64,
+    handlers_called: UnorderedMap<String, String>, // Track handlers called with CRDT counter
+    handler_counter: Counter, // CRDT-compatible counter (stored separately like a collection)
 }
 
 #[app::event]
@@ -40,7 +40,7 @@ impl KvStore {
         KvStore {
             items: UnorderedMap::new(),
             handlers_called: UnorderedMap::new(),
-            handler_counter: 0,
+            handler_counter: Counter::new(),
         }
     }
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
@@ -121,53 +121,69 @@ impl KvStore {
     }
 
     /// Helper function to log handler calls
-    fn log_handler_call(&mut self, handler_name: &str, details: &str) {
-        let log_entry = format!("Handler '{}' called: {}", handler_name, details);
-        app::log!("{}", log_entry);
+    fn log_handler_call(&mut self, handler_name: &str, details: &str) -> app::Result<()> {
+        app::log!("Handler '{}' called: {}", handler_name, details);
 
-        // Store in handlers list with counter
-        self.handler_counter += 1;
-        let key = format!("handler_{}", self.handler_counter);
-        let _ = self.handlers_called.insert(key, log_entry);
+        // Increment CRDT counter (uses env::executor_id() internally)
+        self.handler_counter.increment()?;
+
+        Ok(())
     }
 
     /// Handle insert events
-    pub fn insert_handler(&mut self, key: &str, value: &str) {
-        self.log_handler_call("insert_handler", &format!("key={}, value={}", key, value));
+    pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
+        self.log_handler_call("insert_handler", &format!("key={}, value={}", key, value))?;
         // Add your insert-specific logic here
         // For example: send notifications, update external systems, etc.
+        Ok(())
     }
 
     /// Handle update events
-    pub fn update_handler(&mut self, key: &str, value: &str) {
-        self.log_handler_call("update_handler", &format!("key={}, value={}", key, value));
+    pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
+        self.log_handler_call("update_handler", &format!("key={}, value={}", key, value))?;
         // Add your update-specific logic here
         // For example: log changes, update caches, etc.
+        Ok(())
     }
 
     /// Handle remove events
-    pub fn remove_handler(&mut self, key: &str) {
-        self.log_handler_call("remove_handler", &format!("key={}", key));
+    pub fn remove_handler(&mut self, key: &str) -> app::Result<()> {
+        self.log_handler_call("remove_handler", &format!("key={}", key))?;
         // Add your remove-specific logic here
         // For example: cleanup external resources, etc.
+        Ok(())
     }
 
     /// Handle clear events
-    pub fn clear_handler(&mut self) {
-        self.log_handler_call("clear_handler", "all items cleared");
+    pub fn clear_handler(&mut self) -> app::Result<()> {
+        self.log_handler_call("clear_handler", "all items cleared")?;
         // Add your clear-specific logic here
         // For example: cleanup all external resources, etc.
+        Ok(())
+    }
+
+    /// Get the total number of handlers executed across all nodes (CRDT G-Counter)
+    ///
+    /// This returns the global sum of handler executions from all nodes.
+    /// The G-Counter ensures that concurrent increments from different nodes
+    /// are correctly merged without conflicts.
+    pub fn get_handler_execution_count(&self) -> app::Result<u64> {
+        Ok(self.handler_counter.value()?)
     }
 
     /// Get the list of handlers that have been called (for testing)
+    ///
+    /// Note: This iterates through all possible handler keys from all nodes.
+    /// The order may vary depending on CRDT merge timing.
     pub fn get_handlers_called(&self) -> app::Result<Vec<String>> {
+        // Collect all handler entries from the map
         let mut handlers = Vec::new();
-        for i in 1..=self.handler_counter {
-            let key = format!("handler_{}", i);
-            if let Some(handler) = self.handlers_called.get(&key)? {
-                handlers.push(handler.clone());
+        for (key, value) in self.handlers_called.entries()? {
+            if key.starts_with("handler_") {
+                handlers.push(value);
             }
         }
+        handlers.sort();
         Ok(handlers)
     }
 
@@ -175,10 +191,9 @@ impl KvStore {
     /// This is more reliable than counting exact duplicates
     pub fn get_unique_handlers_called(&self) -> app::Result<Vec<String>> {
         let mut unique_handlers = std::collections::HashSet::new();
-        for i in 1..=self.handler_counter {
-            let key = format!("handler_{}", i);
-            if let Some(handler) = self.handlers_called.get(&key)? {
-                unique_handlers.insert(handler.clone());
+        for (key, value) in self.handlers_called.entries()? {
+            if key.starts_with("handler_") {
+                unique_handlers.insert(value);
             }
         }
         let mut result: Vec<String> = unique_handlers.into_iter().collect();
@@ -188,12 +203,9 @@ impl KvStore {
 
     /// Check if a specific handler was called (for testing)
     pub fn was_handler_called(&self, handler_name: &str) -> app::Result<bool> {
-        for i in 1..=self.handler_counter {
-            let key = format!("handler_{}", i);
-            if let Some(handler) = self.handlers_called.get(&key)? {
-                if handler.contains(handler_name) {
-                    return Ok(true);
-                }
+        for (key, value) in self.handlers_called.entries()? {
+            if key.starts_with("handler_") && value.contains(handler_name) {
+                return Ok(true);
             }
         }
         Ok(false)

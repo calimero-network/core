@@ -17,6 +17,7 @@ pub struct NetworkClient {
 }
 
 impl NetworkClient {
+    #[must_use]
     pub const fn new(network_manager: LazyRecipient<NetworkMessage>) -> Self {
         Self { network_manager }
     }
@@ -52,8 +53,7 @@ impl NetworkClient {
     pub async fn bootstrap(&self) -> eyre::Result<()> {
         let (tx, rx) = oneshot::channel();
 
-        let _result = self
-            .network_manager
+        self.network_manager
             .send(NetworkMessage::Bootstrap {
                 request: Bootstrap,
                 outcome: tx,

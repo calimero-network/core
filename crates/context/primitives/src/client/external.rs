@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use core::ops::Deref;
 
 use calimero_context_config::client::AnyTransport;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
@@ -52,7 +52,7 @@ impl Deref for ExternalClient<'_> {
 
 impl ExternalClient<'_> {
     const fn context_client(&self) -> &ContextClient {
-        &self.client
+        self.client
     }
 }
 

@@ -48,16 +48,16 @@ jobs:
         run: |
           ./apps/kv-store/build.sh
           ./apps/kv-store-with-handlers/build.sh
-          cargo build -p meroctl -p merod -p e2e-tests
+          cargo build --release -p meroctl -p merod -p e2e-tests
 
       - name: Upload Build Artifacts (Binaries)
         uses: actions/upload-artifact@v4
         with:
           name: resources
           path: |
-            target/debug/meroctl
-            target/debug/merod
-            target/debug/e2e-tests
+            target/release/meroctl
+            target/release/merod
+            target/release/e2e-tests
             apps/kv-store/res/kv_store.wasm
             apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
           retention-days: 2
@@ -82,7 +82,7 @@ jobs:
 
       - name: Set Permissions
         run: |
-          chmod +x target/debug/e2e-tests target/debug/merod target/debug/meroctl
+          chmod +x target/release/e2e-tests target/release/merod target/release/meroctl
 
       - name: Download Contracts
         run: |
@@ -135,11 +135,11 @@ jobs:
           jq '.network.serverHost = "0.0.0.0"' \
             e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
-          ./target/debug/e2e-tests \
+          ./target/release/e2e-tests \
             --input-dir ./e2e-tests/config \
             --output-dir ./e2e-tests/corpus \
-            --merod-binary ./target/debug/merod \
-            --meroctl-binary ./target/debug/meroctl \
+            --merod-binary ./target/release/merod \
+            --meroctl-binary ./target/release/meroctl \
             --protocols ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
@@ -179,7 +179,7 @@ jobs:
 
       - name: Set Permissions
         run: |
-          chmod +x target/debug/e2e-tests
+          chmod +x target/release/e2e-tests
 
       - name: Combine reports
         run: |
@@ -200,7 +200,7 @@ jobs:
           echo "Found protocols: ${protocols[*]}"
 
           # Combine all reports into a single markdown file
-          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
+          ./target/release/e2e-tests combine "${protocols[@]}" --output-dir reports
 
           echo "Combined report content:"
           cat reports/report.md

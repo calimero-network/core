@@ -69,9 +69,9 @@ impl Merod {
 
         let config_args = [
             "config",
-            "sync.timeout_ms=120000", // tolerable for now
-            "sync.interval_ms=0",     // sync on every frequency tick
-            "sync.frequency_ms=10000",
+            "sync.timeout_ms=30000", // 30s timeout (faster failure detection)
+            "sync.interval_ms=0",    // no throttling between syncs
+            "sync.frequency_ms=2000", // sync every 2s (aggressive fallback for broadcast failures)
             "bootstrap.nodes=[]",
         ]
         .into_iter()
@@ -115,6 +115,11 @@ impl Merod {
         log_suffix: &str,
     ) -> EyreResult<Child> {
         let mut command = Command::new(&self.binary);
+
+        // Enable debug logging for merod run command
+        if log_suffix == "run" {
+            command.env("RUST_LOG", "calimero_node=debug,calimero_context=debug,calimero_storage=debug,calimero_dag=debug");
+        }
 
         let mut command_line = format!("Command: '{}", &self.binary);
 

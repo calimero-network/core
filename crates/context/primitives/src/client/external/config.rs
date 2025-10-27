@@ -1,4 +1,4 @@
-use std::future::Future;
+use core::future::Future;
 
 use calimero_context_config::client::env::config::ContextConfig;
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
@@ -20,6 +20,7 @@ pub struct ExternalConfigClient<'a> {
 }
 
 impl ExternalClient<'_> {
+    #[must_use]
     pub const fn config(&self) -> ExternalConfigClient<'_> {
         ExternalConfigClient {
             nonce: None,
@@ -56,9 +57,9 @@ impl ExternalConfigClient<'_> {
         E: Into<eyre::Report>,
         F: Future<Output = Result<T, E>>,
     {
-        let retries = MAX_RETRIES + (self.nonce.is_none() as u8);
+        let retries = MAX_RETRIES + u8::from(self.nonce.is_none());
 
-        for _ in 0..(retries + 1) {
+        for _ in 0..=retries {
             let mut error = None;
 
             if let Some(nonce) = self.nonce {
@@ -231,7 +232,7 @@ impl ExternalConfigClient<'_> {
         let context_id = self.client.context_id.rt().expect("infallible conversion");
 
         let nonce = 0;
-        let _ = client
+        let _ignored = client
             .commit_invitation(context_id, commitment_hash.clone(), expiration_block_height)
             .send(**private_key, nonce)
             .await;
@@ -270,7 +271,7 @@ impl ExternalConfigClient<'_> {
 
         let nonce = 0;
         // Similar to commit, this is a public method call sent by the relayer.
-        let _ = client
+        let _ignored = client
             .reveal_invitation(context_id, payload.clone())
             .send(**private_key, nonce)
             .await;

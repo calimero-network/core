@@ -5,7 +5,7 @@ use eyre::Result as EyreResult;
 pub mod config;
 pub mod db;
 pub mod entry;
-mod handle;
+pub mod handle;
 pub mod iter;
 pub mod key;
 pub mod layer;
@@ -14,7 +14,7 @@ pub mod tx;
 
 use config::StoreConfig;
 use db::Database;
-use handle::Handle;
+pub use handle::Handle;
 
 #[cfg(feature = "datatypes")]
 pub mod types;

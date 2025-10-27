@@ -119,7 +119,7 @@ fn try_main() -> eyre::Result<()> {
             options = options.force();
         }
 
-        let workdir = cache.cached_path_with_options(&*src, &options)?;
+        let workdir = cache.cached_path_with_options(&src, &options)?;
 
         let repo = fs::read_dir(workdir)?
             .filter_map(Result::ok)
@@ -216,9 +216,9 @@ impl TryFrom<reqwest::blocking::Response> for Response {
             }
         };
 
-        let res = match serde_json::from_slice(&*bytes) {
+        let res = match serde_json::from_slice(&bytes) {
             Ok(res) => Response::Json(res),
-            Err(_) => match std::str::from_utf8(&*bytes) {
+            Err(_) => match std::str::from_utf8(&bytes) {
                 Ok(str) => Response::String(str.to_owned()),
                 Err(_) => Response::Bytes(bytes),
             },

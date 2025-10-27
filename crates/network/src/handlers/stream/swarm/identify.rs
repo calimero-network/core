@@ -68,22 +68,20 @@ impl EventHandler<Event> for NetworkManager {
                     );
                     self.swarm.add_external_address(observed_addr);
                 }
-            } else {
-                if self.discovery.state.is_peer_relay(&peer_id) {
-                    if let Err(err) = self.create_relay_reservation(&peer_id) {
-                        error!(%err, "Failed to handle relay reservation");
-                    };
+            } else if self.discovery.state.is_peer_relay(&peer_id) {
+                if let Err(err) = self.create_relay_reservation(&peer_id) {
+                    error!(%err, "Failed to handle relay reservation");
                 }
             }
 
             if self.discovery.state.is_peer_rendezvous(&peer_id) {
                 if let Err(err) = self.rendezvous_discover(&peer_id) {
                     error!(%err, "Failed to perform rendezvous discovery");
-                };
+                }
 
                 if let Err(err) = self.rendezvous_register(&peer_id) {
                     error!(%err, "Failed to update registration discovery");
-                };
+                }
             }
         }
     }

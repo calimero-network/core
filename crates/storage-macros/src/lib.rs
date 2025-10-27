@@ -122,7 +122,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         .map(|f| f.ident.as_ref().unwrap())
         .collect();
 
-    let mut serde_where_clause = where_clause.clone();
+    let mut serde_where_clause = where_clause;
 
     for ty in input.generics.type_params() {
         let ident = &ty.ident;

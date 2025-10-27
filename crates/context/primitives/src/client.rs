@@ -1,7 +1,5 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::num::NonZeroUsize;
-
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::types::{
@@ -15,14 +13,13 @@ use calimero_primitives::context::{
     Context, ContextConfigParams, ContextId, ContextInvitationPayload,
 };
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::{key, types, Store};
+use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
-use eyre::{bail, eyre, ContextCompat, WrapErr};
+use eyre::{bail, ContextCompat, WrapErr};
 use futures_util::Stream;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
-use tracing::{debug, trace};
 
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -34,10 +31,6 @@ use crate::ContextAtomic;
 pub mod crypto;
 pub mod external;
 mod sync;
-
-/// Maximum number of state deltas to retain in storage per member.
-/// Older deltas beyond this limit are automatically pruned to prevent unbounded storage growth.
-const DELTA_RETENTION_LIMIT: usize = 256;
 
 /// A client for interacting with the context management system.
 ///
@@ -58,7 +51,8 @@ pub struct ContextClient {
 }
 
 impl ContextClient {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         datastore: Store,
         node_client: NodeClient,
         external_client: ExternalClient<AnyTransport>,
@@ -70,6 +64,12 @@ impl ContextClient {
             external_client,
             context_manager,
         }
+    }
+
+    /// Returns a handle to the datastore for direct access.
+    /// Used by node components that need to read stored data.
+    pub fn datastore_handle(&self) -> calimero_store::Handle<Store> {
+        self.datastore.handle()
     }
 
     /// Sends a request to create a new context.
@@ -181,7 +181,7 @@ impl ContextClient {
         context_id: &ContextId,
         inviter_id: &PublicKey,
         valid_for_blocks: BlockHeight,
-        secret_salt: [u8; DIGEST_SIZE],
+        _secret_salt: [u8; DIGEST_SIZE],
     ) -> eyre::Result<Option<SignedOpenInvitation>> {
         // TODO(identity): figure out the best place to generate salt.
         // We temporarily ignore the passed `secret_salt` as we can't generate it in admin
@@ -207,7 +207,7 @@ impl ContextClient {
         // 1. Fetch the inviter's identity to get their private key for signing.
         let inviter_identity = self
             .get_identity(context_id, inviter_id)?
-            .with_context(|| format!("Inviter identity {} not found", inviter_id))?;
+            .with_context(|| format!("Inviter identity {inviter_id} not found"))?;
         let inviter_private_key = inviter_identity.private_key()?;
 
         let inviter_identity: [u8; DIGEST_SIZE] = **inviter_id;
@@ -292,18 +292,13 @@ impl ContextClient {
         let invitation = signed_invitation.invitation.clone();
         // Convert `config::types::ContextId` to `crypto::ContextId`
         let context_id = invitation.context_id.to_bytes().into();
-        println!(
-            "Try to join by open invitation the Context ID: {}",
-            context_id
-        );
+        println!("Try to join by open invitation the Context ID: {context_id}");
 
         // At this step the identity should be at the zeroth context:
         // it should exist on the node, but available to be assigned for a new context.
         let new_member_identity = self
             .get_identity(&ContextId::zero(), new_member_public_key)?
-            .with_context(|| {
-                format!("New member's identity {} not found", new_member_public_key)
-            })?;
+            .with_context(|| format!("New member's identity {new_member_public_key} not found"))?;
         let new_member_private_key = new_member_identity.private_key()?;
 
         // Convert `crypto::ContextIdentity` to `calimero_contex_config::types::ContextId`
@@ -318,7 +313,7 @@ impl ContextClient {
         let reveal_payload_data_bytes =
             borsh::to_vec(&reveal_payload_data).context("Failed to serialize invitation")?;
         let commitment_hash = hex::encode(Sha256::digest(&reveal_payload_data_bytes));
-        println!("New member commitment hash: {:?}", commitment_hash);
+        println!("New member commitment hash: {commitment_hash:?}");
 
         // Create a config for the external client.
         // We don't have a config for that context ID yet, as we are about to join it.
@@ -339,7 +334,7 @@ impl ContextClient {
             external_config.proxy_contract = proxy_contract.into();
 
             external_config_params = Some(external_config);
-        };
+        }
 
         let external_config_params =
             external_config_params.context("External config is None while it should be set")?;
@@ -367,7 +362,7 @@ impl ContextClient {
                 .context("Signing reveal payload data failed")?;
             hex::encode(signature.to_bytes())
         };
-        println!("New member signature: {:?}", new_member_signature);
+        println!("New member signature: {new_member_signature:?}");
 
         let signed_payload = SignedRevealPayload {
             data: reveal_payload_data,
@@ -435,17 +430,64 @@ impl ContextClient {
 
         let key = key::ContextMeta::new(*context_id);
 
-        let Some(context) = handle.get(&key)? else {
+        let Some(meta) = handle.get(&key)? else {
             return Ok(None);
         };
 
-        let context = Context::new(
+        let context = Context::with_dag_heads(
             *context_id,
-            context.application.application_id(),
-            context.root_hash.into(),
+            meta.application.application_id(),
+            meta.root_hash.into(),
+            meta.dag_heads.clone(),
+        );
+
+        tracing::info!(
+            %context_id,
+            dag_heads_count = meta.dag_heads.len(),
+            dag_heads = ?meta.dag_heads,
+            "Loaded context with dag_heads from database"
         );
 
         Ok(Some(context))
+    }
+
+    /// Updates the DAG heads for a context after applying a delta.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to update.
+    /// * `dag_heads` - The new DAG heads (typically the delta ID that was just applied).
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
+    pub fn update_dag_heads(
+        &self,
+        context_id: &ContextId,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = handle.get(&key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        // Update dag_heads
+        meta.dag_heads = dag_heads.clone();
+
+        // Write back to database
+        self.datastore.clone().handle().put(&key, &meta)?;
+
+        tracing::debug!(
+            %context_id,
+            dag_heads_count = dag_heads.len(),
+            dag_heads = ?dag_heads,
+            "Updated dag_heads in database"
+        );
+
+        Ok(())
     }
 
     /// Returns a stream of all context IDs stored locally.
@@ -649,221 +691,5 @@ impl ContextClient {
             .expect("Mailbox not to be dropped");
 
         receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    // --- State Delta Methods for Synchronization ---
-
-    /// Sets the head height for a member's state delta chain in the datastore.
-    /// This marks the latest known state version (height) for that member, acting as a
-    /// pointer for synchronization.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The context of the member.
-    /// * `public_key` - The member whose delta head is being set.
-    /// * `height` - The height to set as the current head. Must be non-zero.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the writing to the datastore fails.
-    pub fn set_delta_height(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-        height: NonZeroUsize,
-    ) -> eyre::Result<()> {
-        let mut handle = self.datastore.handle();
-
-        handle.put(
-            &key::ContextDelta::new(*context_id, *public_key, 0),
-            &types::ContextDelta::Head(height),
-        )?;
-
-        Ok(())
-    }
-
-    /// Retrieves the head height for a member's state delta chain from the datastore.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The context ID of the member.
-    /// * `public_key` - The member whose delta head is being retrieved.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing `Some(NonZeroUsize)` with the head height, or `None` if it's not set.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the retrieved delta has some different odd format used or the reading
-    /// from the datastore fails.
-    pub fn get_delta_height(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-    ) -> eyre::Result<Option<NonZeroUsize>> {
-        let handle = self.datastore.handle();
-
-        let key = key::ContextDelta::new(*context_id, *public_key, 0);
-
-        let Some(delta) = handle.get(&key)? else {
-            return Ok(None);
-        };
-
-        let types::ContextDelta::Head(height) = delta else {
-            bail!("Odd HEAD delta format for context: {context_id}, public key: {public_key}");
-        };
-
-        Ok(Some(height))
-    }
-
-    /// Stores a new state delta (a chunk of state changes) for a member at a specific height.
-    ///
-    /// This function also implements automatic pruning to prevent unbounded storage growth.
-    /// Only the last 256 deltas per member are retained; older deltas are automatically deleted.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The context ID for the delta.
-    /// * `public_key` - The member who produced this delta.
-    /// * `height` - The height of this specific delta.
-    /// * `delta` - The raw byte representation of the state changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the writing to the datastore fails.
-    pub fn put_state_delta(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-        height: &NonZeroUsize,
-        delta: &[u8],
-    ) -> eyre::Result<()> {
-        let mut handle = self.datastore.handle();
-
-        handle.put(
-            &key::ContextDelta::new(*context_id, *public_key, height.get()),
-            &types::ContextDelta::Data(delta.into()),
-        )?;
-
-        // Prune old deltas to prevent unbounded storage growth
-        self.prune_state_delta(context_id, public_key, height, DELTA_RETENTION_LIMIT);
-
-        Ok(())
-    }
-
-    /// Prunes old state deltas to prevent unbounded storage growth.
-    ///
-    /// Keeps only the last `max_deltas` deltas per member. Older deltas are automatically deleted.
-    /// Deletion errors are logged but do not cause the operation to fail, as the delta
-    /// may have already been pruned or deleted.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The context ID for the delta.
-    /// * `public_key` - The member whose deltas are being pruned.
-    /// * `current_height` - The current height to prune from.
-    /// * `max_deltas` - Maximum number of deltas to retain per member.
-    fn prune_state_delta(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-        current_height: &NonZeroUsize,
-        max_deltas: usize,
-    ) {
-        if current_height.get() <= max_deltas {
-            return;
-        }
-
-        let old_height = current_height.get() - max_deltas;
-        let old_key = key::ContextDelta::new(*context_id, *public_key, old_height);
-
-        let mut handle = self.datastore.handle();
-
-        if let Err(err) = handle.delete(&old_key) {
-            // Log the error but don't fail - delta may have already been pruned
-            debug!(
-                context_id=%context_id,
-                public_key=%public_key,
-                pruned_height=%old_height,
-                current_height=%current_height.get(),
-                error=%err,
-                "Failed to prune old state delta (may have already been pruned)"
-            );
-        } else {
-            trace!(
-                context_id=%context_id,
-                public_key=%public_key,
-                pruned_height=%old_height,
-                current_height=%current_height.get(),
-                "Successfully pruned old state delta"
-            );
-        }
-    }
-
-    /// Returns a stream of state deltas, allowing nodes to synchronize their state.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The context to get deltas for.
-    /// * `public_key` - If `Some`, fetches deltas only for this member. If `None`, fetches for all members.
-    /// * `start_height` - The height from which to start streaming deltas.
-    ///
-    /// # Returns
-    ///
-    /// A stream yielding tuples of `(PublicKey, NonZeroUsize, Box<[u8]>)` representing the member,
-    /// the height, and the delta data.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any of the retrieved deltas has some different odd format used or the reading
-    /// from the datastore fails.
-    pub fn get_state_deltas(
-        &self,
-        context_id: &ContextId,
-        public_key: Option<&PublicKey>,
-        start_height: NonZeroUsize,
-    ) -> impl Stream<Item = eyre::Result<(PublicKey, NonZeroUsize, Box<[u8]>)>> {
-        let handle = self.datastore.handle();
-        let context_id = *context_id;
-        let public_key = public_key.copied();
-
-        try_stream! {
-            let mut iter = handle.iter::<key::ContextDelta>()?;
-
-            let first = iter
-                .seek(key::ContextDelta::new(
-                    context_id,
-                    public_key.unwrap_or([0; DIGEST_SIZE].into()),
-                    start_height.get(),
-                ))
-                .transpose()
-                .map(|k| (k, iter.read()));
-
-            for (k, v) in first.into_iter().chain(iter.entries()) {
-                let (k, v) = (k?, v?);
-
-                if k.context_id() != context_id {
-                    break;
-                }
-
-                let expected = k.public_key();
-                if let Some(public_key) = public_key {
-                    if expected != public_key {
-                        break;
-                    }
-                }
-
-                let Some(height) = NonZeroUsize::new(k.height()) else {
-                    continue;
-                };
-
-                let types::ContextDelta::Data(delta) = v else {
-                    return Err(eyre!("Odd DATA delta format for context: {context_id}, public key: {expected}, height: {height}"))?;
-                };
-
-                yield (expected, height, delta.into());
-            }
-        }
     }
 }

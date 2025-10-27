@@ -20,10 +20,11 @@ const MAX_ALIAS_LEN: usize = 50;
 // Compile time assertion to ensure that the `MAX_ALIAS_LEN` fits within `u8`.
 const _: () = {
     // Assert that MAX_ALIAS_LEN can fit within an 8-bit unsigned integer (0-255).
-    if MAX_ALIAS_LEN > u8::MAX as usize {
-        // This panic will trigger a compilation error with the provided message.
-        panic!("MAX_ALIAS_LEN must be a value that fits in 8 bits.");
-    }
+    // This panic will trigger a compilation error with the provided message.
+    assert!(
+        !(MAX_ALIAS_LEN > u8::MAX as usize),
+        "MAX_ALIAS_LEN must be a value that fits in 8 bits."
+    );
 };
 
 pub trait ScopedAlias {

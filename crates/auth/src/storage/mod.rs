@@ -165,7 +165,7 @@ pub trait Storage: Send + Sync + 'static {
         index_key: &str,
     ) -> Result<(), StorageError> {
         // Store a reference from the index key to the primary key
-        let index_storage_key = format!("index:{}:{}:{}", index_name, index_key, key);
+        let index_storage_key = format!("index:{index_name}:{index_key}:{key}");
         self.set(&index_storage_key, &[]).await
     }
 
@@ -184,7 +184,7 @@ pub trait Storage: Send + Sync + 'static {
         index_name: &str,
         index_key: &str,
     ) -> Result<Vec<String>, StorageError> {
-        let index_prefix = format!("index:{}:{}", index_name, index_key);
+        let index_prefix = format!("index:{index_name}:{index_key}");
         let keys = self.list_keys(&index_prefix).await?;
 
         // Extract primary keys from index keys
@@ -220,7 +220,7 @@ pub trait Storage: Send + Sync + 'static {
         key: &str,
         index_key: &str,
     ) -> Result<(), StorageError> {
-        let index_storage_key = format!("index:{}:{}:{}", index_name, index_key, key);
+        let index_storage_key = format!("index:{index_name}:{index_key}:{key}");
         self.delete(&index_storage_key).await
     }
 
@@ -273,8 +273,7 @@ pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn Storage>, 
 
     // If no registered provider is found, return an error
     Err(StorageError::StorageError(format!(
-        "No registered storage provider found for configuration: {:?}",
-        config
+        "No registered storage provider found for configuration: {config:?}"
     )))
 }
 

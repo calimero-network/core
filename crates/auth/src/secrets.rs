@@ -95,7 +95,7 @@ impl VersionedSecret {
 
         Self {
             value: URL_SAFE_NO_PAD.encode(secret),
-            version: format!("v{}", now),
+            version: format!("v{now}"),
             created_at: now,
             expires_at: now + rotation_config.grace_period,
             is_primary: true,

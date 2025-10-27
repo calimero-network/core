@@ -47,6 +47,64 @@
 //!     }
 //! }
 //! ```
+//!
+//! ## ⚠️ Handler Execution Model
+//!
+//! **IMPORTANT**: Event handlers currently execute **sequentially**, but future optimizations
+//! may execute handlers **in parallel**. Your handlers **MUST** be written to handle both cases.
+//!
+//! ### Handler Requirements
+//!
+//! All event handlers MUST satisfy these properties:
+//!
+//! 1. **Commutative**: Handler order must not affect final state
+//!    - ✅ SAFE: CRDT operations (`Counter::increment()`, `UnorderedMap::insert()`)
+//!    - ❌ UNSAFE: Dependent operations (create → update → delete chains)
+//!
+//! 2. **Independent**: Handlers must not share mutable state
+//!    - ✅ SAFE: Each handler modifies different CRDT keys
+//!    - ❌ UNSAFE: Multiple handlers modifying the same entity
+//!
+//! 3. **Idempotent**: Re-execution must be safe (handlers may retry on failure)
+//!    - ✅ SAFE: CRDT operations (naturally idempotent)
+//!    - ❌ UNSAFE: External API calls (payment processing, email sending)
+//!
+//! 4. **No external side effects**: Handlers should only modify CRDT state
+//!    - ✅ SAFE: Pure state updates using CRDTs
+//!    - ❌ UNSAFE: HTTP requests, file I/O, blockchain transactions
+//!
+//! ### Examples
+//!
+//! **✅ SAFE Handler** (CRDT-only):
+//! ```rust,ignore
+//! fn my_handler(&mut self, user_id: &str) {
+//!     // Each handler uses a unique key (safe for parallel execution)
+//!     self.handler_counter.increment();  // G-Counter is commutative
+//! }
+//! ```
+//!
+//! **❌ UNSAFE Handler** (ordering dependency):
+//! ```rust,ignore
+//! fn create_handler(&mut self, id: &str) {
+//!     self.items.insert(id, "created");
+//! }
+//! fn update_handler(&mut self, id: &str) {
+//!     // DANGER: Assumes create_handler ran first!
+//!     let item = self.items.get(id).expect("must exist");
+//!     self.items.insert(id, format!("{} updated", item));
+//! }
+//! ```
+//!
+//! **❌ UNSAFE Handler** (external side effects):
+//! ```rust,ignore
+//! fn payment_handler(&mut self, amount: u64) {
+//!     // DANGER: Non-idempotent external call!
+//!     external_api::charge_payment(amount);
+//! }
+//! ```
+//!
+//! If your use case requires sequential execution or external side effects,
+//! consider refactoring to use CRDTs or implementing a task queue pattern.
 
 use core::any::TypeId;
 use core::cell::RefCell;
@@ -150,6 +208,16 @@ pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
 /// This function emits the event and arranges for the specified handler method
 /// to be called by the runtime after the event is processed. The handler method
 /// should be defined in your application and will receive the event data as parameters.
+///
+/// # ⚠️ Important: Handler Execution Guarantees
+///
+/// **Handlers may execute in parallel** (not guaranteed sequential). Your handler MUST be:
+/// - **Commutative**: Order-independent (use CRDTs, not sequential operations)
+/// - **Independent**: No shared mutable state between handlers
+/// - **Idempotent**: Safe to retry (no external API calls)
+/// - **Side-effect free**: Only modify CRDT state
+///
+/// See module-level documentation for detailed requirements and examples.
 ///
 /// # Parameters
 ///

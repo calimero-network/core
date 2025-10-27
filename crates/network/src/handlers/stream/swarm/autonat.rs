@@ -63,7 +63,7 @@ impl EventHandler<Event> for NetworkManager {
                     // }
                 }
                 OutboundProbeEvent::Error { .. } => {
-                    debug!("Outbound probe failed")
+                    debug!("Outbound probe failed");
                 }
             },
             Event::StatusChanged { old, new } => {

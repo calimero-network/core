@@ -412,10 +412,10 @@ async fn handle_health_check(
     connection_state: ConnectionState,
 ) {
     let mut ping_timer = interval(Duration::from_secs(state.config.ping_interval_secs));
-    ping_timer.tick().await; // First tick completes immediately
+    let _ = ping_timer.tick().await; // First tick completes immediately
 
     loop {
-        ping_timer.tick().await;
+        let _ = ping_timer.tick().await;
 
         // Check if connection still exists
         if state.connections.read().await.get(&connection_id).is_none() {
