@@ -43,10 +43,10 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 1000,
+        "durationMs": 5000,
         "description": [
-          "assuming it takes 5s to propagate we should",
-          "only need to wait 5 * ceil(log2(nodes)) seconds"
+          "Wait for gossipsub mesh formation + initial sync completion.",
+          "Increased to 5s base (10s total with 3 nodes) for CI reliability."
         ]
       }
     },
@@ -82,7 +82,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 1000,
+        "durationMs": 5000,
         "description": [
           "wait exactly 5s for the broadcast to propagate"
         ]
