@@ -13,6 +13,7 @@ include!(env!("GENERATED_ABI_PATH"));
     Copy,
     Debug,
     PartialEq,
+    Eq,
     PartialOrd,
     Serialize,
     Deserialize,
@@ -25,7 +26,15 @@ pub struct UserId32([u8; 32]);
 
 // Note: [u8; 64] doesn't implement Serialize/Deserialize, so we'll use Vec<u8> for Hash64
 #[derive(
-    Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -89,7 +98,7 @@ pub enum Event {
 }
 
 // State - now just a regular struct, no macro
-#[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
     counters: BTreeMap<String, u32>, // map<string,u32>
@@ -106,110 +115,134 @@ pub struct AbiStateExposed {
 
 // Implementation - now just a regular impl, no macro
 impl AbiState {
-    pub fn init() -> AbiState {
-        AbiState {
+    #[must_use]
+    pub const fn init() -> Self {
+        Self {
             counters: BTreeMap::new(),
             users: Vec::new(),
         }
     }
 
     // Unit return
-    pub fn noop() {}
+    pub const fn noop() {}
 
     // Scalar types
-    pub fn echo_bool(b: bool) -> bool {
+    #[must_use]
+    pub const fn echo_bool(b: bool) -> bool {
         b
     }
 
-    pub fn echo_i32(x: i32) -> i32 {
+    #[must_use]
+    pub const fn echo_i32(x: i32) -> i32 {
         x
     }
 
-    pub fn echo_i64(x: i64) -> i64 {
+    #[must_use]
+    pub const fn echo_i64(x: i64) -> i64 {
         x
     }
 
-    pub fn echo_u32(x: u32) -> u32 {
+    #[must_use]
+    pub const fn echo_u32(x: u32) -> u32 {
         x
     }
 
-    pub fn echo_u64(x: u64) -> u64 {
+    #[must_use]
+    pub const fn echo_u64(x: u64) -> u64 {
         x
     }
 
-    pub fn echo_f32(x: f32) -> f32 {
+    #[must_use]
+    pub const fn echo_f32(x: f32) -> f32 {
         x
     }
 
-    pub fn echo_f64(x: f64) -> f64 {
+    #[must_use]
+    pub const fn echo_f64(x: f64) -> f64 {
         x
     }
 
-    pub fn echo_string(s: String) -> String {
+    #[must_use]
+    pub const fn echo_string(s: String) -> String {
         s
     }
 
-    pub fn echo_bytes(b: Vec<u8>) -> Vec<u8> {
+    #[must_use]
+    pub const fn echo_bytes(b: Vec<u8>) -> Vec<u8> {
         b
     }
 
     // Optionals
-    pub fn opt_u32(x: Option<u32>) -> Option<u32> {
+    #[must_use]
+    pub const fn opt_u32(x: Option<u32>) -> Option<u32> {
         x
     }
 
-    pub fn opt_string(x: Option<String>) -> Option<String> {
+    #[must_use]
+    pub const fn opt_string(x: Option<String>) -> Option<String> {
         x
     }
 
-    pub fn opt_record(p: Option<Person>) -> Option<Person> {
+    #[must_use]
+    pub const fn opt_record(p: Option<Person>) -> Option<Person> {
         p
     }
 
-    pub fn opt_id(x: Option<UserId32>) -> Option<UserId32> {
+    #[must_use]
+    pub const fn opt_id(x: Option<UserId32>) -> Option<UserId32> {
         x
     }
 
     // Lists
-    pub fn list_u32(xs: Vec<u32>) -> Vec<u32> {
+    #[must_use]
+    pub const fn list_u32(xs: Vec<u32>) -> Vec<u32> {
         xs
     }
 
-    pub fn list_strings(xs: Vec<String>) -> Vec<String> {
+    #[must_use]
+    pub const fn list_strings(xs: Vec<String>) -> Vec<String> {
         xs
     }
 
-    pub fn list_records(ps: Vec<Person>) -> Vec<Person> {
+    #[must_use]
+    pub const fn list_records(ps: Vec<Person>) -> Vec<Person> {
         ps
     }
 
-    pub fn list_ids(xs: Vec<UserId32>) -> Vec<UserId32> {
+    #[must_use]
+    pub const fn list_ids(xs: Vec<UserId32>) -> Vec<UserId32> {
         xs
     }
 
     // Maps (string key only)
-    pub fn map_u32(m: BTreeMap<String, u32>) -> BTreeMap<String, u32> {
+    #[must_use]
+    pub const fn map_u32(m: BTreeMap<String, u32>) -> BTreeMap<String, u32> {
         m
     }
 
-    pub fn map_list_u32(m: BTreeMap<String, Vec<u32>>) -> BTreeMap<String, Vec<u32>> {
+    #[must_use]
+    pub const fn map_list_u32(m: BTreeMap<String, Vec<u32>>) -> BTreeMap<String, Vec<u32>> {
         m
     }
 
-    pub fn map_record(m: BTreeMap<String, Person>) -> BTreeMap<String, Person> {
+    #[must_use]
+    pub const fn map_record(m: BTreeMap<String, Person>) -> BTreeMap<String, Person> {
         m
     }
 
     // Records
-    pub fn make_person(p: Person) -> Person {
+    #[must_use]
+    pub const fn make_person(p: Person) -> Person {
         p
     }
 
-    pub fn profile_roundtrip(p: Profile) -> Profile {
+    #[must_use]
+    pub const fn profile_roundtrip(p: Profile) -> Profile {
         p
     }
 
     // Variants
+    #[must_use]
     pub fn act(a: Action) -> u32 {
         match a {
             Action::Ping => 1,
@@ -219,16 +252,18 @@ impl AbiState {
     }
 
     // Newtype bytes
-    pub fn roundtrip_id(x: UserId32) -> UserId32 {
+    #[must_use]
+    pub const fn roundtrip_id(x: UserId32) -> UserId32 {
         x
     }
 
-    pub fn roundtrip_hash(h: Hash64) -> Hash64 {
+    #[must_use]
+    pub const fn roundtrip_hash(h: Hash64) -> Hash64 {
         h
     }
 
     // Errors
-    pub fn may_fail(flag: bool) -> Result<u32, ConformanceError> {
+    pub const fn may_fail(flag: bool) -> Result<u32, ConformanceError> {
         if flag {
             Ok(42)
         } else {
@@ -249,12 +284,14 @@ impl AbiState {
     }
 
     // Test case: public method that calls a private method
+    #[must_use]
     pub fn public_with_private_helper(value: u32) -> u32 {
         Self::private_helper(value)
     }
 
     // Test case: public method that returns a type using internal struct
-    pub fn get_internal_result(value: u32) -> InternalResult {
+    #[must_use]
+    pub const fn get_internal_result(value: u32) -> InternalResult {
         let internal_data = InternalData {
             value,
             multiplier: 3,
@@ -266,7 +303,7 @@ impl AbiState {
     }
 
     // Private method - should NOT appear in ABI
-    fn private_helper(value: u32) -> u32 {
+    const fn private_helper(value: u32) -> u32 {
         let internal_data = InternalData {
             value,
             multiplier: 2,
@@ -283,7 +320,7 @@ struct InternalData {
 }
 
 impl InternalData {
-    fn calculate(&self) -> u32 {
+    const fn calculate(&self) -> u32 {
         self.value * self.multiplier
     }
 }

@@ -1,5 +1,5 @@
+use core::cell::RefCell;
 use serde::Serialize;
-use std::cell::RefCell;
 
 use crate::{
     errors::{HostError, Location, PanicContext},
@@ -10,7 +10,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
     /// This is set temporarily by the SDK's `emit_with_handler` function and read by the runtime.
-    static CURRENT_CALLBACK_HANDLER: RefCell<Option<String>> = RefCell::new(None);
+    static CURRENT_CALLBACK_HANDLER: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Represents a structured event emitted during the execution.
@@ -318,7 +318,7 @@ impl VMHostFunctions<'_> {
                 kind,
                 data,
                 handler,
-            })
+            });
         });
 
         Ok(())
@@ -391,7 +391,7 @@ impl VMHostFunctions<'_> {
                 kind,
                 data,
                 handler,
-            })
+            });
         });
 
         Ok(())
@@ -447,7 +447,7 @@ impl VMHostFunctions<'_> {
                 context_id,
                 function,
                 params,
-            })
+            });
         });
 
         Ok(())

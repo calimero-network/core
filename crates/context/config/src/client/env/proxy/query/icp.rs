@@ -95,7 +95,7 @@ impl Method<Icp> for ProposalApproversRequest {
 }
 
 impl Method<Icp> for ProposalRequest {
-    const METHOD: &'static str = "proposals";
+    const METHOD: &'static str = "proposal";
     type Returns = Option<Proposal>;
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let payload = ICRepr::new(*self.proposal_id);

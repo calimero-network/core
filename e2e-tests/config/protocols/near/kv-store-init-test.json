@@ -1,0 +1,165 @@
+{
+  "steps": [
+    {
+      "applicationInstall": {
+        "application": {
+          "localFile": "./apps/kv-store-init/res/kv_store_init.wasm"
+        },
+        "target": "allMembers"
+      }
+    },
+    {
+      "contextCreate": null
+    },
+    {
+      "contextInviteJoin": null
+    },
+    {
+      "wait": {
+        "durationMs": 3000,
+        "for": "consensus",
+        "description": "Wait for invitee to join and initialize"
+      }
+    },
+    {
+      "call": {
+        "methodName": "len",
+        "argsJson": {},
+        "expectedResultJson": 3,
+        "target": "inviter",
+        "description": "Inviter should have 3 initial items from init()"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "welcome"
+        },
+        "expectedResultJson": "Welcome to KvStoreInit!",
+        "target": "inviter",
+        "description": "Verify init() created welcome key"
+      }
+    },
+    {
+      "call": {
+        "methodName": "len",
+        "argsJson": {},
+        "expectedResultJson": 3,
+        "target": "invitees",
+        "description": "Invitee should have synced 3 initial items"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "init_key_1"
+        },
+        "expectedResultJson": "Initial value 1",
+        "target": "invitees",
+        "description": "Invitee should have init_key_1 from sync"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "welcome"
+        },
+        "expectedResultJson": "Welcome to KvStoreInit!",
+        "target": "invitees",
+        "description": "Invitee should have welcome key from sync"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "test_key",
+          "value": "test_value"
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "description": "Inviter adds new data"
+      }
+    },
+    {
+      "wait": {
+        "durationMs": 5000,
+        "for": "broadcast",
+        "description": "Wait for delta propagation via Gossipsub"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "test_key"
+        },
+        "expectedResultJson": "test_value",
+        "target": "inviter",
+        "description": "Inviter has the new key"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "test_key"
+        },
+        "expectedResultJson": "test_value",
+        "target": "invitees",
+        "description": "Invitee received delta and has new key"
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "invitee_key",
+          "value": "invitee_value"
+        },
+        "expectedResultJson": null,
+        "target": "invitees",
+        "description": "Invitee adds data"
+      }
+    },
+    {
+      "wait": {
+        "durationMs": 5000,
+        "for": "broadcast",
+        "description": "Wait for delta propagation back to inviter"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "invitee_key"
+        },
+        "expectedResultJson": "invitee_value",
+        "target": "inviter",
+        "description": "Inviter received invitee's delta"
+      }
+    },
+    {
+      "call": {
+        "methodName": "len",
+        "argsJson": {},
+        "expectedResultJson": 5,
+        "target": "invitees",
+        "description": "3 initial + 2 runtime = 5 total on invitee"
+      }
+    },
+    {
+      "call": {
+        "methodName": "len",
+        "argsJson": {},
+        "expectedResultJson": 5,
+        "target": "inviter",
+        "description": "3 initial + 2 runtime = 5 total on inviter"
+      }
+    }
+  ]
+}

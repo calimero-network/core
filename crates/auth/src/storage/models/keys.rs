@@ -236,6 +236,12 @@ pub struct KeyMetadata {
     pub revoked_at: Option<u64>,
 }
 
+impl Default for KeyMetadata {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyMetadata {
     /// Create new key metadata
     pub fn new() -> Self {

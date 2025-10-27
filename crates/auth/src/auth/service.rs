@@ -85,8 +85,7 @@ impl AuthService {
             .find(|p| p.supports_method(auth_method))
             .ok_or_else(|| {
                 AuthError::InvalidRequest(format!(
-                    "Unsupported authentication method: {}",
-                    auth_method
+                    "Unsupported authentication method: {auth_method}"
                 ))
             })?;
 
@@ -145,8 +144,7 @@ impl AuthService {
             .find(|p| p.supports_method(auth_method))
             .ok_or_else(|| {
                 AuthError::InvalidRequest(format!(
-                    "Unsupported authentication method: {}",
-                    auth_method
+                    "Unsupported authentication method: {auth_method}"
                 ))
             })?;
 

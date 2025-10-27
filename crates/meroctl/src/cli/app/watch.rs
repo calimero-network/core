@@ -42,6 +42,18 @@ pub struct WatchCommand {
         help = "Current application ID - will find all contexts using this app"
     )]
     pub current_app_id: Option<ApplicationId>,
+
+    /// Package name (e.g., com.example.myapp)
+    #[arg(
+        long,
+        help = "Package name (e.g., com.example.myapp)",
+        default_value = "unknown"
+    )]
+    pub package: String,
+
+    /// Version (e.g., 1.0.0)
+    #[arg(long, help = "Version (e.g., 1.0.0)", default_value = "0.0.0")]
+    pub version: String,
 }
 
 impl WatchCommand {
@@ -60,6 +72,8 @@ impl WatchCommand {
             .install_dev_application(InstallDevApplicationRequest::new(
                 self.path.clone(),
                 metadata.clone().unwrap_or_default(),
+                Some(self.package.clone()),
+                Some(self.version.clone()),
             ))
             .await?
             .data
@@ -83,7 +97,15 @@ impl WatchCommand {
         )));
 
         // Start watching the file
-        watch_app_and_update_contexts(environment, target_app_id, self.path, metadata).await
+        watch_app_and_update_contexts(
+            environment,
+            target_app_id,
+            self.path,
+            metadata,
+            self.package,
+            self.version,
+        )
+        .await
     }
 }
 
@@ -92,6 +114,8 @@ async fn watch_app_and_update_contexts(
     mut baseline_app_id: ApplicationId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
+    package: String,
+    version: String,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -138,6 +162,8 @@ async fn watch_app_and_update_contexts(
             .install_dev_application(InstallDevApplicationRequest::new(
                 path.clone(),
                 metadata.clone().unwrap_or_default(),
+                Some(package.clone()),
+                Some(version.clone()),
             ))
             .await?
             .data

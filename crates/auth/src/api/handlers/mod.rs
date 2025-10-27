@@ -140,7 +140,7 @@ pub async fn asset_handler(Path(path): Path<String>) -> impl IntoResponse {
     }
 
     // For all other assets, prepend "assets/" to match the embedded file structure
-    let asset_path = format!("assets/{}", path);
+    let asset_path = format!("assets/{path}");
     serve_embedded_file(&asset_path).await
 }
 

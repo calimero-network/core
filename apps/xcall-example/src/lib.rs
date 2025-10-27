@@ -45,7 +45,7 @@ impl XCallExample {
         let target_context_bytes: [u8; 32] = bs58::decode(&target_context)
             .into_vec()
             .map_err(|e| {
-                calimero_sdk::types::Error::msg(format!("Failed to decode context ID: {}", e))
+                calimero_sdk::types::Error::msg(format!("Failed to decode context ID: {e}"))
             })?
             .try_into()
             .map_err(|_| calimero_sdk::types::Error::msg("Context ID must be exactly 32 bytes"))?;

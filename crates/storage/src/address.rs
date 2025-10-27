@@ -32,16 +32,19 @@ pub struct Id {
 }
 
 impl Id {
+    /// Creates a new ID from bytes.
     #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
         Self { bytes }
     }
 
+    /// Returns the root context ID.
     #[must_use]
     pub fn root() -> Self {
         Self::new(context_id())
     }
 
+    /// Generates a random ID.
     #[must_use]
     pub fn random() -> Self {
         let mut bytes = [0_u8; 32];
@@ -49,11 +52,13 @@ impl Id {
         Self::new(bytes)
     }
 
+    /// Returns the underlying bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
 
+    /// Checks if this is the root context ID.
     pub fn is_root(&self) -> bool {
         self.bytes == context_id()
     }
@@ -133,11 +138,13 @@ impl Path {
         Ok(Self { offsets, path: str })
     }
 
+    /// Returns the depth (number of segments).
     #[must_use]
     pub fn depth(&self) -> usize {
         self.offsets.len()
     }
 
+    /// Returns the first segment.
     #[must_use]
     pub fn first(&self) -> &str {
         if self.offsets.is_empty() {
@@ -147,6 +154,7 @@ impl Path {
         }
     }
 
+    /// Checks if this path is an ancestor of another.
     #[must_use]
     pub fn is_ancestor_of(&self, other: &Self) -> bool {
         if self.depth() >= other.depth() {
@@ -164,11 +172,13 @@ impl Path {
         true
     }
 
+    /// Checks if this path is a descendant of another.
     #[must_use]
     pub fn is_descendant_of(&self, other: &Self) -> bool {
         other.is_ancestor_of(self)
     }
 
+    /// Checks if this is a root path.
     #[must_use]
     pub fn is_root(&self) -> bool {
         self.depth() == 0

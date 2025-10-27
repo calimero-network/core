@@ -104,7 +104,7 @@ impl Actor for NetworkManager {
             Err(err) => {
                 error!("Failed to setup control for stream protocol: {:?}", err);
             }
-        };
+        }
 
         match control.accept(CALIMERO_BLOB_PROTOCOL) {
             Ok(incoming_blob_streams) => {
@@ -116,7 +116,7 @@ impl Actor for NetworkManager {
             Err(err) => {
                 error!("Failed to setup control for blob protocol: {:?}", err);
             }
-        };
+        }
 
         let _ping_handle = ctx.add_stream(
             IntervalStream::new(interval(

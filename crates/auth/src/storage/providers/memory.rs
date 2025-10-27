@@ -17,6 +17,12 @@ pub struct MemoryStorage {
     data: RwLock<HashMap<String, Vec<u8>>>,
 }
 
+impl Default for MemoryStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemoryStorage {
     /// Create a new memory storage
     pub fn new() -> Self {

@@ -31,6 +31,10 @@ pub enum StorageError {
     #[error("Index not found for ID: {0}")]
     IndexNotFound(Id),
 
+    /// Invalid or corrupt data encountered.
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
+
     /// The requested record was not found, but in the context it was asked for,
     /// it was expected to be found and so this represents an error or some kind
     /// of inconsistency in the stored data.
@@ -61,6 +65,7 @@ impl Serialize for StorageError {
             | Self::IndexNotFound(id)
             | Self::UnexpectedId(id)
             | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
+            Self::InvalidData(ref msg) => serializer.serialize_str(msg),
             Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
         }
     }

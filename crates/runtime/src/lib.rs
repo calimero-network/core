@@ -36,12 +36,14 @@ impl Default for Engine {
 }
 
 impl Engine {
+    #[must_use]
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
         engine.set_tunables(WasmerTunables::new(&limits));
 
         Self { limits, engine }
     }
 
+    #[must_use]
     pub fn headless() -> Self {
         let limits = VMLimits::default();
 
@@ -64,7 +66,7 @@ impl Engine {
         let module = wasmer::Module::new(&self.engine, bytes)?;
 
         Ok(Module {
-            limits: self.limits.clone(),
+            limits: self.limits,
             engine: self.engine.clone(),
             module,
         })
@@ -74,7 +76,7 @@ impl Engine {
         let module = wasmer::Module::deserialize(&self.engine, bytes)?;
 
         Ok(Module {
-            limits: self.limits.clone(),
+            limits: self.limits,
             engine: self.engine.clone(),
             module,
         })

@@ -14,6 +14,9 @@ pub enum Key {
 
     /// An entry key.
     Entry(Id),
+
+    /// Sync state key for tracking last sync time with a remote node.
+    SyncState(Id),
 }
 
 impl Key {
@@ -30,42 +33,57 @@ impl Key {
                 bytes[0] = 1;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
+            Self::SyncState(id) => {
+                bytes[0] = 2;
+                bytes[1..33].copy_from_slice(id.as_bytes());
+            }
         }
         Sha256::digest(bytes).into()
     }
 }
 
-/// Determines where the ultimate storage system is located.
+/// Core storage operations (read, write, remove).
 ///
-/// This trait is mainly used to allow for a different storage location to be
-/// used for key operations during testing, such as modelling a foreign node's
-/// data store.
+/// Base trait for all storage backends. Provides fundamental CRUD operations
+/// without requiring iteration support.
 ///
 pub trait StorageAdaptor {
     /// Reads data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to read data from.
-    ///
     fn storage_read(key: Key) -> Option<Vec<u8>>;
 
     /// Removes data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to remove.
-    ///
     fn storage_remove(key: Key) -> bool;
 
     /// Writes data to persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key`   - The key to write data to.
-    /// * `value` - The data to write.
-    ///
     fn storage_write(key: Key, value: &[u8]) -> bool;
+}
+
+/// Storage iteration support for GC and snapshots.
+///
+/// Optional trait for storage backends that support key iteration.
+/// Required for garbage collection and full resync snapshot generation.
+///
+/// # ISP (Interface Segregation Principle)
+///
+/// This trait is separate from `StorageAdaptor` to avoid forcing all
+/// implementations to support iteration. Some storage backends (e.g., WASM
+/// environment without backend access) may not be able to efficiently iterate
+/// all keys.
+///
+pub trait IterableStorage: StorageAdaptor {
+    /// Iterates over all keys in storage.
+    ///
+    /// Returns all keys currently in storage. Used for:
+    /// - Garbage collection of old tombstones
+    /// - Full resync snapshot generation
+    ///
+    /// # Implementation Note
+    ///
+    /// For large datasets, consider returning an iterator instead of Vec
+    /// to avoid memory overhead. This would require changing the return type
+    /// to `Box<dyn Iterator<Item = Key>>`.
+    ///
+    fn storage_iter_keys() -> Vec<Key>;
 }
 
 /// The main storage system.
@@ -95,6 +113,18 @@ impl StorageAdaptor for MainStorage {
     }
 }
 
+// Note: IterableStorage is only implemented for node's RocksDB backend.
+// WASM storage (MainStorage) doesn't support key iteration as the host
+// doesn't expose that functionality. This is by design - WASM apps
+// shouldn't need to iterate all storage keys.
+// This requires adding iteration support to the underlying storage backend (RocksDB, etc.)
+//
+// impl IterableStorage for MainStorage {
+//     fn storage_iter_keys() -> Vec<Key> {
+//         // Implement via backend iterator
+//     }
+// }
+
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) use mocked::MockedStorage;
 
@@ -104,7 +134,7 @@ pub(crate) mod mocked {
     use core::cell::RefCell;
     use std::collections::BTreeMap;
 
-    use super::{Key, StorageAdaptor};
+    use super::{IterableStorage, Key, StorageAdaptor};
 
     /// The scope of the storage system, which allows for multiple storage
     /// systems to be used in parallel.
@@ -133,6 +163,20 @@ pub(crate) mod mocked {
                     .borrow_mut()
                     .insert((SCOPE, key), value.to_vec())
                     .is_some()
+            })
+        }
+    }
+
+    // MockedStorage supports iteration for testing
+    impl<const SCOPE: usize> IterableStorage for MockedStorage<SCOPE> {
+        fn storage_iter_keys() -> Vec<Key> {
+            STORAGE.with(|storage| {
+                storage
+                    .borrow()
+                    .keys()
+                    .filter(|(scope, _)| *scope == SCOPE)
+                    .map(|(_, key)| *key)
+                    .collect()
             })
         }
     }
