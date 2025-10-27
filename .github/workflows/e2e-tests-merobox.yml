@@ -176,6 +176,7 @@ jobs:
           merobox bootstrap run \
             e2e-tests-merobox/workflows/kv-store/${{ matrix.protocol }}.yml \
             --no-docker \
+            --binary-path target/debug/merod \
             --verbose
 
       - name: Upload KV Store Test Results
@@ -203,6 +204,7 @@ jobs:
           merobox bootstrap run \
             e2e-tests-merobox/workflows/proposals/${{ matrix.protocol }}-proposals.yml \
             --no-docker \
+            --binary-path target/debug/merod \
             --verbose
 
       - name: Upload Proposals Test Results
@@ -214,7 +216,36 @@ jobs:
           retention-days: 2
 
       # ============================================================================
-      # Upload Logs (Combined for both tests)
+      # Run Merobox Tests - KV Store with Handlers (NEAR only)
+      # ============================================================================
+      - name: Run KV Store with Handlers Tests
+        if: matrix.protocol == 'near'
+        id: handlers-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          echo "=========================================="
+          echo "Running KV Store with Handlers tests for NEAR"
+          echo "=========================================="
+
+          merobox bootstrap run \
+            e2e-tests-merobox/workflows/kv-store-with-handlers/near.yml \
+            --no-docker \
+            --binary-path target/debug/merod \
+            --verbose
+
+      - name: Upload Handlers Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: handlers-near
+          path: e2e-tests-merobox/results/near-handlers/
+          retention-days: 2
+
+      # ============================================================================
+      # Upload Logs (Combined for all tests)
       # ============================================================================
       - name: Upload Test Logs
         if: ${{ !cancelled() }}
@@ -246,6 +277,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: proposals-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Handlers Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: handlers-*
           merge-multiple: false
           path: results/
 
@@ -347,6 +385,46 @@ jobs:
             fi
             echo "" >> report.md
           done
+
+          # ============================================================================
+          # Handlers Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🛠️ KV Store with Handlers Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/handlers-near" ]; then
+            if [ -f "results/handlers-near/summary.json" ]; then
+              status=$(jq -r '.status' results/handlers-near/summary.json)
+              duration=$(jq -r '.duration' results/handlers-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/handlers-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/handlers-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/handlers-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
 
           # ============================================================================
           # Overall Summary

@@ -11,8 +11,13 @@ e2e-tests-merobox/
 │   │   ├── near.yml        # NEAR protocol
 │   │   ├── icp.yml         # ICP protocol
 │   │   └── ethereum.yml    # Ethereum protocol
+│   ├── kv-store-with-handlers/ # KV Store with Handlers workflows
+│   │   ├── near.yml        # NEAR protocol (handlers test)
+│   │   └── README.md       # Handlers testing guide
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
+│       ├── icp-proposals.yml   # ICP proposals comprehensive test
+│       ├── ethereum-proposals.yml # Ethereum proposals comprehensive test
 │       └── README.md       # Proposals testing guide
 ├── results/                # Test output (generated)
 ├── run-local.sh           # Local test runner script
@@ -42,6 +47,7 @@ cargo build -p merod -p meroctl
 
 # Build test applications
 ./apps/kv-store/build.sh
+./apps/kv-store-with-handlers/build.sh
 ```
 
 ### Run Tests Locally
@@ -65,12 +71,16 @@ cargo build -p merod -p meroctl
 # Run Ethereum tests (with devnet check)
 ./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
 
-# Run all protocols (KV Store + Proposals)
+# Run all protocols (KV Store + Handlers + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 6 test suites:
+# Note: This runs 7 test suites:
 # - KV Store: near, icp (if dfx running), ethereum (if anvil running)
+# - Handlers: near-handlers
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
+
+# Run KV Store with Handlers test (NEAR only)
+./e2e-tests-merobox/run-local.sh --protocol near-handlers --build --build-apps
 
 # Run custom workflow
 ./e2e-tests-merobox/run-local.sh --workflow path/to/custom.yml
@@ -329,15 +339,16 @@ The CI workflow uploads:
 
 ### Current Tests
 
-| Test Suite    | Protocols           | Steps | Status      |
-| ------------- | ------------------- | ----- | ----------- |
-| **KV Store**  | NEAR, ICP, Ethereum | ~48   | Implemented |
-| **Proposals** | NEAR, ICP, Ethereum | 70+   | Implemented |
+| Test Suite                 | Protocols           | Steps | Status      |
+| -------------------------- | ------------------- | ----- | ----------- |
+| **KV Store**               | NEAR, ICP, Ethereum | ~48   | Implemented |
+| **KV Store with Handlers** | NEAR                | ~35   | Implemented |
+| **Proposals**              | NEAR, ICP, Ethereum | 70+   | Implemented |
 
 ### Planned Tests
 
-- KV Store with Handlers (NEAR)
-- Open Invitations (NEAR)
+- KV Store with Handlers (ICP, Ethereum)
+- Open Invitations (NEAR, ICP, Ethereum) - requires merobox support
 - External State Verification (all protocols)
 
 ## 🔄 Migration Status

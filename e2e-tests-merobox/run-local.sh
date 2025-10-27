@@ -32,8 +32,9 @@ usage() {
     echo "Options:"
     echo "  -p, --protocol PROTOCOL    Protocol to test:"
     echo "                             - near, icp, ethereum (KV Store only)"
+    echo "                             - near-handlers (KV Store with Handlers - NEAR only)"
     echo "                             - near-proposals, icp-proposals, ethereum-proposals"
-    echo "                             - all (runs all KV Store + Proposals tests)"
+    echo "                             - all (runs all tests: KV Store + Handlers + Proposals)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
     echo "  -b, --build                Build merod and meroctl binaries before testing"
@@ -43,9 +44,10 @@ usage() {
     echo "  -h, --help                 Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 --protocol near --build                     # Run NEAR tests"
+    echo "  $0 --protocol near --build                     # Run NEAR KV Store tests"
+    echo "  $0 --protocol near-handlers --build --build-apps  # Run NEAR Handlers tests"
     echo "  $0 --protocol icp --check-devnets --build      # Check ICP devnet and test"
-    echo "  $0 --protocol all --build --build-apps         # Build and test all protocols"
+    echo "  $0 --protocol all --build --build-apps         # Build and test all (7 suites)"
     echo "  $0 --workflow path/to/custom.yml               # Run custom workflow"
     echo ""
     echo "Devnet Setup (run separately before testing):"
@@ -183,6 +185,13 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${RED}Error: Failed to build kv-store app${NC}"
         exit 1
     fi
+    
+    if ./apps/kv-store-with-handlers/build.sh; then
+        echo -e "${GREEN}✓ KV store with handlers app built successfully${NC}"
+    else
+        echo -e "${RED}Error: Failed to build kv-store-with-handlers app${NC}"
+        exit 1
+    fi
     echo ""
 fi
 
@@ -310,12 +319,13 @@ run_test() {
     echo ""
     
     # Run merobox workflow and capture output
-    # Command: merobox bootstrap run [config_file] --no-docker
+    # Command: merobox bootstrap run [config_file] --no-docker --binary-path /path/to/merod
     # Use pipefail to capture exit code even when piped through tee
     set -o pipefail
     merobox bootstrap run \
         "$workflow_file" \
         --no-docker \
+        --binary-path "$MEROD_BIN" \
         $VERBOSE 2>&1 | tee "$log_file"
     local exit_code=${PIPESTATUS[0]}
     set +o pipefail
@@ -414,6 +424,12 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/ethereum.yml" "ethereum"
             FAILED=$?
             ;;
+        near-handlers)
+            echo -e "${YELLOW}Running NEAR KV Store with Handlers test...${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/near.yml" "near-handlers"
+            FAILED=$?
+            ;;
         near-proposals)
             echo -e "${YELLOW}Running NEAR proposals comprehensive test...${NC}"
             echo ""
@@ -464,6 +480,15 @@ else
                 ETH_KV_RESULT=0
             fi
             
+            # === KV Store with Handlers Tests ===
+            echo ""
+            echo -e "${BLUE}━━━ KV Store with Handlers Tests ━━━${NC}"
+            echo ""
+            
+            # Run NEAR Handlers (doesn't need devnet)
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/near.yml" "near-handlers"
+            NEAR_HANDLERS_RESULT=$?
+            
             # === Proposals Tests ===
             echo ""
             echo -e "${BLUE}━━━ Proposals Tests ━━━${NC}"
@@ -491,7 +516,7 @@ else
                 ETH_PROP_RESULT=0
             fi
             
-            FAILED=$((NEAR_KV_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
+            FAILED=$((NEAR_KV_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
             ;;
         "")
             echo -e "${RED}Error: Protocol not specified${NC}"
