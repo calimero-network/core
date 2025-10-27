@@ -149,7 +149,7 @@ impl Report for GetLatestVersionResponse {
                 let _ = table.add_row(vec![id.to_string()]);
             }
             None => {
-                let _ = table.add_row(vec!["No latest version found".to_string()]);
+                let _ = table.add_row(vec!["No latest version found".to_owned()]);
             }
         }
 
