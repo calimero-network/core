@@ -48,11 +48,11 @@ impl<'a, K, V> Iter<'a, K, V> {
         }
     }
 
-    pub fn keys(&mut self) -> IterKeys<'_, 'a, K, V> {
+    pub const fn keys(&mut self) -> IterKeys<'_, 'a, K, V> {
         IterKeys { iter: self }
     }
 
-    pub fn entries(&mut self) -> IterEntries<'_, 'a, K, V> {
+    pub const fn entries(&mut self) -> IterEntries<'_, 'a, K, V> {
         IterEntries { iter: self }
     }
 }

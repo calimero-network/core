@@ -28,7 +28,7 @@ impl CalimeroVersion<'static> {
     }
 
     pub fn current_str() -> &'static str {
-        &*CURRENT_STRING
+        &CURRENT_STRING
     }
 }
 

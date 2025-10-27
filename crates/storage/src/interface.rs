@@ -1,213 +1,36 @@
-//! Interface for the storage system.
+//! Storage interface implementing a repository pattern for CRDT-based data.
 //!
-//! This module contains the interface for the storage system, which provides
-//! the basics of loading and saving data, but presents a number of helper
-//! methods and additional functionality to abstract away common operations.
+//! This module provides the primary API for interacting with the storage system,
+//! handling entity persistence, hierarchy management, and distributed synchronization.
 //!
-//! This follows the repository pattern, where the interface is the primary
-//! means of interacting with the storage system, rather than the ActiveRecord
-//! pattern where the model is the primary means of interaction.
+//! # Architecture
 //!
-//! # Synchronisation
+//! Calimero uses a **hybrid CRDT model**:
+//! - **Operation-based (CmRDT)**: Local changes emit [`Action`]s propagated to peers
+//! - **State-based (CvRDT)**: Merkle tree comparison for catch-up/reconciliation
 //!
-//! There are two main mechanisms involved in synchronisation:
+//! Each element maintains two Merkle hashes (own data, and full including descendants)
+//! enabling efficient tree comparison—only subtrees with differing hashes need examination.
 //!
-//!   1. **Direct changes**: When a change is made locally, the resulting
-//!      actions need to be propagated to other nodes.
-//!   2. **Comparison**: When a comparison is made between two nodes, the
-//!      resulting actions need to be taken to bring the nodes into sync.
+//! # API Entry Points
 //!
-//! The entry points for synchronisation are therefore either the
-//! [`apply_action()`](Interface::apply_action()) method, to carry out actions;
-//! or the [`compare_trees()`](Interface::compare_trees()) method, to compare
-//! two nodes, which will emit actions to pass to [`apply_action()`](Interface::apply_action())
-//! on either the local or remote node, or both.
+//! **Direct Operations:**
+//! - [`save()`](Interface::save()) - Save/update entities
+//! - [`add_child_to()`](Interface::add_child_to()) - Add to collections
+//! - [`remove_child_from()`](Interface::remove_child_from()) - Remove from collections
+//! - [`find_by_id()`](Interface::find_by_id()) - Direct lookup
 //!
-//! ## CRDT model
+//! **Synchronization:**
+//! - [`apply_action()`](Interface::apply_action()) - Execute remote changes
+//! - [`compare_trees()`](Interface::compare_trees()) - Generate sync actions
 //!
-//! Calimero primarily uses operation-based CRDTs, also called commutative
-//! replicated data types (CmRDTs). This means that the order of operations does
-//! not matter, and the outcome will be the same regardless of the order in
-//! which the operations are applied.
+//! # Conflict Resolution
 //!
-//! It is worth noting that the orthodox CmRDT model does not feature or require
-//! a comparison activity, as there is an operating assumption that all updates
-//! have been carried out fully and reliably.
+//! - Last-write-wins based on timestamps
+//! - Orphaned children (from out-of-order ops) stored temporarily
+//! - Future comparison reconciles inconsistencies
 //!
-//! The alternative CRDT approach is state-based, also called convergent
-//! replicated data types (CvRDTs). This is a comparison-based approach, but the
-//! downside is that this model requires the full state to be transmitted
-//! between nodes, which can be costly. Although this approach is easier to
-//! implement, and fits well with gossip protocols, it is not as efficient as
-//! the operation-based model.
-//!
-//! The standard choice therefore comes down to:
-//!
-//!   - Use CmRDTs and guarantee that all updates are carried out fully and
-//!     reliably, are not dropped or duplicated, and are replayed in causal
-//!     order.
-//!   - Use CvRDTs and accept the additional bandwidth cost of transmitting the
-//!     full state for every single CRDT.
-//!
-//! It does not fit the Calimero objectives to transmit the entire state for
-//! every update, but there is also no guarantee that all updates will be
-//! carried out fully and reliably. Therefore, Calimero uses a hybrid approach
-//! that represents the best of both worlds.
-//!
-//! In the first instance, operations are emitted (in the form of [`Action`]s)
-//! whenever a change is made. These operations are then propagated to other
-//! nodes, where they are executed. This is the CmRDT model.
-//!
-//! However, there are cases where a node may have missed an update, for
-//! instance, if it was offline. In this case, the node will be out of sync with
-//! the rest of the network. To bring the node back into sync, a comparison is
-//! made between the local node and a remote node, and the resulting actions are
-//! executed. This is the CvRDT model.
-//!
-//! The storage system maintains a set of Merkle hashes, which are stored
-//! against each element, and represent the state of the element and its
-//! children. The Merkle hash for an element can therefore be used to trivially
-//! determine whether an element or any of its descendants have changed,
-//! without actually needing to compare every entity in the tree.
-//!
-//! Therefore, when a comparison is carried out it is not a full state
-//! comparison, but a comparison of the immediate data and metadata of given
-//! element(s). This is sufficient to determine whether the nodes are in sync,
-//! and to generate the actions needed to bring them into sync. If there is any
-//! deviation detected, the comparison will recurse into the children of the
-//! element(s) in question, and generate further actions as necessary — but this
-//! will only ever examine those descendent entities for which the Merkle hash
-//! differs.
-//!
-//! We can therefore summarise this position as being: Calimero uses a CmRDT
-//! model for direct changes, and a CvRDT model for comparison as a fallback
-//! mechanism to bring nodes back into sync when needed.
-//!
-//! ## Direct changes
-//!
-//! When a change is made locally, the resulting actions need to be propagated
-//! to other nodes. An action list will be generated, which can be made up of
-//! [`Add`](Action::Add), [`Delete`](Action::Delete), and [`Update`](Action::Update)
-//! actions. These actions are then propagated to all the other nodes in the
-//! network, where they are executed using the [`apply_action()`](Interface::apply_action())
-//! method.
-//!
-//! This is a straightforward process, as the actions are known and are fully
-//! self-contained without any wider impact. Order does not strictly matter, as
-//! the actions are commutative, and the outcome will be the same regardless of
-//! the order in which they are applied. Any conflicts are handled using the
-//! last-write-wins strategy.
-//!
-//! There are certain cases where a mis-ordering of action, which is
-//! essentially the same as having missing actions, can result in an invalid
-//! state. For instance, if a child is added before the parent, the parent will
-//! not exist and the child will be orphaned. In this situation we can either
-//! ignore the child, or we can block its addition until the parent has been
-//! added, or we can store it as an orphaned entity to be resolved later. At
-//! present we follow the last approach, as it aligns well with the use of
-//! comparisons to bring nodes back into sync. We therefore know that the node
-//! will _eventually_ become consistent, which is all we guarantee.
-//!
-//! TODO: Examine whether this is the right approach, or whether we should for
-//! TODO: instance block and do a comparison on the parent to ensure that local
-//! TODO: state is as consistent as possible.
-//!
-//! Providing all generated actions are carried out, all nodes will eventually
-//! be in sync, without any need for comparisons, transmission of full states,
-//! or a transaction model (which requires linear history, and therefore
-//! becomes mathematically unsuitable for large distributed systems).
-//!
-//! ## Comparison
-//!
-//! There are a number of situations under which a comparison may be needed:
-//!
-//!   1. A node has missed an update, and needs to be brought back into sync
-//!      (i.e. there is a gap in the instruction set).
-//!   2. A node has been offline, and needs to be brought back into sync (i.e.
-//!      all instructions since a certain point have been missed).
-//!   3. A discrepancy has been detected between two nodes, and they need to be
-//!      brought back into sync.
-//!
-//! A comparison is primarily triggered from a catch-up as a proactive measure,
-//! i.e. without knowing if any changes exist, but can also arise at any point
-//! if a discrepancy is detected.
-//!
-//! When performing a comparison, the data we have is the result of the entity
-//! being serialised by the remote note, passed to us, and deserialised, so it
-//! should be comparable in structure to having loaded it from the local
-//! database.
-//!
-//! We therefore have access to the data and metadata, which includes the
-//! immediate fields of the entity (i.e. the [`AtomicUnit`](crate::entities::AtomicUnit))
-//! and also a list of the children.
-//!
-//! The stored list of children contains their Merkle hashes, thereby allowing
-//! us to check all children in one operation instead of needing to load each
-//! child in turn, as that would require remote data for each child, and that
-//! would not be as efficient.
-//!
-//!   - If a child exists on both sides and the hash is different, we recurse
-//!     into a comparison for that child.
-//!
-//!   - If a child is missing on one side then we can go with the side that has
-//!     the latest parent and add or remove the child.
-//!
-//! Notably, in the case of there being a missing child, the resolution
-//! mechanism does expose a small risk of erroneous outcome. For instance, if
-//! the local node has had a child added, and has been offline, and the parent
-//! has been updated remotely — in this situation, in the absence of any other
-//! activity, a comparison (e.g. a catch-up when coming back online) would
-//! result in losing the child, as the remote node would not have the child in
-//! its list of children. This edge case should usually be handled by the
-//! specific add and remove events generated at the time of the original
-//! activity, which should get propagated independently of a sync. However,
-//! there are three extended options that can be implemented:
-//!
-//!   1. Upon catch-up, any local list of actions can be held and replayed
-//!      locally after synchronisation. Alone, this would not correct the
-//!      situation, due to last-write-wins rules, but additional logic could be
-//!      considered for this particular situation.
-//!   2. During or after performing a comparison, all local children for an
-//!      entity can be loaded by path and checked against the parent's list of
-//!      children. If there are any deviations then appropriate action can be
-//!      taken. This does not fully cater for the edge case, and again would not
-//!      correct the situation on its own, but additional logic could be added.
-//!   3. A special kind of "deleted" element could be added to the system, which
-//!      would store metadata for checking. This would be beneficial as it would
-//!      allow differentiation between a missing child and a deleted child,
-//!      which is the main problem exposed by the edge case. However, although
-//!      this represents a full solution from a data mechanism perspective, it
-//!      would not be desirable to store deleted entries permanently. It would
-//!      be best combined with a cut-off constraint, that would limit the time
-//!      period in which a catch-up can be performed, and after which the
-//!      deleted entities would be purged. This does add complexity not only in
-//!      the effect on the wider system of implementing that constraint, but
-//!      also in the need for garbage collection to remove the deleted entities.
-//!      This would likely be better conducted the next time the parent entity
-//!      is updated, but there are a number of factors to consider here.
-//!   4. Another way to potentially handle situations of this nature is to
-//!      combine multiple granular updates into an atomic group operation that
-//!      ensures that all updates are applied together. However, this remains to
-//!      be explored, as it may not fit with the wider system design.
-//!
-//! Due to the potential complexity, this edge case is not currently mitigated,
-//! but will be the focus of future development.
-//!
-//! TODO: Assess the best approach for handling this edge case in a way that
-//! TODO: fits with the wider system design, and add extended tests for it.
-//!
-//! The outcome of a comparison is that the calling code receives a list of
-//! actions, which can be [`Add`](Action::Add), [`Delete`](Action::Delete),
-//! [`Update`](Action::Update), and [`Compare`](Action::Compare). The first
-//! three are the same as propagating the consequences of direct changes, but
-//! the comparison action is a special case that arises when a child entity is
-//! found to differ between the two nodes, whereupon the comparison process
-//! needs to recursively descend into the parts of the subtree found to differ.
-//!
-//! The calling code is then responsible for going away and obtaining the
-//! information necessary to carry out the next comparison action if there is
-//! one, as well as relaying the generated action list.
-//!
+//! See the [crate README](../README.md) for detailed design documentation.
 
 #[cfg(test)]
 #[path = "tests/interface.rs"]
@@ -216,130 +39,23 @@ mod tests;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use std::collections::BTreeMap;
-use std::io::Error as IoError;
 
-use borsh::{from_slice, to_vec, BorshDeserialize, BorshSerialize};
-use eyre::Report;
+use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
-use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data, Metadata};
+use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
-use crate::sync;
+
+// Re-export types for convenience
+pub use crate::action::{Action, ComparisonData};
+pub use crate::error::StorageError;
 
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
-
-/// Actions to be taken during synchronisation.
-///
-/// The following variants represent the possible actions arising from either a
-/// direct change or a comparison between two nodes.
-///
-///   - **Direct change**: When a direct change is made, in other words, when
-///     there is local activity that results in data modification to propagate
-///     to other nodes, the possible resulting actions are [`Add`](Action::Add),
-///     [`Delete`](Action::Delete), and [`Update`](Action::Update). A comparison
-///     is not needed in this case, as the deltas are known, and assuming all of
-///     the actions are carried out, the nodes will be in sync.
-///
-///   - **Comparison**: When a comparison is made between two nodes, the
-///     possible resulting actions are [`Add`](Action::Add), [`Delete`](Action::Delete),
-///     [`Update`](Action::Update), and [`Compare`](Action::Compare). The extra
-///     comparison action arises in the case of tree traversal, where a child
-///     entity is found to differ between the two nodes. In this case, the child
-///     entity is compared, and the resulting actions are added to the list of
-///     actions to be taken. This process is recursive.
-///
-/// Note: Some actions contain the full entity, and not just the entity ID, as
-/// the actions will often be in context of data that is not available locally
-/// and cannot be sourced otherwise. The actions are stored in serialised form
-/// because of type restrictions, and they are due to be sent around the network
-/// anyway.
-///
-/// Note: This enum contains the entity type, for passing to the guest for
-/// processing along with the ID and data.
-///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[expect(clippy::exhaustive_enums, reason = "Exhaustive")]
-pub enum Action {
-    /// Add an entity with the given ID, type, and data.
-    Add {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Serialised data of the entity.
-        data: Vec<u8>,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-
-        /// The metadata of the entity.
-        metadata: Metadata,
-    },
-
-    /// Compare the entity with the given ID and type. Note that this results in
-    /// a direct comparison of the specific entity in question, including data
-    /// that is immediately available to it, such as the hashes of its children.
-    /// This may well result in further actions being generated if children
-    /// differ, leading to a recursive comparison.
-    Compare {
-        /// Unique identifier of the entity.
-        id: Id,
-    },
-
-    /// Delete an entity with the given ID.
-    Delete {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-    },
-
-    /// Update the entity with the given ID and type to have the supplied data.
-    Update {
-        /// Unique identifier of the entity.
-        id: Id,
-
-        /// Serialised data of the entity.
-        data: Vec<u8>,
-
-        /// Details of the ancestors of the entity.
-        ancestors: Vec<ChildInfo>,
-
-        /// The metadata of the entity.
-        metadata: Metadata,
-    },
-}
-
-/// Data that is used for comparison between two nodes.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ComparisonData {
-    /// The unique identifier of the entity being compared.
-    id: Id,
-
-    /// The Merkle hash of the entity's own data, without any descendants.
-    own_hash: [u8; 32],
-
-    /// The Merkle hash of the entity's complete data, including child hashes.
-    full_hash: [u8; 32],
-
-    /// The list of ancestors of the entity, with their IDs and hashes. The
-    /// order is from the immediate parent to the root, so index zero will be
-    /// the parent, and the last index will be the root.
-    ancestors: Vec<ChildInfo>,
-
-    /// The list of children of the entity, with their IDs and hashes,
-    /// organised by collection name.
-    children: BTreeMap<String, Vec<ChildInfo>>,
-
-    /// The metadata of the entity.
-    metadata: Metadata,
-}
 
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
@@ -347,19 +63,13 @@ pub struct ComparisonData {
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
 impl<S: StorageAdaptor> Interface<S> {
-    /// Adds a child to a collection.
+    /// Adds a child entity to a parent's collection.
     ///
-    /// # Parameters
-    ///
-    /// * `parent_id`  - The ID of the parent entity that owns the
-    ///                  [`Collection`].
-    /// * `collection` - The [`Collection`] to which the child should be added.
-    /// * `child`      - The child entity to add.
+    /// Updates Merkle hashes and generates sync actions automatically.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// - `SerializationError` if child can't be encoded
+    /// - `IndexNotFound` if parent doesn't exist
     ///
     pub fn add_child_to<C: Collection, D: Data>(
         parent_id: Id,
@@ -390,40 +100,22 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(true)
     }
 
-    /// Applies an [`Action`] to the storage system.
+    /// Applies a synchronization action from a remote node.
     ///
-    /// This function accepts a single incoming [`Action`] and applies it to the
-    /// storage system. The action is deserialised into the specified type, and
-    /// then applied as appropriate.
-    ///
-    /// Note: In order to call this function, the caller needs to know the type
-    /// of the entity that the action is for, and this type must implement the
-    /// [`Data`] trait. One of the possible ways to achieve this is to use the
-    /// path information externally to match against the entity type, using
-    /// knowledge available in the system. It is also possible to extend this
-    /// function to deal with the type being indicated in the serialised data,
-    /// if appropriate, or in the ID or accompanying metadata.
-    ///
-    /// After applying the [`Action`], the ancestor hashes will be recalculated,
-    /// and this function will compare them against the expected hashes. If any
-    /// of the hashes do not match, the ID of the first entity with a mismatched
-    /// hash will be returned — i.e. the nearest ancestor.
-    ///
-    /// # Parameters
-    ///
-    /// * `action` - The [`Action`] to apply to the storage system.
+    /// Handles Add/Update/Delete actions, creating missing ancestors if needed.
+    /// Generates Compare action for hash verification after applying changes.
     ///
     /// # Errors
-    ///
-    /// If there is an error when deserialising into the specified type, or when
-    /// applying the [`Action`], an error will be returned.
+    /// - `DeserializationError` if action data is invalid
+    /// - `ActionNotAllowed` if Compare action is passed directly
     ///
     pub fn apply_action(action: Action) -> Result<(), StorageError> {
         match action {
             Action::Add {
                 id,
                 data,
-                // todo! we only need parent_id
+                // Note: We track both parent and collection for full metadata,
+                // though parent_id alone would suffice for tree structure
                 ancestors,
                 metadata,
             }
@@ -469,68 +161,65 @@ impl<S: StorageAdaptor> Interface<S> {
                     return Ok(());
                 }
 
-                sync::push_action(Action::Compare { id });
+                crate::delta::push_action(Action::Compare { id });
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
-            Action::Delete {
-                id, ancestors: _, ..
-            } => {
-                // todo! remove_child_from here
-                let _ignored = S::storage_remove(Key::Entry(id));
+            Action::DeleteRef { id, deleted_at } => {
+                Self::apply_delete_ref_action(id, deleted_at)?;
             }
         };
 
         Ok(())
     }
 
-    /// The children of the [`Collection`].
+    /// Applies DeleteRef action with CRDT conflict resolution.
     ///
-    /// This gets the children of the [`Collection`], which are the [`Element`](crate::entities::Element)s
-    /// that are directly below the [`Collection`]'s owner in the hierarchy.
-    /// This is a simple method that returns the children as a list, and does
-    /// not provide any filtering or ordering.
+    /// Uses guard clauses for clarity (KISS principle).
+    /// Handles three cases:
+    /// 1. Already deleted - update tombstone if newer
+    /// 2. Exists locally - compare timestamps (LWW)
+    /// 3. Never seen - ignore (could create tombstone in future)
+    fn apply_delete_ref_action(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+        // Guard: Already deleted, check if this deletion is newer
+        if <Index<S>>::is_deleted(id)? {
+            // Already has tombstone, use later deletion timestamp
+            let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+            return Ok(());
+        }
+
+        // Guard: Entity doesn't exist, nothing to delete
+        let Some(metadata) = <Index<S>>::get_metadata(id)? else {
+            // Entity doesn't exist - no tombstone needed
+            // CRDT rationale: Deleting non-existent entity is idempotent no-op.
+            // We don't create "preventive tombstones" because:
+            // - Storage efficiency: Avoid bloat from phantom deletions
+            // - CRDT convergence: If entity never existed, all peers agree (empty set)
+            // - Idempotency: Safe to call remove_child_from multiple times
+            return Ok(());
+        };
+
+        // Guard: Local update is newer, deletion loses
+        if deleted_at < *metadata.updated_at {
+            // Local update wins, ignore older deletion
+            return Ok(());
+        }
+
+        // Deletion wins - apply it
+        let _ignored = S::storage_remove(Key::Entry(id));
+        let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+
+        Ok(())
+    }
+
+    /// Retrieves all children in a collection.
     ///
-    /// Notably, there is no real concept of ordering in the storage system, as
-    /// the records are not ordered in any way. They are simply stored in the
-    /// hierarchy, and so the order of the children is not guaranteed. Any
-    /// required ordering must be done as required upon retrieval.
-    ///
-    /// # Determinism
-    ///
-    /// TODO: Update when the `child_info` field is replaced with an index.
-    ///
-    /// Depending on the source, simply looping through the children may be
-    /// non-deterministic. At present we are using a [`Vec`], which is
-    /// deterministic, but this is a temporary measure, and the order of
-    /// children under a given path is not enforced, and therefore
-    /// non-deterministic.
-    ///
-    /// When the `child_info` field is replaced with an index, the order may be
-    /// enforced using `created_at` timestamp, which then allows performance
-    /// optimisations with sharding and other techniques.
-    ///
-    /// # Performance
-    ///
-    /// TODO: Update when the `child_info` field is replaced with an index.
-    ///
-    /// Looping through children and combining their hashes into the parent is
-    /// logically correct. However, it does necessitate loading all the children
-    /// to get their hashes every time there is an update. The efficiency of
-    /// this can and will be improved in future.
-    ///
-    /// # Parameters
-    ///
-    /// * `parent_id`  - The ID of the parent entity that owns the
-    ///                  [`Collection`].
-    /// * `collection` - The [`Collection`] to get the children of.
+    /// Returns deserialized child entities. Order is not guaranteed.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
+    /// - `IndexNotFound` if parent doesn't exist
+    /// - `DeserializationError` if child data is corrupt
     ///
     pub fn children_of<C: Collection>(
         parent_id: Id,
@@ -546,31 +235,12 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(children)
     }
 
-    /// The basic info for children of the [`Collection`].
+    /// Retrieves child metadata without deserializing full data.
     ///
-    /// This gets basic info for children of the [`Collection`], which are the
-    /// [`Element`](crate::entities::Element)s that are directly below the
-    /// [`Collection`]'s owner in the hierarchy. This is a simple method that
-    /// returns the children as a list, and does not provide any filtering or
-    /// ordering.
-    ///
-    /// See [`children_of()`](Interface::children_of()) for more information.
-    ///
-    /// # Parameters
-    ///
-    /// * `parent_id`  - The ID of the parent entity that owns the
-    ///                  [`Collection`].
-    /// * `collection` - The [`Collection`] to get the children of.
+    /// Returns IDs, hashes, and timestamps only. More efficient than [`children_of()`](Self::children_of()).
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
-    ///
-    /// # See also
-    ///
-    /// [`children_of()`](Interface::children_of())
+    /// Returns error if index lookup fails.
     ///
     pub fn child_info_for<C: Collection>(
         parent_id: Id,
@@ -579,26 +249,13 @@ impl<S: StorageAdaptor> Interface<S> {
         <Index<S>>::get_children_of(parent_id, collection.name())
     }
 
-    /// Compares a foreign entity with a local one.
+    /// Compares local and remote entity trees, generating sync actions.
     ///
-    /// This function compares a foreign entity, usually from a remote node,
-    /// with the version available in the tree in local storage, if present, and
-    /// generates a list of [`Action`]s to perform on the local tree, the
-    /// foreign tree, or both, to bring the two trees into sync.
-    ///
-    /// The tuple returned is composed of two lists of actions: the first list
-    /// contains the actions to be performed on the local tree, and the second
-    /// list contains the actions to be performed on the foreign tree.
-    ///
-    /// # Parameters
-    ///
-    /// * `foreign_entity` - The foreign entity to compare against the local
-    ///                      version. This will usually be from a remote node.
+    /// Compares Merkle hashes recursively, producing action lists for both sides.
+    /// Returns `(local_actions, remote_actions)` to bring trees into sync.
     ///
     /// # Errors
-    ///
-    /// This function will return an error if there are issues accessing local
-    /// data or if there are problems during the comparison process.
+    /// Returns error if index lookup or hash comparison fails.
     ///
     pub fn compare_trees(
         foreign_entity_data: Option<Vec<u8>>,
@@ -746,13 +403,13 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(actions)
     }
 
-    /// Compares a foreign entity with a local one, and applies the resulting
-    /// actions to bring the two entities into sync.
+    /// Compares entities and automatically applies sync actions locally.
+    ///
+    /// Convenience wrapper around [`compare_trees()`](Self::compare_trees()) that applies
+    /// local actions immediately and pushes remote actions to sync queue.
     ///
     /// # Errors
-    ///
-    /// This function will return an error if there are issues accessing local
-    /// data or if there are problems during the comparison process.
+    /// Returns error if comparison or action application fails.
     ///
     pub fn compare_affective(
         data: Option<Vec<u8>>,
@@ -769,29 +426,26 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         for action in remote {
-            sync::push_action(action);
+            crate::delta::push_action(action);
         }
 
         Ok(())
     }
 
-    /// Finds an [`Element`](crate::entities::Element) by its unique identifier.
+    /// Finds and deserializes an entity by its unique ID.
     ///
-    /// This will always retrieve a single [`Element`](crate::entities::Element),
-    /// if it exists, regardless of where it may be in the hierarchy, or what
-    /// state it may be in.
-    ///
-    /// # Parameters
-    ///
-    /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
-    ///          to find.
+    /// Filters out tombstoned (deleted) entities automatically.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// - `DeserializationError` if stored data is corrupt
+    /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        // Check if entity is deleted (tombstone)
+        if <Index<S>>::is_deleted(id)? {
+            return Ok(None); // Entity is deleted
+        }
+
         let value = S::storage_read(Key::Entry(id));
 
         let Some(slice) = value else {
@@ -811,66 +465,42 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(Some(item))
     }
 
-    /// Finds an [`Element`](crate::entities::Element) by its unique identifier
-    /// without deserialising it.
+    /// Finds an entity by ID, returning raw bytes without deserialization.
     ///
-    /// This will always retrieve a single [`Element`](crate::entities::Element),
-    /// if it exists, regardless of where it may be in the hierarchy, or what
-    /// state it may be in.
-    ///
-    /// Notably it returns the raw bytes without attempting to deserialise them
-    /// into a [`Data`] type.
-    ///
-    /// # Parameters
-    ///
-    /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
-    ///          to find.
+    /// Note: This does NOT filter deleted entities. Use `find_by_id` for automatic
+    /// tombstone filtering.
     ///
     pub fn find_by_id_raw(id: Id) -> Option<Vec<u8>> {
         S::storage_read(Key::Entry(id))
     }
 
-    /// Finds one or more [`Element`](crate::entities::Element)s by path in the
-    /// hierarchy.
+    /// Gets raw entity data by ID.
     ///
-    /// This will retrieve all [`Element`](crate::entities::Element)s that exist
-    /// at the specified path in the hierarchy. This may be a single item, or
-    /// multiple items if there are multiple [`Element`](crate::entities::Element)s
-    /// at the same path.
-    ///
-    /// # Parameters
-    ///
-    /// * `path` - The path to the [`Element`](crate::entities::Element)s to
-    ///            find.
+    /// This is a simple alias for `find_by_id_raw` for convenience in tests.
     ///
     /// # Errors
+    /// Returns `IndexNotFound` if entity doesn't exist.
     ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    pub fn get(id: Id) -> Result<Vec<u8>, StorageError> {
+        Self::find_by_id_raw(id).ok_or(StorageError::IndexNotFound(id))
+    }
+
+    /// Finds entities by hierarchical path.
+    ///
+    /// **Note**: Not yet implemented.
+    ///
+    /// # Errors
+    /// Currently panics (unimplemented).
     ///
     pub fn find_by_path<D: Data>(_path: &Path) -> Result<Vec<D>, StorageError> {
         unimplemented!()
     }
 
-    /// Finds the children of an [`Element`](crate::entities::Element) by its
-    /// unique identifier.
-    ///
-    /// This will retrieve all [`Element`](crate::entities::Element)s that are
-    /// children of the specified [`Element`](crate::entities::Element). This
-    /// may be a single item, or multiple items if there are multiple children.
-    /// Notably, it will return [`None`] if the [`Element`](crate::entities::Element)
-    /// in question does not exist.
-    ///
-    /// # Parameters
-    ///
-    /// * `parent_id`  - The unique identifier of the [`Element`](crate::entities::Element)
-    ///                  to find the children of.
-    /// * `collection` - The name of the [`Collection`] to find the children of.
+    /// Finds children by parent ID and collection name.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// - `IndexNotFound` if parent doesn't exist
+    /// - `DeserializationError` if child data is corrupt
     ///
     pub fn find_children_by_id<D: Data>(
         parent_id: Id,
@@ -886,20 +516,12 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(children)
     }
 
-    /// Generates comparison data for an entity.
+    /// Generates comparison metadata for tree synchronization.
     ///
-    /// This function generates comparison data for the specified entity, which
-    /// includes the entity's own hash, the full hash of the entity and its
-    /// children, and the IDs and hashes of the children themselves.
-    ///
-    /// # Parameters
-    ///
-    /// * `entity` - The entity to generate comparison data for.
+    /// Includes hashes, ancestors, children info. Used by [`compare_trees()`](Self::compare_trees()).
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// Returns error if index lookup fails.
     ///
     pub fn generate_comparison_data(id: Option<Id>) -> Result<ComparisonData, StorageError> {
         let id = id.unwrap_or_else(Id::root);
@@ -930,22 +552,10 @@ impl<S: StorageAdaptor> Interface<S> {
         })
     }
 
-    /// Whether the [`Collection`] has children.
-    ///
-    /// This checks whether the [`Collection`] of the specified entity has
-    /// children, which are the entities that are directly below the entity's
-    /// [`Collection`] in the hierarchy.
-    ///
-    /// # Parameters
-    ///
-    /// * `parent_id`   - The unique identifier of the entity to check for
-    ///                  children.
-    /// * `collection` - The [`Collection`] to check for children.
+    /// Checks if a collection has any children.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// Returns error if index lookup fails.
     ///
     pub fn has_children<C: Collection>(
         parent_id: Id,
@@ -954,16 +564,10 @@ impl<S: StorageAdaptor> Interface<S> {
         <Index<S>>::has_children(parent_id, collection.name())
     }
 
-    /// Retrieves the parent entity of a given entity.
-    ///
-    /// # Parameters
-    ///
-    /// * `child_id` - The [`Id`] of the entity whose parent is to be retrieved.
+    /// Retrieves the parent entity of a child.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// Returns error if index lookup or deserialization fails.
     ///
     pub fn parent_of<D: Data>(child_id: Id) -> Result<Option<D>, StorageError> {
         <Index<S>>::get_parent_id(child_id)?
@@ -972,17 +576,10 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Removes a child from a collection.
     ///
-    /// # Parameters
-    ///
-    /// * `parent_id`  - The ID of the parent entity that owns the
-    ///                  [`Collection`].
-    /// * `collection` - The collection from which the child should be removed.
-    /// * `child_id`   - The ID of the child entity to remove.
+    /// Deletes the child entity and generates sync actions automatically.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// Returns error if parent or child doesn't exist.
     ///
     pub fn remove_child_from<C: Collection>(
         parent_id: Id,
@@ -996,49 +593,37 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
+        let deleted_at = time_now();
+
         <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
 
-        let (parent_full_hash, _) =
-            <Index<S>>::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
-        let mut ancestors = <Index<S>>::get_ancestors_of(parent_id)?;
-        let metadata =
-            <Index<S>>::get_metadata(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
-        ancestors.insert(0, ChildInfo::new(parent_id, parent_full_hash, metadata));
-
-        _ = S::storage_remove(Key::Entry(child_id));
-
-        sync::push_action(Action::Delete {
+        // Use DeleteRef for efficient tombstone-based deletion
+        // More efficient than Delete: only sends ID + timestamp vs full ancestor tree
+        // The tombstone is created by remove_child_from, we just broadcast the deletion
+        crate::delta::push_action(Action::DeleteRef {
             id: child_id,
-            ancestors,
+            deleted_at,
         });
 
         Ok(true)
     }
 
-    /// Retrieves the root entity for a given context.
-    ///
-    /// # Parameters
-    ///
-    /// * `context_id` - An identifier for the context whose root is to be retrieved.
+    /// Retrieves the root entity.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// Returns error if deserialization fails.
     ///
     pub fn root<D: Data>() -> Result<Option<D>, StorageError> {
         Self::find_by_id(Id::root())
     }
 
-    /// Saves the root entity to the storage system, and commits any recorded
-    /// actions or comparisons.
+    /// Saves the root entity and commits sync actions.
     ///
-    /// This function must only be called once otherwise it will panic.
+    /// Should be called at the end of each transaction. Call once per execution.
     ///
     /// # Errors
-    ///
-    /// This function will return an error if there are issues accessing local
-    /// data or if there are problems during the comparison process.
+    /// - `UnexpectedId` if root ID doesn't match
+    /// - `SerializationError` if encoding fails
     ///
     pub fn commit_root<D: Data>(root: Option<D>) -> Result<(), StorageError> {
         let id: Id = Id::root();
@@ -1060,73 +645,30 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         if let Some(hash) = hash {
-            sync::commit_root(&hash)?;
+            crate::delta::commit_root(&hash)?;
         }
 
         Ok(())
     }
 
-    /// Saves an [`Element`](crate::entities::Element) to the storage system.
+    /// Saves an entity to storage, updating if it exists.
     ///
-    /// This will save the provided [`Element`](crate::entities::Element) to the
-    /// storage system. If the record already exists, it will be updated with
-    /// the new data. If the record does not exist, it will be created.
+    /// Only saves if entity is dirty. Returns `false` if not saved due to:
+    /// - Entity not dirty
+    /// - Existing record is newer (last-write-wins guard)
     ///
-    /// # Update guard
+    /// Automatically:
+    /// - Calculates Merkle hashes
+    /// - Updates timestamps
+    /// - Generates sync actions
+    /// - Propagates hash changes up ancestor chain
     ///
-    /// If the provided [`Element`](crate::entities::Element) is older than the
-    /// existing record, the update will be ignored, and the existing record
-    /// will be kept. The Boolean return value indicates whether the record was
-    /// saved or not; a value of `false` indicates that the record was not saved
-    /// due to this guard check — any other reason will be due to an error, and
-    /// returned as such.
-    ///
-    /// # Dirty flag
-    ///
-    /// Note, if the [`Element`](crate::entities::Element) is not marked as
-    /// dirty, it will not be saved, but `true` will be returned. In this case,
-    /// the record is considered to be up-to-date and does not need saving, and
-    /// so the save operation is effectively a no-op. If necessary, this can be
-    /// checked before calling [`save()](crate::entities::Element::save()) by
-    /// calling [`is_dirty()](crate::entities::Element::is_dirty()).
-    ///
-    /// # Hierarchy
-    ///
-    /// It's important to be aware of the hierarchy when saving an entity. If
-    /// the entity is a child, it must have a parent, and the parent must exist
-    /// in the storage system. If the parent does not exist, the child will not
-    /// be saved, and an error will be returned.
-    ///
-    /// If the entity is a root, it will be saved as a root, and the parent ID
-    /// will be set to [`None`].
-    ///
-    /// When creating a new child entity, it's important to call
-    /// [`add_child_to()`](Interface::add_child_to()) in order to create and
-    /// associate the child with the parent. Thereafter, [`save()`](Interface::save())
-    /// can be called to save updates to the child entity.
-    ///
-    /// # Merkle hash
-    ///
-    /// The Merkle hash of the [`Element`](crate::entities::Element) is
-    /// calculated before saving, and stored in the [`Element`](crate::entities::Element)
-    /// itself. This is used to determine whether the data of the [`Element`](crate::entities::Element)
-    /// or its children has changed, and is used to validate the stored data.
-    ///
-    /// Note that if the [`Element`](crate::entities::Element) does not need
-    /// saving, or cannot be saved, then the Merkle hash will not be updated.
-    /// This way the hash only ever represents the state of the data that is
-    /// actually stored.
-    ///
-    /// # Parameters
-    ///
-    /// * `element` - The [`Element`](crate::entities::Element) whose data
-    ///               should be saved. This will be serialised and stored in the
-    ///               storage system.
+    /// **Note**: Use [`add_child_to()`](Self::add_child_to()) for new children,
+    /// then `save()` for subsequent updates.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when serialising data or interacting with the storage
-    /// system, an error will be returned.
+    /// - `SerializationError` if encoding fails
+    /// - `CannotCreateOrphan` if entity has no parent and isn't root
     ///
     pub fn save<D: Data>(entity: &mut D) -> Result<bool, StorageError> {
         if !entity.element().is_dirty() {
@@ -1159,31 +701,89 @@ impl<S: StorageAdaptor> Interface<S> {
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
         let last_metadata = <Index<S>>::get_metadata(id)?;
 
-        if let Some(last_metadata) = &last_metadata {
+        let final_data = if let Some(last_metadata) = &last_metadata {
             if last_metadata.updated_at > metadata.updated_at {
+                // Incoming is older - skip completely
                 return Ok(None);
+            } else if id.is_root() {
+                // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
+                // Even if incoming is newer, we merge to avoid losing concurrent updates
+                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                    Self::try_merge_data(
+                        id,
+                        &existing_data,
+                        data,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?
+                } else {
+                    data.to_vec()
+                }
+            } else if last_metadata.updated_at == metadata.updated_at {
+                // Concurrent update (same timestamp) - try to merge
+                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                    Self::try_merge_data(
+                        id,
+                        &existing_data,
+                        data,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?
+                } else {
+                    data.to_vec()
+                }
+            } else {
+                // Incoming is newer - use it (LWW for non-root entities)
+                data.to_vec()
             }
-        } else if id.is_root() {
-            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata))?;
-        }
+        } else {
+            if id.is_root() {
+                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata))?;
+            }
+            data.to_vec()
+        };
 
-        let own_hash = Sha256::digest(data).into();
+        let own_hash = Sha256::digest(&final_data).into();
 
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
-        _ = S::storage_write(Key::Entry(id), data);
+        _ = S::storage_write(Key::Entry(id), &final_data);
 
         let is_new = metadata.created_at == *metadata.updated_at;
 
         Ok(Some((is_new, full_hash)))
     }
 
-    /// Saves raw data to the storage system.
+    /// Attempt to merge two versions of data using CRDT semantics.
+    ///
+    /// Returns the merged data, falling back to LWW (newer data) on failure.
+    fn try_merge_data(
+        _id: Id,
+        existing: &[u8],
+        incoming: &[u8],
+        existing_timestamp: u64,
+        incoming_timestamp: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        use crate::merge::merge_root_state;
+
+        // Attempt CRDT merge
+        match merge_root_state(existing, incoming, existing_timestamp, incoming_timestamp) {
+            Ok(merged) => Ok(merged),
+            Err(_) => {
+                // Merge failed - fall back to LWW
+                if incoming_timestamp >= existing_timestamp {
+                    Ok(incoming.to_vec())
+                } else {
+                    Ok(existing.to_vec())
+                }
+            }
+        }
+    }
+
+    /// Saves raw serialized data with orphan checking.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when serialising data or interacting with the storage
-    /// system, an error will be returned.
+    /// - `CannotCreateOrphan` if entity has no parent and isn't root
     ///
     pub fn save_raw(
         id: Id,
@@ -1216,114 +816,47 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         };
 
-        sync::push_action(action);
+        crate::delta::push_action(action);
 
         Ok(Some(full_hash))
     }
 
-    /// Validates the stored state.
+    /// Validates Merkle tree integrity.
     ///
-    /// This will validate the stored state of the storage system, i.e. the data
-    /// that has been saved to the storage system, ensuring that it is correct
-    /// and consistent. This is done by calculating Merkle hashes of the stored
-    /// data, and comparing them to the expected hashes.
+    /// **Note**: Not yet implemented.
     ///
     /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// Currently panics (unimplemented).
     ///
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
-}
 
-/// Errors that can occur when working with the storage system.
-#[derive(Debug, ThisError)]
-#[non_exhaustive]
-pub enum StorageError {
-    /// The requested action is not allowed.
-    #[error("Action not allowed: {0}")]
-    ActionNotAllowed(String),
-
-    /// An attempt was made to create an orphan, i.e. an entity that has not
-    /// been registered as either a root or having a parent. This was probably
-    /// cause by calling `save()` without calling `add_child_to()` first.
-    #[error("Cannot create orphan with ID: {0}")]
-    CannotCreateOrphan(Id),
-
-    /// An error occurred during serialization.
-    #[error("Deserialization error: {0}")]
-    DeserializationError(IoError),
-
-    /// An error occurred when handling threads or async tasks.
-    #[error("Dispatch error: {0}")]
-    DispatchError(String),
-
-    /// The ID of the entity supplied does not match the ID in the accompanying
-    /// comparison data.
-    #[error("ID mismatch in comparison data for ID: {0}")]
-    IdentifierMismatch(Id),
-
-    /// TODO: An error during tree validation.
-    #[error("Invalid data was found for ID: {0}")]
-    InvalidDataFound(Id),
-
-    /// An index entry already exists for the specified entity. This would
-    /// indicate a bug in the system.
-    #[error("Index already exists for ID: {0}")]
-    IndexAlreadyExists(Id),
-
-    /// An index entry was not found for the specified entity. This would
-    /// indicate a bug in the system.
-    #[error("Index not found for ID: {0}")]
-    IndexNotFound(Id),
-
-    /// The requested record was not found, but in the context it was asked for,
-    /// it was expected to be found and so this represents an error or some kind
-    /// of inconsistency in the stored data.
-    #[error("Record not found with ID: {0}")]
-    NotFound(Id),
-
-    /// An unexpected ID was encountered.
-    #[error("Unexpected ID: {0}")]
-    UnexpectedId(Id),
-
-    /// An error occurred during serialization.
-    #[error("Serialization error: {0}")]
-    SerializationError(IoError),
-
-    /// TODO: An error from the Store.
-    #[error("Store error: {0}")]
-    StoreError(#[from] Report),
-
-    /// An unknown collection type was specified.
-    #[error("Unknown collection type: {0}")]
-    UnknownCollectionType(String),
-
-    /// An unknown type was specified.
-    #[error("Unknown type: {0}")]
-    UnknownType(u8),
-}
-
-impl Serialize for StorageError {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match *self {
-            Self::ActionNotAllowed(ref err)
-            | Self::DispatchError(ref err)
-            | Self::UnknownCollectionType(ref err) => serializer.serialize_str(err),
-            Self::DeserializationError(ref err) | Self::SerializationError(ref err) => {
-                serializer.serialize_str(&err.to_string())
-            }
-            Self::CannotCreateOrphan(id)
-            | Self::IndexAlreadyExists(id)
-            | Self::IndexNotFound(id)
-            | Self::IdentifierMismatch(id)
-            | Self::InvalidDataFound(id)
-            | Self::UnexpectedId(id)
-            | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
-            Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
-            Self::UnknownType(err) => serializer.serialize_u8(err),
-        }
-    }
+    // NOTE: Sync orchestration moved to node layer (YAGNI)
+    //
+    // The sync decision logic should be in the node's sync manager, not in storage.
+    // Storage provides primitives (generate_snapshot, full_resync, needs_full_resync),
+    // but the orchestration belongs in the network/node layer where it can access
+    // network protocols and handle peer communication.
+    //
+    // Example node layer implementation:
+    //
+    // ```rust
+    // impl SyncManager {
+    //     async fn sync_with_peer(&self, peer_id: NodeId) -> Result<()> {
+    //         use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
+    //
+    //         if Interface::needs_full_resync(peer_id, TOMBSTONE_RETENTION_NANOS)? {
+    //             let snapshot = network::request_snapshot(peer_id).await?;
+    //             Interface::full_resync(peer_id, snapshot)?;
+    //         } else {
+    //             // Incremental sync via compare_trees
+    //             let comparison = network::request_comparison(peer_id).await?;
+    //             let (local_actions, remote_actions) = Interface::compare_trees(comparison)?;
+    //             // Apply actions...
+    //         }
+    //         Ok(())
+    //     }
+    // }
+    // ```
 }

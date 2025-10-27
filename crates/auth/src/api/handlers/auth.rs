@@ -188,7 +188,7 @@ pub async fn token_handler(
             error!("Authentication failed: {}", err);
             return error_response(
                 StatusCode::UNAUTHORIZED,
-                format!("Authentication failed: {}", err),
+                format!("Authentication failed: {err}"),
                 None,
             );
         }
@@ -270,7 +270,7 @@ pub async fn refresh_token_handler(
             if !err.to_string().contains("expired") {
                 return error_response(
                     StatusCode::UNAUTHORIZED,
-                    format!("Invalid access token: {}", err),
+                    format!("Invalid access token: {err}"),
                     None,
                 );
             }
@@ -288,7 +288,7 @@ pub async fn refresh_token_handler(
         Err(err) => {
             return error_response(
                 StatusCode::UNAUTHORIZED,
-                format!("Invalid refresh token: {}", err),
+                format!("Invalid refresh token: {err}"),
                 None,
             );
         }
@@ -323,7 +323,7 @@ pub async fn refresh_token_handler(
             error!("Failed to refresh token: {}", err);
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to refresh token: {}", err),
+                format!("Failed to refresh token: {err}"),
                 None,
             )
         }
@@ -440,7 +440,7 @@ pub async fn validate_handler(
             }
             error_response(
                 StatusCode::UNAUTHORIZED,
-                format!("Invalid token: {}", err),
+                format!("Invalid token: {err}"),
                 Some(error_headers),
             )
         }
@@ -457,7 +457,7 @@ fn extract_token_from_headers(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Extracts the token from the X-Forwarded-Uri header.
-fn extract_token_from_forwarded_uri<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
+fn extract_token_from_forwarded_uri(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("X-Forwarded-Uri")
         .and_then(|value| value.to_str().ok())
@@ -649,8 +649,7 @@ pub async fn callback_handler(
     </script>
 </body>
 </html>
-        "#,
-        callback_url = callback_url
+        "#
     );
 
     (
@@ -756,7 +755,7 @@ pub async fn revoke_token_handler(
 
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to revoke tokens: {}", err),
+                format!("Failed to revoke tokens: {err}"),
                 None,
             )
         }
@@ -866,7 +865,7 @@ pub async fn mock_token_handler(
     // Create a temporary root key that can be validated
     // This allows the tokens to pass validation for e2e testing
     let mock_key = Key::new_root_key_with_permissions(
-        format!("mock_public_key_{}", timestamp),
+        format!("mock_public_key_{timestamp}"),
         "mock_auth".to_string(),
         permissions.clone(),
         request.node_url.clone(),
@@ -877,7 +876,7 @@ pub async fn mock_token_handler(
         error!("Failed to store mock key: {}", err);
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create mock key: {}", err),
+            format!("Failed to create mock key: {err}"),
             None,
         );
     }

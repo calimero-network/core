@@ -14,6 +14,8 @@ pub struct ApplicationMeta {
     pub source: Box<str>,    // todo! use Cow<'a, str>
     pub metadata: Box<[u8]>, // todo! use Cow<'a, [u8]>
     pub compiled: key::BlobMeta,
+    pub package: Box<str>, // e.g., "com.example.myapp"
+    pub version: Box<str>, // e.g., "1.0.0"
 }
 
 impl ApplicationMeta {
@@ -24,6 +26,8 @@ impl ApplicationMeta {
         source: Box<str>,
         metadata: Box<[u8]>,
         compiled: key::BlobMeta,
+        package: Box<str>,
+        version: Box<str>,
     ) -> Self {
         Self {
             bytecode,
@@ -31,6 +35,8 @@ impl ApplicationMeta {
             source,
             metadata,
             compiled,
+            package,
+            version,
         }
     }
 }

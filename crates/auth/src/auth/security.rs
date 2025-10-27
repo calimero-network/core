@@ -118,7 +118,7 @@ where
         }
 
         let future = self.inner.call(request);
-        Box::pin(async move { future.await })
+        Box::pin(future)
     }
 }
 

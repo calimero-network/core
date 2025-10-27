@@ -9,7 +9,7 @@ mod generic;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
-pub use context::{ContextConfig, ContextDelta, ContextIdentity, ContextMeta, ContextState};
+pub use context::{ContextConfig, ContextDagDelta, ContextIdentity, ContextMeta, ContextState};
 pub use generic::GenericData;
 
 pub trait PredefinedEntry: AsKeyParts {

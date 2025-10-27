@@ -43,167 +43,165 @@ impl NodeClient {
 
     /// Get blob from local storage or network if context_id is provided
     /// Returns a streaming Blob that can be used to read the data
-    pub fn get_blob<'a>(
+    pub async fn get_blob<'a>(
         &'a self,
         blob_id: &'a BlobId,
         context_id: Option<&'a ContextId>,
-    ) -> impl std::future::Future<Output = eyre::Result<Option<Blob>>> + 'a {
-        async move {
-            // First try to get locally
-            let Some(stream) = self.blobstore.get(*blob_id)? else {
-                // If no context provided or blob not found locally, return None
-                if context_id.is_none() {
-                    return Ok(None);
-                }
+    ) -> eyre::Result<Option<Blob>> {
+        // First try to get locally
+        let Some(stream) = self.blobstore.get(*blob_id)? else {
+            // If no context provided or blob not found locally, return None
+            if context_id.is_none() {
+                return Ok(None);
+            }
 
-                // Try network discovery
-                let context_id = context_id.unwrap();
-                tracing::info!(
+            // Try network discovery
+            let context_id = context_id.unwrap();
+            tracing::info!(
+                blob_id = %blob_id,
+                context_id = %context_id,
+                "Blob not found locally, attempting network discovery"
+            );
+
+            const MAX_RETRIES: usize = 3;
+            const RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+
+            for attempt in 1..=MAX_RETRIES {
+                tracing::debug!(
                     blob_id = %blob_id,
                     context_id = %context_id,
-                    "Blob not found locally, attempting network discovery"
+                    attempt,
+                    max_attempts = MAX_RETRIES,
+                    "Attempting network discovery"
                 );
 
-                const MAX_RETRIES: usize = 3;
-                const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
-
-                for attempt in 1..=MAX_RETRIES {
-                    tracing::debug!(
-                        blob_id = %blob_id,
-                        context_id = %context_id,
-                        attempt,
-                        max_attempts = MAX_RETRIES,
-                        "Attempting network discovery"
-                    );
-
-                    let peers = match self
-                        .network_client
-                        .query_blob(*blob_id, Some(*context_id))
-                        .await
-                    {
-                        Ok(peers) => peers,
-                        Err(e) => {
-                            tracing::warn!(
-                                blob_id = %blob_id,
-                                context_id = %context_id,
-                                attempt,
-                                error = %e,
-                                "Failed to query DHT for blob"
-                            );
-                            if attempt < MAX_RETRIES {
-                                tokio::time::sleep(RETRY_DELAY).await;
-                                continue;
-                            }
-                            return Err(e);
-                        }
-                    };
-
-                    if peers.is_empty() {
-                        tracing::info!(
+                let peers = match self
+                    .network_client
+                    .query_blob(*blob_id, Some(*context_id))
+                    .await
+                {
+                    Ok(peers) => peers,
+                    Err(e) => {
+                        tracing::warn!(
                             blob_id = %blob_id,
                             context_id = %context_id,
                             attempt,
-                            "No peers found with blob"
+                            error = %e,
+                            "Failed to query DHT for blob"
                         );
                         if attempt < MAX_RETRIES {
                             tokio::time::sleep(RETRY_DELAY).await;
                             continue;
                         }
-                        return Ok(None);
+                        return Err(e);
                     }
+                };
 
+                if peers.is_empty() {
                     tracing::info!(
                         blob_id = %blob_id,
                         context_id = %context_id,
-                        peer_count = peers.len(),
                         attempt,
-                        "Found {} peers with blob, attempting download", peers.len()
+                        "No peers found with blob"
+                    );
+                    if attempt < MAX_RETRIES {
+                        tokio::time::sleep(RETRY_DELAY).await;
+                        continue;
+                    }
+                    return Ok(None);
+                }
+
+                tracing::info!(
+                    blob_id = %blob_id,
+                    context_id = %context_id,
+                    peer_count = peers.len(),
+                    attempt,
+                    "Found {} peers with blob, attempting download", peers.len()
+                );
+
+                // Try to get the blob from each available peer
+                for (peer_index, peer_id) in peers.iter().enumerate() {
+                    tracing::debug!(
+                        peer_id = %peer_id,
+                        peer_index = peer_index + 1,
+                        total_peers = peers.len(),
+                        attempt,
+                        "Attempting to download blob from peer"
                     );
 
-                    // Try to get the blob from each available peer
-                    for (peer_index, peer_id) in peers.iter().enumerate() {
-                        tracing::debug!(
-                            peer_id = %peer_id,
-                            peer_index = peer_index + 1,
-                            total_peers = peers.len(),
-                            attempt,
-                            "Attempting to download blob from peer"
-                        );
+                    match self
+                        .network_client
+                        .request_blob(*blob_id, *context_id, *peer_id)
+                        .await
+                    {
+                        Ok(Some(data)) => {
+                            tracing::info!(
+                                blob_id = %blob_id,
+                                peer_id = %peer_id,
+                                size = data.len(),
+                                attempt,
+                                "Successfully downloaded blob from network"
+                            );
 
-                        match self
-                            .network_client
-                            .request_blob(*blob_id, *context_id, *peer_id)
-                            .await
-                        {
-                            Ok(Some(data)) => {
-                                tracing::info!(
-                                    blob_id = %blob_id,
-                                    peer_id = %peer_id,
-                                    size = data.len(),
-                                    attempt,
-                                    "Successfully downloaded blob from network"
-                                );
+                            // Store the blob locally for future use
+                            let (blob_id_stored, _size) = self
+                                .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                                .await?;
 
-                                // Store the blob locally for future use
-                                let (blob_id_stored, _size) = self
-                                    .add_blob(data.as_slice(), Some(data.len() as u64), None)
-                                    .await?;
-
-                                // Verify we stored the correct blob
-                                if blob_id_stored != *blob_id {
-                                    tracing::warn!(
-                                        expected = %blob_id,
-                                        actual = %blob_id_stored,
-                                        "Downloaded blob ID mismatch"
-                                    );
-                                    continue;
-                                }
-
-                                // Return the newly stored blob as a stream
-                                return Ok(self.blobstore.get(*blob_id)?);
-                            }
-                            Ok(None) => {
-                                tracing::debug!(
-                                    peer_id = %peer_id,
-                                    attempt,
-                                    "Peer doesn't have the blob"
-                                );
-                            }
-                            Err(e) => {
+                            // Verify we stored the correct blob
+                            if blob_id_stored != *blob_id {
                                 tracing::warn!(
-                                    peer_id = %peer_id,
-                                    error = %e,
-                                    attempt,
-                                    "Failed to download blob from peer"
+                                    expected = %blob_id,
+                                    actual = %blob_id_stored,
+                                    "Downloaded blob ID mismatch"
                                 );
+                                continue;
                             }
-                        }
-                    }
 
-                    // If we reach here, all peers failed for this attempt
-                    if attempt < MAX_RETRIES {
-                        tracing::info!(
-                            blob_id = %blob_id,
-                            context_id = %context_id,
-                            attempt,
-                            "All peers failed, retrying in {} seconds",
-                            RETRY_DELAY.as_secs()
-                        );
-                        tokio::time::sleep(RETRY_DELAY).await;
+                            // Return the newly stored blob as a stream
+                            return self.blobstore.get(*blob_id);
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                peer_id = %peer_id,
+                                attempt,
+                                "Peer doesn't have the blob"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                peer_id = %peer_id,
+                                error = %e,
+                                attempt,
+                                "Failed to download blob from peer"
+                            );
+                        }
                     }
                 }
 
-                tracing::debug!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    max_attempts = MAX_RETRIES,
-                    "Failed to download blob from any peer after all retry attempts"
-                );
-                return Ok(None);
-            };
+                // If we reach here, all peers failed for this attempt
+                if attempt < MAX_RETRIES {
+                    tracing::info!(
+                        blob_id = %blob_id,
+                        context_id = %context_id,
+                        attempt,
+                        "All peers failed, retrying in {} seconds",
+                        RETRY_DELAY.as_secs()
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
 
-            Ok(Some(stream))
-        }
+            tracing::debug!(
+                blob_id = %blob_id,
+                context_id = %context_id,
+                max_attempts = MAX_RETRIES,
+                "Failed to download blob from any peer after all retry attempts"
+            );
+            return Ok(None);
+        };
+
+        Ok(Some(stream))
     }
 
     /// Get blob bytes from local storage with actor-based caching
@@ -222,7 +220,7 @@ impl NodeClient {
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        match self
+        if let Ok(()) = self
             .node_manager
             .send(GetBlobBytes {
                 request,
@@ -230,18 +228,15 @@ impl NodeClient {
             })
             .await
         {
-            Ok(_) => {
-                if let Ok(response) = rx.await {
-                    if let Ok(response) = response {
-                        if response.bytes.is_some() {
-                            return Ok(response.bytes);
-                        }
+            if let Ok(response) = rx.await {
+                if let Ok(response) = response {
+                    if response.bytes.is_some() {
+                        return Ok(response.bytes);
                     }
                 }
             }
-            Err(_) => {
-                // NodeManager not available, fallback to direct access
-            }
+        } else {
+            // NodeManager not available, fallback to direct access
         }
 
         if let Some(context_id) = context_id {
@@ -313,7 +308,7 @@ impl NodeClient {
             match result {
                 (Ok(_blob_key), Ok(blob_meta)) => {
                     // Only collect chunk IDs, not full blob info
-                    for link in blob_meta.links.iter() {
+                    for link in &blob_meta.links {
                         let _ = chunk_blob_ids.insert(link.blob_id());
                     }
                 }
@@ -404,7 +399,7 @@ impl NodeClient {
         let mut deleted_metadata_count = 0;
         let mut deleted_files_count = 0;
 
-        blobs_to_delete.extend(blob_meta.links.iter().map(|link| link.blob_id()));
+        blobs_to_delete.extend(blob_meta.links.iter().map(key::BlobMeta::blob_id));
 
         // Delete blob files first
         for current_blob_id in &blobs_to_delete {
@@ -490,7 +485,7 @@ impl NodeClient {
             Ok(Some(mut blob_stream)) => {
                 if let Some(Ok(first_chunk)) = blob_stream.next().await {
                     let bytes = first_chunk.as_ref();
-                    let sample_size = std::cmp::min(bytes.len(), 512);
+                    let sample_size = core::cmp::min(bytes.len(), 512);
                     return Some(detect_mime_from_bytes(&bytes[..sample_size]).to_owned());
                 }
             }

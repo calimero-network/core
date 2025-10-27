@@ -17,7 +17,7 @@ fn try_main() -> EyreResult<()> {
 
     println!("cargo:rustc-env=CALIMERO_BUILD={}", git_build.trim());
     println!("cargo:rustc-env=CALIMERO_COMMIT={}", git_commit.trim());
-    println!("cargo:rustc-env=CALIMERO_RUSTC_VERSION={}", rustc_version);
+    println!("cargo:rustc-env=CALIMERO_RUSTC_VERSION={rustc_version}");
 
     Ok(())
 }
@@ -29,7 +29,7 @@ fn git_details() -> EyreResult<(String, String)> {
         Ok(dir) => Path::new(dir.trim()),
         Err(msg) => {
             println!("cargo:warning=unable to determine git version (not in git repository?)");
-            println!("cargo:warning={}", msg);
+            println!("cargo:warning={msg}");
             return Ok(("unknown".to_owned(), "unknown".to_owned()));
         }
     };

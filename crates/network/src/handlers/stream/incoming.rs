@@ -10,8 +10,8 @@ use crate::NetworkManager;
 pub struct FromIncoming(PeerId, P2pStream, StreamProtocol);
 
 impl FromIncoming {
-    pub fn from_stream(peer_id: PeerId, stream: P2pStream, protocol: StreamProtocol) -> Self {
-        FromIncoming(peer_id, stream, protocol)
+    pub const fn from_stream(peer_id: PeerId, stream: P2pStream, protocol: StreamProtocol) -> Self {
+        Self(peer_id, stream, protocol)
     }
 }
 

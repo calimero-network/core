@@ -170,15 +170,13 @@ fn normalize_generic_type(
             // All list types -> list<T> or bytes for Vec<u8>
             if args.args.len() != 1 {
                 return Err(NormalizeError::TypePathError(format!(
-                    "invalid {} type - expected 1 type argument",
-                    ident_str
+                    "invalid {ident_str} type - expected 1 type argument"
                 )));
             }
             let item_arg = &args.args[0];
             let GenericArgument::Type(item_ty) = item_arg else {
                 return Err(NormalizeError::TypePathError(format!(
-                    "invalid {} item type",
-                    ident_str
+                    "invalid {ident_str} item type"
                 )));
             };
 
@@ -202,8 +200,7 @@ fn normalize_generic_type(
             // All map types -> map<K, V> (normalize to semantic type)
             if args.args.len() != 2 {
                 return Err(NormalizeError::TypePathError(format!(
-                    "invalid {} type - expected 2 type arguments",
-                    ident_str
+                    "invalid {ident_str} type - expected 2 type arguments"
                 )));
             }
 
@@ -212,15 +209,13 @@ fn normalize_generic_type(
 
             let GenericArgument::Type(key_ty) = key_arg else {
                 return Err(NormalizeError::TypePathError(format!(
-                    "invalid {} key type",
-                    ident_str
+                    "invalid {ident_str} key type"
                 )));
             };
 
             let GenericArgument::Type(value_ty) = value_arg else {
                 return Err(NormalizeError::TypePathError(format!(
-                    "invalid {} value type",
-                    ident_str
+                    "invalid {ident_str} value type"
                 )));
             };
 
@@ -237,16 +232,14 @@ fn normalize_generic_type(
             // All set types -> list<T> (normalize to semantic type)
             if args.args.len() != 1 {
                 return Err(NormalizeError::TypePathError(format!(
-                    "invalid {} type - expected 1 type argument",
-                    ident_str
+                    "invalid {ident_str} type - expected 1 type argument"
                 )));
             }
 
             let arg = &args.args[0];
             let GenericArgument::Type(item_ty) = arg else {
                 return Err(NormalizeError::TypePathError(format!(
-                    "invalid {} argument",
-                    ident_str
+                    "invalid {ident_str} argument"
                 )));
             };
 

@@ -97,6 +97,12 @@ pub struct VMLimits {
     pub max_event_kind_size: u64,
     /// The maximum size of an event's data payload in bytes.
     pub max_event_data_size: u64,
+    /// The maximum number of cross-context calls that can be made.
+    pub max_xcalls: u64,
+    /// The maximum size of a cross-context call function name in bytes.
+    pub max_xcall_function_size: u64,
+    /// The maximum size of cross-context call parameters in bytes.
+    pub max_xcall_params_size: u64,
     /// The maximum size of a storage key in bytes.
     pub max_storage_key_size: NonZeroU64,
     /// The maximum size of a storage value in bytes.
@@ -118,17 +124,20 @@ impl Default for VMLimits {
             max_memory_pages: ONE_KIB,                                          // 1 KiB
             max_stack_size: 200 * ONE_KIB as usize,                             // 200 KiB
             max_registers: 100,                                                 //
-            max_register_size: is_valid((100 * ONE_MIB as u64).validate()),     // 100 MiB
-            max_registers_capacity: ONE_GIB as u64,                             // 1 GiB
+            max_register_size: is_valid((100 * u64::from(ONE_MIB)).validate()), // 100 MiB
+            max_registers_capacity: u64::from(ONE_GIB),                         // 1 GiB
             max_logs: 100,                                                      //
-            max_log_size: 16 * ONE_KIB as u64,                                  // 16 KiB
+            max_log_size: 16 * u64::from(ONE_KIB),                              // 16 KiB
             max_events: 100,                                                    //
             max_event_kind_size: 100,                                           //
-            max_event_data_size: 16 * ONE_KIB as u64,                           // 16 KiB
-            max_storage_key_size: is_valid((ONE_MIB as u64).try_into()),        // 1 MiB
-            max_storage_value_size: is_valid((10 * ONE_MIB as u64).try_into()), // 10 MiB
+            max_event_data_size: 16 * u64::from(ONE_KIB),                       // 16 KiB
+            max_xcalls: 100,                                                    //
+            max_xcall_function_size: 100,                                       //
+            max_xcall_params_size: 16 * u64::from(ONE_KIB),                     // 16 KiB
+            max_storage_key_size: is_valid(u64::from(ONE_MIB).try_into()),      // 1 MiB
+            max_storage_value_size: is_valid((10 * u64::from(ONE_MIB)).try_into()), // 10 MiB
             max_blob_handles: 100,                                              //
-            max_blob_chunk_size: 10 * ONE_MIB as u64,                           // 10 MiB
+            max_blob_chunk_size: 10 * u64::from(ONE_MIB),                       // 10 MiB
         }
     }
 }
@@ -158,6 +167,8 @@ pub struct VMLogic<'a> {
     logs: Vec<String>,
     /// A list of events emitted during execution.
     events: Vec<Event>,
+    /// A list of cross-context calls to be executed.
+    xcalls: Vec<XCall>,
     /// The root hash of the state after a successful commit.
     root_hash: Option<[u8; DIGEST_SIZE]>,
     /// A binary artifact produced by the execution.
@@ -200,6 +211,7 @@ impl<'a> VMLogic<'a> {
             returns: None,
             logs: vec![],
             events: vec![],
+            xcalls: vec![],
             root_hash: None,
             artifact: vec![],
             proposals: BTreeMap::new(),
@@ -220,7 +232,7 @@ impl<'a> VMLogic<'a> {
     /// # Arguments
     ///
     /// * `memory` - The `wasmer::Memory` instance from the instantiated guest module.
-    pub fn with_memory(&mut self, memory: wasmer::Memory) -> &mut Self {
+    pub const fn with_memory(&mut self, memory: wasmer::Memory) -> &mut Self {
         self.memory = Some(memory);
         self
     }
@@ -265,6 +277,8 @@ pub struct Outcome {
     pub logs: Vec<String>,
     /// All events emitted during the execution.
     pub events: Vec<Event>,
+    /// All cross-context calls made during the execution.
+    pub xcalls: Vec<XCall>,
     /// The new state root hash if there were commits during the execution.
     pub root_hash: Option<[u8; DIGEST_SIZE]>,
     /// The binary artifact produced if there were commits during the execution.
@@ -303,6 +317,7 @@ impl VMLogic<'_> {
             returns,
             logs: self.logs,
             events: self.events,
+            xcalls: self.xcalls,
             root_hash: self.root_hash,
             artifact: self.artifact,
             proposals: self.proposals,
@@ -358,7 +373,7 @@ impl VMHostFunctions<'_> {
     /// # Returns
     ///
     /// * Mutable slice of the guest memory contents.
-    #[allow(
+    #[expect(
         clippy::mut_from_ref,
         reason = "We are not modifying the self explicitly, only the underlying slice of the guest memory.\
         Meantime we are required to have an immutable reference to self, hence the exception"
@@ -387,7 +402,7 @@ impl VMHostFunctions<'_> {
     fn read_guest_memory_str(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&str> {
         let buf = self.read_guest_memory_slice(slice);
 
-        std::str::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
+        core::str::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
     }
 
     /// Reads a fixed-size IMMUTABLE array slice from guest memory.
@@ -575,6 +590,9 @@ mod tests {
         assert_eq!(limits.max_events, 100);
         assert_eq!(limits.max_event_kind_size, 100);
         assert_eq!(limits.max_event_data_size, 16 << 10); // 16 KiB
+        assert_eq!(limits.max_xcalls, 100);
+        assert_eq!(limits.max_xcall_function_size, 100);
+        assert_eq!(limits.max_xcall_params_size, 16 << 10); // 16 KiB
         assert_eq!(limits.max_storage_key_size.get(), 1 << 20); // 1 MiB
         assert_eq!(limits.max_storage_value_size.get(), 10 << 20); // 10 MiB
         assert_eq!(limits.max_blob_handles, 100);
