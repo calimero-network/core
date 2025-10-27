@@ -43,7 +43,7 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 1000,
+        "durationMs": 3000,
         "description": [
           "assuming it takes 5s to propagate we should",
           "only need to wait 5 * ceil(log2(nodes)) seconds"
@@ -82,7 +82,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 1000,
+        "durationMs": 5000,
         "description": [
           "wait exactly 5s for the broadcast to propagate"
         ]
