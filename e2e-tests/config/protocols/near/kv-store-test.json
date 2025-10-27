@@ -43,10 +43,10 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 3000,
+        "durationMs": 5000,
         "description": [
-          "Wait for nodes to join, subscribe to gossipsub, and sync state.",
-          "Increased to 3s for CI environments which may be slower."
+          "Wait for gossipsub mesh formation + initial sync completion.",
+          "Increased to 5s base (10s total with 3 nodes) for CI reliability."
         ]
       }
     },
