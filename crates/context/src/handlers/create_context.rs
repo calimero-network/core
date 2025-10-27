@@ -276,12 +276,12 @@ async fn create_context(
 
     let init_delta = if let Some(root_hash) = outcome.root_hash {
         context.root_hash = root_hash.into();
-        
+
         // CRITICAL: Create delta and set dag_heads for init()
         // This ensures newly joined nodes can sync via delta protocol
         if !outcome.artifact.is_empty() {
             use calimero_storage::delta::{CausalDelta, StorageDelta};
-            
+
             // Extract actions from init artifact
             let actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
                 Ok(StorageDelta::Actions(actions)) => actions,
@@ -294,16 +294,16 @@ async fn create_context(
                     vec![]
                 }
             };
-            
+
             if !actions.is_empty() {
                 // Create genesis delta (parent is zero hash)
                 let timestamp = calimero_storage::env::time_now();
                 let parents = vec![[0u8; 32]]; // Genesis parent
                 let delta_id = CausalDelta::compute_id(&parents, &actions, timestamp);
-                
+
                 // Set dag_heads to the init delta
                 context.dag_heads = vec![delta_id];
-                
+
                 // Persist the init delta so peers can request it
                 let serialized_actions = borsh::to_vec(&actions)?;
                 let init_delta = types::ContextDagDelta {
@@ -313,14 +313,14 @@ async fn create_context(
                     timestamp,
                     applied: true,
                 };
-                
+
                 debug!(
                     context_id = %context.id,
                     delta_id = ?delta_id,
                     actions_count = actions.len(),
                     "Created init delta with dag_heads"
                 );
-                
+
                 Some(init_delta)
             } else {
                 // Fallback: Use root_hash as dag_head if no actions
@@ -387,7 +387,7 @@ async fn create_context(
             &key::ContextDagDelta::new(context.id, delta.delta_id),
             &delta,
         )?;
-        
+
         debug!(
             context_id = %context.id,
             delta_id = ?delta.delta_id,
