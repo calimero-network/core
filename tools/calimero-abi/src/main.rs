@@ -107,14 +107,14 @@ fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> eyre
     }
 
     // Determine output path
-    let output_path = match output {
-        Some(path) => path.to_path_buf(),
-        None => {
+    let output_path = output.map_or_else(
+        || {
             let mut path = wasm_file.clone();
             let _ = path.set_extension("abi.json");
             path
-        }
-    };
+        },
+        Path::to_path_buf,
+    );
 
     // Write the ABI JSON
     fs::write(&output_path, abi_json)?;
@@ -206,7 +206,7 @@ fn inspect_wasm(wasm_file: &PathBuf) -> eyre::Result<()> {
 
     println!("All sections:");
     for (i, section) in sections.iter().enumerate() {
-        println!("  {}. {}", i + 1, section);
+        println!("  {}. {}", i.saturating_add(1), section);
     }
 
     println!("\nExports: {export_count} total");
@@ -215,19 +215,21 @@ fn inspect_wasm(wasm_file: &PathBuf) -> eyre::Result<()> {
     if !custom_sections.is_empty() {
         println!("\nCustom sections summary:");
         for (name, size) in &custom_sections {
-            println!("  - '{}' ({} bytes)", name, size);
+            println!("  - '{name}' ({size} bytes)");
         }
     }
 
-    if !custom_sections.iter().any(|(name, _)| name == "calimero_abi_v1") {
+    if custom_sections
+        .iter()
+        .any(|(name, _)| name == "calimero_abi_v1")
+    {
+        println!("\n✓ 'calimero_abi_v1' section found - ABI extraction available");
+    } else {
         println!("\n⚠️  'calimero_abi_v1' section NOT found.");
         println!("This WASM file was built without ABI generation enabled.");
         println!("\nTo enable ABI generation:");
-        println!("  1. Ensure you're using calimero-sdk");
-        println!("  2. Build with: cargo build --target wasm32-unknown-unknown --release");
-        println!("  3. The SDK will automatically embed the ABI during build");
-    } else {
-        println!("\n✓ 'calimero_abi_v1' section found - ABI extraction available");
+        println!("  - See the build.rs examples in apps/kv-store or apps/abi_conformance");
+        println!("  - Build with: cargo build --target wasm32-unknown-unknown --release");
     }
 
     Ok(())
