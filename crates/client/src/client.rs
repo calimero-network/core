@@ -18,14 +18,15 @@ use calimero_server_primitives::admin::{
     CreateContextIdAlias, CreateContextIdentityAlias, CreateContextRequest, CreateContextResponse,
     DeleteAliasResponse, DeleteContextResponse, GenerateContextIdentityResponse,
     GetApplicationResponse, GetContextClientKeysResponse, GetContextIdentitiesResponse,
-    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
-    GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
+    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetLatestVersionResponse,
+    GetPeersCountResponse, GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
     InstallDevApplicationRequest, InviteToContextOpenInvitationRequest,
     InviteToContextOpenInvitationResponse, InviteToContextRequest, InviteToContextResponse,
     JoinContextByOpenInvitationRequest, JoinContextRequest, JoinContextResponse,
-    ListAliasesResponse, ListApplicationsResponse, LookupAliasResponse, RevokePermissionResponse,
-    SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
+    ListAliasesResponse, ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse,
+    LookupAliasResponse, RevokePermissionResponse, SyncContextResponse,
+    UninstallApplicationResponse, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
@@ -656,5 +657,27 @@ where
             .map(ResolveResponseValue::Parsed);
 
         Ok(ResolveResponse { alias, value })
+    }
+
+    // Package management methods
+    pub async fn list_packages(&self) -> Result<ListPackagesResponse> {
+        let response = self.connection.get("admin-api/packages").await?;
+        Ok(response)
+    }
+
+    pub async fn list_versions(&self, package: &str) -> Result<ListVersionsResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/packages/{package}/versions"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_latest_version(&self, package: &str) -> Result<GetLatestVersionResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/packages/{package}/latest"))
+            .await?;
+        Ok(response)
     }
 }

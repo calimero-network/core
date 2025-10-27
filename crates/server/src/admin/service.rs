@@ -32,10 +32,12 @@ use crate::admin::handlers::applications::{
 };
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_identities, get_context_ids,
-    get_context_storage, invite_to_context, invite_to_context_open_invitation, join_context,
+    get_context_storage, get_contexts_for_application, get_contexts_with_executors_for_application,
+    invite_to_context, invite_to_context_open_invitation, join_context,
     join_context_open_invitation, sync, update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
+use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
 use crate::config::ServerConfig;
 use crate::AdminState;
@@ -103,6 +105,10 @@ pub(crate) fn setup(
             "/applications/:application_id",
             get(get_application::handler).delete(uninstall_application::handler),
         )
+        // Package management
+        .route("/packages", get(list_packages::handler))
+        .route("/packages/:package/versions", get(list_versions::handler))
+        .route("/packages/:package/latest", get(get_latest_version::handler))
         // Context management
         .route(
             "/contexts",
@@ -119,6 +125,14 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/application",
             post(update_context_application::handler),
+        )
+        .route(
+            "/contexts/for-application/:application_id",
+            get(get_contexts_for_application::handler),
+        )
+        .route(
+            "/contexts/with-executors/for-application/:application_id",
+            get(get_contexts_with_executors_for_application::handler),
         )
         .route(
             "/contexts/:context_id/storage",
