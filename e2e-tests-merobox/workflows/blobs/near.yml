@@ -3,14 +3,15 @@ description: End-to-end testing of Calimero Blob API with real file uploads
 
 # Test configuration
 result_dir: e2e-tests-merobox/results/near-blobs
+no_docker: true
 force_pull_image: false
 
 # Node configuration
 nodes:
+  chain_id: calimero-testnet
   count: 2
-  base_port: 2630
-  base_rpc_port: 2730
-  log_level: debug,calimero_=debug
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: near-blob
 
 # Test workflow steps
 steps:
@@ -18,13 +19,16 @@ steps:
   # SETUP: Install Application & Create Context
   # ============================================================================
 
-  - name: Install Blobs Application on Inviter
+  - name: Install Application on Node 1
     type: install_application
     node: near-blob-1
-    path: apps/blobs/res/blobs.wasm
+    path: "apps/blobs/res/blobs.wasm"
     dev: true
     outputs:
       app_id: applicationId
+      app_id_node1:
+        field: applicationId
+        target: app_id_{node_name}
 
   - name: Create Context on Inviter
     type: create_context
