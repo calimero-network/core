@@ -45,9 +45,9 @@
 //!
 //! # Anti-Drift Protection
 //!
-//! The HLC will reject timestamps that are too far in the future (500ms by default)
-//! to prevent clock skew from causing excessive drift. This is configurable via
-//! the `UHLC_MAX_DELTA_MS` environment variable.
+//! The HLC will reject timestamps that are too far in the future (5s in Calimero)
+//! to prevent clock skew from causing excessive drift while allowing for network delays
+//! in distributed systems. This is configured via `HLCBuilder::with_max_delta()`.
 //!
 //! # Implementation Note
 //!
@@ -62,11 +62,18 @@
 //! - [Original paper](https://cse.buffalo.edu/tech-reports/2014-04.pdf) - Academic foundation
 
 use core::fmt;
+use core::num::NonZeroU128;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
 // Re-export uhlc types for use throughout the crate
 pub use uhlc::{HLCBuilder, Timestamp, HLC, ID, NTP64};
+
+// Const for default ID (can't be zero)
+const DEFAULT_ID: NonZeroU128 = match NonZeroU128::new(1) {
+    Some(v) => v,
+    None => unreachable!(),
+};
 
 /// Wrapper around uhlc::Timestamp that implements Borsh serialization.
 ///
@@ -143,9 +150,11 @@ impl BorshDeserialize for HybridTimestamp {
 
         // Use NonZero to create ID, or use a sentinel value if zero
         let id = if id_u128 == 0 {
-            ID::from(core::num::NonZeroU128::new(1).unwrap())
+            ID::from(DEFAULT_ID)
         } else {
-            ID::from(core::num::NonZeroU128::new(id_u128).unwrap())
+            NonZeroU128::new(id_u128).map(ID::from).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "ID cannot be zero")
+            })?
         };
 
         Ok(Self(Timestamp::new(time, id)))
@@ -155,8 +164,7 @@ impl BorshDeserialize for HybridTimestamp {
 impl Default for HybridTimestamp {
     fn default() -> Self {
         // Create a default timestamp with zero time and ID of 1 (can't be zero due to NonZero)
-        let id = ID::from(core::num::NonZeroU128::new(1).unwrap());
-        Self(Timestamp::new(NTP64(0), id))
+        Self(Timestamp::new(NTP64(0), ID::from(DEFAULT_ID)))
     }
 }
 

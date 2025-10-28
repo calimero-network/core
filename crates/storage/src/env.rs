@@ -90,6 +90,13 @@ pub fn hlc_timestamp() -> HybridTimestamp {
 }
 
 /// Update HLC with remote timestamp (preserves causality).
+///
+/// When syncing deltas from remote nodes, call this with each delta's HLC timestamp
+/// to ensure the local clock observes remote operations and maintains causal ordering.
+///
+/// # Errors
+///
+/// Returns `Err(())` if the remote timestamp is >5s in the future (drift protection).
 pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
     imp::update_hlc(remote_ts)
 }
@@ -111,7 +118,12 @@ mod calimero_vm {
 
     thread_local! {
         // Uses custom getrandom backend (see getrandom_impl.rs)
-        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(HLC::default());
+        // 5s drift protection (default 500ms is too strict for distributed systems)
+        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(
+            crate::logical_clock::HLCBuilder::new()
+                .with_max_delta(std::time::Duration::from_secs(5))
+                .build()
+        );
     }
 
     /// Commits the root hash to the runtime.
@@ -192,8 +204,12 @@ mod mocked {
 
     thread_local! {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
-        // HLC::default() uses getrandom, which in native/test contexts uses /dev/urandom
-        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(HLC::default());
+        // 5s drift protection (default 500ms is too strict for distributed systems)
+        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(
+            crate::logical_clock::HLCBuilder::new()
+                .with_max_delta(std::time::Duration::from_secs(5))
+                .build()
+        );
     }
 
     /// The default storage system.

@@ -232,7 +232,6 @@ async fn test_deep_chain_catch_up() {
             id,
             parents: vec![prev_id],
             payload: vec![],
-            timestamp: i as u64 * 1000,
         };
 
         deltas.push(delta.clone());
@@ -288,7 +287,6 @@ async fn test_snapshot_transfer_fresh_node() {
             id: [i; 32], // Use [i; 32] for simpler IDs
             parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
             payload: vec![], // Empty payload to avoid entity index issues
-            timestamp: i as u64 * 1000,
         };
 
         node_a.add_delta(delta).await.unwrap();
@@ -311,6 +309,7 @@ async fn test_snapshot_transfer_fresh_node() {
         entries: vec![],
         indexes: vec![],
         root_hash: [0; 32],
+        timestamp: 0,
     };
 
     // After snapshot, node B should have same state
@@ -337,6 +336,7 @@ async fn test_snapshot_excludes_tombstones() {
         entries: live_entries.clone(),
         indexes: vec![],
         root_hash: [1; 32],
+        timestamp: 0,
     };
 
     // Verify snapshot only contains live entities
@@ -478,7 +478,6 @@ async fn test_heartbeat_with_same_state_no_divergence() {
             id,
             parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
             payload: vec![],
-            timestamp: i as u64 * 1000,
         };
 
         node_a.add_delta(delta.clone()).await.unwrap();
@@ -582,6 +581,7 @@ async fn test_recovery_via_full_resync() {
         entries: vec![(Id::from([100; 32]), vec![1])],
         indexes: vec![],
         root_hash: [1; 32],
+        timestamp: 0,
     };
 
     // After resync, node B has node A's state
@@ -603,7 +603,6 @@ async fn test_recovery_via_delta_replay() {
             id,
             parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
             payload: vec![],
-            timestamp: i as u64 * 1000,
         };
 
         deltas.push(delta.clone());
