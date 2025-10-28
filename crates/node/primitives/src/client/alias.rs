@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use core::str::FromStr;
 
 use calimero_primitives::alias::Alias;
 use calimero_store::key::{self as key, Aliasable, StoreScopeCompat};
@@ -90,13 +90,11 @@ impl NodeClient {
 
         let mut iter = handle.iter::<key::Alias>()?;
 
-        let first = scope
-            .map(|scope| {
-                iter.seek(key::Alias::new_unchecked::<T>(Some(scope), [0; 50]))
-                    .transpose()
-                    .map(|k| (k, iter.read()))
-            })
-            .flatten();
+        let first = scope.and_then(|scope| {
+            iter.seek(key::Alias::new_unchecked::<T>(Some(scope), [0; 50]))
+                .transpose()
+                .map(|k| (k, iter.read()))
+        });
 
         let mut aliases = vec![];
 

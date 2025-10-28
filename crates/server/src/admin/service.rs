@@ -18,6 +18,7 @@ use tracing::info;
 
 use super::handlers::context::{grant_capabilities, revoke_capabilities};
 use super::handlers::proposals::{
+    approve_proposal_handler, create_and_approve_proposal_handler,
     get_context_storage_entries_handler, get_context_value_handler,
     get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler,
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
@@ -30,10 +31,13 @@ use crate::admin::handlers::applications::{
     uninstall_application,
 };
 use crate::admin::handlers::context::{
-    create_context, delete_context, get_context, get_context_identities, get_context_storage,
-    get_contexts, invite_to_context, join_context, sync, update_context_application,
+    create_context, delete_context, get_context, get_context_identities, get_context_ids,
+    get_context_storage, get_contexts_for_application, get_contexts_with_executors_for_application,
+    invite_to_context, invite_to_context_open_invitation, join_context,
+    join_context_open_invitation, sync, update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
+use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
 use crate::config::ServerConfig;
 use crate::AdminState;
@@ -101,13 +105,19 @@ pub(crate) fn setup(
             "/applications/:application_id",
             get(get_application::handler).delete(uninstall_application::handler),
         )
+        // Package management
+        .route("/packages", get(list_packages::handler))
+        .route("/packages/:package/versions", get(list_versions::handler))
+        .route("/packages/:package/latest", get(get_latest_version::handler))
         // Context management
         .route(
             "/contexts",
-            get(get_contexts::handler).post(create_context::handler),
+            get(get_context_ids::handler).post(create_context::handler),
         )
         .route("/contexts/invite", post(invite_to_context::handler))
+        .route("/contexts/invite_by_open_invitation", post(invite_to_context_open_invitation::handler))
         .route("/contexts/join", post(join_context::handler))
+        .route("/contexts/join_by_open_invitation", post(join_context_open_invitation::handler))
         .route(
             "/contexts/:context_id",
             get(get_context::handler).delete(delete_context::handler),
@@ -115,6 +125,14 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/application",
             post(update_context_application::handler),
+        )
+        .route(
+            "/contexts/for-application/:application_id",
+            get(get_contexts_for_application::handler),
+        )
+        .route(
+            "/contexts/with-executors/for-application/:application_id",
+            get(get_contexts_with_executors_for_application::handler),
         )
         .route(
             "/contexts/:context_id/storage",
@@ -157,6 +175,14 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/proposals",
             post(get_proposals_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals/create-and-approve",
+            post(create_and_approve_proposal_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals/approve",
+            post(approve_proposal_handler),
         )
         .route(
             "/contexts/:context_id/proposals/:proposal_id",

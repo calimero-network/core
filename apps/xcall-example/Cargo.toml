@@ -1,0 +1,25 @@
+[package]
+name = "xcall-example"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true
+
+[package.metadata.workspaces]
+independent = true
+

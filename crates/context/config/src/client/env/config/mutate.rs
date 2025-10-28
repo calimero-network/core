@@ -1,13 +1,16 @@
 use std::fmt::Debug;
 
 use super::requests::{
-    AddContextRequest, AddMembersRequest, GrantCapabilitiesRequest, RemoveMembersRequest,
-    RevokeCapabilitiesRequest, UpdateApplicationRequest, UpdateProxyContractRequest,
+    AddContextRequest, AddMembersRequest, CommitOpenInvitationRequest, GrantCapabilitiesRequest,
+    RemoveMembersRequest, RevealOpenInvitationRequest, RevokeCapabilitiesRequest,
+    UpdateApplicationRequest, UpdateProxyContractRequest,
 };
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::types::{Application, Capability, ContextId, ContextIdentity};
+use crate::types::{
+    Application, BlockHeight, Capability, ContextId, ContextIdentity, SignedRevealPayload,
+};
 use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
 #[derive(Debug)]
@@ -88,6 +91,43 @@ impl<'a, T> ContextConfigMutate<'a, T> {
                 context_id: add_request.context_id,
                 kind: ContextRequestKind::AddMembers {
                     members: add_request.members.into(),
+                },
+            }),
+        }
+    }
+
+    pub fn commit_invitation(
+        self,
+        context_id: ContextId,
+        commitment_hash: String,
+        expiration_block_height: BlockHeight,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let commit_open_invitation_request =
+            CommitOpenInvitationRequest::new(context_id, commitment_hash, expiration_block_height);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: commit_open_invitation_request.context_id,
+                kind: ContextRequestKind::CommitOpenInvitation {
+                    commitment_hash: commit_open_invitation_request.commitment_hash,
+                    expiration_block_height: commit_open_invitation_request.expiration_block_height,
+                },
+            }),
+        }
+    }
+
+    pub fn reveal_invitation(
+        self,
+        context_id: ContextId,
+        payload: SignedRevealPayload,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let reveal_request = RevealOpenInvitationRequest::new(context_id, payload);
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: reveal_request.context_id,
+                kind: ContextRequestKind::RevealOpenInvitation {
+                    payload: reveal_request.payload,
                 },
             }),
         }

@@ -1,15 +1,16 @@
+use core::cell::RefCell;
 use serde::Serialize;
-use std::cell::RefCell;
 
 use crate::{
     errors::{HostError, Location, PanicContext},
-    logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE},
+    logic::{sys, VMHostFunctions, VMLogicResult},
 };
+use calimero_primitives::common::DIGEST_SIZE;
 
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
     /// This is set temporarily by the SDK's `emit_with_handler` function and read by the runtime.
-    static CURRENT_CALLBACK_HANDLER: RefCell<Option<String>> = RefCell::new(None);
+    static CURRENT_CALLBACK_HANDLER: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Represents a structured event emitted during the execution.
@@ -22,6 +23,18 @@ pub struct Event {
     pub data: Vec<u8>,
     /// Optional handler name for the event.
     pub handler: Option<String>,
+}
+
+/// Represents a cross-context call to be executed.
+#[derive(Debug, Serialize)]
+#[non_exhaustive]
+pub struct XCall {
+    /// The context ID to execute the call on.
+    pub context_id: [u8; DIGEST_SIZE],
+    /// The function name to call.
+    pub function: String,
+    /// The parameters to pass to the function.
+    pub params: Vec<u8>,
 }
 
 impl VMHostFunctions<'_> {
@@ -305,7 +318,7 @@ impl VMHostFunctions<'_> {
                 kind,
                 data,
                 handler,
-            })
+            });
         });
 
         Ok(())
@@ -378,7 +391,63 @@ impl VMHostFunctions<'_> {
                 kind,
                 data,
                 handler,
-            })
+            });
+        });
+
+        Ok(())
+    }
+
+    /// Queues a cross-context call to be executed after the current execution completes.
+    ///
+    /// This function collects cross-context calls that will be executed locally
+    /// on the specified contexts after the current execution finishes.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_xcall_ptr` - Pointer to the XCall data in guest memory.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the xcall was successfully queued.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::XCallFunctionSizeOverflow` if the function name is too long.
+    /// * `HostError::XCallParamsSizeOverflow` if the params data is too large.
+    /// * `HostError::XCallsOverflow` if the maximum number of xcalls has been reached.
+    /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
+    pub fn xcall(&mut self, src_xcall_ptr: u64) -> VMLogicResult<()> {
+        let xcall = unsafe { self.read_guest_memory_typed::<sys::XCall<'_>>(src_xcall_ptr)? };
+
+        let function_len = xcall.function().len();
+        let params_len = xcall.params().len();
+
+        let logic = self.borrow_logic();
+
+        if function_len > logic.limits.max_xcall_function_size {
+            return Err(HostError::XCallFunctionSizeOverflow.into());
+        }
+
+        if params_len > logic.limits.max_xcall_params_size {
+            return Err(HostError::XCallParamsSizeOverflow.into());
+        }
+
+        if logic.xcalls.len()
+            >= usize::try_from(logic.limits.max_xcalls).map_err(|_| HostError::IntegerOverflow)?
+        {
+            return Err(HostError::XCallsOverflow.into());
+        }
+
+        let context_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(xcall.context_id())?;
+        let function = self.read_guest_memory_str(xcall.function())?.to_owned();
+        let params = self.read_guest_memory_slice(xcall.params()).to_vec();
+
+        self.with_logic_mut(|logic| {
+            logic.xcalls.push(XCall {
+                context_id,
+                function,
+                params,
+            });
         });
 
         Ok(())

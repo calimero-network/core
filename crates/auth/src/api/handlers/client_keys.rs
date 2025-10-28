@@ -170,7 +170,7 @@ pub async fn generate_client_key_handler(
     let timestamp = Utc::now().timestamp();
 
     let mut hasher = Sha256::new();
-    hasher.update(format!("client:{}:{}:{}", context_id, context_identity, timestamp).as_bytes());
+    hasher.update(format!("client:{context_id}:{context_identity}:{timestamp}").as_bytes());
     let hash = hasher.finalize();
     let client_id = hex::encode(hash);
 
@@ -179,7 +179,7 @@ pub async fn generate_client_key_handler(
     let mut all_permissions = Vec::new();
 
     if !context_id.is_empty() && !context_identity.is_empty() {
-        let default_permission = format!("context[{},{}]", context_id, context_identity);
+        let default_permission = format!("context[{context_id},{context_identity}]");
         all_permissions.push(default_permission);
     }
 
@@ -200,7 +200,7 @@ pub async fn generate_client_key_handler(
         }
     }
 
-    let name = format!("Context Client - {} ({})", context_id, context_identity);
+    let name = format!("Context Client - {context_id} ({context_identity})");
 
     let client_key =
         Key::new_client_key(root_key_id.clone(), name, all_permissions, node_url.clone());

@@ -157,7 +157,7 @@ impl<'a> SanitizationResult<'a> {
         Ok(())
     }
 
-    pub fn errors(&mut self) -> &mut Errors<'static> {
+    pub const fn errors(&mut self) -> &mut Errors<'static> {
         &mut self.errors
     }
 
@@ -282,7 +282,7 @@ impl Parse for Sanitizer<'_> {
                             });
                         }
                         tt => entries.push(SanitizerAtom::Tree(tt)),
-                    };
+                    }
                 }
             }
 

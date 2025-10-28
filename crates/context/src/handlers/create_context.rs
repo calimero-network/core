@@ -1,6 +1,6 @@
 use std::collections::{btree_map, BTreeMap};
 use std::mem;
-use std::num::NonZeroUsize;
+// Removed: NonZeroUsize (DAG-based approach)
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
@@ -18,6 +18,7 @@ use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use tokio::sync::{Mutex, OwnedMutexGuard};
+use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::ContextStorage;
@@ -68,9 +69,12 @@ impl Handler<CreateContextRequest> for ContextManager {
             .try_lock_owned()
             .expect("logically exclusive");
 
-        let context = context.meta;
+        let context_meta = context.meta.clone();
 
         let module_task = self.get_module(application_id);
+
+        let context_meta_for_map_ok = context_meta.clone();
+        let context_meta_for_map_err = context_meta.clone();
 
         ActorResponse::r#async(
             module_task
@@ -81,7 +85,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         act.context_client.clone(),
                         module,
                         external_config,
-                        context,
+                        context_meta,
                         context_secret,
                         application,
                         identity,
@@ -93,7 +97,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                     .into_actor(act)
                 })
                 .map_ok(move |root_hash, act, _ctx| {
-                    if let Some(meta) = act.contexts.get_mut(&context.id) {
+                    if let Some(meta) = act.contexts.get_mut(&context_meta_for_map_ok.id) {
                         // this should almost always exist, but with an LruCache, it
                         // may not. And if it's been evicted, the next execution will
                         // re-create it with data from the store, so it's not a problem
@@ -102,12 +106,12 @@ impl Handler<CreateContextRequest> for ContextManager {
                     }
 
                     CreateContextResponse {
-                        context_id: context.id,
+                        context_id: context_meta_for_map_ok.id,
                         identity,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
-                    let _ignored = act.contexts.remove(&context.id);
+                    let _ignored = act.contexts.remove(&context_meta_for_map_err.id);
 
                     err
                 }),
@@ -270,9 +274,75 @@ async fn create_context(
         );
     }
 
-    if let Some(root_hash) = outcome.root_hash {
+    let init_delta = if let Some(root_hash) = outcome.root_hash {
         context.root_hash = root_hash.into();
-    }
+
+        // CRITICAL: Create delta and set dag_heads for init()
+        // This ensures newly joined nodes can sync via delta protocol
+        if !outcome.artifact.is_empty() {
+            use calimero_storage::delta::{CausalDelta, StorageDelta};
+
+            // Extract actions from init artifact
+            let actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
+                Ok(StorageDelta::Actions(actions)) => actions,
+                Ok(_) => {
+                    warn!("Unexpected StorageDelta variant during init");
+                    vec![]
+                }
+                Err(e) => {
+                    warn!(?e, "Failed to deserialize init artifact");
+                    vec![]
+                }
+            };
+
+            if !actions.is_empty() {
+                // Create genesis delta (parent is zero hash)
+                let hlc = calimero_storage::env::hlc_timestamp();
+                let parents = vec![[0u8; 32]]; // Genesis parent
+                let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+
+                // Set dag_heads to the init delta
+                context.dag_heads = vec![delta_id];
+
+                // Persist the init delta so peers can request it
+                let serialized_actions = borsh::to_vec(&actions)?;
+                let init_delta = types::ContextDagDelta {
+                    delta_id,
+                    parents,
+                    actions: serialized_actions,
+                    hlc,
+                    applied: true,
+                };
+
+                debug!(
+                    context_id = %context.id,
+                    delta_id = ?delta_id,
+                    actions_count = actions.len(),
+                    "Created init delta with dag_heads"
+                );
+
+                Some(init_delta)
+            } else {
+                // Fallback: Use root_hash as dag_head if no actions
+                context.dag_heads = vec![root_hash];
+                warn!(
+                    context_id = %context.id,
+                    "Init generated artifact but no actions - using root_hash as dag_head"
+                );
+                None
+            }
+        } else {
+            // Fallback: Empty artifact, use root_hash as dag_head
+            context.dag_heads = vec![root_hash];
+            warn!(
+                context_id = %context.id,
+                "Init had empty artifact - using root_hash as dag_head"
+            );
+            None
+        }
+    } else {
+        None
+    };
 
     let external_client = context_client.external_client(&context.id, &external_config)?;
 
@@ -286,11 +356,7 @@ async fn create_context(
 
     let datastore = storage.commit()?;
 
-    let height = NonZeroUsize::MIN;
-
-    context_client.put_state_delta(&context.id, &identity, &height, &outcome.artifact)?;
-
-    context_client.set_delta_height(&context.id, &identity, height)?;
+    // Height-based delta tracking removed - now using DAG-based approach
 
     let mut handle = datastore.handle();
 
@@ -311,8 +377,23 @@ async fn create_context(
         &types::ContextMeta::new(
             key::ApplicationMeta::new(application.id),
             *context.root_hash,
+            context.dag_heads.clone(),
         ),
     )?;
+
+    // Persist init delta if created
+    if let Some(delta) = init_delta {
+        handle.put(
+            &key::ContextDagDelta::new(context.id, delta.delta_id),
+            &delta,
+        )?;
+
+        debug!(
+            context_id = %context.id,
+            delta_id = ?delta.delta_id,
+            "Persisted init delta to database"
+        );
+    }
 
     handle.put(
         &key::ContextIdentity::new(context.id, identity),

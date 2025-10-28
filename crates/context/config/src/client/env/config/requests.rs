@@ -9,7 +9,9 @@ use core::ptr;
 use serde::Serialize;
 
 use crate::repr::Repr;
-use crate::types::{Application, Capability, ContextId, ContextIdentity};
+use crate::types::{
+    Application, BlockHeight, Capability, ContextId, ContextIdentity, SignedRevealPayload,
+};
 
 // ============================================================================
 // Query Request Types
@@ -169,6 +171,44 @@ impl<'a> RemoveMembersRequest<'a> {
         Self {
             context_id: Repr::new(context_id),
             members,
+        }
+    }
+}
+
+/// Request to commit open invitation to a context.
+#[derive(Debug)]
+pub struct CommitOpenInvitationRequest {
+    pub context_id: Repr<ContextId>,
+    pub commitment_hash: String,
+    pub expiration_block_height: BlockHeight,
+}
+
+impl CommitOpenInvitationRequest {
+    pub fn new(
+        context_id: ContextId,
+        commitment_hash: String,
+        expiration_block_height: BlockHeight,
+    ) -> Self {
+        Self {
+            context_id: Repr::new(context_id),
+            commitment_hash,
+            expiration_block_height,
+        }
+    }
+}
+
+/// Request to reveal and claim an open invitation at the context.
+#[derive(Debug)]
+pub struct RevealOpenInvitationRequest {
+    pub context_id: Repr<ContextId>,
+    pub payload: SignedRevealPayload,
+}
+
+impl RevealOpenInvitationRequest {
+    pub fn new(context_id: ContextId, payload: SignedRevealPayload) -> Self {
+        Self {
+            context_id: Repr::new(context_id),
+            payload,
         }
     }
 }

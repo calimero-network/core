@@ -19,9 +19,7 @@ where
     }
 }
 
-impl<L: Layer> Layer for ReadOnly<'_, L> {
-    type Base = L;
-}
+impl<L: Layer> Layer for ReadOnly<'_, L> {}
 
 impl<L> ReadLayer for ReadOnly<'_, L>
 where

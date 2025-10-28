@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::btree_map;
-use std::num::NonZeroUsize;
+// Removed: NonZeroUsize (replaced with CausalDelta)
 use std::time::Instant;
 
 use actix::{
@@ -30,7 +30,7 @@ use futures_util::future::TryFutureExt;
 use futures_util::io::Cursor;
 use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -151,7 +151,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 bail!("context '{context_id}' deleted before we could execute");
             };
 
-            Ok((guard, context.meta))
+            Ok((guard, context.meta.clone()))
         });
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
@@ -159,8 +159,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .map_ok(move |module, _act, _ctx| (guard, context, module))
         });
 
-        let execution_count = self.metrics.execution_count.clone();
-        let execution_duration = self.metrics.execution_duration.clone();
+        let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
+        let execution_duration = self.metrics.as_ref().map(|m| m.execution_duration.clone());
+
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
@@ -171,7 +172,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let start = Instant::now();
 
-                let (outcome, delta_height) = internal_execute(
+                let (outcome, causal_delta) = internal_execute(
                     datastore,
                     &node_client,
                     &context_client,
@@ -192,20 +193,29 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .then_some("success")
                     .unwrap_or("failure");
 
-                let _ignored = execution_count
-                    .get_or_create(&ExecutionLabels {
-                        context_id: context_id.to_string(),
-                        method: method.clone(),
-                        status: status.to_owned(),
-                    })
-                    .inc();
-                let _ignored = execution_duration
-                    .get_or_create(&ExecutionLabels {
-                        context_id: context_id.to_string(),
-                        method: method.clone(),
-                        status: status.to_owned(),
-                    })
-                    .observe(duration);
+                // Update execution count metrics
+                if let Some(execution_count) = execution_count {
+                    let _ignored = execution_count
+                        .clone()
+                        .get_or_create(&ExecutionLabels {
+                            context_id: context_id.to_string(),
+                            method: method.clone(),
+                            status: status.to_owned(),
+                        })
+                        .inc();
+                }
+
+                // Update execution duration metrics
+                if let Some(execution_duration) = execution_duration {
+                    let _ignored = execution_duration
+                        .clone()
+                        .get_or_create(&ExecutionLabels {
+                            context_id: context_id.to_string(),
+                            method: method.clone(),
+                            status: status.to_owned(),
+                        })
+                        .observe(duration);
+                }
 
                 info!(
                     %context_id,
@@ -223,18 +233,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                     artifact_len = outcome.artifact.len(),
                     logs_count = outcome.logs.len(),
                     events_count = outcome.events.len(),
+                    xcalls_count = outcome.xcalls.len(),
                     "Execution outcome details"
                 );
 
-                Ok((guard, context, outcome, delta_height))
+                Ok((guard, context, outcome, causal_delta))
             }
             .into_actor(act)
         });
 
         let external_task =
-            execute_task.and_then(move |(guard, context, outcome, delta_height), act, _ctx| {
+            execute_task.and_then(move |(guard, context, outcome, causal_delta), act, _ctx| {
                 if let Some(cached_context) = act.contexts.get_mut(&context_id) {
+                    debug!(
+                        %context_id,
+                        old_root = ?cached_context.meta.root_hash,
+                        new_root = ?context.root_hash,
+                        is_state_op,
+                        "Updating cached context root_hash"
+                    );
                     cached_context.meta.root_hash = context.root_hash;
+                } else {
+                    debug!(%context_id, is_state_op, "Context not in cache, will be fetched from DB next time");
                 }
 
                 let node_client = act.node_client.clone();
@@ -251,6 +271,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         is_state_op,
                         artifact_empty = outcome.artifact.is_empty(),
                         events_count = outcome.events.len(),
+                        xcalls_count = outcome.xcalls.len(),
                         "Execution outcome details"
                     );
 
@@ -269,6 +290,81 @@ impl Handler<ExecuteRequest> for ContextManager {
                         }
                     }
 
+                    // Process cross-context calls
+                    // NOTE: XCalls are executed locally on the current node after the main execution completes.
+                    // This allows contexts to communicate by calling functions on other contexts.
+                    for xcall in &outcome.xcalls {
+                        let target_context_id = ContextId::from(xcall.context_id);
+
+                        info!(
+                            %context_id,
+                            target_context = ?target_context_id,
+                            function = %xcall.function,
+                            params_len = xcall.params.len(),
+                            "Processing cross-context call"
+                        );
+
+                        // Find an owned member of the target context to execute as
+                        // We need to use a member that has permissions on the target context
+                        use futures_util::TryStreamExt;
+                        let members: Vec<_> = context_client
+                            .get_context_members(&target_context_id, Some(true))
+                            .try_collect()
+                            .await
+                            .unwrap_or_default();
+
+                        let Some((target_executor, _is_owned)) = members.first() else {
+                            error!(
+                                %context_id,
+                                target_context = ?target_context_id,
+                                function = %xcall.function,
+                                "No owned members found for target context"
+                            );
+                            continue;
+                        };
+
+                        let target_executor = *target_executor;
+
+                        info!(
+                            %context_id,
+                            target_context = ?target_context_id,
+                            target_executor = ?target_executor,
+                            "Found owned member for target context"
+                        );
+
+                        // Execute the cross-context call with the target context's member
+                        let xcall_result = context_client
+                            .execute(
+                                &target_context_id,
+                                &target_executor,
+                                xcall.function.clone(),
+                                xcall.params.clone(),
+                                vec![],
+                                None,
+                            )
+                            .await;
+
+                        match xcall_result {
+                            Ok(_) => {
+                                info!(
+                                    %context_id,
+                                    target_context = ?target_context_id,
+                                    function = %xcall.function,
+                                    "Cross-context call executed successfully"
+                                );
+                            }
+                            Err(err) => {
+                                error!(
+                                    %context_id,
+                                    target_context = ?target_context_id,
+                                    function = %xcall.function,
+                                    ?err,
+                                    "Cross-context call failed"
+                                );
+                            }
+                        }
+                    }
+
                     // Broadcast state deltas to other nodes when:
                     // 1. It's not a state synchronization operation (is_state_op = false)
                     // 2. AND there's a state change artifact (non-empty artifact)
@@ -284,11 +380,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                             is_state_op,
                             artifact_empty = outcome.artifact.is_empty(),
                             events_count = outcome.events.len(),
-                            delta_height = ?delta_height,
+                            has_delta = causal_delta.is_some(),
                             "Broadcasting state delta and events to other nodes"
                         );
 
-                        if let Some(height) = delta_height {
+                        if let Some(ref the_delta) = causal_delta {
                             // Serialize events if any were emitted
                             let events_data = if outcome.events.is_empty() {
                                 info!(
@@ -324,7 +420,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     &executor,
                                     &sender_key,
                                     outcome.artifact.clone(),
-                                    height,
+                                    the_delta.id,
+                                    the_delta.parents.clone(),
+                                    the_delta.hlc,
                                     events_data,
                                 )
                                 .await?;
@@ -482,7 +580,7 @@ impl ContextManager {
 async fn internal_execute(
     datastore: Store,
     node_client: &NodeClient,
-    context_client: &ContextClient,
+    _context_client: &ContextClient,
     module: calimero_runtime::Module,
     guard: &OwnedMutexGuard<ContextId>,
     context: &mut Context,
@@ -490,26 +588,51 @@ async fn internal_execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     is_state_op: bool,
-) -> eyre::Result<(Outcome, Option<NonZeroUsize>)> {
+) -> eyre::Result<(Outcome, Option<calimero_storage::delta::CausalDelta>)> {
     let storage = ContextStorage::from(datastore, context.id);
 
     let (outcome, storage) = execute(
         guard,
         module,
         executor,
-        method,
+        method.clone(),
         input,
         storage,
         node_client.clone(),
     )
     .await?;
 
+    debug!(
+        context_id = %context.id,
+        method = %method,
+        is_state_op,
+        has_root_hash = outcome.root_hash.is_some(),
+        artifact_len = outcome.artifact.len(),
+        events_count = outcome.events.len(),
+        returns_ok = outcome.returns.is_ok(),
+        "WASM execution completed"
+    );
+
     if outcome.returns.is_err() {
+        warn!(
+            context_id = %context.id,
+            method = %method,
+            error = ?outcome.returns,
+            "WASM execution returned error"
+        );
         return Ok((outcome, None));
     }
 
     'fine: {
         if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
+            debug!(
+                context_id = %context.id,
+                has_root_hash = true,
+                artifact_empty = true,
+                is_state_op,
+                "Outcome has root hash but empty artifact - checking mitigation"
+            );
+
             if is_state_op {
                 // fixme! temp mitigation for a potential state inconsistency
                 break 'fine;
@@ -519,52 +642,143 @@ async fn internal_execute(
         }
     }
 
-    let mut height = None;
+    let mut causal_delta = None;
 
-    if !storage.is_empty() {
+    // Always update root_hash if present (even if storage is empty)
+    // This is critical for state_ops like __calimero_sync_next where actions
+    // are applied inside WASM but storage appears empty
+    if let Some(root_hash) = outcome.root_hash {
+        debug!(
+            context_id = %context.id,
+            old_root = ?context.root_hash,
+            new_root = ?root_hash,
+            is_state_op,
+            storage_empty = storage.is_empty(),
+            "Updating context root_hash after execution"
+        );
+        context.root_hash = root_hash.into();
+
+        // Commit storage and persist metadata
         let store = storage.commit()?;
 
-        if let Some(root_hash) = outcome.root_hash {
-            context.root_hash = root_hash.into();
+        // Create causal delta for non-state ops with non-empty artifacts
+        if !is_state_op && !outcome.artifact.is_empty() {
+            // Create causal delta with DAG metadata
+            use calimero_storage::delta::{CausalDelta, StorageDelta};
 
-            if !is_state_op {
-                let delta_height = context_client
-                    .get_delta_height(&context.id, &executor)?
-                    .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
+            // Extract actions from artifact for DAG persistence
+            let actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
+                Ok(StorageDelta::Actions(actions)) => actions,
+                Ok(_) => {
+                    warn!("Unexpected StorageDelta variant, using empty actions");
+                    vec![]
+                }
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        "Failed to deserialize artifact for DAG, using empty actions"
+                    );
+                    vec![]
+                }
+            };
 
-                height = Some(delta_height);
+            // Use current DAG heads as parents for this new delta
+            let parents = if context.dag_heads.is_empty() {
+                // Genesis case: parent is the zero hash
+                vec![[0u8; 32]]
+            } else {
+                // Normal case: parents are current DAG heads
+                context.dag_heads.clone()
+            };
 
-                context_client.put_state_delta(
-                    &context.id,
-                    &executor,
-                    &delta_height,
-                    &outcome.artifact,
-                )?;
+            let hlc = calimero_storage::env::hlc_timestamp();
+            let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
-                context_client.set_delta_height(&context.id, &executor, delta_height)?;
+            let delta = CausalDelta {
+                id: delta_id,
+                parents,
+                actions,
+                hlc,
+            };
+
+            // Update context's DAG heads to this new delta
+            context.dag_heads = vec![delta.id];
+
+            causal_delta = Some(delta);
+        } else if !is_state_op {
+            // No delta created (empty artifact), but state changed
+            // Use root_hash as dag_head fallback to enable sync
+            // This happens when init() creates state but doesn't generate actions
+            if context.dag_heads.is_empty() {
+                warn!(
+                    context_id = %context.id,
+                    root_hash = ?root_hash,
+                    artifact_empty = outcome.artifact.is_empty(),
+                    "State changed but no delta created - using root_hash as dag_head fallback"
+                );
+                context.dag_heads = vec![root_hash];
             }
+        }
 
-            let mut handle = store.handle();
+        // CRITICAL: Always persist context metadata when root_hash changes
+        // This ensures receiving nodes update their state after applying deltas
+        let mut handle = store.handle();
+
+        debug!(
+            context_id = %context.id,
+            root_hash = ?context.root_hash,
+            dag_heads_count = context.dag_heads.len(),
+            is_state_op,
+            "Persisting context metadata to database"
+        );
+
+        handle.put(
+            &key::ContextMeta::new(context.id),
+            &types::ContextMeta::new(
+                key::ApplicationMeta::new(context.application_id),
+                *context.root_hash,
+                context.dag_heads.clone(),
+            ),
+        )?;
+
+        // Also persist the delta itself for serving to peers who request it
+        if let Some(ref delta) = causal_delta {
+            let serialized_actions = borsh::to_vec(&delta.actions)?;
 
             handle.put(
-                &key::ContextMeta::new(context.id),
-                &types::ContextMeta::new(
-                    key::ApplicationMeta::new(context.application_id),
-                    *context.root_hash,
-                ),
+                &key::ContextDagDelta::new(context.id, delta.id),
+                &types::ContextDagDelta {
+                    delta_id: delta.id,
+                    parents: delta.parents.clone(),
+                    actions: serialized_actions,
+                    hlc: delta.hlc,
+                    applied: true,
+                },
             )?;
+
+            debug!(
+                context_id = %context.id,
+                delta_id = ?delta.id,
+                "Persisted delta to database for future requests"
+            );
         }
+
+        debug!(
+            context_id = %context.id,
+            root_hash = ?context.root_hash,
+            dag_heads_count = context.dag_heads.len(),
+            is_state_op,
+            "Context metadata persisted successfully"
+        );
     }
 
-    // Only send StateMutation to WebSocket if there are events or state changes
+    // Emit state mutation to WebSocket clients (frontends) if there are events or state changes
+    // Note: This is separate from node-to-node DAG broadcast (lines 408-419)
     if !outcome.events.is_empty() || outcome.root_hash.is_some() {
-        // Use the updated root if present, otherwise the current context root
         let new_root = outcome
             .root_hash
             .map(|h| h.into())
             .unwrap_or((*context.root_hash).into());
-        // Note: Handler execution is handled in network sync when events are received by other nodes
-        // The emitting node does not execute handlers locally to avoid recursion
 
         let events_vec = outcome
             .events
@@ -584,7 +798,7 @@ async fn internal_execute(
         }))?;
     }
 
-    Ok((outcome, height))
+    Ok((outcome, causal_delta))
 }
 
 pub async fn execute(

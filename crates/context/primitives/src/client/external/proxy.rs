@@ -13,7 +13,8 @@ pub struct ExternalProxyClient<'a> {
 }
 
 impl ExternalClient<'_> {
-    pub fn proxy(&self) -> ExternalProxyClient<'_> {
+    #[must_use]
+    pub const fn proxy(&self) -> ExternalProxyClient<'_> {
         ExternalProxyClient { client: self }
     }
 }

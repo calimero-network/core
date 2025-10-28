@@ -1,11 +1,9 @@
 #![expect(single_use_lifetimes, reason = "borsh shenanigans")]
 
 use std::borrow::Cow;
-use std::num::NonZeroUsize;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::Nonce;
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -18,13 +16,35 @@ pub enum BroadcastMessage<'a> {
     StateDelta {
         context_id: ContextId,
         author_id: PublicKey,
+
+        /// DAG: Unique delta ID (content hash)
+        delta_id: [u8; 32],
+
+        /// DAG: Parent delta IDs (for causal ordering)
+        parent_ids: Vec<[u8; 32]>,
+
+        /// Hybrid Logical Clock timestamp for causal ordering
+        hlc: calimero_storage::logical_clock::HybridTimestamp,
+
         root_hash: Hash, // todo! shouldn't be cleartext
         artifact: Cow<'a, [u8]>,
-        height: NonZeroUsize, // todo! shouldn't be cleartext
         nonce: Nonce,
+
         /// Execution events that were emitted during the state change.
         /// This field is encrypted along with the artifact.
         events: Option<Cow<'a, [u8]>>,
+    },
+
+    /// Hash heartbeat for divergence detection
+    ///
+    /// Periodically broadcast by nodes to allow peers to detect silent divergence.
+    /// If a peer has a different hash for the same DAG heads, it indicates a problem.
+    HashHeartbeat {
+        context_id: ContextId,
+        /// Current root hash
+        root_hash: Hash,
+        /// Current DAG head(s)
+        dag_heads: Vec<[u8; 32]>,
     },
 }
 
@@ -50,31 +70,35 @@ pub enum InitPayload {
     BlobShare {
         blob_id: BlobId,
     },
-    StateSync {
-        root_hash: Hash,
-        application_id: ApplicationId,
-    },
     KeyShare,
-    DeltaSync {
-        root_hash: Hash,
-        application_id: ApplicationId,
+    /// Request a specific delta by ID (for DAG gap filling)
+    DeltaRequest {
+        context_id: ContextId,
+        delta_id: [u8; 32],
+    },
+    /// Request peer's current DAG heads for catchup
+    DagHeadsRequest {
+        context_id: ContextId,
     },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum MessagePayload<'a> {
-    StateSync {
-        artifact: Cow<'a, [u8]>,
-    },
     BlobShare {
         chunk: Cow<'a, [u8]>,
     },
     KeyShare {
         sender_key: PrivateKey,
     },
-    DeltaSync {
-        member: PublicKey,
-        height: NonZeroUsize,
-        delta: Option<Cow<'a, [u8]>>,
+    /// Response to DeltaRequest containing the requested delta
+    DeltaResponse {
+        delta: Cow<'a, [u8]>,
+    },
+    /// Delta not found response
+    DeltaNotFound,
+    /// Response to DagHeadsRequest containing peer's current heads and root hash
+    DagHeadsResponse {
+        dag_heads: Vec<[u8; 32]>,
+        root_hash: Hash,
     },
 }

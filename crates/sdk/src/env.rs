@@ -48,6 +48,7 @@ use std::panic::set_hook;
 
 use calimero_sys::{
     self as sys, Buffer, BufferMut, Event, Location, PtrSizedInt, Ref, RegisterId, ValueReturn,
+    XCall,
 };
 
 use crate::event::AppEvent;
@@ -333,6 +334,32 @@ pub fn emit_with_handler<T: AppEvent>(event: &T, handler: &str) {
             Ref::new(&Buffer::from(handler.as_bytes())),
         );
     }
+}
+
+/// Makes a cross-context call to be executed after the current execution completes.
+///
+/// This function queues a call to another context that will be executed locally
+/// after the current execution finishes. The call will be executed on the specified
+/// context with the given function name and parameters.
+///
+/// # Parameters
+///
+/// * `context_id` - The 32-byte ID of the context to call
+/// * `function` - The name of the function to call in the target context
+/// * `params` - The parameters to pass to the function (typically JSON-encoded)
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use calimero_sdk::env;
+///
+/// let target_context = [0u8; 32]; // The context ID to call
+/// let params = serde_json::to_vec(&"hello").unwrap();
+/// env::xcall(&target_context, "my_function", &params);
+/// ```
+#[inline]
+pub fn xcall(context_id: &[u8; 32], function: &str, params: &[u8]) {
+    unsafe { sys::xcall(Ref::new(&XCall::new(context_id, function, params))) }
 }
 
 /// Commits state changes to the runtime.

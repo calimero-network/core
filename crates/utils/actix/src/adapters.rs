@@ -1,5 +1,5 @@
-use std::future::Future;
-use std::marker::PhantomData;
+use core::future::Future;
+use core::marker::PhantomData;
 
 use actix::dev::{MessageResponse, ToEnvelope};
 use actix::fut::wrap_stream;
@@ -60,7 +60,7 @@ where
             act.handle(item, ctx).handle(ctx, tx);
         });
 
-        let _ignored = ctx.spawn(fut.finish().map(|_, _, _| {
+        let _ignored = ctx.spawn(fut.finish().map(|(), _, _| {
             if let Some(tx) = tx {
                 let _ignored = tx.send(());
             }
@@ -133,6 +133,6 @@ impl<A: Actor> ActorExt for A {
         Self: Handler<M>,
         M: Message,
     {
-        self.handle(msg, ctx).handle(ctx, Some(receiver))
+        self.handle(msg, ctx).handle(ctx, Some(receiver));
     }
 }

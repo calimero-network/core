@@ -2,8 +2,9 @@ use calimero_server_primitives::admin::{
     CreateContextResponse, DeleteContextResponse, GenerateContextIdentityResponse,
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
     GetContextStorageResponse, GetContextUsersResponse, GetContextsResponse, GetPeersCountResponse,
-    GrantPermissionResponse, InviteToContextResponse, JoinContextResponse,
-    RevokePermissionResponse, SyncContextResponse, UpdateContextApplicationResponse,
+    GrantPermissionResponse, InviteToContextOpenInvitationResponse, InviteToContextResponse,
+    JoinContextResponse, RevokePermissionResponse, SyncContextResponse,
+    UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
 use comfy_table::{Cell, Color, Table};
@@ -169,6 +170,15 @@ impl Report for InviteToContextResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Invitation Sent").fg(Color::Green)]);
         let _ = table.add_row(vec!["Successfully sent invitation"]);
+        println!("{table}");
+    }
+}
+
+impl Report for InviteToContextOpenInvitationResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Open Invitation Created").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully created an open invitation"]);
         println!("{table}");
     }
 }

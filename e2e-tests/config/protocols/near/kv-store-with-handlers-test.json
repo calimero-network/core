@@ -17,13 +17,22 @@
       }
     },
     {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
       "contextInviteJoin": null
     },
     {
       "wait": {
-        "durationMs": 5000,
+        "durationMs": 3000,
         "for": "consensus",
-        "description": "Wait for nodes to join and reach consensus"
+        "description": "Wait for key exchange (2-3s) + gossipsub mesh formation + initial sync"
       }
     },
     {
@@ -41,17 +50,18 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value"
-        ],
-        "target": "inviter"
+        "expectedResultJson": 2,
+        "target": "inviter",
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 2 (both nodes executed insert_handler). Retries for G-Counter CRDT merge."
       }
     },
     {
@@ -69,18 +79,18 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'update_handler' called: key=test_key, value=updated_value"
-        ],
-        "target": "invitees"
+        "expectedResultJson": 4,
+        "target": "invitees",
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 4 (both nodes execute × 2 sets). Retries for G-Counter CRDT merge."
       }
     },
     {
@@ -97,19 +107,18 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'remove_handler' called: key=test_key",
-          "Handler 'update_handler' called: key=test_key, value=updated_value"
-        ],
-        "target": "invitees"
+        "expectedResultJson": 6,
+        "target": "invitees",
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 6 (both nodes execute: 2 sets + 1 remove). Retries for G-Counter CRDT merge."
       }
     },
     {
@@ -127,7 +136,7 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
@@ -142,21 +151,18 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": "Wait for network sync and handler execution on receiving nodes"
+        "description": "Wait for network sync, handler execution, and CRDT counter merge"
       }
     },
     {
       "call": {
-        "methodName": "get_unique_handlers_called",
+        "methodName": "get_handler_execution_count",
         "argsJson": {},
-        "expectedResultJson": [
-          "Handler 'clear_handler' called: all items cleared",
-          "Handler 'insert_handler' called: key=another_key, value=another_value",
-          "Handler 'insert_handler' called: key=test_key, value=test_value",
-          "Handler 'remove_handler' called: key=test_key",
-          "Handler 'update_handler' called: key=test_key, value=updated_value"
-        ],
-        "target": "invitees"
+        "expectedResultJson": 10,
+        "target": "invitees",
+        "retries": 10,
+        "intervalMs": 2000,
+        "description": "Global G-Counter shows 10 (both nodes execute: 2 sets + 1 remove + 1 set + 1 clear). Retries for G-Counter CRDT merge."
       }
     }
   ]

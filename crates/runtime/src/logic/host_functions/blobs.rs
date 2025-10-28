@@ -8,8 +8,9 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::{
     errors::HostError,
-    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult, DIGEST_SIZE},
+    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult},
 };
+use calimero_primitives::common::DIGEST_SIZE;
 
 /// An enum representing a handle to a blob, which can be for reading or writing.
 #[derive(Debug)]
@@ -44,8 +45,8 @@ pub struct BlobReadHandle {
     position: u64,
 }
 
-impl std::fmt::Debug for BlobReadHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for BlobReadHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BlobReadHandle")
             .field("blob_id", &self.blob_id)
             .field("stream", &"<stream>")
@@ -251,7 +252,7 @@ impl VMHostFunctions<'_> {
             }
             // Record the Blob ID into the guest memory buffer
             BlobHandle::Read(read_handle) => {
-                guest_blob_id_out_buf.copy_from_slice(read_handle.blob_id.as_ref())
+                guest_blob_id_out_buf.copy_from_slice(read_handle.blob_id.as_ref());
             }
         }
 
@@ -299,7 +300,7 @@ impl VMHostFunctions<'_> {
         let blob_info = tokio::runtime::Handle::current()
             .block_on(node_client.get_blob_info(blob_id))
             .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
-            .ok_or_else(|| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+            .ok_or(VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
         // Announce blob to network
         tokio::task::block_in_place(|| {

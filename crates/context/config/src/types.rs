@@ -12,6 +12,7 @@ use thiserror::Error as ThisError;
 
 use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 
+pub type BlockHeight = u64;
 pub type Revision = u64;
 
 #[derive(
@@ -56,9 +57,26 @@ impl<'a> Application<'a> {
 }
 
 #[derive(
-    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, Hash,
+    Eq,
+    Ord,
+    Copy,
+    Debug,
+    Deserialize,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Hash,
+    Serialize,
 )]
 pub struct Identity([u8; 32]);
+
+impl Identity {
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
 
 impl ReprBytes for Identity {
     type EncodeBytes<'a> = [u8; 32];
@@ -80,7 +98,7 @@ impl ReprBytes for Identity {
 
 impl From<[u8; 32]> for Identity {
     fn from(value: [u8; 32]) -> Self {
-        Identity(value)
+        Self(value)
     }
 }
 
@@ -107,8 +125,26 @@ impl ReprBytes for SignerId {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Eq,
+    Ord,
+    Copy,
+    Debug,
+    Deserialize,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+)]
 pub struct ContextId(Identity);
+
+impl ContextId {
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+}
 
 impl ReprBytes for ContextId {
     type EncodeBytes<'a> = [u8; 32];
@@ -125,6 +161,12 @@ impl ReprBytes for ContextId {
         F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
+    }
+}
+
+impl From<[u8; 32]> for ContextId {
+    fn from(value: [u8; 32]) -> Self {
+        Self(Identity(value))
     }
 }
 
@@ -145,7 +187,19 @@ pub struct ContextStorageEntry {
     pub value: Vec<u8>,
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Eq,
+    Ord,
+    Copy,
+    Debug,
+    Deserialize,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+)]
 pub struct ContextIdentity(Identity);
 
 impl ReprBytes for ContextIdentity {
@@ -163,6 +217,12 @@ impl ReprBytes for ContextIdentity {
         F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
+    }
+}
+
+impl From<[u8; 32]> for ContextIdentity {
+    fn from(value: [u8; 32]) -> Self {
+        Self(Identity(value))
     }
 }
 
@@ -290,6 +350,43 @@ impl ReprBytes for ProposalId {
         F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
+    }
+}
+
+impl Serialize for ProposalId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let encoded = bs58::encode(self.as_bytes()).into_string();
+        serializer.serialize_str(&encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProposalId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ProposalIdVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ProposalIdVisitor {
+            type Value = ProposalId;
+
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a base58-encoded ProposalId string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                ProposalId::from_bytes(|bytes| bs58::decode(value).onto(bytes))
+                    .map_err(|e| E::custom(format!("invalid ProposalId: {}", e)))
+            }
+        }
+
+        deserializer.deserialize_str(ProposalIdVisitor)
     }
 }
 
@@ -421,5 +518,98 @@ impl<'a, T: Deserialize<'a>> Signed<T> {
 
         key.verify(&self.payload, &self.signature)
             .map_or(Err(ConfigError::InvalidSignature), |()| Ok(parsed))
+    }
+}
+
+/// The structure represents an open invitation payload that allows any party to claim it.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
+pub struct InvitationFromMember {
+    /// The identity of the inviter (public key). The inviter should be a member of the context
+    /// that he is inviting to.
+    pub inviter_identity: ContextIdentity,
+    /// Context ID for the invitation.
+    pub context_id: ContextId,
+    /// The height at which the invitation becomes expired.
+    pub expiration_height: BlockHeight,
+    /// Secret salt.
+    pub secret_salt: [u8; 32],
+    // The protocol ID to prevent reusing the same invitation on different blockchains.
+    // TODO(opt): utilize the integer for the protocol, and possibly a compressed integer
+    // representation of protocol+network.
+    pub protocol: String,
+    // The protocol network (e.g. "mainnet", "testnet", etc.)
+    pub network: String,
+    // The contract ID for the config context contract on the target protocol.
+    pub contract_id: String,
+}
+
+/// A container for an open invitation and the inviter's signature over it.
+/// This is the object that an existing member (Alice) would generate and send
+/// to a new member (Bob).
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
+pub struct SignedOpenInvitation {
+    /// An open invitation to the context
+    pub invitation: InvitationFromMember,
+    /// Inviter's signature for the invitation payload (hex-encoded)
+    pub inviter_signature: String,
+}
+
+// The full payload Bob reveals in the second transaction
+#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+pub struct RevealPayloadData {
+    /// Signed open invitation
+    pub signed_open_invitation: SignedOpenInvitation,
+    /// The identity of the member that is going to be invited (invitee).
+    /// The owner of the identity should insert this field himself and then
+    /// sign the whole structure, and wrapping it into `SignedRevealPayload`.
+    pub new_member_identity: ContextIdentity,
+}
+
+// This is the final object submitted to the `reveal` method.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+pub struct SignedRevealPayload {
+    /// The data that is needed to join the context.
+    pub data: RevealPayloadData,
+    /// The invitee's signature over the `data` (`RevealPayloadData`).
+    pub invitee_signature: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smoke_invitation_borsh_roundtrip() {
+        let inviter_identity_bytes = [1u8; 32];
+        let context_id_bytes = [2u8; 32];
+        let salt = [3u8; 32];
+
+        let invitation = InvitationFromMember {
+            inviter_identity: inviter_identity_bytes.into(),
+            context_id: context_id_bytes.into(),
+            expiration_height: 1000,
+            secret_salt: salt,
+            protocol: "near".to_string(),
+            network: "devnet".to_string(),
+            contract_id: "".to_string(),
+        };
+        let invitation_borsh =
+            borsh::to_vec(&invitation).expect("Failed to Borsh serialize the invitation");
+        let invitation_deserialized: InvitationFromMember = borsh::from_slice(&invitation_borsh)
+            .expect("Failed to Borsh deserialize the invitation");
+
+        assert_eq!(
+            invitation.inviter_identity,
+            invitation_deserialized.inviter_identity
+        );
+        assert_eq!(invitation.context_id, invitation_deserialized.context_id);
+        assert_eq!(
+            invitation.expiration_height,
+            invitation_deserialized.expiration_height
+        );
+        assert_eq!(invitation.secret_salt, invitation_deserialized.secret_salt);
+        assert_eq!(invitation.protocol, invitation_deserialized.protocol);
+        assert_eq!(invitation.network, invitation_deserialized.network);
+        assert_eq!(invitation.contract_id, invitation_deserialized.contract_id);
     }
 }

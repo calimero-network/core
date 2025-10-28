@@ -10,9 +10,10 @@ publish = true
 
 [dependencies]
 actix.workspace = true
+async-trait.workspace = true
 borsh.workspace = true
+calimero-dag.workspace = true
 camino = { workspace = true, features = ["serde1"] }
-either.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 libp2p.workspace = true
@@ -29,13 +30,19 @@ calimero-context-primitives.workspace = true
 calimero-crypto.workspace = true
 calimero-blobstore.workspace = true
 calimero-network.workspace = true
+dashmap.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-server.workspace = true
+calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+calimero-dag = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

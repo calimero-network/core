@@ -9,7 +9,7 @@ use std::str::FromStr;
 // External crates
 use calimero_primitives::alias::{Alias, ScopedAlias};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::blobs::{BlobId, BlobMetadata};
+use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -18,11 +18,13 @@ use calimero_server_primitives::admin::{
     CreateContextIdAlias, CreateContextIdentityAlias, CreateContextRequest, CreateContextResponse,
     DeleteAliasResponse, DeleteContextResponse, GenerateContextIdentityResponse,
     GetApplicationResponse, GetContextClientKeysResponse, GetContextIdentitiesResponse,
-    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
-    GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
+    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetLatestVersionResponse,
+    GetPeersCountResponse, GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
-    InstallDevApplicationRequest, InviteToContextRequest, InviteToContextResponse,
-    JoinContextRequest, JoinContextResponse, ListAliasesResponse, ListApplicationsResponse,
+    InstallDevApplicationRequest, InviteToContextOpenInvitationRequest,
+    InviteToContextOpenInvitationResponse, InviteToContextRequest, InviteToContextResponse,
+    JoinContextByOpenInvitationRequest, JoinContextRequest, JoinContextResponse,
+    ListAliasesResponse, ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse,
     LookupAliasResponse, RevokePermissionResponse, SyncContextResponse,
     UninstallApplicationResponse, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
@@ -238,6 +240,43 @@ where
         Ok(blob_info)
     }
 
+    pub async fn upload_blob(
+        &self,
+        data: Vec<u8>,
+        context_id: Option<&ContextId>,
+    ) -> Result<BlobInfo> {
+        let path = if let Some(ctx_id) = context_id {
+            format!("admin-api/blobs?context_id={}", ctx_id)
+        } else {
+            "admin-api/blobs".to_owned()
+        };
+
+        let response = self.connection.put_binary(&path, data).await?;
+
+        #[derive(serde::Deserialize)]
+        struct BlobUploadResponse {
+            data: BlobInfo,
+        }
+
+        let upload_response: BlobUploadResponse = response.json().await?;
+        Ok(upload_response.data)
+    }
+
+    pub async fn download_blob(
+        &self,
+        blob_id: &BlobId,
+        context_id: Option<&ContextId>,
+    ) -> Result<Vec<u8>> {
+        let path = if let Some(ctx_id) = context_id {
+            format!("admin-api/blobs/{}?context_id={}", blob_id, ctx_id)
+        } else {
+            format!("admin-api/blobs/{}", blob_id)
+        };
+
+        let data = self.connection.get_binary(&path).await?;
+        Ok(data)
+    }
+
     pub async fn generate_context_identity(&self) -> Result<GenerateContextIdentityResponse> {
         let response = self
             .connection
@@ -314,6 +353,17 @@ where
         Ok(response)
     }
 
+    pub async fn invite_to_context_by_open_invitation(
+        &self,
+        request: InviteToContextOpenInvitationRequest,
+    ) -> Result<InviteToContextOpenInvitationResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/invite_by_open_invitation", request)
+            .await?;
+        Ok(response)
+    }
+
     pub async fn update_context_application(
         &self,
         context_id: &ContextId,
@@ -355,6 +405,36 @@ where
                 "admin-api/contexts/{}/proposals/{}/approvals/users",
                 context_id, proposal_id
             ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn create_and_approve_proposal(
+        &self,
+        context_id: &ContextId,
+        request: calimero_server_primitives::admin::CreateAndApproveProposalRequest,
+    ) -> Result<calimero_server_primitives::admin::CreateAndApproveProposalResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/contexts/{context_id}/proposals/create-and-approve"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn approve_proposal(
+        &self,
+        context_id: &ContextId,
+        request: calimero_server_primitives::admin::ApproveProposalRequest,
+    ) -> Result<calimero_server_primitives::admin::ApproveProposalResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/contexts/{context_id}/proposals/approve"),
+                request,
+            )
             .await?;
         Ok(response)
     }
@@ -404,6 +484,17 @@ where
         let response = self
             .connection
             .post("admin-api/contexts/join", request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn join_context_by_open_invitation(
+        &self,
+        request: JoinContextByOpenInvitationRequest,
+    ) -> Result<JoinContextResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/join_by_open_invitation", request)
             .await?;
         Ok(response)
     }
@@ -603,5 +694,27 @@ where
             .map(ResolveResponseValue::Parsed);
 
         Ok(ResolveResponse { alias, value })
+    }
+
+    // Package management methods
+    pub async fn list_packages(&self) -> Result<ListPackagesResponse> {
+        let response = self.connection.get("admin-api/packages").await?;
+        Ok(response)
+    }
+
+    pub async fn list_versions(&self, package: &str) -> Result<ListVersionsResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/packages/{package}/versions"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_latest_version(&self, package: &str) -> Result<GetLatestVersionResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/packages/{package}/latest"))
+            .await?;
+        Ok(response)
     }
 }

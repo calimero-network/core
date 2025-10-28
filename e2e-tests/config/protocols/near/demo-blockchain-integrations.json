@@ -12,6 +12,15 @@
       "contextCreate": null
     },
     {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
       "contextInviteJoin": null
     },
     {
@@ -19,8 +28,8 @@
         "for": "consensus",
         "durationMs": 5000,
         "description": [
-          "assuming it takes 5s to propagate we should",
-          "only need to wait 5 * ceil(log2(nodes)) seconds"
+          "Wait for gossipsub mesh formation + initial sync completion.",
+          "Increased to 5s base (10s total with 3 nodes) for CI reliability."
         ]
       }
     },
@@ -40,8 +49,8 @@
         },
         "expectedResultJson": null,
         "target": "inviter",
-        "retries": 20,
-        "intervalMs": 5000,
+        "retries": 5,
+        "intervalMs": 1000,
         "description": [
           "if we don't reach consensus in the ideal case",
           "wait 5 seconds for nodes that have not yet synced",
@@ -98,11 +107,11 @@
           }
         ],
         "target": "invitees",
-        "retries": 20,
-        "intervalMs": 10000,
+        "retries": 10,
+        "intervalMs": 2000,
         "description": [
-          "if a node still hasn't received the broadcast",
-          "try 20 more times every 10 seconds, but no more"
+          "Retry up to 10 times with 2s intervals for CI reliability.",
+          "Gossipsub mesh + sync may take longer in CI environments."
         ]
       }
     },

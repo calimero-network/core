@@ -11,6 +11,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use indexmap::IndexSet;
 use sha2::{Digest, Sha256};
 
+pub mod counter;
+pub use counter::Counter;
 pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
 pub mod unordered_set;
@@ -227,9 +229,17 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut cache = self.children_ids.borrow_mut();
 
         if cache.is_none() {
-            let children = <Interface<S>>::child_info_for(self.id(), &RootHandle)?;
-
-            let children = children.into_iter().map(|c| c.id()).collect();
+            // Try to load children from index
+            // After CRDT sync, newly created collections might not have index entries yet
+            // In that case, start with an empty set
+            let children = match <Interface<S>>::child_info_for(self.id(), &RootHandle) {
+                Ok(info) => info.into_iter().map(|c| c.id()).collect(),
+                Err(StorageError::IndexNotFound(_)) => {
+                    // Collection was just created/synced, no children yet
+                    IndexSet::new()
+                }
+                Err(e) => return Err(StoreError::StorageError(e)),
+            };
 
             *cache = Some(children);
         }

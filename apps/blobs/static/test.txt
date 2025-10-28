@@ -1,0 +1,16 @@
+Calimero Blob API Example
+
+This is a sample text file for testing the blob storage functionality.
+
+Features demonstrated:
+- File upload with blob announcement
+- Metadata storage in contract
+- Base58 blob ID encoding
+- Multi-node blob discovery
+- File retrieval by blob ID
+
+The blob API enables decentralized file sharing across the Calimero network.
+Each file is content-addressed and announced to peers for distributed access.
+
+For more information, see the README.md file.
+

@@ -31,6 +31,13 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::JoinContext { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::JoinContextOpenInvitation {
+                request: _,
+                outcome: _,
+            } => {
+                //TODO(identity): do we need that here? I don't think so.
+                //self.forward_handler(ctx, request, outcome)
+            }
             ContextMessage::Sync { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }

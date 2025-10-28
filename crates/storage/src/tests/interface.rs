@@ -200,9 +200,9 @@ mod interface__apply_actions {
         let mut page = Page::new_from_element("Test Page", Element::root());
         assert!(MainInterface::save(&mut page).unwrap());
 
-        let action = Action::Delete {
+        let action = Action::DeleteRef {
             id: page.id(),
-            ancestors: vec![],
+            deleted_at: time_now(),
         };
 
         assert!(MainInterface::apply_action(action).is_ok());
@@ -210,6 +210,68 @@ mod interface__apply_actions {
         // Verify the page was deleted
         let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
         assert!(retrieved_page.is_none());
+    }
+
+    #[test]
+    fn apply_action__delete_ref() {
+        use crate::env::time_now;
+
+        let mut page = Page::new_from_element("Test Page", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        let action = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: time_now(),
+        };
+
+        assert!(MainInterface::apply_action(action).is_ok());
+
+        // Verify the page was deleted (tombstone)
+        let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        assert!(retrieved_page.is_none());
+
+        // Verify tombstone exists
+        assert!(Index::<MainStorage>::is_deleted(page.id()).unwrap());
+    }
+
+    #[test]
+    fn delete_ref_conflict_resolution() {
+        use crate::env::time_now;
+
+        let mut page = Page::new_from_element("Test Page", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        // Update page (newer timestamp)
+        page.title = "Updated Page".to_owned();
+        page.element_mut().update();
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        let update_time = *page.element().metadata.updated_at;
+
+        // Try to delete with older timestamp
+        let old_delete = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: update_time - 1000, // Older than update
+        };
+
+        assert!(MainInterface::apply_action(old_delete).is_ok());
+
+        // Page should still exist (update wins)
+        let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().title, "Updated Page");
+
+        // Now delete with newer timestamp
+        let new_delete = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: update_time + 1000, // Newer than update
+        };
+
+        assert!(MainInterface::apply_action(new_delete).is_ok());
+
+        // Page should be deleted (deletion wins)
+        let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        assert!(retrieved.is_none());
     }
 
     #[test]
@@ -503,5 +565,161 @@ mod interface__comparison {
             }]
         );
         assert_eq!(foreign_para3_actions, vec![]);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_and_resync {
+    use super::*;
+    use crate::address::Path;
+    use crate::snapshot::{apply_snapshot, generate_full_snapshot, generate_snapshot};
+    use crate::tests::common::{Page, Paragraph};
+
+    // Use MockedStorage for snapshot tests (has working storage_iter_keys)
+    type TestStorage = MockedStorage<1000>;
+    type TestInterface = Interface<TestStorage>;
+
+    #[test]
+    fn test_generate_snapshot() {
+        // Create root page
+        let mut page = Page::new_from_element("Test Page", Element::root());
+
+        // Create paragraphs with unique paths
+        let para1_path = Path::new("::para1").unwrap();
+        let para2_path = Path::new("::para2").unwrap();
+        let mut para1 = Paragraph::new_from_element("Para 1", Element::new(&para1_path, None));
+        let mut para2 = Paragraph::new_from_element("Para 2", Element::new(&para2_path, None));
+
+        TestInterface::save(&mut page).unwrap();
+        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
+        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+
+        // Generate snapshot
+        let snapshot = generate_snapshot::<TestStorage>().unwrap();
+
+        // Verify snapshot contains data
+        assert!(snapshot.entity_count > 0, "Should have entities");
+        assert!(snapshot.index_count > 0, "Should have indexes");
+        assert!(snapshot.timestamp > 0, "Should have timestamp");
+
+        // Verify specific entities are included
+        let entry_ids: Vec<_> = snapshot.entries.iter().map(|(id, _)| *id).collect();
+        assert!(entry_ids.contains(&page.id()), "Should include page");
+        assert!(entry_ids.contains(&para1.id()), "Should include para1");
+        assert!(entry_ids.contains(&para2.id()), "Should include para2");
+    }
+
+    #[test]
+    fn test_apply_snapshot() {
+        type ForeignStorage = MockedStorage<99>;
+        type ForeignInterface = Interface<ForeignStorage>;
+
+        // Create data on foreign node - page as root, para as child
+        let mut foreign_page = Page::new_from_element("Foreign Page", Element::root());
+        let para_path = Path::new("::foreign_para").unwrap();
+        let mut foreign_para =
+            Paragraph::new_from_element("Foreign Para", Element::new(&para_path, None));
+
+        ForeignInterface::save(&mut foreign_page).unwrap();
+        ForeignInterface::add_child_to(
+            foreign_page.id(),
+            &foreign_page.paragraphs,
+            &mut foreign_para,
+        )
+        .unwrap();
+
+        // Generate snapshot from foreign
+        let snapshot = generate_snapshot::<ForeignStorage>().unwrap();
+
+        // Apply snapshot to TestStorage (which is empty)
+        assert!(apply_snapshot::<TestStorage>(&snapshot).is_ok());
+
+        // Verify data was restored
+        let retrieved_page = TestInterface::find_by_id::<Page>(foreign_page.id()).unwrap();
+        assert!(retrieved_page.is_some(), "Page should be restored");
+        assert_eq!(retrieved_page.unwrap().title, "Foreign Page");
+
+        let retrieved_para = TestInterface::find_by_id::<Paragraph>(foreign_para.id()).unwrap();
+        assert!(retrieved_para.is_some(), "Paragraph should be restored");
+        assert_eq!(retrieved_para.unwrap().text, "Foreign Para");
+    }
+
+    #[test]
+    fn test_snapshot_excludes_tombstones() {
+        use crate::index::Index;
+
+        // Create parent page as root
+        let mut page = Page::new_from_element("Parent Page", Element::root());
+
+        // Create paragraphs with unique paths
+        let para1_path = Path::new("::para1").unwrap();
+        let para2_path = Path::new("::para2").unwrap();
+        let mut para1 = Paragraph::new_from_element("Para 1", Element::new(&para1_path, None));
+        let mut para2 = Paragraph::new_from_element("Para 2", Element::new(&para2_path, None));
+
+        TestInterface::save(&mut page).unwrap();
+        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
+        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+
+        // Verify different IDs
+        assert_ne!(para1.id(), para2.id());
+        assert_ne!(para1.id(), page.id());
+
+        // Delete para1 (creates tombstone)
+        Index::<TestStorage>::mark_deleted(para1.id(), crate::env::time_now()).unwrap();
+
+        // Generate regular snapshot (excludes tombstones)
+        let snapshot = generate_snapshot::<TestStorage>().unwrap();
+
+        // Verify para1 (tombstone) is NOT in snapshot
+        let index_ids: Vec<_> = snapshot.indexes.iter().map(|(id, _)| *id).collect();
+        assert!(
+            !index_ids.contains(&para1.id()),
+            "Tombstone should be excluded from network snapshot"
+        );
+        assert!(
+            index_ids.contains(&para2.id()),
+            "Active entity should be included"
+        );
+        assert!(index_ids.contains(&page.id()), "Parent should be included");
+
+        // Generate full snapshot (includes tombstones)
+        let full_snapshot = generate_full_snapshot::<TestStorage>().unwrap();
+        let full_index_ids: Vec<_> = full_snapshot.indexes.iter().map(|(id, _)| *id).collect();
+        assert!(
+            full_index_ids.contains(&para1.id()),
+            "Tombstone should be included in full snapshot"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_round_trip() {
+        type SourceStorage = MockedStorage<100>;
+        type SourceInterface = Interface<SourceStorage>;
+        type TargetStorage = MockedStorage<101>;
+        type TargetInterface = Interface<TargetStorage>;
+
+        // Create data on source
+        let mut page = Page::new_from_element("Source Page", Element::root());
+        let para_path = Path::new("::source_para").unwrap();
+        let mut para = Paragraph::new_from_element("Source Para", Element::new(&para_path, None));
+
+        SourceInterface::save(&mut page).unwrap();
+        SourceInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+
+        // Generate snapshot
+        let snapshot = generate_snapshot::<SourceStorage>().unwrap();
+
+        // Apply to target
+        apply_snapshot::<TargetStorage>(&snapshot).unwrap();
+
+        // Verify data on target matches source
+        let target_page = TargetInterface::find_by_id::<Page>(page.id()).unwrap();
+        assert!(target_page.is_some());
+        assert_eq!(target_page.unwrap().title, "Source Page");
+
+        let target_para = TargetInterface::find_by_id::<Paragraph>(para.id()).unwrap();
+        assert!(target_para.is_some());
+        assert_eq!(target_para.unwrap().text, "Source Para");
     }
 }

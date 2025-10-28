@@ -1,3 +1,17 @@
+//! Calimero SDK for building CRDT-based distributed applications.
+//!
+//! # Event Handlers ⚠️
+//!
+//! **IMPORTANT**: Event handlers may execute in **parallel** (not guaranteed sequential).
+//!
+//! Your handlers MUST be:
+//! - **Commutative**: Order-independent (use CRDTs)
+//! - **Independent**: No shared mutable state
+//! - **Idempotent**: Safe to retry
+//! - **Pure**: Only modify CRDT state, no external side effects
+//!
+//! See [`event`] module documentation for detailed requirements and examples.
+
 // Re-export the embed_abi macro from wasm-abi
 pub use calimero_wasm_abi::embed_abi;
 pub use {borsh, serde, serde_json};

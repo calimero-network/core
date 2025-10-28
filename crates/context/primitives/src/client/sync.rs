@@ -107,7 +107,13 @@ impl ContextClient {
                     let app_id = match source.scheme() {
                         "http" | "https" => self
                             .node_client
-                            .install_application_from_url(source.clone(), metadata.clone(), None)
+                            .install_application_from_url(
+                                source.clone(),
+                                metadata.clone(),
+                                None,
+                                "unknown",
+                                "0.0.0",
+                            )
                             .await
                             .ok(),
                         _ => None,
@@ -120,6 +126,8 @@ impl ContextClient {
                             application.size,
                             &source.into(),
                             metadata,
+                            "unknown",
+                            "0.0.0",
                         )?,
                     }
                 };
@@ -148,12 +156,13 @@ impl ContextClient {
             )?;
         }
 
-        let (should_save, application_id, root_hash) = context.map_or_else(
+        let (should_save, application_id, root_hash, dag_heads) = context.map_or_else(
             || {
                 (
                     true,
                     application_id.expect("must've been defined if context doesn't exist"),
                     Hash::default(),
+                    vec![],
                 )
             },
             |meta| {
@@ -161,6 +170,7 @@ impl ContextClient {
                     application_id.is_some(),
                     application_id.unwrap_or_else(|| meta.application.application_id()),
                     meta.root_hash.into(),
+                    meta.dag_heads.clone(),
                 )
             },
         );
@@ -168,7 +178,11 @@ impl ContextClient {
         if should_save {
             handle.put(
                 &key::ContextMeta::new(context_id),
-                &types::ContextMeta::new(key::ApplicationMeta::new(application_id), *root_hash),
+                &types::ContextMeta::new(
+                    key::ApplicationMeta::new(application_id),
+                    *root_hash,
+                    dag_heads.clone(),
+                ),
             )?;
 
             let (sender, receiver) = oneshot::channel();
@@ -184,10 +198,10 @@ impl ContextClient {
                 .await
                 .expect("Mailbox not to be dropped");
 
-            receiver.await.expect("Mailbox not to be dropped")
+            receiver.await.expect("Mailbox not to be dropped");
         }
 
-        let context = Context::new(context_id, application_id, root_hash);
+        let context = Context::with_dag_heads(context_id, application_id, root_hash, dag_heads);
 
         Ok(context)
     }

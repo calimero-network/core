@@ -134,9 +134,7 @@ impl TokenManager {
                         request_host.split(':').next().unwrap_or(request_host);
                     if request_host_without_port != token_host && request_host != token_host {
                         return Err(format!(
-                            "Token is not valid for this host. Token is for '{}' but request is to '{}'", 
-                            token_host,
-                            request_host
+                            "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
                         ));
                     }
                 }
@@ -315,7 +313,7 @@ impl TokenManager {
                     Err(AuthError::InvalidToken("Token has expired".to_string()))
                 }
                 jsonwebtoken::errors::ErrorKind::InvalidToken => {
-                    Err(AuthError::InvalidToken(format!("Malformed token: {}", err)))
+                    Err(AuthError::InvalidToken(format!("Malformed token: {err}")))
                 }
                 _ => Err(AuthError::InvalidToken(err.to_string())),
             },
@@ -331,9 +329,7 @@ impl TokenManager {
             .get("Authorization")
             .ok_or_else(|| AuthError::InvalidRequest("Missing Authorization header".to_string()))?
             .to_str()
-            .map_err(|e| {
-                AuthError::InvalidRequest(format!("Invalid Authorization header: {}", e))
-            })?;
+            .map_err(|e| AuthError::InvalidRequest(format!("Invalid Authorization header: {e}")))?;
 
         if !auth_header.starts_with("Bearer ") {
             return Err(AuthError::InvalidRequest(
@@ -401,7 +397,7 @@ impl TokenManager {
         self.key_manager
             .set_key(key_id, &key)
             .await
-            .map_err(|e| AuthError::StorageError(format!("Failed to update key: {}", e)))?;
+            .map_err(|e| AuthError::StorageError(format!("Failed to update key: {e}")))?;
 
         Ok(())
     }
@@ -472,8 +468,7 @@ impl TokenManager {
                         e
                     );
                     return Err(AuthError::StorageError(format!(
-                        "Failed to store new client key during rotation: {}",
-                        e
+                        "Failed to store new client key during rotation: {e}"
                     )));
                 }
 
@@ -532,7 +527,7 @@ impl TokenManager {
         // Generate a secure random nonce
         let mut nonce_bytes = [0u8; 32];
         rand::thread_rng().try_fill(&mut nonce_bytes).map_err(|e| {
-            AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {}", e))
+            AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {e}"))
         })?;
         let nonce = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
 

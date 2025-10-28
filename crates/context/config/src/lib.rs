@@ -13,7 +13,10 @@ pub mod repr;
 pub mod types;
 
 use repr::Repr;
-use types::{Application, Capability, ContextId, ContextIdentity, ProposalId, SignerId};
+use types::{
+    Application, BlockHeight, Capability, ContextId, ContextIdentity, ProposalId,
+    SignedRevealPayload, SignerId,
+};
 
 pub type Timestamp = u64;
 
@@ -85,6 +88,13 @@ pub enum ContextRequestKind<'a> {
     },
     RemoveMembers {
         members: Cow<'a, [Repr<ContextIdentity>]>,
+    },
+    CommitOpenInvitation {
+        commitment_hash: String,
+        expiration_block_height: BlockHeight,
+    },
+    RevealOpenInvitation {
+        payload: SignedRevealPayload,
     },
     Grant {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,

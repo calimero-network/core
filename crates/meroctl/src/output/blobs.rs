@@ -1,5 +1,9 @@
+use std::path::PathBuf;
+
+use calimero_primitives::blobs::{BlobId, BlobInfo};
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use comfy_table::{Cell, Color, Table};
+use serde::{Deserialize, Serialize};
 
 use super::Report;
 
@@ -56,5 +60,46 @@ impl Report for BlobInfoResponse {
         ]);
 
         println!("{table}");
+    }
+}
+
+// Upload response wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlobUploadResponse {
+    pub blob_id: BlobId,
+    pub size: u64,
+}
+
+impl From<BlobInfo> for BlobUploadResponse {
+    fn from(info: BlobInfo) -> Self {
+        Self {
+            blob_id: info.blob_id,
+            size: info.size,
+        }
+    }
+}
+
+impl Report for BlobUploadResponse {
+    fn report(&self) {
+        println!("Successfully uploaded blob");
+        println!("  Blob ID: {}", self.blob_id);
+        println!("  Size: {} bytes", self.size);
+    }
+}
+
+// Download response wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlobDownloadResponse {
+    pub blob_id: BlobId,
+    pub output_path: PathBuf,
+    pub size: u64,
+}
+
+impl Report for BlobDownloadResponse {
+    fn report(&self) {
+        println!("Successfully downloaded blob");
+        println!("  Blob ID: {}", self.blob_id);
+        println!("  Saved to: {}", self.output_path.display());
+        println!("  Size: {} bytes", self.size);
     }
 }

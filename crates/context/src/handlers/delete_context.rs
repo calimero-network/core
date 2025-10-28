@@ -80,8 +80,6 @@ async fn delete_context(
 
     delete_context_scoped::<key::ContextState, 32>(&mut datastore, &context_id, [0; 32], None)?;
 
-    delete_context_scoped::<key::ContextDelta, 40>(&mut datastore, &context_id, [0; 40], None)?;
-
     Ok(())
 }
 

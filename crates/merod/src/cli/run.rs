@@ -29,6 +29,7 @@ impl RunCommand {
             config.network.server.admin,
             config.network.server.jsonrpc,
             config.network.server.websocket,
+            config.network.server.sse,
         );
 
         start(NodeConfig {
@@ -44,11 +45,13 @@ impl RunCommand {
                 timeout: config.sync.timeout,
                 interval: config.sync.interval,
                 frequency: config.sync.frequency,
+                ..Default::default() // Use defaults for new fields
             },
             datastore: StoreConfig::new(path.join(config.datastore.path)),
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
             server: server_config,
+            gc_interval_secs: None, // Use default (12 hours)
         })
         .await
     }

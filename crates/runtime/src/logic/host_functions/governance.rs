@@ -1,6 +1,7 @@
 use rand::RngCore;
 
-use crate::logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE};
+use crate::logic::{sys, VMHostFunctions, VMLogicResult};
+use calimero_primitives::common::DIGEST_SIZE;
 
 impl VMHostFunctions<'_> {
     /// Creates a new governance proposal.
@@ -31,7 +32,7 @@ impl VMHostFunctions<'_> {
         let actions = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_actions_ptr)? };
         let dest_id = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_id_ptr)? };
 
-        let mut proposal_id = [0u8; DIGEST_SIZE];
+        let mut proposal_id = [0_u8; DIGEST_SIZE];
         rand::thread_rng().fill_bytes(&mut proposal_id);
 
         // Record newly created ID to guest memory
@@ -61,7 +62,7 @@ impl VMHostFunctions<'_> {
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_approval_ptr)? };
         let approval = *self.read_guest_memory_sized::<DIGEST_SIZE>(&approval)?;
 
-        let _ignored = self.with_logic_mut(|logic| logic.approvals.push(approval));
+        self.with_logic_mut(|logic| logic.approvals.push(approval));
         Ok(())
     }
 }
@@ -70,8 +71,9 @@ impl VMHostFunctions<'_> {
 mod tests {
     use crate::logic::{
         tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
-        Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
+        Cow, VMContext, VMLimits, VMLogic,
     };
+    use calimero_primitives::common::DIGEST_SIZE;
     use wasmer::{AsStoreMut, Store};
 
     /// Tests the `send_proposal()` and `approve_proposal()` host functions.

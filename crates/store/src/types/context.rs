@@ -1,7 +1,4 @@
-#![expect(single_use_lifetimes, reason = "borsh shenanigans")]
-
-use std::borrow::Cow;
-use std::num::NonZeroUsize;
+#![allow(single_use_lifetimes, reason = "borsh shenanigans")]
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -12,19 +9,25 @@ use crate::types::PredefinedEntry;
 
 pub type Hash = [u8; 32];
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextMeta {
     pub application: key::ApplicationMeta,
     pub root_hash: Hash,
+    pub dag_heads: Vec<[u8; 32]>,
 }
 
 impl ContextMeta {
     #[must_use]
-    pub const fn new(application: key::ApplicationMeta, root_hash: Hash) -> Self {
+    pub const fn new(
+        application: key::ApplicationMeta,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> Self {
         Self {
             application,
             root_hash,
+            dag_heads,
         }
     }
 }
@@ -109,13 +112,17 @@ impl PredefinedEntry for key::ContextIdentity {
     type DataType<'a> = ContextIdentity;
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
-pub enum ContextDelta<'a> {
-    Head(NonZeroUsize),
-    Data(Cow<'a, [u8]>),
+/// DAG delta data (persisted)
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug)]
+pub struct ContextDagDelta {
+    pub delta_id: [u8; 32],
+    pub parents: Vec<[u8; 32]>,
+    pub actions: Vec<u8>, // Serialized actions
+    pub hlc: calimero_storage::logical_clock::HybridTimestamp,
+    pub applied: bool,
 }
 
-impl PredefinedEntry for key::ContextDelta {
+impl PredefinedEntry for key::ContextDagDelta {
     type Codec = Borsh;
-    type DataType<'a> = ContextDelta<'a>;
+    type DataType<'a> = ContextDagDelta;
 }

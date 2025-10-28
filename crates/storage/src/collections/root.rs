@@ -9,10 +9,10 @@ use borsh::{from_slice, BorshDeserialize, BorshSerialize};
 
 use super::{Collection, ROOT_ID};
 use crate::address::Id;
+use crate::delta::{push_comparison, StorageDelta};
 use crate::integration::Comparison;
 use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
-use crate::sync::{self, SyncArtifact};
 
 /// A set collection that stores unqiue values once.
 pub struct Root<T, S: StorageAdaptor = MainStorage> {
@@ -125,29 +125,29 @@ where
     #[expect(clippy::missing_errors_doc, reason = "NO")]
     pub fn sync(args: &[u8]) -> Result<(), StorageError> {
         let artifact =
-            from_slice::<SyncArtifact>(args).map_err(StorageError::DeserializationError)?;
+            from_slice::<StorageDelta>(args).map_err(StorageError::DeserializationError)?;
 
         match artifact {
-            SyncArtifact::Actions(actions) => {
+            StorageDelta::Actions(actions) => {
                 for action in actions {
                     let _ignored = match action {
                         Action::Compare { id } => {
-                            sync::push_comparison(Comparison {
+                            push_comparison(Comparison {
                                 data: <Interface<S>>::find_by_id_raw(id),
                                 comparison_data: <Interface<S>>::generate_comparison_data(Some(
                                     id,
                                 ))?,
                             });
                         }
-                        Action::Add { .. } | Action::Update { .. } | Action::Delete { .. } => {
+                        Action::Add { .. } | Action::Update { .. } | Action::DeleteRef { .. } => {
                             <Interface<S>>::apply_action(action)?;
                         }
                     };
                 }
             }
-            SyncArtifact::Comparisons(comparisons) => {
+            StorageDelta::Comparisons(comparisons) => {
                 if comparisons.is_empty() {
-                    sync::push_comparison(Comparison {
+                    push_comparison(Comparison {
                         data: <Interface<S>>::find_by_id_raw(Id::root()),
                         comparison_data: <Interface<S>>::generate_comparison_data(None)?,
                     });

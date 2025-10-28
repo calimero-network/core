@@ -5,6 +5,7 @@ use calimero_vm as imp;
 #[cfg(not(target_arch = "wasm32"))]
 use mocked as imp;
 
+use crate::logical_clock::HybridTimestamp;
 use crate::store::Key;
 
 /// Commits the root hash to the runtime.
@@ -64,18 +65,80 @@ pub fn time_now() -> u64 {
     imp::time_now()
 }
 
-/// Return the context id.
+/// Returns the current context ID.
+///
+/// In WASM, this calls the host function. In tests, returns a fixed value.
 #[must_use]
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn context_id() -> [u8; 32] {
     imp::context_id()
 }
 
+/// Returns the current executor ID (the public key of the transaction signer).
+///
+/// In WASM, this calls the host function. In tests, returns a fixed value.
+#[must_use]
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
+pub fn executor_id() -> [u8; 32] {
+    imp::executor_id()
+}
+
+/// Get hybrid timestamp (auto-increments logical clock).
+#[must_use]
+pub fn hlc_timestamp() -> HybridTimestamp {
+    imp::hlc_timestamp()
+}
+
+/// Update HLC with remote timestamp (preserves causality).
+///
+/// When syncing deltas from remote nodes, call this with each delta's HLC timestamp
+/// to ensure the local clock observes remote operations and maintains causal ordering.
+///
+/// # Errors
+///
+/// Returns `Err(())` if the remote timestamp is >5s in the future (drift protection).
+pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+    imp::update_hlc(remote_ts)
+}
+
+/// Reset for testing.
+#[cfg(test)]
+pub fn reset_for_testing() {
+    imp::reset_for_testing();
+}
+
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
+    use std::cell::RefCell;
+
     use calimero_sdk::env;
 
+    use crate::logical_clock::{HybridTimestamp, LogicalClock};
     use crate::store::Key;
+
+    thread_local! {
+        static WASM_HLC: RefCell<Option<LogicalClock>> = const { RefCell::new(None) };
+    }
+
+    fn ensure_hlc_initialized() {
+        WASM_HLC.with(|hlc_cell| {
+            if hlc_cell.borrow().is_none() {
+                // Use executor ID (node identity) as deterministic seed for HLC ID
+                // This ensures each node has a unique but deterministic HLC ID
+                let executor_id = env::executor_id();
+                *hlc_cell.borrow_mut() = Some(LogicalClock::new(|buf| {
+                    // Use executor ID to deterministically generate HLC ID
+                    for (i, byte) in executor_id.iter().enumerate().take(buf.len()) {
+                        buf[i] = *byte;
+                    }
+                    // Fill remaining bytes if buf is longer than executor_id
+                    for i in executor_id.len()..buf.len() {
+                        buf[i] = executor_id[i % executor_id.len()];
+                    }
+                }));
+            }
+        });
+    }
 
     /// Commits the root hash to the runtime.
     pub(super) fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
@@ -107,12 +170,49 @@ mod calimero_vm {
         env::context_id()
     }
 
+    /// Return the executor id.
+    pub(super) fn executor_id() -> [u8; 32] {
+        env::executor_id()
+    }
+
     /// Gets the current time.
     ///
     /// This function obtains the current time as a nanosecond timestamp.
     ///
     pub(super) fn time_now() -> u64 {
         env::time_now()
+    }
+
+    /// Get a new hybrid timestamp from the HLC
+    pub(super) fn hlc_timestamp() -> HybridTimestamp {
+        ensure_hlc_initialized();
+        WASM_HLC.with(|hlc_cell| {
+            hlc_cell
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .new_timestamp(env::time_now)
+        })
+    }
+
+    /// Update HLC with remote timestamp
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+        ensure_hlc_initialized();
+        WASM_HLC.with(|hlc_cell| {
+            hlc_cell
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .update(remote_ts, env::time_now)
+        })
+    }
+
+    /// Resets the environment state for testing.
+    #[cfg(test)]
+    pub(super) fn reset_for_testing() {
+        WASM_HLC.with(|hlc| {
+            *hlc.borrow_mut() = None;
+        });
     }
 }
 
@@ -123,10 +223,12 @@ mod mocked {
 
     use rand::RngCore;
 
+    use crate::logical_clock::{HybridTimestamp, LogicalClock};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
+        static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf)));
     }
 
     /// The default storage system.
@@ -166,6 +268,11 @@ mod mocked {
         [236; 32]
     }
 
+    /// Return the executor id (for testing, returns a fixed value).
+    pub(super) const fn executor_id() -> [u8; 32] {
+        [237; 32]
+    }
+
     /// Gets the current time.
     ///
     /// This function obtains the current time as a nanosecond timestamp.
@@ -180,5 +287,29 @@ mod mocked {
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
             .as_nanos() as u64
+    }
+
+    /// Get a new hybrid timestamp from the HLC
+    pub(super) fn hlc_timestamp() -> HybridTimestamp {
+        NATIVE_HLC.with(|hlc| hlc.borrow_mut().new_timestamp(time_now))
+    }
+
+    /// Update HLC with remote timestamp
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+        NATIVE_HLC.with(|hlc| hlc.borrow_mut().update(remote_ts, time_now))
+    }
+
+    /// Resets the environment state for testing.
+    ///
+    /// Clears the thread-local ROOT_HASH and HLC, allowing multiple commits
+    /// in the same test execution context.
+    #[cfg(test)]
+    pub(super) fn reset_for_testing() {
+        ROOT_HASH.with(|rh| {
+            *rh.borrow_mut() = None;
+        });
+        NATIVE_HLC.with(|hlc| {
+            *hlc.borrow_mut() = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        });
     }
 }

@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use calimero_context_config::repr::Repr;
-use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
+use calimero_context_config::types::{
+    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedOpenInvitation,
+};
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -23,14 +25,24 @@ pub struct InstallApplicationRequest {
     pub url: Url,
     pub hash: Option<Hash>,
     pub metadata: Vec<u8>,
+    pub package: Option<String>,
+    pub version: Option<String>,
 }
 
 impl InstallApplicationRequest {
-    pub const fn new(url: Url, hash: Option<Hash>, metadata: Vec<u8>) -> Self {
+    pub fn new(
+        url: Url,
+        hash: Option<Hash>,
+        metadata: Vec<u8>,
+        package: Option<String>,
+        version: Option<String>,
+    ) -> Self {
         Self {
             url,
             hash,
             metadata,
+            package,
+            version,
         }
     }
 }
@@ -60,11 +72,23 @@ impl InstallApplicationResponse {
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
     pub metadata: Vec<u8>,
+    pub package: Option<String>,
+    pub version: Option<String>,
 }
 
 impl InstallDevApplicationRequest {
-    pub const fn new(path: Utf8PathBuf, metadata: Vec<u8>) -> Self {
-        Self { path, metadata }
+    pub fn new(
+        path: Utf8PathBuf,
+        metadata: Vec<u8>,
+        package: Option<String>,
+        version: Option<String>,
+    ) -> Self {
+        Self {
+            path,
+            metadata,
+            package,
+            version,
+        }
     }
 }
 
@@ -85,6 +109,43 @@ impl UninstallApplicationResponse {
         Self {
             data: UninstallApplicationResponseData { application_id },
         }
+    }
+}
+
+// -------------------------------------------- Package Management API --------------------------------------------
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPackagesResponse {
+    pub packages: Vec<String>,
+}
+
+impl ListPackagesResponse {
+    pub const fn new(packages: Vec<String>) -> Self {
+        Self { packages }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListVersionsResponse {
+    pub versions: Vec<String>,
+}
+
+impl ListVersionsResponse {
+    pub const fn new(versions: Vec<String>) -> Self {
+        Self { versions }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetLatestVersionResponse {
+    pub application_id: Option<ApplicationId>,
+}
+
+impl GetLatestVersionResponse {
+    pub const fn new(application_id: Option<ApplicationId>) -> Self {
+        Self { application_id }
     }
 }
 
@@ -346,6 +407,44 @@ impl InviteToContextResponse {
     }
 }
 
+// TODO: refactor `InviteToContextRequest` with an optional `invitee_id` field to serve both
+// types of requests.
+#[derive(Debug, Deserialize, Copy, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteToContextOpenInvitationRequest {
+    pub context_id: ContextId,
+    pub inviter_id: PublicKey,
+    pub valid_for_blocks: BlockHeight,
+}
+
+impl InviteToContextOpenInvitationRequest {
+    pub const fn new(
+        context_id: ContextId,
+        inviter_id: PublicKey,
+        valid_for_blocks: BlockHeight,
+    ) -> Self {
+        Self {
+            context_id,
+            inviter_id,
+            valid_for_blocks,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteToContextOpenInvitationResponse {
+    pub data: Option<SignedOpenInvitation>,
+}
+
+impl InviteToContextOpenInvitationResponse {
+    pub const fn new(signed_open_invitation: Option<SignedOpenInvitation>) -> Self {
+        Self {
+            data: signed_open_invitation,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextRequest {
@@ -355,6 +454,22 @@ pub struct JoinContextRequest {
 impl JoinContextRequest {
     pub const fn new(invitation_payload: ContextInvitationPayload) -> Self {
         Self { invitation_payload }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinContextByOpenInvitationRequest {
+    pub invitation: SignedOpenInvitation,
+    pub new_member_public_key: PublicKey,
+}
+
+impl JoinContextByOpenInvitationRequest {
+    pub const fn new(invitation: SignedOpenInvitation, new_member_public_key: PublicKey) -> Self {
+        Self {
+            invitation,
+            new_member_public_key,
+        }
     }
 }
 
@@ -902,6 +1017,44 @@ pub struct RevokePermissionResponse {
 impl RevokePermissionResponse {
     pub const fn new() -> Self {
         Self { data: Empty {} }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAndApproveProposalRequest {
+    pub signer_id: PublicKey,
+    pub proposal: Proposal,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAndApproveProposalResponse {
+    pub data: Option<ProposalWithApprovals>,
+}
+
+impl CreateAndApproveProposalResponse {
+    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
+        Self { data }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveProposalRequest {
+    pub signer_id: PublicKey,
+    pub proposal_id: calimero_context_config::types::ProposalId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveProposalResponse {
+    pub data: Option<ProposalWithApprovals>,
+}
+
+impl ApproveProposalResponse {
+    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
+        Self { data }
     }
 }
 
