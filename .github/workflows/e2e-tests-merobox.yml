@@ -50,6 +50,9 @@ jobs:
         env:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          chmod +x apps/kv-store/build.sh
+          chmod +x apps/kv-store-with-handlers/build.sh
+          chmod +x apps/blobs/build.sh
           ./apps/kv-store/build.sh
           ./apps/kv-store-with-handlers/build.sh
           ./apps/blobs/build.sh
