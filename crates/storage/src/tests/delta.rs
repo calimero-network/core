@@ -117,7 +117,7 @@ fn delta_id_changes_with_parents() {
 }
 
 #[test]
-fn delta_id_changes_with_hlc() {
+fn delta_id_deterministic_regardless_of_hlc() {
     let parents = vec![[0; 32]];
     let actions = vec![];
 
@@ -128,8 +128,9 @@ fn delta_id_changes_with_hlc() {
     let id1 = CausalDelta::compute_id(&parents, &actions, &hlc1);
     let id2 = CausalDelta::compute_id(&parents, &actions, &hlc2);
 
-    // Should be different (different HLC timestamps)
-    assert_ne!(id1, id2);
+    // Should be the SAME - delta ID is deterministic based on parents+actions only.
+    // This ensures nodes executing the same operations produce identical delta IDs.
+    assert_eq!(id1, id2);
 }
 
 #[test]

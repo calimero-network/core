@@ -7,7 +7,12 @@ use crate::cli::Environment;
 #[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Delete a blob by its ID")]
 pub struct DeleteCommand {
-    #[arg(value_name = "BLOB_ID", help = "ID of the blob to delete")]
+    #[arg(
+        short = 'b',
+        long = "blob-id",
+        value_name = "BLOB_ID",
+        help = "ID of the blob to delete"
+    )]
     pub blob_id: BlobId,
 }
 

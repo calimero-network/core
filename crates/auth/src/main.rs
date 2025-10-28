@@ -51,8 +51,7 @@ fn create_default_config() -> AuthConfig {
         cors: Default::default(),
         security: SecurityConfig {
             rate_limit: RateLimitConfig {
-                rate_limit_rpm: 100,
-                rate_limit_burst: 10,
+                rate_limit_rpm: 1000,
             },
             max_body_size: 1024 * 1024, // 1MB
             headers: SecurityHeadersConfig {

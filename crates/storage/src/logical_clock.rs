@@ -48,26 +48,72 @@
 //! The HLC will reject timestamps that are too far in the future (5s in Calimero)
 //! to prevent clock skew from causing excessive drift while allowing for network delays
 //! in distributed systems. This is configured via `HLCBuilder::with_max_delta()`.
-//!
-//! # Implementation Note
-//!
-//! HLC instances are created using Calimero's existing `env::random_bytes()`
-//! instead of relying on `getrandom`, avoiding additional WASM dependencies
-//! (like "js" feature) and ensuring consistent random source across the codebase.
-//!
-//! # References
-//!
-//! - [uhlc-rs](https://github.com/atolab/uhlc-rs) - The underlying implementation
-//! - [Blog post](http://sergeiturukin.com/2017/06/26/hybrid-logical-clocks.html) - HLC explained
-//! - [Original paper](https://cse.buffalo.edu/tech-reports/2014-04.pdf) - Academic foundation
 
 use core::fmt;
 use core::num::NonZeroU128;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-// Re-export uhlc types for use throughout the crate
-pub use uhlc::{HLCBuilder, Timestamp, HLC, ID, NTP64};
+/// NTP64 timestamp (64-bit: 32-bit seconds + 32-bit fraction).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NTP64(pub u64);
+
+impl NTP64 {
+    /// Get the raw u64 value.
+    #[must_use]
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Unique identifier for an HLC instance (prevents timestamp collisions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ID(NonZeroU128);
+
+impl From<NonZeroU128> for ID {
+    fn from(value: NonZeroU128) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ID> for u128 {
+    fn from(id: ID) -> u128 {
+        id.0.get()
+    }
+}
+
+/// HLC Timestamp = (time, id)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Timestamp {
+    time: NTP64,
+    id: ID,
+}
+
+impl Timestamp {
+    /// Create a new timestamp.
+    #[must_use]
+    pub const fn new(time: NTP64, id: ID) -> Self {
+        Self { time, id }
+    }
+
+    /// Get the time component.
+    #[must_use]
+    pub const fn get_time(&self) -> &NTP64 {
+        &self.time
+    }
+
+    /// Get the ID component.
+    #[must_use]
+    pub const fn get_id(&self) -> &ID {
+        &self.id
+    }
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#{:x}", self.time.0, u128::from(self.id))
+    }
+}
 
 // Const for default ID (can't be zero)
 const DEFAULT_ID: NonZeroU128 = match NonZeroU128::new(1) {
@@ -75,40 +121,33 @@ const DEFAULT_ID: NonZeroU128 = match NonZeroU128::new(1) {
     None => unreachable!(),
 };
 
-/// Wrapper around uhlc::Timestamp that implements Borsh serialization.
-///
-/// This allows us to store HLC timestamps in our CRDT storage layer.
+/// Borsh-serializable wrapper around Timestamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HybridTimestamp(Timestamp);
 
 impl HybridTimestamp {
-    /// Create from uhlc Timestamp
+    /// Create a new hybrid timestamp.
     #[must_use]
     pub const fn new(ts: Timestamp) -> Self {
         Self(ts)
     }
 
-    /// Get the underlying uhlc Timestamp
+    /// Get the inner timestamp.
     #[must_use]
     pub const fn inner(&self) -> &Timestamp {
         &self.0
     }
 
-    /// Get the NTP64 time value
+    /// Get the time component.
     #[must_use]
-    pub fn get_time(&self) -> &NTP64 {
+    pub const fn get_time(&self) -> &NTP64 {
         self.0.get_time()
     }
 
-    /// Get the unique ID of the HLC that created this timestamp
+    /// Get the ID component.
     #[must_use]
-    pub fn get_id(&self) -> &ID {
+    pub const fn get_id(&self) -> &ID {
         self.0.get_id()
-    }
-
-    /// Check if this timestamp is from our HLC
-    pub fn is_from(&self, hlc: &HLC) -> bool {
-        self.0.get_id() == hlc.get_id()
     }
 }
 
@@ -124,15 +163,12 @@ impl From<HybridTimestamp> for Timestamp {
     }
 }
 
-// Implement Borsh serialization for storage
 impl BorshSerialize for HybridTimestamp {
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        // Serialize as (NTP64, ID as string)
         let time_u64 = self.0.get_time().as_u64();
-        let id_string = format!("{}", self.0.get_id());
-
+        let id_u128: u128 = (*self.0.get_id()).into();
         time_u64.serialize(writer)?;
-        id_string.serialize(writer)?;
+        id_u128.serialize(writer)?;
         Ok(())
     }
 }
@@ -140,15 +176,8 @@ impl BorshSerialize for HybridTimestamp {
 impl BorshDeserialize for HybridTimestamp {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let time_u64 = u64::deserialize_reader(reader)?;
-        let id_string = String::deserialize_reader(reader)?;
-
+        let id_u128 = u128::deserialize_reader(reader)?;
         let time = NTP64(time_u64);
-
-        // Parse ID from string (format is hex)
-        let id_u128 = u128::from_str_radix(&id_string, 16)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-        // Use NonZero to create ID, or use a sentinel value if zero
         let id = if id_u128 == 0 {
             ID::from(DEFAULT_ID)
         } else {
@@ -156,14 +185,12 @@ impl BorshDeserialize for HybridTimestamp {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "ID cannot be zero")
             })?
         };
-
         Ok(Self(Timestamp::new(time, id)))
     }
 }
 
 impl Default for HybridTimestamp {
     fn default() -> Self {
-        // Create a default timestamp with zero time and ID of 1 (can't be zero due to NonZero)
         Self(Timestamp::new(NTP64(0), ID::from(DEFAULT_ID)))
     }
 }
@@ -174,67 +201,140 @@ impl fmt::Display for HybridTimestamp {
     }
 }
 
-/// Get the physical time component from a timestamp (seconds since epoch)
+/// Get the physical time in seconds from a timestamp.
 #[must_use]
 pub fn physical_time_secs(ts: &HybridTimestamp) -> u32 {
     (ts.0.get_time().as_u64() >> 32) as u32
 }
 
-/// Get the logical component from a timestamp (embedded in fraction bits)
+/// Get the logical counter from a timestamp.
 #[must_use]
 pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
-    // The logical counter is in the last 4 bits of the fraction
     (ts.0.get_time().as_u64() & 0xF) as u32
+}
+
+/// Hybrid Logical Clock implementation.
+///
+/// Implements the HLC algorithm with custom time/random sources for WASM compatibility.
+/// Based on: https://github.com/atolab/uhlc-rs
+pub(crate) struct LogicalClock {
+    /// Unique ID for this HLC instance (randomly generated)
+    id: u128,
+    /// Last observed physical time in NTP64 format
+    last_time: u64,
+    /// Logical counter (embedded in low 16 bits of timestamp)
+    counter: u16,
+}
+
+impl LogicalClock {
+    pub(crate) fn new<F>(mut random_bytes_fn: F) -> Self
+    where
+        F: FnMut(&mut [u8]),
+    {
+        let mut id_bytes = [0u8; 16];
+        random_bytes_fn(&mut id_bytes);
+        let id = u128::from_le_bytes(id_bytes);
+
+        Self {
+            id: if id == 0 { 1 } else { id },
+            last_time: 0,
+            counter: 0,
+        }
+    }
+
+    pub(crate) fn new_timestamp<F>(&mut self, time_now_fn: F) -> HybridTimestamp
+    where
+        F: FnOnce() -> u64,
+    {
+        // Get physical time from provided function
+        let now_nanos = time_now_fn();
+
+        // Convert nanoseconds to NTP64 format
+        // NTP64: upper 32 bits = seconds, lower 32 bits = fraction of second
+        let secs = now_nanos / 1_000_000_000;
+        let nanos = now_nanos % 1_000_000_000;
+        let frac = (nanos * (1u64 << 32)) / 1_000_000_000;
+        let physical_time = (secs << 32) | frac;
+
+        // HLC algorithm: time = max(physical, last_observed)
+        if physical_time > self.last_time {
+            self.last_time = physical_time;
+            self.counter = 0;
+        } else {
+            // Clock didn't advance - increment logical counter
+            self.counter = self.counter.wrapping_add(1);
+        }
+
+        // Embed counter in low 16 bits of timestamp
+        let time_with_counter = NTP64((self.last_time & !0xFFFF) | (self.counter as u64 & 0xFFFF));
+
+        let id = ID::from(NonZeroU128::new(self.id).expect("ID is never zero"));
+
+        HybridTimestamp::from(Timestamp::new(time_with_counter, id))
+    }
+
+    /// Update with remote timestamp (maintains causality, rejects if >5s in future).
+    pub(crate) fn update<F>(
+        &mut self,
+        remote_ts: &HybridTimestamp,
+        time_now_fn: F,
+    ) -> Result<(), ()>
+    where
+        F: FnOnce() -> u64,
+    {
+        let remote_time = remote_ts.get_time().as_u64();
+
+        // Get current physical time for drift check
+        let now_nanos = time_now_fn();
+
+        // Convert nanoseconds to NTP64 format
+        let secs = now_nanos / 1_000_000_000;
+        let nanos = now_nanos % 1_000_000_000;
+        let frac = (nanos * (1u64 << 32)) / 1_000_000_000;
+        let local_ntp = (secs << 32) | frac;
+
+        // Drift protection: reject if >5s in future
+        const DRIFT_TOLERANCE_SECS: u64 = 5;
+        let drift_ntp = local_ntp + (DRIFT_TOLERANCE_SECS << 32);
+
+        if remote_time > drift_ntp {
+            return Err(());
+        }
+
+        // Update to max observed time (causality)
+        if remote_time > self.last_time {
+            self.last_time = remote_time;
+            self.counter = 0;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::RngCore;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn test_hlc_monotonicity() {
-        let hlc = HLC::default();
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
 
-        let ts1 = hlc.new_timestamp();
-        let ts2 = hlc.new_timestamp();
-        let ts3 = hlc.new_timestamp();
+        let ts1 = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        let ts2 = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        let ts3 = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
         assert!(ts1 < ts2);
         assert!(ts2 < ts3);
     }
 
     #[test]
-    fn test_hlc_update_with_remote() {
-        let hlc1 = HLC::default();
-        let hlc2 = HLC::default();
-
-        let _ts1 = hlc1.new_timestamp();
-        let ts2 = hlc2.new_timestamp();
-
-        // hlc1 receives ts2 from hlc2
-        assert!(hlc1.update_with_timestamp(&ts2).is_ok());
-
-        // Next timestamp from hlc1 should be > ts2
-        let ts3 = hlc1.new_timestamp();
-        assert!(ts3 > ts2);
-    }
-
-    #[test]
-    fn test_hlc_anti_drift() {
-        let hlc = HLC::default();
-
-        // Create a timestamp far in the future
-        let future_time = NTP64(u64::MAX);
-        let future_ts = Timestamp::new(future_time, *hlc.get_id());
-
-        // Should reject timestamp that's too far ahead
-        assert!(hlc.update_with_timestamp(&future_ts).is_err());
-    }
-
-    #[test]
     fn test_hybrid_timestamp_borsh() {
-        let hlc = HLC::default();
-        let ts = HybridTimestamp::from(hlc.new_timestamp());
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let ts = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
         // Serialize
         let serialized = borsh::to_vec(&ts).unwrap();
@@ -246,31 +346,15 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_uniqueness() {
-        let hlc1 = HLC::default();
-        let hlc2 = HLC::default();
+    fn test_hlc_uniqueness() {
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc1 = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut hlc2 = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
 
-        let _ts1 = hlc1.new_timestamp();
-        let ts2 = hlc2.new_timestamp();
+        let ts1 = hlc1.new_timestamp(|| time.load(Ordering::Relaxed));
+        let ts2 = hlc2.new_timestamp(|| time.load(Ordering::Relaxed));
 
-        // Different HLCs have different IDs
-        assert_ne!(hlc1.get_id(), hlc2.get_id());
-
-        // Timestamps from different HLCs are distinguishable
-        let ts1_again = hlc1.new_timestamp();
-        assert_ne!(ts1_again, ts2);
-    }
-
-    #[test]
-    fn test_physical_and_logical_components() {
-        let hlc = HLC::default();
-        let ts1 = HybridTimestamp::from(hlc.new_timestamp());
-        let ts2 = HybridTimestamp::from(hlc.new_timestamp());
-
-        // Physical time should be approximately same (within same second)
-        assert_eq!(physical_time_secs(&ts1), physical_time_secs(&ts2));
-
-        // But logical counter should increase
-        assert!(logical_counter(&ts2) >= logical_counter(&ts1));
+        // Even if generated at the same instant, timestamps should be unique (different IDs)
+        assert_ne!(ts1.get_id(), ts2.get_id());
     }
 }

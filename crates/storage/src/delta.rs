@@ -27,9 +27,12 @@ use crate::logical_clock::HybridTimestamp;
 ///
 /// The DAG provides coarse-grained ordering (delta-level), while HLC provides
 /// fine-grained ordering (action-level).
+///
+/// **Note**: The delta ID does NOT include the HLC to ensure determinism.
+/// Nodes executing the same operations produce identical IDs regardless of physical time.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize, PartialEq, Eq)]
 pub struct CausalDelta {
-    /// Unique ID: SHA256(parents || actions || hlc_range)
+    /// Unique ID: SHA256(parents || actions) - deterministic, excludes timestamp
     pub id: [u8; 32],
 
     /// Parent delta IDs (empty for root, 1 for sequential, 2+ for merges)
@@ -48,7 +51,15 @@ pub struct CausalDelta {
 
 impl CausalDelta {
     /// Compute the ID for a delta
-    pub fn compute_id(parents: &[[u8; 32]], actions: &[Action], hlc: &HybridTimestamp) -> [u8; 32] {
+    ///
+    /// The ID is deterministic based on parents and actions only.
+    /// Timestamps are excluded to ensure nodes computing the same
+    /// operations produce identical delta IDs regardless of physical time.
+    pub fn compute_id(
+        parents: &[[u8; 32]],
+        actions: &[Action],
+        _hlc: &HybridTimestamp,
+    ) -> [u8; 32] {
         let mut hasher = Sha256::new();
 
         // Hash parents
@@ -56,15 +67,29 @@ impl CausalDelta {
             hasher.update(parent);
         }
 
-        // Hash actions
-        if let Ok(actions_bytes) = to_vec(actions) {
-            hasher.update(&actions_bytes);
+        // Hash actions WITHOUT metadata timestamps to ensure determinism
+        // Serialize only the content-addressable parts: id, data, ancestors (without timestamps)
+        for action in actions {
+            match action {
+                Action::Add { id, data, .. } | Action::Update { id, data, .. } => {
+                    let id_bytes: [u8; 32] = (*id).into();
+                    hasher.update(&id_bytes);
+                    hasher.update(data);
+                    // Metadata and ancestors excluded - they contain timestamps
+                }
+                Action::DeleteRef { id, .. } => {
+                    let id_bytes: [u8; 32] = (*id).into();
+                    hasher.update(&id_bytes);
+                    // deleted_at excluded - it's a timestamp
+                }
+                Action::Compare { id } => {
+                    let id_bytes: [u8; 32] = (*id).into();
+                    hasher.update(&id_bytes);
+                }
+            }
         }
 
-        // Hash HLC
-        if let Ok(hlc_bytes) = to_vec(hlc) {
-            hasher.update(&hlc_bytes);
-        }
+        // HLC is NOT hashed - it's metadata for ordering/LWW conflict resolution.
 
         hasher.finalize().into()
     }

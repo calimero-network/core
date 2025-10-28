@@ -113,17 +113,31 @@ mod calimero_vm {
 
     use calimero_sdk::env;
 
-    use crate::logical_clock::{HybridTimestamp, HLC};
+    use crate::logical_clock::{HybridTimestamp, LogicalClock};
     use crate::store::Key;
 
     thread_local! {
-        // Uses custom getrandom backend (see getrandom_impl.rs)
-        // 5s drift protection (default 500ms is too strict for distributed systems)
-        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(
-            crate::logical_clock::HLCBuilder::new()
-                .with_max_delta(std::time::Duration::from_secs(5))
-                .build()
-        );
+        static WASM_HLC: RefCell<Option<LogicalClock>> = const { RefCell::new(None) };
+    }
+
+    fn ensure_hlc_initialized() {
+        WASM_HLC.with(|hlc_cell| {
+            if hlc_cell.borrow().is_none() {
+                // Use executor ID (node identity) as deterministic seed for HLC ID
+                // This ensures each node has a unique but deterministic HLC ID
+                let executor_id = env::executor_id();
+                *hlc_cell.borrow_mut() = Some(LogicalClock::new(|buf| {
+                    // Use executor ID to deterministically generate HLC ID
+                    for (i, byte) in executor_id.iter().enumerate().take(buf.len()) {
+                        buf[i] = *byte;
+                    }
+                    // Fill remaining bytes if buf is longer than executor_id
+                    for i in executor_id.len()..buf.len() {
+                        buf[i] = executor_id[i % executor_id.len()];
+                    }
+                }));
+            }
+        });
     }
 
     /// Commits the root hash to the runtime.
@@ -171,23 +185,33 @@ mod calimero_vm {
 
     /// Get a new hybrid timestamp from the HLC
     pub(super) fn hlc_timestamp() -> HybridTimestamp {
-        HLC_INSTANCE.with(|hlc| HybridTimestamp::from(hlc.borrow().new_timestamp()))
+        ensure_hlc_initialized();
+        WASM_HLC.with(|hlc_cell| {
+            hlc_cell
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .new_timestamp(env::time_now)
+        })
     }
 
     /// Update HLC with remote timestamp
     pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
-        HLC_INSTANCE.with(|hlc| {
-            hlc.borrow()
-                .update_with_timestamp(remote_ts.inner())
-                .map_err(|_| ())
+        ensure_hlc_initialized();
+        WASM_HLC.with(|hlc_cell| {
+            hlc_cell
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .update(remote_ts, env::time_now)
         })
     }
 
     /// Resets the environment state for testing.
     #[cfg(test)]
     pub(super) fn reset_for_testing() {
-        HLC_INSTANCE.with(|hlc| {
-            *hlc.borrow_mut() = HLC::default();
+        WASM_HLC.with(|hlc| {
+            *hlc.borrow_mut() = None;
         });
     }
 }
@@ -199,17 +223,12 @@ mod mocked {
 
     use rand::RngCore;
 
-    use crate::logical_clock::{HybridTimestamp, HLC};
+    use crate::logical_clock::{HybridTimestamp, LogicalClock};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
-        // 5s drift protection (default 500ms is too strict for distributed systems)
-        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(
-            crate::logical_clock::HLCBuilder::new()
-                .with_max_delta(std::time::Duration::from_secs(5))
-                .build()
-        );
+        static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf)));
     }
 
     /// The default storage system.
@@ -272,16 +291,12 @@ mod mocked {
 
     /// Get a new hybrid timestamp from the HLC
     pub(super) fn hlc_timestamp() -> HybridTimestamp {
-        HLC_INSTANCE.with(|hlc| HybridTimestamp::from(hlc.borrow().new_timestamp()))
+        NATIVE_HLC.with(|hlc| hlc.borrow_mut().new_timestamp(time_now))
     }
 
     /// Update HLC with remote timestamp
     pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
-        HLC_INSTANCE.with(|hlc| {
-            hlc.borrow()
-                .update_with_timestamp(remote_ts.inner())
-                .map_err(|_| ())
-        })
+        NATIVE_HLC.with(|hlc| hlc.borrow_mut().update(remote_ts, time_now))
     }
 
     /// Resets the environment state for testing.
@@ -293,8 +308,8 @@ mod mocked {
         ROOT_HASH.with(|rh| {
             *rh.borrow_mut() = None;
         });
-        HLC_INSTANCE.with(|hlc| {
-            *hlc.borrow_mut() = HLC::default();
+        NATIVE_HLC.with(|hlc| {
+            *hlc.borrow_mut() = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
         });
     }
 }

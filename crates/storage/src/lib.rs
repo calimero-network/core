@@ -72,10 +72,6 @@ pub mod merge;
 pub mod snapshot;
 pub mod store;
 
-// Custom getrandom implementation for WASM using Calimero's random infrastructure
-#[cfg(target_arch = "wasm32")]
-mod getrandom_impl;
-
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
     pub use sha2::{Digest, Sha256};

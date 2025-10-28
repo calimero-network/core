@@ -69,9 +69,9 @@ impl Merod {
 
         let config_args = [
             "config",
-            "sync.timeout_ms=30000", // 30s timeout (faster failure detection)
-            "sync.interval_ms=0",    // no throttling between syncs
-            "sync.frequency_ms=2000", // sync every 2s (aggressive fallback for broadcast failures)
+            "sync.timeout_ms=30000",  // 30s timeout (matches production)
+            "sync.interval_ms=500",   // 500ms between syncs (very aggressive for tests)
+            "sync.frequency_ms=1000", // 1s periodic checks (ensures rapid sync in tests)
             "bootstrap.nodes=[]",
         ]
         .into_iter()
