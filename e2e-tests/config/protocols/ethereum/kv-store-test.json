@@ -19,7 +19,7 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 2000,
+        "durationMs": 5000,
         "description": [
           "Wait for context initialization to complete"
         ]
