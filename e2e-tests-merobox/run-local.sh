@@ -119,11 +119,11 @@ if [ "$USE_VENV" = true ]; then
     
     # Create fresh virtual environment
     echo -e "${BLUE}Creating virtual environment at $VENV_DIR${NC}"
-    if python3 -m venv "$VENV_DIR"; then
+    if python3.11 -m venv "$VENV_DIR"; then
         echo -e "${GREEN}✓ Virtual environment created${NC}"
     else
         echo -e "${RED}Error: Failed to create virtual environment${NC}"
-        echo -e "${YELLOW}Make sure python3-venv is installed${NC}"
+        echo -e "${YELLOW}Make sure python3.11-venv is installed${NC}"
         exit 1
     fi
     
@@ -181,6 +181,12 @@ fi
 if [ "$BUILD_APPS" = true ]; then
     echo -e "${BLUE}Building WASM applications...${NC}"
     cd "$PROJECT_ROOT"
+    
+    # Make build scripts executable
+    chmod +x ./apps/kv-store/build.sh
+    chmod +x ./apps/kv-store-with-handlers/build.sh
+    chmod +x ./apps/blobs/build.sh
+    
     if ./apps/kv-store/build.sh; then
         echo -e "${GREEN}✓ KV store app built successfully${NC}"
     else
