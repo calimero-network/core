@@ -162,26 +162,18 @@ impl<S: StorageAdaptor> Interface<S> {
                     return Ok(());
                 };
 
-                // If data was merged, update parent's children list with correct hash
+                // ALWAYS update parent with correct hash after save (handles merging)
+                // This ensures hash consistency even when data gets merged
                 if let Some(parent) = parent {
                     let (_, own_hash) =
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
-                    // Only update if hash changed due to merging
-                    let parent_children = <Index<S>>::get_children_of(
+                    // Update parent with the actual hash after any merging
+                    <Index<S>>::add_child_to(
                         parent.id(),
                         "no collection, remove this nonsense",
+                        ChildInfo::new(id, own_hash, metadata),
                     )?;
-                    if let Some(child_info) = parent_children.iter().find(|c| c.id() == id) {
-                        if child_info.merkle_hash() != own_hash {
-                            // Hash changed due to merge - update parent
-                            <Index<S>>::add_child_to(
-                                parent.id(),
-                                "no collection, remove this nonsense",
-                                ChildInfo::new(id, own_hash, metadata),
-                            )?;
-                        }
-                    }
                 }
 
                 crate::delta::push_action(Action::Compare { id });
