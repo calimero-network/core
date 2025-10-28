@@ -1,4 +1,7 @@
-#![allow(clippy::struct_excessive_bools, reason = "CLI struct with boolean flags is appropriate")]
+#![allow(
+    clippy::struct_excessive_bools,
+    reason = "CLI struct with boolean flags is appropriate"
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,7 +40,12 @@ struct Cli {
     all: bool,
 
     /// Export specific column families (comma-separated)
-    #[arg(long, value_name = "COLUMNS", requires = "export", conflicts_with = "all")]
+    #[arg(
+        long,
+        value_name = "COLUMNS",
+        requires = "export",
+        conflicts_with = "all"
+    )]
     columns: Option<String>,
 
     /// Validate database integrity
@@ -122,14 +130,14 @@ fn open_database(path: &Path) -> Result<DBWithThreadMode<SingleThreaded>> {
     let options = Options::default();
 
     // Get all column families
-    let cf_names: Vec<String> = Column::all().iter().map(|c| c.as_str().to_owned()).collect();
+    let cf_names: Vec<String> = Column::all()
+        .iter()
+        .map(|c| c.as_str().to_owned())
+        .collect();
 
     // Open database in read-only mode
     let db = DBWithThreadMode::<SingleThreaded>::open_cf_for_read_only(
-        &options,
-        path,
-        &cf_names,
-        false, // error_if_log_file_exist
+        &options, path, &cf_names, false, // error_if_log_file_exist
     )
     .wrap_err_with(|| format!("Failed to open database at {}", path.display()))?;
 

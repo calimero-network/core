@@ -45,10 +45,12 @@ pub fn validate_database(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value>
     for column in Column::all() {
         let result = validate_column(db, *column)?;
 
-        overall_result.total_entries =
-            overall_result.total_entries.saturating_add(result.total_entries);
-        overall_result.valid_entries =
-            overall_result.valid_entries.saturating_add(result.valid_entries);
+        overall_result.total_entries = overall_result
+            .total_entries
+            .saturating_add(result.total_entries);
+        overall_result.valid_entries = overall_result
+            .valid_entries
+            .saturating_add(result.valid_entries);
         overall_result.invalid_entries = overall_result
             .invalid_entries
             .saturating_add(result.invalid_entries);
@@ -104,9 +106,8 @@ fn validate_column(
     let iter = db.iterator_cf(&cf, IteratorMode::Start);
 
     for item in iter {
-        let (key, value) = item.wrap_err_with(|| {
-            format!("Failed to read entry from column family '{cf_name}'")
-        })?;
+        let (key, value) =
+            item.wrap_err_with(|| format!("Failed to read entry from column family '{cf_name}'"))?;
 
         result.total_entries = result.total_entries.saturating_add(1);
 
