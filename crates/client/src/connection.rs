@@ -97,6 +97,112 @@ where
         self.request(RequestType::Delete, path, None::<()>).await
     }
 
+    pub async fn put_binary(&self, path: &str, data: Vec<u8>) -> Result<reqwest::Response> {
+        let mut url = self.api_url.clone();
+
+        if let Some((path_part, query_part)) = path.split_once('?') {
+            url.set_path(path_part);
+            url.set_query(Some(query_part));
+        } else {
+            url.set_path(path);
+        }
+
+        let requires_auth = self.path_requires_auth(path);
+
+        let auth_header = if requires_auth && self.node_name.is_some() {
+            if let Ok(Some(tokens)) = self
+                .client_storage
+                .load_tokens(&self.node_name.as_ref().unwrap())
+                .await
+            {
+                Some(format!("Bearer {}", tokens.access_token))
+            } else {
+                match self.authenticator.authenticate(&self.api_url).await {
+                    Ok(new_tokens) => {
+                        self.client_storage
+                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
+                            .await?;
+                        Some(format!("Bearer {}", new_tokens.access_token))
+                    }
+                    Err(auth_err) => {
+                        bail!("Authentication failed: {}", auth_err);
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        let response = self
+            .execute_request_with_auth_retry(|| {
+                let mut builder = self.client.put(url.clone()).body(data.clone());
+
+                if let Some(ref auth_header) = auth_header {
+                    builder = builder.header("Authorization", auth_header);
+                }
+
+                builder.send()
+            })
+            .await?;
+
+        Ok(response)
+    }
+
+    pub async fn get_binary(&self, path: &str) -> Result<Vec<u8>> {
+        let mut url = self.api_url.clone();
+
+        if let Some((path_part, query_part)) = path.split_once('?') {
+            url.set_path(path_part);
+            url.set_query(Some(query_part));
+        } else {
+            url.set_path(path);
+        }
+
+        let requires_auth = self.path_requires_auth(path);
+
+        let auth_header = if requires_auth && self.node_name.is_some() {
+            if let Ok(Some(tokens)) = self
+                .client_storage
+                .load_tokens(&self.node_name.as_ref().unwrap())
+                .await
+            {
+                Some(format!("Bearer {}", tokens.access_token))
+            } else {
+                match self.authenticator.authenticate(&self.api_url).await {
+                    Ok(new_tokens) => {
+                        self.client_storage
+                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
+                            .await?;
+                        Some(format!("Bearer {}", new_tokens.access_token))
+                    }
+                    Err(auth_err) => {
+                        bail!("Authentication failed: {}", auth_err);
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        let response = self
+            .execute_request_with_auth_retry(|| {
+                let mut builder = self.client.get(url.clone());
+
+                if let Some(ref auth_header) = auth_header {
+                    builder = builder.header("Authorization", auth_header);
+                }
+
+                builder.send()
+            })
+            .await?;
+
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(Into::into)
+    }
+
     pub async fn head(&self, path: &str) -> Result<reqwest::header::HeaderMap> {
         let mut url = self.api_url.clone();
         url.set_path(path);
