@@ -146,9 +146,9 @@ impl<S: StorageAdaptor> Interface<S> {
                     )?;
                 }
 
+                // Pre-compute hash for adding to parent index (creates index if needed)
                 if let Some(parent) = parent {
                     let own_hash = Sha256::digest(&data).into();
-
                     <Index<S>>::add_child_to(
                         parent.id(),
                         "no collection, remove this nonsense",
@@ -156,9 +156,32 @@ impl<S: StorageAdaptor> Interface<S> {
                     )?;
                 }
 
-                if Self::save_internal(id, &data, metadata)?.is_none() {
+                // Save data (might merge, producing different hash)
+                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata)? else {
                     // we didn't save anything, so we skip updating the ancestors
                     return Ok(());
+                };
+
+                // If data was merged, update parent's children list with correct hash
+                if let Some(parent) = parent {
+                    let (_, own_hash) =
+                        <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
+
+                    // Only update if hash changed due to merging
+                    let parent_children = <Index<S>>::get_children_of(
+                        parent.id(),
+                        "no collection, remove this nonsense",
+                    )?;
+                    if let Some(child_info) = parent_children.iter().find(|c| c.id() == id) {
+                        if child_info.merkle_hash() != own_hash {
+                            // Hash changed due to merge - update parent
+                            <Index<S>>::add_child_to(
+                                parent.id(),
+                                "no collection, remove this nonsense",
+                                ChildInfo::new(id, own_hash, metadata),
+                            )?;
+                        }
+                    }
                 }
 
                 crate::delta::push_action(Action::Compare { id });

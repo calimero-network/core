@@ -55,7 +55,6 @@ impl VMLogic<'_> {
             ) -> u32;
 
             fn random_bytes(ptr: u64);
-            fn __getrandom_custom(dest_ptr: u32, len: u32) -> i32;
             fn time_now(ptr: u64);
 
             fn send_proposal(actions_ptr: u64, id_ptr: u64);

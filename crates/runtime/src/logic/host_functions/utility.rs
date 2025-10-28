@@ -104,34 +104,6 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    /// Custom getrandom implementation for guest WASM modules.
-    ///
-    /// This function is called by the getrandom crate when the "custom" feature is enabled.
-    /// It provides the same functionality as random_bytes but with the signature that
-    /// getrandom expects: (ptr: i32, len: i32) -> i32
-    ///
-    /// # Arguments
-    ///
-    /// * `dest_ptr` - Pointer to destination buffer in guest memory (WASM32 uses 32-bit pointers)
-    /// * `len` - Length of the buffer to fill
-    ///
-    /// # Returns
-    ///
-    /// * Returns `0` on success
-    /// * Returns `1` on failure
-    pub fn __getrandom_custom(&mut self, dest_ptr: u32, len: u32) -> VMLogicResult<i32> {
-        // Generate random bytes
-        let mut random_data = vec![0u8; len as usize];
-        rand::thread_rng().fill_bytes(&mut random_data);
-
-        // Write to guest memory
-        self.borrow_memory()
-            .write(dest_ptr as u64, &random_data)
-            .map_err(|_| HostError::InvalidMemoryAccess)?;
-
-        Ok(0) // Success
-    }
-
     /// Gets the current Unix timestamp in nanoseconds.
     ///
     /// This function obtains the current time as a nanosecond timestamp, as
