@@ -104,8 +104,8 @@ async fn test_dag_applies_deltas_to_storage_in_order() {
     };
 
     // Apply deltas in order
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], vec![action1]);
-    let delta2 = CausalDelta::new([2; 32], vec![[1; 32]], vec![action2]);
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![action1]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![action2]);
 
     let applied1 = dag.add_delta(delta1, &applier).await.unwrap();
     let applied2 = dag.add_delta(delta2, &applier).await.unwrap();
@@ -162,8 +162,8 @@ async fn test_dag_handles_out_of_order_and_applies_to_storage() {
         metadata: Metadata::default(),
     };
 
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], vec![action1]);
-    let delta2 = CausalDelta::new([2; 32], vec![[1; 32]], vec![action2]);
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![action1]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![action2]);
 
     // Receive OUT OF ORDER - critical test!
     let applied2 = dag.add_delta(delta2.clone(), &applier).await.unwrap();
@@ -239,8 +239,8 @@ async fn test_dag_concurrent_updates_both_applied_to_storage() {
     };
 
     // Concurrent updates from genesis - both valid!
-    let delta_a = CausalDelta::new([10; 32], vec![[0; 32]], vec![action_a]);
-    let delta_b = CausalDelta::new([20; 32], vec![[0; 32]], vec![action_b]);
+    let delta_a = CausalDelta::new_test([10; 32], vec![[0; 32]], vec![action_a]);
+    let delta_b = CausalDelta::new_test([20; 32], vec![[0; 32]], vec![action_b]);
 
     dag.add_delta(delta_a, &applier).await.unwrap();
     dag.add_delta(delta_b, &applier).await.unwrap();
@@ -264,7 +264,7 @@ async fn test_dag_concurrent_updates_both_applied_to_storage() {
     assert_eq!(stored_b, b"concurrent update B", "Storage has update B");
 
     // Create merge delta
-    let delta_merge = CausalDelta::new(
+    let delta_merge = CausalDelta::new_test(
         [30; 32],
         vec![[10; 32], [20; 32]], // merge both branches
         vec![],                   // no actions needed
@@ -306,7 +306,7 @@ async fn test_dag_storage_error_handling() {
         metadata: Metadata::default(),
     };
 
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], vec![action1]);
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![action1]);
 
     // Enable failure
     applier.set_should_fail(true).await;
@@ -347,8 +347,8 @@ async fn test_dag_storage_lww_through_deltas() {
         metadata: Metadata::default(),
     };
 
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], vec![action1]);
-    let delta2 = CausalDelta::new([2; 32], vec![[0; 32]], vec![action2]);
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![action1]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[0; 32]], vec![action2]);
 
     // Apply both
     dag.add_delta(delta1, &applier).await.unwrap();
@@ -375,7 +375,7 @@ async fn test_dag_storage_delete_via_delta() {
         metadata: Metadata::default(),
     };
 
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], vec![add_action]);
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![add_action]);
     dag.add_delta(delta1, &applier).await.unwrap();
 
     // Verify exists
@@ -387,7 +387,7 @@ async fn test_dag_storage_delete_via_delta() {
         deleted_at: time_now(),
     };
 
-    let delta2 = CausalDelta::new([2; 32], vec![[1; 32]], vec![delete_action]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![delete_action]);
     dag.add_delta(delta2, &applier).await.unwrap();
 
     // Should be deleted (tombstone check via is_deleted)
@@ -429,7 +429,7 @@ async fn test_dag_storage_multiple_actions_per_delta() {
         },
     ];
 
-    let delta = CausalDelta::new([1; 32], vec![[0; 32]], actions.clone());
+    let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], actions.clone());
     dag.add_delta(delta, &applier).await.unwrap();
 
     // All actions should be applied
@@ -464,7 +464,7 @@ async fn test_dag_storage_deep_chain_out_of_order() {
                 metadata: Metadata::default(),
             };
 
-            CausalDelta::new([i as u8; 32], vec![[(i - 1) as u8; 32]], vec![action])
+            CausalDelta::new_test([i as u8; 32], vec![[(i - 1) as u8; 32]], vec![action])
         })
         .collect();
 
@@ -502,7 +502,7 @@ async fn test_dag_storage_concurrent_branches_merge() {
     Index::<MainStorage>::add_root(ChildInfo::new(id_b, [22; 32], Metadata::default())).unwrap();
 
     // Branch A: root -> delta_a -> delta_a2
-    let delta_a = CausalDelta::new(
+    let delta_a = CausalDelta::new_test(
         [1; 32],
         vec![[0; 32]],
         vec![Action::Update {
@@ -513,7 +513,7 @@ async fn test_dag_storage_concurrent_branches_merge() {
         }],
     );
 
-    let delta_a2 = CausalDelta::new(
+    let delta_a2 = CausalDelta::new_test(
         [2; 32],
         vec![[1; 32]],
         vec![Action::Update {
@@ -525,7 +525,7 @@ async fn test_dag_storage_concurrent_branches_merge() {
     );
 
     // Branch B: root -> delta_b
-    let delta_b = CausalDelta::new(
+    let delta_b = CausalDelta::new_test(
         [3; 32],
         vec![[0; 32]],
         vec![Action::Update {
@@ -547,7 +547,7 @@ async fn test_dag_storage_concurrent_branches_merge() {
     assert_eq!(heads.len(), 2);
 
     // Merge both branches
-    let merge = CausalDelta::new(
+    let merge = CausalDelta::new_test(
         [99; 32],
         vec![[2; 32], [3; 32]],
         vec![], // No new actions in merge
@@ -580,7 +580,7 @@ async fn test_dag_storage_stress_many_deltas() {
             metadata: Metadata::default(),
         };
 
-        let delta = CausalDelta::new([i as u8; 32], vec![[(i - 1) as u8; 32]], vec![action]);
+        let delta = CausalDelta::new_test([i as u8; 32], vec![[(i - 1) as u8; 32]], vec![action]);
 
         dag.add_delta(delta, &applier).await.unwrap();
     }
@@ -613,14 +613,14 @@ async fn test_dag_heads_tracked_after_linear_deltas() {
     assert_eq!(dag.get_heads(), vec![[0; 32]]);
 
     // Apply delta 1 (empty payload for simplicity)
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], vec![]);
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
     dag.add_delta(delta1, &applier).await.unwrap();
 
     // Head should update to delta 1
     assert_eq!(dag.get_heads(), vec![[1; 32]]);
 
     // Apply delta 2
-    let delta2 = CausalDelta::new([2; 32], vec![[1; 32]], vec![]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![]);
     dag.add_delta(delta2, &applier).await.unwrap();
 
     // Head should update to delta 2
@@ -636,8 +636,8 @@ async fn test_dag_heads_multiple_concurrent_branches() {
     let mut dag = DagStore::new([0; 32]);
 
     // Create two concurrent deltas
-    let delta_a = CausalDelta::new([10; 32], vec![[0; 32]], vec![]);
-    let delta_b = CausalDelta::new([20; 32], vec![[0; 32]], vec![]);
+    let delta_a = CausalDelta::new_test([10; 32], vec![[0; 32]], vec![]);
+    let delta_b = CausalDelta::new_test([20; 32], vec![[0; 32]], vec![]);
 
     dag.add_delta(delta_a, &applier).await.unwrap();
     dag.add_delta(delta_b, &applier).await.unwrap();
@@ -657,8 +657,8 @@ async fn test_dag_heads_merge_reduces_to_single_head() {
     let mut dag = DagStore::new([0; 32]);
 
     // Create concurrent branches
-    let delta_a = CausalDelta::new([1; 32], vec![[0; 32]], vec![]);
-    let delta_b = CausalDelta::new([2; 32], vec![[0; 32]], vec![]);
+    let delta_a = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
+    let delta_b = CausalDelta::new_test([2; 32], vec![[0; 32]], vec![]);
 
     dag.add_delta(delta_a, &applier).await.unwrap();
     dag.add_delta(delta_b, &applier).await.unwrap();
@@ -666,7 +666,7 @@ async fn test_dag_heads_merge_reduces_to_single_head() {
     assert_eq!(dag.get_heads().len(), 2);
 
     // Merge both branches
-    let merge = CausalDelta::new([99; 32], vec![[1; 32], [2; 32]], vec![]);
+    let merge = CausalDelta::new_test([99; 32], vec![[1; 32], [2; 32]], vec![]);
     dag.add_delta(merge, &applier).await.unwrap();
 
     // Should have single head now

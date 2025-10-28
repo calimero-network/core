@@ -56,7 +56,7 @@ impl PersistedDagState {
 
 #[test]
 fn test_dag_state_serialization() {
-    let delta1 = CausalDelta::new(
+    let delta1 = CausalDelta::new_test(
         [1; 32],
         vec![[0; 32]],
         vec![Action::Add {
@@ -89,7 +89,7 @@ fn test_dag_state_serialization() {
 
 #[test]
 fn test_dag_state_with_pending_deltas() {
-    let delta1 = CausalDelta::new(
+    let delta1 = CausalDelta::new_test(
         [2; 32],
         vec![[1; 32]], // Missing parent
         vec![],
@@ -140,7 +140,7 @@ fn test_dag_restore_preserves_heads() {
 #[test]
 fn test_dag_restore_preserves_pending() {
     // State with pending deltas
-    let pending_delta = CausalDelta::new(
+    let pending_delta = CausalDelta::new_test(
         [5; 32],
         vec![[4; 32]], // Missing parent
         vec![],
@@ -186,7 +186,7 @@ fn test_dag_restore_large_state() {
             bytes
         };
 
-        deltas.push(CausalDelta::new(id, vec![parent_id], vec![]));
+        deltas.push(CausalDelta::new_test(id, vec![parent_id], vec![]));
 
         if i <= 80 {
             applied_ids.push(id);
@@ -230,9 +230,9 @@ fn test_dag_restore_large_state() {
 #[test]
 fn test_recovery_scenario_mid_sync() {
     // Scenario: Node was syncing, had pending deltas, then crashed
-    let pending1 = CausalDelta::new([10; 32], vec![[9; 32]], vec![]);
-    let pending2 = CausalDelta::new([11; 32], vec![[10; 32]], vec![]);
-    let pending3 = CausalDelta::new([12; 32], vec![[11; 32]], vec![]);
+    let pending1 = CausalDelta::new_test([10; 32], vec![[9; 32]], vec![]);
+    let pending2 = CausalDelta::new_test([11; 32], vec![[10; 32]], vec![]);
+    let pending3 = CausalDelta::new_test([12; 32], vec![[11; 32]], vec![]);
 
     let state = PersistedDagState::from_stats(
         vec![[5; 32]], // Last applied
@@ -257,9 +257,9 @@ fn test_recovery_scenario_concurrent_branches() {
     let heads = vec![[10; 32], [20; 32], [30; 32]];
 
     let deltas = vec![
-        CausalDelta::new([10; 32], vec![[0; 32]], vec![]),
-        CausalDelta::new([20; 32], vec![[0; 32]], vec![]),
-        CausalDelta::new([30; 32], vec![[0; 32]], vec![]),
+        CausalDelta::new_test([10; 32], vec![[0; 32]], vec![]),
+        CausalDelta::new_test([20; 32], vec![[0; 32]], vec![]),
+        CausalDelta::new_test([30; 32], vec![[0; 32]], vec![]),
     ];
 
     let state = PersistedDagState::from_stats(

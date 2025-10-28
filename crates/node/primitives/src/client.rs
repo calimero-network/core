@@ -95,6 +95,7 @@ impl NodeClient {
         artifact: Vec<u8>,
         delta_id: [u8; 32],
         parent_ids: Vec<[u8; 32]>,
+        hlc: calimero_storage::logical_clock::HybridTimestamp,
         events: Option<Vec<u8>>,
     ) -> eyre::Result<()> {
         info!(
@@ -122,6 +123,7 @@ impl NodeClient {
             author_id: *sender,
             delta_id,
             parent_ids,
+            hlc,
             root_hash: context.root_hash,
             artifact: encrypted.into(),
             nonce,

@@ -124,12 +124,14 @@ async fn test_missing_delta_catch_up_single_parent() {
         id: [1; 32],
         parents: vec![[0; 32]],
         payload: vec![], // Empty payload - simpler test
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     let delta2 = CausalDelta {
         id: [2; 32],
         parents: vec![[1; 32]],
         payload: vec![], // Empty payload - simpler test
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     // Node A receives both
@@ -175,18 +177,21 @@ async fn test_missing_delta_catch_up_multiple_parents() {
         id: [1; 32],
         parents: vec![[0; 32]],
         payload: vec![],
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     let delta2 = CausalDelta {
         id: [2; 32],
         parents: vec![[0; 32]],
         payload: vec![],
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     let delta3_merge = CausalDelta {
         id: [3; 32],
         parents: vec![[1; 32], [2; 32]], // Merge!
         payload: vec![],
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     // Node A has all deltas
@@ -232,6 +237,7 @@ async fn test_deep_chain_catch_up() {
             id,
             parents: vec![prev_id],
             payload: vec![],
+            hlc: calimero_storage::env::hlc_timestamp(),
         };
 
         deltas.push(delta.clone());
@@ -287,6 +293,7 @@ async fn test_snapshot_transfer_fresh_node() {
             id: [i; 32], // Use [i; 32] for simpler IDs
             parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
             payload: vec![], // Empty payload to avoid entity index issues
+            hlc: calimero_storage::env::hlc_timestamp(),
         };
 
         node_a.add_delta(delta).await.unwrap();
@@ -426,6 +433,7 @@ async fn test_hash_heartbeat_detects_silent_divergence() {
         id: [1; 32],
         parents: vec![[0; 32]],
         payload: vec![],
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     node_a.add_delta(delta1.clone()).await.unwrap();
@@ -478,6 +486,7 @@ async fn test_heartbeat_with_same_state_no_divergence() {
             id,
             parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
             payload: vec![],
+            hlc: calimero_storage::env::hlc_timestamp(),
         };
 
         node_a.add_delta(delta.clone()).await.unwrap();
@@ -556,12 +565,14 @@ async fn test_recovery_via_full_resync() {
         id: [10; 32],
         parents: vec![[0; 32]],
         payload: vec![], // Empty payload
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     let delta_b = CausalDelta {
         id: [20; 32],
         parents: vec![[0; 32]],
         payload: vec![], // Empty payload
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     node_a.add_delta(delta_a).await.unwrap();
@@ -603,6 +614,7 @@ async fn test_recovery_via_delta_replay() {
             id,
             parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
             payload: vec![],
+            hlc: calimero_storage::env::hlc_timestamp(),
         };
 
         deltas.push(delta.clone());

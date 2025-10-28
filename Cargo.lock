@@ -2158,6 +2158,7 @@ dependencies = [
  "calimero-crypto",
  "calimero-network-primitives",
  "calimero-primitives",
+ "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
  "camino",

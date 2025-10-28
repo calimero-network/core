@@ -40,6 +40,7 @@ pub async fn handle_state_delta(
     author_id: PublicKey,
     delta_id: [u8; 32],
     parent_ids: Vec<[u8; 32]>,
+    hlc: calimero_storage::logical_clock::HybridTimestamp,
     root_hash: Hash,
     artifact: Vec<u8>,
     nonce: Nonce,
@@ -89,6 +90,7 @@ pub async fn handle_state_delta(
         id: delta_id,
         parents: parent_ids,
         payload: actions, // Note: renamed from 'actions' to 'payload'
+        hlc,
     };
 
     // Get our identity for applying deltas
@@ -405,6 +407,7 @@ async fn request_missing_deltas(
                     id: storage_delta.id,
                     parents: storage_delta.parents,
                     payload: storage_delta.actions,
+                    hlc: storage_delta.hlc,
                 };
 
                 if let Err(e) = delta_store.add_delta(dag_delta).await {

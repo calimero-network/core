@@ -83,11 +83,11 @@ async fn test_dag_linear_sequence() {
     let mut dag = DagStore::new([0; 32]);
 
     // Create linear chain: root -> delta1 -> delta2 -> delta3
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
-    let delta2 = CausalDelta::new([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
 
-    let delta3 = CausalDelta::new([3; 32], vec![[2; 32]], TestPayload { value: 3 });
+    let delta3 = CausalDelta::new_test([3; 32], vec![[2; 32]], TestPayload { value: 3 });
 
     // Apply in order
     let applied1 = dag.add_delta(delta1, &applier).await.unwrap();
@@ -118,7 +118,7 @@ async fn test_dag_duplicate_delta() {
     let applier = TestApplier::new();
     let mut dag = DagStore::new([0; 32]);
 
-    let delta = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
     // Add delta first time
     let result1 = dag.add_delta(delta.clone(), &applier).await.unwrap();
@@ -143,9 +143,9 @@ async fn test_dag_out_of_order() {
     let applier = TestApplier::new();
     let mut dag = DagStore::new([0; 32]);
 
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
-    let delta2 = CausalDelta::new([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
 
     // Receive delta2 first (out of order)
     let applied2_first = dag.add_delta(delta2.clone(), &applier).await.unwrap();
@@ -179,9 +179,9 @@ async fn test_dag_multiple_pending_sequential() {
     let mut dag = DagStore::new([0; 32]);
 
     // Create chain: root -> d1 -> d2 -> d3
-    let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
-    let delta2 = CausalDelta::new([2; 32], vec![[1; 32]], TestPayload { value: 2 });
-    let delta3 = CausalDelta::new([3; 32], vec![[2; 32]], TestPayload { value: 3 });
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    let delta3 = CausalDelta::new_test([3; 32], vec![[2; 32]], TestPayload { value: 3 });
 
     // Receive completely out of order: d3, d2, then d1
     dag.add_delta(delta3.clone(), &applier).await.unwrap();
@@ -208,7 +208,7 @@ async fn test_dag_deep_pending_chain() {
 
     // Create a long chain
     let deltas: Vec<_> = (1..=10)
-        .map(|i| CausalDelta::new([i; 32], vec![[i - 1; 32]], TestPayload { value: i as u32 }))
+        .map(|i| CausalDelta::new_test([i; 32], vec![[i - 1; 32]], TestPayload { value: i as u32 }))
         .collect();
 
     // Add them in reverse order (10, 9, 8, ..., 1)
@@ -237,9 +237,9 @@ async fn test_dag_concurrent_updates() {
     let mut dag = DagStore::new([0; 32]);
 
     // Two nodes create concurrent deltas from same parent
-    let delta_a = CausalDelta::new([10; 32], vec![[0; 32]], TestPayload { value: 10 });
+    let delta_a = CausalDelta::new_test([10; 32], vec![[0; 32]], TestPayload { value: 10 });
 
-    let delta_b = CausalDelta::new([20; 32], vec![[0; 32]], TestPayload { value: 20 });
+    let delta_b = CausalDelta::new_test([20; 32], vec![[0; 32]], TestPayload { value: 20 });
 
     dag.add_delta(delta_a, &applier).await.unwrap();
     dag.add_delta(delta_b, &applier).await.unwrap();
@@ -261,8 +261,8 @@ async fn test_dag_merge_concurrent_branches() {
     let mut dag = DagStore::new([0; 32]);
 
     // Concurrent branches
-    let delta_a = CausalDelta::new([10; 32], vec![[0; 32]], TestPayload { value: 10 });
-    let delta_b = CausalDelta::new([20; 32], vec![[0; 32]], TestPayload { value: 20 });
+    let delta_a = CausalDelta::new_test([10; 32], vec![[0; 32]], TestPayload { value: 10 });
+    let delta_b = CausalDelta::new_test([20; 32], vec![[0; 32]], TestPayload { value: 20 });
 
     dag.add_delta(delta_a, &applier).await.unwrap();
     dag.add_delta(delta_b, &applier).await.unwrap();
@@ -271,7 +271,7 @@ async fn test_dag_merge_concurrent_branches() {
     assert_eq!(dag.get_heads().len(), 2);
 
     // Merge delta
-    let delta_merge = CausalDelta::new(
+    let delta_merge = CausalDelta::new_test(
         [30; 32],
         vec![[10; 32], [20; 32]],
         TestPayload { value: 30 },
@@ -296,9 +296,9 @@ async fn test_dag_three_way_merge() {
     let mut dag = DagStore::new([0; 32]);
 
     // Three concurrent branches
-    let delta_a = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
-    let delta_b = CausalDelta::new([2; 32], vec![[0; 32]], TestPayload { value: 2 });
-    let delta_c = CausalDelta::new([3; 32], vec![[0; 32]], TestPayload { value: 3 });
+    let delta_a = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta_b = CausalDelta::new_test([2; 32], vec![[0; 32]], TestPayload { value: 2 });
+    let delta_c = CausalDelta::new_test([3; 32], vec![[0; 32]], TestPayload { value: 3 });
 
     dag.add_delta(delta_a, &applier).await.unwrap();
     dag.add_delta(delta_b, &applier).await.unwrap();
@@ -310,7 +310,7 @@ async fn test_dag_three_way_merge() {
     assert_eq!(heads.len(), 3);
 
     // Three-way merge
-    let merge = CausalDelta::new(
+    let merge = CausalDelta::new_test(
         [99; 32],
         vec![[1; 32], [2; 32], [3; 32]],
         TestPayload { value: 99 },
@@ -336,11 +336,11 @@ async fn test_dag_complex_topology() {
     //      \ /
     //       5
 
-    let d1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
-    let d2 = CausalDelta::new([2; 32], vec![[0; 32]], TestPayload { value: 2 });
-    let d3 = CausalDelta::new([3; 32], vec![[1; 32]], TestPayload { value: 3 });
-    let d4 = CausalDelta::new([4; 32], vec![[2; 32]], TestPayload { value: 4 });
-    let d5 = CausalDelta::new([5; 32], vec![[3; 32], [4; 32]], TestPayload { value: 5 });
+    let d1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let d2 = CausalDelta::new_test([2; 32], vec![[0; 32]], TestPayload { value: 2 });
+    let d3 = CausalDelta::new_test([3; 32], vec![[1; 32]], TestPayload { value: 3 });
+    let d4 = CausalDelta::new_test([4; 32], vec![[2; 32]], TestPayload { value: 4 });
+    let d5 = CausalDelta::new_test([5; 32], vec![[3; 32], [4; 32]], TestPayload { value: 5 });
 
     dag.add_delta(d1, &applier).await.unwrap();
     dag.add_delta(d2, &applier).await.unwrap();
@@ -361,7 +361,7 @@ async fn test_dag_apply_failure() {
     let applier = TestApplier::with_failure();
     let mut dag = DagStore::new([0; 32]);
 
-    let delta = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
     // Should fail due to applier
     let result = dag.add_delta(delta, &applier).await;
@@ -380,7 +380,7 @@ async fn test_dag_apply_failure_recovery() {
 
     let mut dag = DagStore::new([0; 32]);
 
-    let delta = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
     // First attempt fails
     let result = dag.add_delta(delta.clone(), &applier).await;
@@ -403,7 +403,7 @@ async fn test_dag_pending_stats() {
     let mut dag = DagStore::new([0; 32]);
 
     // Add pending delta
-    let delta = CausalDelta::new(
+    let delta = CausalDelta::new_test(
         [99; 32],
         vec![[88; 32]], // missing parent
         TestPayload { value: 99 },
@@ -424,7 +424,7 @@ async fn test_dag_cleanup_stale() {
     let mut dag = DagStore::new([0; 32]);
 
     // Add pending delta
-    let delta = CausalDelta::new([99; 32], vec![[88; 32]], TestPayload { value: 99 });
+    let delta = CausalDelta::new_test([99; 32], vec![[88; 32]], TestPayload { value: 99 });
 
     dag.add_delta(delta, &applier).await.unwrap();
     assert_eq!(dag.pending_stats().count, 1);
@@ -443,7 +443,7 @@ async fn test_dag_cleanup_stale_keeps_recent() {
     let applier = TestApplier::new();
     let mut dag = DagStore::new([0; 32]);
 
-    let delta = CausalDelta::new([99; 32], vec![[88; 32]], TestPayload { value: 99 });
+    let delta = CausalDelta::new_test([99; 32], vec![[88; 32]], TestPayload { value: 99 });
 
     dag.add_delta(delta, &applier).await.unwrap();
 
@@ -459,14 +459,14 @@ async fn test_dag_get_missing_parents() {
     let mut dag = DagStore::new([0; 32]);
 
     // Add delta with missing parent
-    let delta1 = CausalDelta::new(
+    let delta1 = CausalDelta::new_test(
         [2; 32],
         vec![[1; 32]], // missing
         TestPayload { value: 2 },
     );
 
     // Add delta with multiple missing parents
-    let delta2 = CausalDelta::new(
+    let delta2 = CausalDelta::new_test(
         [4; 32],
         vec![[3; 32], [1; 32]], // both missing, [1; 32] already tracked
         TestPayload { value: 4 },
@@ -490,7 +490,7 @@ async fn test_dag_has_delta() {
     let applier = TestApplier::new();
     let mut dag = DagStore::new([0; 32]);
 
-    let delta = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
     assert!(!dag.has_delta(&[1; 32]));
 
@@ -505,7 +505,7 @@ async fn test_dag_get_delta() {
     let applier = TestApplier::new();
     let mut dag = DagStore::new([0; 32]);
 
-    let delta = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
     assert!(dag.get_delta(&[1; 32]).is_none());
 
@@ -522,9 +522,9 @@ async fn test_dag_get_deltas_since() {
     let mut dag = DagStore::new([0; 32]);
 
     // Linear chain
-    let d1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
-    let d2 = CausalDelta::new([2; 32], vec![[1; 32]], TestPayload { value: 2 });
-    let d3 = CausalDelta::new([3; 32], vec![[2; 32]], TestPayload { value: 3 });
+    let d1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let d2 = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    let d3 = CausalDelta::new_test([3; 32], vec![[2; 32]], TestPayload { value: 3 });
 
     dag.add_delta(d1.clone(), &applier).await.unwrap();
     dag.add_delta(d2.clone(), &applier).await.unwrap();
@@ -555,9 +555,9 @@ async fn test_dag_get_deltas_since_branched() {
     //    |
     //    3
 
-    let d1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
-    let d2 = CausalDelta::new([2; 32], vec![[0; 32]], TestPayload { value: 2 });
-    let d3 = CausalDelta::new([3; 32], vec![[1; 32]], TestPayload { value: 3 });
+    let d1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let d2 = CausalDelta::new_test([2; 32], vec![[0; 32]], TestPayload { value: 2 });
+    let d3 = CausalDelta::new_test([3; 32], vec![[1; 32]], TestPayload { value: 3 });
 
     dag.add_delta(d1, &applier).await.unwrap();
     dag.add_delta(d2, &applier).await.unwrap();
@@ -584,7 +584,7 @@ async fn test_dag_many_concurrent_branches() {
 
     // Create 100 concurrent branches from root
     for i in 1..=100 {
-        let delta = CausalDelta::new([i; 32], vec![[0; 32]], TestPayload { value: i as u32 });
+        let delta = CausalDelta::new_test([i; 32], vec![[0; 32]], TestPayload { value: i as u32 });
         dag.add_delta(delta, &applier).await.unwrap();
     }
 
@@ -593,7 +593,7 @@ async fn test_dag_many_concurrent_branches() {
 
     // Merge all with single delta
     let parents: Vec<_> = (1..=100).map(|i| [i; 32]).collect();
-    let merge = CausalDelta::new([200; 32], parents, TestPayload { value: 200 });
+    let merge = CausalDelta::new_test([200; 32], parents, TestPayload { value: 200 });
 
     dag.add_delta(merge, &applier).await.unwrap();
 
@@ -609,7 +609,7 @@ async fn test_dag_long_chain() {
 
     // Create chain of 100 deltas (reduced from 1000 to fit in u8)
     for i in 1..=100 {
-        let delta = CausalDelta::new(
+        let delta = CausalDelta::new_test(
             [i as u8; 32],
             vec![[(i - 1) as u8; 32]],
             TestPayload { value: i as u32 },
@@ -630,7 +630,7 @@ async fn test_dag_stress_out_of_order() {
     // Create 100-delta chain
     let mut deltas = Vec::new();
     for i in 1..=100 {
-        deltas.push(CausalDelta::new(
+        deltas.push(CausalDelta::new_test(
             [i; 32],
             vec![[i - 1; 32]],
             TestPayload { value: i as u32 },
@@ -676,7 +676,7 @@ async fn test_extreme_pending_chain_500_deltas() {
             bytes
         };
 
-        deltas.push(CausalDelta::new(
+        deltas.push(CausalDelta::new_test(
             id,
             vec![parent_id],
             TestPayload { value: i as u32 },
@@ -707,7 +707,7 @@ async fn test_extreme_concurrent_branches_200() {
             bytes
         };
 
-        let delta = CausalDelta::new(id, vec![[0; 32]], TestPayload { value: i as u32 });
+        let delta = CausalDelta::new_test(id, vec![[0; 32]], TestPayload { value: i as u32 });
         dag.add_delta(delta, &applier).await.unwrap();
     }
 
@@ -727,7 +727,7 @@ async fn test_extreme_concurrent_branches_200() {
         })
         .collect();
 
-    let merge = CausalDelta::new([255; 32], parents, TestPayload { value: 999 });
+    let merge = CausalDelta::new_test([255; 32], parents, TestPayload { value: 999 });
 
     dag.add_delta(merge, &applier).await.unwrap();
 
@@ -757,7 +757,7 @@ async fn test_extreme_random_order_1000_deltas() {
             bytes
         };
 
-        deltas.push(CausalDelta::new(
+        deltas.push(CausalDelta::new_test(
             id,
             vec![parent_id],
             TestPayload { value: i as u32 },
@@ -811,7 +811,7 @@ async fn test_extreme_mixed_topology_500_deltas() {
                 bytes
             };
 
-            all_deltas.push(CausalDelta::new(
+            all_deltas.push(CausalDelta::new_test(
                 id,
                 vec![parent_id],
                 TestPayload {
@@ -845,7 +845,7 @@ async fn test_extreme_late_parent_arrival() {
             bytes
         };
 
-        let delta = CausalDelta::new(
+        let delta = CausalDelta::new_test(
             id,
             vec![[99; 32]], // All depend on same missing parent
             TestPayload { value: i as u32 },
@@ -858,7 +858,7 @@ async fn test_extreme_late_parent_arrival() {
     assert_eq!(dag.get_missing_parents(), vec![[99; 32]]);
 
     // Parent finally arrives
-    let parent = CausalDelta::new([99; 32], vec![[0; 32]], TestPayload { value: 99 });
+    let parent = CausalDelta::new_test([99; 32], vec![[0; 32]], TestPayload { value: 99 });
 
     dag.add_delta(parent, &applier).await.unwrap();
 

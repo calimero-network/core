@@ -422,6 +422,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     outcome.artifact.clone(),
                                     the_delta.id,
                                     the_delta.parents.clone(),
+                                    the_delta.hlc,
                                     events_data,
                                 )
                                 .await?;

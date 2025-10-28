@@ -55,7 +55,9 @@ use core::num::NonZeroU128;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 /// NTP64 timestamp (64-bit: 32-bit seconds + 32-bit fraction).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct NTP64(pub u64);
 
 impl NTP64 {
@@ -67,7 +69,9 @@ impl NTP64 {
 }
 
 /// Unique identifier for an HLC instance (prevents timestamp collisions).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ID(NonZeroU128);
 
 impl From<NonZeroU128> for ID {
@@ -83,7 +87,9 @@ impl From<ID> for u128 {
 }
 
 /// HLC Timestamp = (time, id)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Timestamp {
     time: NTP64,
     id: ID,
@@ -122,7 +128,9 @@ const DEFAULT_ID: NonZeroU128 = match NonZeroU128::new(1) {
 };
 
 /// Borsh-serializable wrapper around Timestamp.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct HybridTimestamp(Timestamp);
 
 impl HybridTimestamp {
