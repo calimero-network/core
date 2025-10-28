@@ -7,7 +7,12 @@ use crate::cli::Environment;
 #[derive(Clone, Debug, Parser, Copy)]
 #[command(about = "Get information about a blob")]
 pub struct InfoCommand {
-    #[arg(value_name = "BLOB_ID", help = "ID of the blob to get info for")]
+    #[arg(
+        short = 'b',
+        long = "blob-id",
+        value_name = "BLOB_ID",
+        help = "ID of the blob to get info for"
+    )]
     pub blob_id: BlobId,
 }
 
