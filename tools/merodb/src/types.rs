@@ -22,7 +22,7 @@
 use borsh::BorshDeserialize;
 use calimero_store::types::{
     ApplicationMeta as StoreApplicationMeta, BlobMeta as StoreBlobMeta,
-    ContextConfig as StoreContextConfig, ContextDelta as StoreContextDelta,
+    ContextConfig as StoreContextConfig, ContextDagDelta as StoreContextDagDelta,
     ContextIdentity as StoreContextIdentity, ContextMeta as StoreContextMeta,
 };
 use eyre::Result;
@@ -110,7 +110,7 @@ impl Column {
             Self::Config => "ContextConfig { protocol, network, contract, proxy_contract, application_revision, members_revision }",
             Self::Identity => "ContextIdentity { private_key: Option<[u8; 32]>, sender_key: Option<[u8; 32]> }",
             Self::State => "Raw bytes (application-specific state)",
-            Self::Delta => "ContextDelta::Head(NonZeroUsize) | ContextDelta::Data(Cow<[u8]>)",
+            Self::Delta => "ContextDagDelta { delta_id, parents, actions, timestamp, applied }",
             Self::Blobs => "BlobMeta { size: u64, hash: [u8; 32], links: Box<[BlobId]> }",
             Self::Application => "ApplicationMeta { bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId }",
             Self::Alias => "AliasTarget (ContextId, PublicKey, or ApplicationId)",
@@ -280,20 +280,16 @@ fn parse_context_identity(data: &[u8]) -> Result<Value> {
 }
 
 fn parse_context_delta(data: &[u8]) -> Result<Value> {
-    match StoreContextDelta::try_from_slice(data) {
-        Ok(delta) => match delta {
-            StoreContextDelta::Head(size) => Ok(json!({
-                "type": "head",
-                "size": size.get()
-            })),
-            StoreContextDelta::Data(bytes) => Ok(json!({
-                "type": "data",
-                "hex": hex::encode(bytes.as_ref()),
-                "size": bytes.len()
-            })),
-        },
+    match StoreContextDagDelta::try_from_slice(data) {
+        Ok(delta) => Ok(json!({
+            "delta_id": hex::encode(delta.delta_id),
+            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+            "actions_size": delta.actions.len(),
+            "timestamp": delta.timestamp,
+            "applied": delta.applied
+        })),
         Err(e) => Ok(json!({
-            "error": format!("Failed to parse ContextDelta: {e}"),
+            "error": format!("Failed to parse ContextDagDelta: {e}"),
             "hex": hex::encode(data)
         })),
     }

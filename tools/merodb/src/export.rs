@@ -1,3 +1,5 @@
+use borsh::BorshDeserialize;
+use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::Manifest;
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
@@ -91,34 +93,35 @@ fn parse_value_with_abi(
                 parse_value(column, value)
             },
             |manifest| {
-                // Delta can contain state data, but we need to handle the Delta enum first
-                use borsh::BorshDeserialize;
-                use calimero_store::types::ContextDelta as StoreContextDelta;
-
-                StoreContextDelta::try_from_slice(value).map_or_else(
+                // Parse the DAG delta and try to deserialize its actions with ABI
+                StoreContextDagDelta::try_from_slice(value).map_or_else(
                     |_| parse_value(column, value),
-                    |delta| match delta {
-                        StoreContextDelta::Head(size) => Ok(json!({
-                            "type": "head",
-                            "size": size.get()
-                        })),
-                        StoreContextDelta::Data(bytes) => {
-                            // Try to deserialize the delta data with ABI
-                            match deserializer::deserialize_root_state(&bytes, manifest) {
-                                Ok(deserialized) => Ok(json!({
-                                    "type": "data",
+                    |delta| {
+                        // Try to deserialize the actions data with ABI
+                        match deserializer::deserialize_root_state(&delta.actions, manifest) {
+                            Ok(deserialized) => Ok(json!({
+                                "delta_id": hex::encode(delta.delta_id),
+                                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                                "actions": {
                                     "deserialized": deserialized,
-                                    "raw_size": bytes.len()
-                                })),
-                                Err(e) => {
-                                    // Fall back to hex on error
-                                    Ok(json!({
-                                        "type": "data",
+                                    "raw_size": delta.actions.len()
+                                },
+                                "timestamp": delta.timestamp,
+                                "applied": delta.applied
+                            })),
+                            Err(e) => {
+                                // Fall back to hex on error
+                                Ok(json!({
+                                    "delta_id": hex::encode(delta.delta_id),
+                                    "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                                    "actions": {
                                         "error": format!("Failed to deserialize: {e}"),
-                                        "hex": hex::encode(bytes.as_ref()),
-                                        "size": bytes.len()
-                                    }))
-                                }
+                                        "hex": hex::encode(&delta.actions),
+                                        "size": delta.actions.len()
+                                    },
+                                    "timestamp": delta.timestamp,
+                                    "applied": delta.applied
+                                }))
                             }
                         }
                     },
