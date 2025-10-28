@@ -10,7 +10,9 @@
     },
     {
       "contextCreate": {
-        "params": "{\"title\": \"Test Document\"}"
+        "params": {
+          "title": "Test Document"
+        }
       }
     },
     {
