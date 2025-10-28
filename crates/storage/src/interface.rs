@@ -146,14 +146,19 @@ impl<S: StorageAdaptor> Interface<S> {
                     )?;
                 }
 
-                // Pre-compute hash for adding to parent index (creates index if needed)
-                if let Some(parent) = parent {
-                    let own_hash = Sha256::digest(&data).into();
-                    <Index<S>>::add_child_to(
-                        parent.id(),
-                        "no collection, remove this nonsense",
-                        ChildInfo::new(id, own_hash, metadata),
-                    )?;
+                // For new entities, create a minimal index entry first to avoid orphan errors
+                if !<Index<S>>::has_index(id) {
+                    if id.is_root() {
+                        <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata))?;
+                    } else if let Some(parent) = parent {
+                        // Create minimal index entry with placeholder hash
+                        let placeholder_hash = Sha256::digest(&data).into();
+                        <Index<S>>::add_child_to(
+                            parent.id(),
+                            "no collection, remove this nonsense",
+                            ChildInfo::new(id, placeholder_hash, metadata),
+                        )?;
+                    }
                 }
 
                 // Save data (might merge, producing different hash)
@@ -163,7 +168,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 };
 
                 // ALWAYS update parent with correct hash after save (handles merging)
-                // This ensures hash consistency even when data gets merged
+                // save_internal calls update_hash_for which updates child_index.own_hash
+                // Then add_child_to reads from index and uses correct full_hash
                 if let Some(parent) = parent {
                     let (_, own_hash) =
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;

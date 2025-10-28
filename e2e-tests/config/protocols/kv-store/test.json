@@ -17,6 +17,15 @@
       }
     },
     {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 2000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
       "call": {
         "methodName": "set",
         "argsJson": {

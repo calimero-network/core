@@ -12,6 +12,15 @@
       "contextCreate": null
     },
     {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 2000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
       "contextInviteJoin": null
     },
     {
