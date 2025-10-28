@@ -14,6 +14,7 @@ version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
     "./apps/blobs",
+    "./apps/collaborative-editor",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
@@ -68,6 +69,7 @@ members = [
     "./apps/kv-store-with-handlers",
     "./apps/private_data",
     "./apps/blobs",
+    "./apps/collaborative-editor",
     "./apps/abi_conformance",
     "./apps/xcall-example",
 

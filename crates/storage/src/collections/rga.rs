@@ -35,7 +35,9 @@ use crate::store::{MainStorage, StorageAdaptor};
 ///
 /// Combines HLC timestamp with sequence number for global uniqueness.
 /// Ordered lexicographically for deterministic conflict resolution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize,
+)]
 struct CharId {
     /// HLC timestamp when character was inserted
     timestamp: crate::logical_clock::HybridTimestamp,
@@ -148,30 +150,30 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// Returns error if position is out of bounds or storage operation fails
     pub fn insert(&mut self, pos: usize, content: char) -> Result<(), StoreError> {
         let timestamp = env::hlc_timestamp();
-        
+
         // Find the left neighbor at the visible position
         let ordered = self.get_ordered_chars()?;
-        
+
         let left = if pos == 0 {
             CharId::root()
         } else if pos <= ordered.len() {
             ordered
                 .get(pos - 1)
                 .map(|(id, _)| *id)
-                .ok_or(StoreError::StorageError(crate::interface::StorageError::InvalidData(
-            "position out of bounds".into()
-        )))?
+                .ok_or(StoreError::StorageError(
+                    crate::interface::StorageError::InvalidData("position out of bounds".into()),
+                ))?
         } else {
-            return Err(StoreError::StorageError(crate::interface::StorageError::InvalidData(
-            "position out of bounds".into()
-        )));
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::InvalidData("position out of bounds".into()),
+            ));
         };
 
         let char_id = CharId::new(timestamp, 0);
         let new_char = RgaChar::new(content, left);
-        
+
         self.chars.insert(CharKey::new(char_id), new_char)?;
-        
+
         Ok(())
     }
 
@@ -182,15 +184,13 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// Returns error if position is out of bounds or storage operation fails
     pub fn delete(&mut self, pos: usize) -> Result<(), StoreError> {
         let ordered = self.get_ordered_chars()?;
-        
-        let (char_id, _) = ordered
-            .get(pos)
-            .ok_or(StoreError::StorageError(crate::interface::StorageError::InvalidData(
-            "position out of bounds".into()
-        )))?;
-        
+
+        let (char_id, _) = ordered.get(pos).ok_or(StoreError::StorageError(
+            crate::interface::StorageError::InvalidData("position out of bounds".into()),
+        ))?;
+
         self.chars.remove(&CharKey::new(*char_id))?;
-        
+
         Ok(())
     }
 
@@ -229,7 +229,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// Returns error if position is out of bounds or storage operation fails
     pub fn insert_str(&mut self, pos: usize, s: &str) -> Result<(), StoreError> {
         let timestamp = env::hlc_timestamp();
-        
+
         // Find the left neighbor
         let ordered = self.get_ordered_chars()?;
         let mut left = if pos == 0 {
@@ -238,22 +238,22 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             ordered
                 .get(pos - 1)
                 .map(|(id, _)| *id)
-                .ok_or(StoreError::StorageError(crate::interface::StorageError::InvalidData(
-            "position out of bounds".into()
-        )))?
+                .ok_or(StoreError::StorageError(
+                    crate::interface::StorageError::InvalidData("position out of bounds".into()),
+                ))?
         } else {
-            return Err(StoreError::StorageError(crate::interface::StorageError::InvalidData(
-            "position out of bounds".into()
-        )));
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::InvalidData("position out of bounds".into()),
+            ));
         };
 
         // Insert each character
         for (seq, content) in s.chars().enumerate() {
             let char_id = CharId::new(timestamp, seq as u32);
             let new_char = RgaChar::new(content, left);
-            
+
             self.chars.insert(CharKey::new(char_id), new_char)?;
-            
+
             // Next char's left is this char
             left = char_id;
         }
@@ -268,17 +268,17 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// Returns error if range is invalid or storage operation fails
     pub fn delete_range(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
         if start > end {
-            return Err(StoreError::StorageError(crate::interface::StorageError::InvalidData(
-            "start must be <= end".into()
-        )));
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::InvalidData("start must be <= end".into()),
+            ));
         }
 
         let ordered = self.get_ordered_chars()?;
-        
+
         if end > ordered.len() {
-            return Err(StoreError::StorageError(crate::interface::StorageError::InvalidData(
-                "end position out of bounds".into()
-            )));
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::InvalidData("end position out of bounds".into()),
+            ));
         }
 
         // Delete each character in range
@@ -297,7 +297,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             .entries()?
             .map(|(key, char)| (key.id(), char))
             .collect();
-        
+
         // Build ordered list by following left-neighbor links from root
         let mut ordered = Vec::new();
         let mut current_left = CharId::root();
@@ -326,7 +326,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             } else {
                 // Sort by CharId (HLC timestamp) for deterministic order
                 candidates.sort_by_key(|(id, _)| *id);
-                
+
                 // Take the character with lowest CharId (earliest timestamp)
                 let (next_id, next_char) = candidates[0];
                 ordered.push((*next_id, next_char.clone()));
@@ -345,15 +345,15 @@ mod tests {
     #[test]
     fn test_rga_basic_insert() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
-        
+
         rga.insert(0, 'H').unwrap();
         assert_eq!(rga.get_text().unwrap(), "H");
-        
+
         rga.insert(1, 'i').unwrap();
         assert_eq!(rga.get_text().unwrap(), "Hi");
-        
+
         // Insert at position 0 - both 'H' and 'O' have left=root
         // RGA orders by HLC timestamp: 'H' (earlier) comes before 'O' (later)
         // So result is "HiO" not "OHi"
@@ -367,15 +367,15 @@ mod tests {
     #[test]
     fn test_rga_basic_delete() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
-        
+
         rga.insert_str(0, "Hello").unwrap();
         assert_eq!(rga.get_text().unwrap(), "Hello");
-        
+
         rga.delete(0).unwrap(); // Delete 'H'
         assert_eq!(rga.get_text().unwrap(), "ello");
-        
+
         rga.delete(3).unwrap(); // Delete 'o'
         assert_eq!(rga.get_text().unwrap(), "ell");
     }
@@ -383,13 +383,13 @@ mod tests {
     #[test]
     fn test_rga_insert_str() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
-        
+
         rga.insert_str(0, "Hello").unwrap();
         assert_eq!(rga.get_text().unwrap(), "Hello");
         assert_eq!(rga.len().unwrap(), 5);
-        
+
         rga.insert_str(5, " World").unwrap();
         assert_eq!(rga.get_text().unwrap(), "Hello World");
         assert_eq!(rga.len().unwrap(), 11);
@@ -398,15 +398,15 @@ mod tests {
     #[test]
     fn test_rga_delete_range() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
-        
+
         rga.insert_str(0, "Hello World").unwrap();
         assert_eq!(rga.get_text().unwrap(), "Hello World");
-        
+
         rga.delete_range(5, 11).unwrap(); // Delete " World"
         assert_eq!(rga.get_text().unwrap(), "Hello");
-        
+
         rga.delete_range(0, 2).unwrap(); // Delete "He"
         assert_eq!(rga.get_text().unwrap(), "llo");
     }
@@ -414,16 +414,16 @@ mod tests {
     #[test]
     fn test_rga_len_and_is_empty() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
-        
+
         assert!(rga.is_empty().unwrap());
         assert_eq!(rga.len().unwrap(), 0);
-        
+
         rga.insert_str(0, "test").unwrap();
         assert!(!rga.is_empty().unwrap());
         assert_eq!(rga.len().unwrap(), 4);
-        
+
         rga.delete_range(0, 4).unwrap();
         assert!(rga.is_empty().unwrap());
         assert_eq!(rga.len().unwrap(), 0);
@@ -432,10 +432,10 @@ mod tests {
     #[test]
     fn test_rga_insert_out_of_bounds() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
         rga.insert_str(0, "Hi").unwrap();
-        
+
         let result = rga.insert(10, '!');
         assert!(result.is_err());
     }
@@ -443,10 +443,10 @@ mod tests {
     #[test]
     fn test_rga_delete_out_of_bounds() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
         rga.insert_str(0, "Hi").unwrap();
-        
+
         let result = rga.delete(5);
         assert!(result.is_err());
     }
@@ -454,18 +454,18 @@ mod tests {
     #[test]
     fn test_rga_interleaved_operations() {
         env::reset_for_testing();
-        
+
         let mut rga = ReplicatedGrowableArray::new();
-        
+
         rga.insert_str(0, "abc").unwrap();
         assert_eq!(rga.get_text().unwrap(), "abc");
-        
+
         rga.delete(1).unwrap(); // Delete 'b'
         assert_eq!(rga.get_text().unwrap(), "ac");
-        
+
         rga.insert(1, 'B').unwrap(); // Insert 'B' where 'b' was
         assert_eq!(rga.get_text().unwrap(), "aBc");
-        
+
         rga.insert(3, '!').unwrap();
         assert_eq!(rga.get_text().unwrap(), "aBc!");
     }
@@ -473,15 +473,15 @@ mod tests {
     #[test]
     fn test_rga_concurrent_inserts_deterministic() {
         env::reset_for_testing();
-        
+
         // Simulate two nodes inserting at same position concurrently
         let mut rga = ReplicatedGrowableArray::new();
         rga.insert_str(0, "Hello").unwrap();
-        
+
         // Both insert at position 5 (end) - their HLC timestamps determine order
         rga.insert(5, '!').unwrap();
         rga.insert(6, '?').unwrap();
-        
+
         let text = rga.get_text().unwrap();
         // Should be deterministic based on HLC ordering
         assert!(text == "Hello!?" || text == "Hello?!");
