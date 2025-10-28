@@ -24,7 +24,7 @@ exclude = [
     "./crates/version",
     "./crates/meroctl",
     "./crates/auth",
-    "./tools/calimero-abi"
+    "./tools/calimero-abi",
 ]
 
 [workspace]
@@ -196,7 +196,6 @@ calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
 calimero-primitives = { path = "./crates/primitives" }
-calimero-relayer = { path = "./crates/relayer" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }
@@ -213,8 +212,6 @@ calimero-version = { path = "./crates/version" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 e2e-tests = { path = "./e2e-tests" }
 kv-store = { path = "./apps/kv-store" }
-meroctl = { path = "./crates/meroctl" }
-merod = { path = "./crates/merod" }
 xcall-example = { path = "./apps/xcall-example" }
 
 [profile.release]
@@ -298,7 +295,7 @@ exit = "deny"
 infinite_loop = "deny"
 missing_assert_message = "deny"
 #missing_docs_in_private_items = "forbid" TODO: Enable later once documentation has been added
-mod_module_files = "warn"  # Allow for sync/ directory with submodules
+mod_module_files = "warn"          # Allow for sync/ directory with submodules
 panic_in_result_fn = "deny"
 str_to_string = "deny"
 string_to_string = "deny"
