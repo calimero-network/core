@@ -52,7 +52,7 @@ impl SyncManager {
                         id: parent_delta.id,
                         parents: parent_delta.parents,
                         payload: parent_delta.actions,
-                        timestamp: parent_delta.timestamp,
+                        hlc: parent_delta.hlc,
                     };
 
                     if let Err(e) = delta_store.add_delta(dag_delta).await {
@@ -160,47 +160,46 @@ impl SyncManager {
             "Handling delta request from peer"
         );
 
-        // Try to get delta from DeltaStore first (in-memory cache)
-        let delta_from_store =
-            if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
-                delta_store.get_delta(&delta_id).await
-            } else {
-                None
+        // Try RocksDB first (has full CausalDelta with HLC)
+        use calimero_store::key;
+
+        let handle = self.context_client.datastore_handle();
+        let db_key = key::ContextDagDelta::new(context_id, delta_id);
+
+        let response = if let Some(stored_delta) = handle.get(&db_key)? {
+            // Found in RocksDB - reconstruct CausalDelta with HLC
+            let actions: Vec<calimero_storage::interface::Action> =
+                borsh::from_slice(&stored_delta.actions)?;
+
+            let causal_delta = CausalDelta {
+                id: stored_delta.delta_id,
+                parents: stored_delta.parents,
+                actions,
+                hlc: stored_delta.hlc,
             };
 
-        // If not in DeltaStore, try to load from RocksDB (for broadcasted deltas)
-        let response = if let Some(delta) = delta_from_store {
-            // Found in DeltaStore - serialize and send
-            let serialized = borsh::to_vec(&delta)?;
+            let serialized = borsh::to_vec(&causal_delta)?;
 
             debug!(
                 %context_id,
                 delta_id = ?delta_id,
                 size = serialized.len(),
-                source = "DeltaStore",
+                source = "RocksDB",
                 "Sending requested delta to peer"
             );
 
             MessagePayload::DeltaResponse {
                 delta: serialized.into(),
             }
-        } else {
-            // Try to load from RocksDB
-            use calimero_store::key;
-
-            let handle = self.context_client.datastore_handle();
-            let db_key = key::ContextDagDelta::new(context_id, delta_id);
-
-            if let Some(stored_delta) = handle.get(&db_key)? {
-                // Reconstruct CausalDelta from stored data
-                let actions: Vec<calimero_storage::interface::Action> =
-                    borsh::from_slice(&stored_delta.actions)?;
-
+        } else if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+            // Not in RocksDB yet (race condition after broadcast), try DeltaStore
+            if let Some(dag_delta) = delta_store.get_delta(&delta_id).await {
+                // dag::CausalDelta now includes HLC, so we can directly convert
                 let causal_delta = CausalDelta {
-                    id: stored_delta.delta_id,
-                    parents: stored_delta.parents,
-                    actions,
-                    timestamp: stored_delta.timestamp,
+                    id: dag_delta.id,
+                    parents: dag_delta.parents,
+                    actions: dag_delta.payload,
+                    hlc: dag_delta.hlc,
                 };
 
                 let serialized = borsh::to_vec(&causal_delta)?;
@@ -209,7 +208,7 @@ impl SyncManager {
                     %context_id,
                     delta_id = ?delta_id,
                     size = serialized.len(),
-                    source = "RocksDB",
+                    source = "DeltaStore",
                     "Sending requested delta to peer"
                 );
 
@@ -220,10 +219,17 @@ impl SyncManager {
                 warn!(
                     %context_id,
                     delta_id = ?delta_id,
-                    "Requested delta not found in DeltaStore or RocksDB"
+                    "Requested delta not found in RocksDB or DeltaStore"
                 );
                 MessagePayload::DeltaNotFound
             }
+        } else {
+            warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                "Requested delta not found (no DeltaStore for context)"
+            );
+            MessagePayload::DeltaNotFound
         };
 
         // Send response

@@ -182,7 +182,7 @@ impl MockNetwork {
                                 id: msg.delta_id,
                                 parents: msg.parent_ids.clone(),
                                 payload: actions,
-                                timestamp: calimero_storage::env::time_now(),
+                                hlc: calimero_storage::env::hlc_timestamp(),
                             };
 
                             // Note: In real implementation, this would use DeltaApplier
@@ -366,7 +366,7 @@ async fn test_p2p_delta_request() {
             ancestors: vec![],
             metadata: Default::default(),
         }],
-        timestamp: calimero_storage::env::time_now(),
+        hlc: calimero_storage::env::hlc_timestamp(),
     };
 
     // Manually add to peer A's DAG (simulating it received this earlier)

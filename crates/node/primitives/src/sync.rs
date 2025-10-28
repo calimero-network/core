@@ -23,6 +23,9 @@ pub enum BroadcastMessage<'a> {
         /// DAG: Parent delta IDs (for causal ordering)
         parent_ids: Vec<[u8; 32]>,
 
+        /// Hybrid Logical Clock timestamp for causal ordering
+        hlc: calimero_storage::logical_clock::HybridTimestamp,
+
         root_hash: Hash, // todo! shouldn't be cleartext
         artifact: Cow<'a, [u8]>,
         nonce: Nonce,

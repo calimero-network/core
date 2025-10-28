@@ -17,6 +17,15 @@
       }
     },
     {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
       "contextInviteJoin": null
     },
     {

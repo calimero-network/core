@@ -146,19 +146,40 @@ impl<S: StorageAdaptor> Interface<S> {
                     )?;
                 }
 
-                if let Some(parent) = parent {
-                    let own_hash = Sha256::digest(&data).into();
+                // For new entities, create a minimal index entry first to avoid orphan errors
+                if !<Index<S>>::has_index(id) {
+                    if id.is_root() {
+                        <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata))?;
+                    } else if let Some(parent) = parent {
+                        // Create minimal index entry with placeholder hash
+                        let placeholder_hash = Sha256::digest(&data).into();
+                        <Index<S>>::add_child_to(
+                            parent.id(),
+                            "no collection, remove this nonsense",
+                            ChildInfo::new(id, placeholder_hash, metadata),
+                        )?;
+                    }
+                }
 
+                // Save data (might merge, producing different hash)
+                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata)? else {
+                    // we didn't save anything, so we skip updating the ancestors
+                    return Ok(());
+                };
+
+                // ALWAYS update parent with correct hash after save (handles merging)
+                // save_internal calls update_hash_for which updates child_index.own_hash
+                // Then add_child_to reads from index and uses correct full_hash
+                if let Some(parent) = parent {
+                    let (_, own_hash) =
+                        <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
+
+                    // Update parent with the actual hash after any merging
                     <Index<S>>::add_child_to(
                         parent.id(),
                         "no collection, remove this nonsense",
                         ChildInfo::new(id, own_hash, metadata),
                     )?;
-                }
-
-                if Self::save_internal(id, &data, metadata)?.is_none() {
-                    // we didn't save anything, so we skip updating the ancestors
-                    return Ok(());
                 }
 
                 crate::delta::push_action(Action::Compare { id });
