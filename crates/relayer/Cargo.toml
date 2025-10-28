@@ -1,5 +1,5 @@
 [package]
-name = "calimero-relayer"
+name = "mero-relayer"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ publish = false
 description = "Calimero relayer for external client interactions"
 
 [[bin]]
-name = "calimero-relayer"
+name = "mero-relayer"
 path = "src/main.rs"
 
 [dependencies]

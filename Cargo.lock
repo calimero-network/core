@@ -2192,26 +2192,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-relayer"
-version = "0.1.0"
-dependencies = [
- "axum 0.7.9",
- "calimero-context-config",
- "chrono",
- "clap",
- "color-eyre",
- "eyre",
- "futures-util",
- "serde",
- "serde_json",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "calimero-runtime"
 version = "0.0.0"
 dependencies = [
@@ -2406,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.5"
+version = "0.10.0-rc.6"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
@@ -6353,6 +6333,26 @@ dependencies = [
  "uuid 1.18.1",
  "validator",
  "web3",
+]
+
+[[package]]
+name = "mero-relayer"
+version = "0.1.0"
+dependencies = [
+ "axum 0.7.9",
+ "calimero-context-config",
+ "chrono",
+ "clap",
+ "color-eyre",
+ "eyre",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

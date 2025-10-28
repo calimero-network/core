@@ -21,6 +21,7 @@ env:
   BINARIES: |-
     merod
     meroctl
+    mero-relayer
     mero-abi
   AUTH_BINARIES: |-
     mero-auth
