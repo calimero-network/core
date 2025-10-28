@@ -26,10 +26,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 1000,
+        "durationMs": 3000,
         "description": [
-          "assuming it takes 5s to propagate we should",
-          "only need to wait 5 * ceil(log2(nodes)) seconds"
+          "Wait for key exchange (2-3s) + gossipsub mesh + initial sync"
         ]
       }
     },
