@@ -32,14 +32,13 @@ pub fn generate_schema() -> Value {
 
 const fn get_column_description(column: Column) -> &'static str {
     match column {
-        Column::Meta => "Stores context metadata including application ID and root hash. Each context has exactly one metadata entry.",
+        Column::Meta => "Stores context metadata including application ID, root hash, and DAG heads. Each context has exactly one metadata entry.",
         Column::Config => "Stores context configuration including protocol, network, contract addresses, and revision numbers.",
         Column::Identity => "Stores context membership. Each entry represents a public key that is a member of a context.",
         Column::State => "Stores application-specific state as raw bytes. The structure depends on the application.",
-        Column::Delta => "Stores state changes (deltas) by identity and block height. Used for tracking state modifications.",
         Column::Blobs => "Stores blob metadata including size and content type. The actual blob data is stored separately.",
         Column::Application => "Stores application metadata including the blob ID and source hash.",
         Column::Alias => "Stores human-readable aliases for contexts, applications, and public keys.",
-        Column::Generic => "Generic key-value storage for arbitrary data organized by scope and fragment.",
+        Column::Generic => "Generic key-value storage for arbitrary data organized by scope and fragment. Also stores ContextDagDelta entries for CRDT synchronization.",
     }
 }

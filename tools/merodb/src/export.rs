@@ -64,42 +64,32 @@ fn parse_value_with_abi(
     abi_manifest: Option<&Manifest>,
 ) -> Result<Value> {
     match column {
-        Column::State => abi_manifest.map_or_else(
+        Column::State => {
+            // State column stores Borsh-serialized data structures
+            // Parse as generic Borsh structures
+            let parsed = deserializer::parse_borsh_generic(value);
+            Ok(json!({
+                "parsed": parsed,
+                "raw_size": value.len(),
+                "note": "Generic Borsh deserialization - actual types may differ"
+            }))
+        }
+
+        Column::Generic => abi_manifest.map_or_else(
             || {
                 // No ABI, use default parsing
                 parse_value(column, value)
             },
             |manifest| {
-                // Try to deserialize with ABI
-                match deserializer::deserialize_root_state(value, manifest) {
-                    Ok(deserialized) => Ok(json!({
-                        "deserialized": deserialized,
-                        "raw_size": value.len()
-                    })),
-                    Err(e) => {
-                        // Fall back to hex on error
-                        Ok(json!({
-                            "error": format!("Failed to deserialize: {e}"),
-                            "hex": hex::encode(value),
-                            "size": value.len()
-                        }))
-                    }
-                }
-            },
-        ),
-        Column::Delta => abi_manifest.map_or_else(
-            || {
-                // No ABI, use default parsing
-                parse_value(column, value)
-            },
-            |manifest| {
-                // Parse the DAG delta and try to deserialize its actions with ABI
+                // Generic column can contain ContextDagDelta entries
+                // Try to parse as ContextDagDelta and deserialize its actions with ABI
                 StoreContextDagDelta::try_from_slice(value).map_or_else(
                     |_| parse_value(column, value),
                     |delta| {
                         // Try to deserialize the actions data with ABI
                         match deserializer::deserialize_root_state(&delta.actions, manifest) {
                             Ok(deserialized) => Ok(json!({
+                                "type": "context_dag_delta",
                                 "delta_id": hex::encode(delta.delta_id),
                                 "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                                 "actions": {
@@ -112,6 +102,7 @@ fn parse_value_with_abi(
                             Err(e) => {
                                 // Fall back to hex on error
                                 Ok(json!({
+                                    "type": "context_dag_delta",
                                     "delta_id": hex::encode(delta.delta_id),
                                     "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                                     "actions": {

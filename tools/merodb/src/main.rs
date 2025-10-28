@@ -154,7 +154,6 @@ fn parse_columns(column_names: &str) -> Result<Vec<Column>> {
             "Config" => Column::Config,
             "Identity" => Column::Identity,
             "State" => Column::State,
-            "Delta" => Column::Delta,
             "Blobs" => Column::Blobs,
             "Application" => Column::Application,
             "Alias" => Column::Alias,

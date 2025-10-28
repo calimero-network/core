@@ -5,6 +5,119 @@ use calimero_wasm_abi::schema::{CollectionType, Manifest, ScalarType, TypeDef, T
 use eyre::{Result, WrapErr};
 use serde_json::{json, Value};
 
+/// Parse Borsh-encoded data generically without type information
+///
+/// This attempts to deserialize common Borsh patterns by trying to parse
+/// all values sequentially until the data is exhausted.
+pub fn parse_borsh_generic(data: &[u8]) -> Value {
+    let mut cursor = Cursor::new(data);
+    let mut values = Vec::new();
+
+    // Parse all values until we run out of data
+    while cursor.position() < data.len() as u64 {
+        if let Ok(val) = parse_borsh_value(&mut cursor) {
+            values.push(val);
+        } else {
+            // If we can't parse more, include remaining as hex
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "position is always less than data.len()"
+            )]
+            let pos = cursor.position() as usize;
+            if pos < data.len() {
+                values.push(json!({
+                    "remaining_hex": hex::encode(&data[pos..]),
+                    "size": data.len().saturating_sub(pos)
+                }));
+            }
+            break;
+        }
+    }
+
+    // If only one value, return it directly; otherwise return as array
+    if values.len() == 1 {
+        values.into_iter().next().unwrap()
+    } else {
+        json!(values)
+    }
+}
+
+/// Parse a single Borsh value from the cursor
+fn parse_borsh_value(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
+    let pos = cursor.position();
+
+    // Try as string first (most common in app state)
+    if let Ok(s) = String::deserialize_reader(cursor) {
+        if is_reasonable_string(&s) {
+            return Ok(json!(s));
+        }
+    }
+
+    // Try as u64 (timestamps, counters)
+    cursor.set_position(pos);
+    if let Ok(val) = u64::deserialize_reader(cursor) {
+        // Check if it looks like a timestamp (reasonable range)
+        if val > 1_600_000_000_000_000_000 && val < 2_000_000_000_000_000_000 {
+            return Ok(json!({
+                "timestamp_ns": val,
+                "timestamp_readable": format_timestamp_ns(val)
+            }));
+        }
+        if val < 1_000_000_000 {
+            return Ok(json!(val));
+        }
+    }
+
+    // Try as 32-byte ID/hash
+    cursor.set_position(pos);
+    let remaining = (cursor.get_ref().len() as u64).saturating_sub(pos);
+    if remaining >= 32 {
+        let mut bytes = [0_u8; 32];
+        if cursor.read_exact(&mut bytes).is_ok() {
+            // Check if it looks like an ID (not all zeros)
+            if bytes.iter().any(|&b| b != 0) {
+                return Ok(json!({
+                    "id_or_hash": hex::encode(bytes)
+                }));
+            }
+        }
+    }
+
+    // Try as bool
+    cursor.set_position(pos);
+    if let Ok(val) = bool::deserialize_reader(cursor) {
+        return Ok(json!(val));
+    }
+
+    // Try as u32
+    cursor.set_position(pos);
+    if let Ok(val) = u32::deserialize_reader(cursor) {
+        return Ok(json!(val));
+    }
+
+    // Nothing matched - fail
+    eyre::bail!("Could not parse value at position {pos}")
+}
+
+/// Check if a string looks reasonable (printable ASCII/UTF-8, reasonable length)
+fn is_reasonable_string(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() < 1000
+        && (s
+            .chars()
+            .all(|c| c.is_ascii_graphic() || c.is_whitespace() || c.is_ascii_alphanumeric()))
+}
+
+/// Format a nanosecond timestamp as human-readable
+fn format_timestamp_ns(ns: u64) -> String {
+    use core::time::Duration;
+
+    let duration = Duration::from_nanos(ns);
+
+    // Simple formatting - just show seconds since epoch for now
+    format!("{} seconds since epoch", duration.as_secs())
+}
+
 /// Deserialize Borsh-encoded bytes into JSON using the ABI schema
 pub fn deserialize_with_abi(data: &[u8], manifest: &Manifest, type_name: &str) -> Result<Value> {
     let type_def = manifest
@@ -196,26 +309,51 @@ fn deserialize_collection(
 
 /// Deserialize the root state type
 ///
-/// This looks for common state type names in the manifest
+/// This looks for the application state type in the manifest using several strategies
 pub fn deserialize_root_state(data: &[u8], manifest: &Manifest) -> Result<Value> {
-    // Try to find the root state type
-    // Common patterns: the type used in the first method's return type,
-    // or a type that looks like application state
+    // Strategy 1: Look for types that implement AppState trait or have State suffix
+    // Common patterns in Calimero SDK apps:
+    // - Type names ending with "State" (e.g., "KvStore", "Marketplace", etc. don't always end with State)
+    // - Types that are used as &mut self in #[app::logic] methods
 
-    // For now, try to find a type that's used in init methods or has "State" in the name
-    let state_type = manifest
+    // Strategy 2: Find the type that appears most frequently as &mut self in methods
+    // In Calimero apps, the state struct is the impl target for all logic methods
+
+    // Strategy 3: Look for struct types (not enums/variants) that are used in methods
+    let state_type_candidates: Vec<_> = manifest
         .types
-        .keys()
-        .find(|name| {
-            name.contains("State")
-                || manifest.methods.iter().any(|m| {
-                    m.name == "init"
-                        && m.returns.as_ref().is_some_and(
-                            |r| matches!(r, TypeRef::Reference { ref_ } if ref_ == *name),
-                        )
-                })
+        .iter()
+        .filter(|(_, typedef)| {
+            // Only consider Record types (structs), not Variants (enums)
+            matches!(typedef, TypeDef::Record { .. })
         })
-        .ok_or_else(|| eyre::eyre!("Could not determine root state type from ABI"))?;
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    // If there's only one struct type, that's likely the state
+    if state_type_candidates.len() == 1 {
+        return deserialize_with_abi(data, manifest, &state_type_candidates[0]);
+    }
+
+    // Try to find based on method parameters/returns
+    // In Calimero SDK apps, methods don't typically return the state type
+    // but the state is the struct on which methods are implemented
+
+    // Look for types with "State" in the name as a fallback
+    let state_type = state_type_candidates
+        .iter()
+        .find(|name| name.contains("State"))
+        .or_else(|| {
+            // If no "State" suffix, try the first struct type
+            state_type_candidates.first()
+        })
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Could not determine root state type from ABI. Found {} struct types: {:?}",
+                state_type_candidates.len(),
+                state_type_candidates
+            )
+        })?;
 
     deserialize_with_abi(data, manifest, state_type)
 }
