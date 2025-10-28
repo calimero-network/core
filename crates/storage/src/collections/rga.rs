@@ -69,7 +69,9 @@ struct CharKey {
 
 impl CharKey {
     fn new(id: CharId) -> Self {
-        let bytes = borsh::to_vec(&id).expect("CharId serialization should never fail");
+        // CharId is a simple fixed-size struct, serialization is infallible in practice
+        // Use unwrap_or_default as a safety fallback (should never occur)
+        let bytes = borsh::to_vec(&id).unwrap_or_default();
         Self { id, bytes }
     }
 

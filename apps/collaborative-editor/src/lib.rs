@@ -23,13 +23,13 @@ use calimero_storage::collections::{Counter, ReplicatedGrowableArray};
 pub struct EditorState {
     /// The collaborative text document using RGA CRDT
     pub document: ReplicatedGrowableArray,
-    
+
     /// Document title/name
     pub title: String,
-    
+
     /// Context owner's identity
     pub owner: String,
-    
+
     /// Total number of edits made to the document (CRDT Counter)
     pub edit_count: Counter,
 }
@@ -46,7 +46,7 @@ pub enum EditorEvent {
         /// Owner's identity
         owner: String,
     },
-    
+
     /// Emitted when text is inserted
     TextInserted {
         /// Position where text was inserted
@@ -56,7 +56,7 @@ pub enum EditorEvent {
         /// Editor who made the change
         editor: String,
     },
-    
+
     /// Emitted when text is deleted
     TextDeleted {
         /// Starting position of deletion
@@ -66,7 +66,7 @@ pub enum EditorEvent {
         /// Editor who made the change
         editor: String,
     },
-    
+
     /// Emitted when the document title is changed
     TitleChanged {
         /// Old title
@@ -107,10 +107,7 @@ impl EditorState {
             edit_count: Counter::new(),
         };
 
-        app::emit!(EditorEvent::DocumentCreated {
-            title,
-            owner,
-        });
+        app::emit!(EditorEvent::DocumentCreated { title, owner });
 
         state
     }
@@ -165,12 +162,7 @@ impl EditorState {
         let editor_id = env::executor_id();
         let editor = encode_identity(&editor_id);
 
-        app::log!(
-            "Deleting text from {} to {} by {}",
-            start,
-            end,
-            editor
-        );
+        app::log!("Deleting text from {} to {} by {}", start, end, editor);
 
         self.document
             .delete_range(start, end)
@@ -180,11 +172,7 @@ impl EditorState {
             .increment()
             .map_err(|e| format!("Failed to increment edit count: {:?}", e))?;
 
-        app::emit!(EditorEvent::TextDeleted {
-            start,
-            end,
-            editor,
-        });
+        app::emit!(EditorEvent::TextDeleted { start, end, editor });
 
         Ok(())
     }
@@ -241,7 +229,12 @@ impl EditorState {
         let old_title = self.title.clone();
         self.title = new_title.clone();
 
-        app::log!("Title changed from '{}' to '{}' by {}", old_title, new_title, editor);
+        app::log!(
+            "Title changed from '{}' to '{}' by {}",
+            old_title,
+            new_title,
+            editor
+        );
 
         app::emit!(EditorEvent::TitleChanged {
             old_title,
@@ -306,7 +299,7 @@ impl EditorState {
         if start < end {
             self.delete_text(start, end)?;
         }
-        
+
         // Then insert the new text at the start position
         if !text.is_empty() {
             self.insert_text(start, text)?;
@@ -341,4 +334,3 @@ impl EditorState {
         Ok(())
     }
 }
-
