@@ -28,18 +28,14 @@ pub struct CausalDelta<T> {
 
     /// The actual delta payload (generic)
     pub payload: T,
-
-    /// Creation timestamp
-    pub timestamp: u64,
 }
 
 impl<T> CausalDelta<T> {
-    pub fn new(id: [u8; 32], parents: Vec<[u8; 32]>, payload: T, timestamp: u64) -> Self {
+    pub fn new(id: [u8; 32], parents: Vec<[u8; 32]>, payload: T) -> Self {
         Self {
             id,
             parents,
             payload,
-            timestamp,
         }
     }
 }
@@ -384,14 +380,12 @@ mod basic_tests {
             [1; 32],
             vec![[0; 32]], // parent: root
             TestPayload { value: 1 },
-            1000,
         );
 
         let delta2 = CausalDelta::new(
             [2; 32],
             vec![[1; 32]], // parent: delta1
             TestPayload { value: 2 },
-            2000,
         );
 
         // Apply in order
@@ -421,13 +415,12 @@ mod basic_tests {
         let mut dag = DagStore::new([0; 32]);
 
         // Create chain but receive out of order
-        let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 }, 1000);
+        let delta1 = CausalDelta::new([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
         let delta2 = CausalDelta::new(
             [2; 32],
             vec![[1; 32]], // depends on delta1
             TestPayload { value: 2 },
-            2000,
         );
 
         // Receive delta2 first (out of order)
@@ -465,14 +458,12 @@ mod basic_tests {
             [10; 32],
             vec![[0; 32]], // both from root
             TestPayload { value: 10 },
-            1000,
         );
 
         let delta_b = CausalDelta::new(
             [20; 32],
             vec![[0; 32]], // both from root
             TestPayload { value: 20 },
-            1001,
         );
 
         // Apply both
@@ -491,7 +482,6 @@ mod basic_tests {
             [30; 32],
             vec![[10; 32], [20; 32]], // merge both
             TestPayload { value: 30 },
-            2000,
         );
 
         dag.add_delta(delta_merge, &applier).await.unwrap();
@@ -514,7 +504,6 @@ mod basic_tests {
             [99; 32],
             vec![[88; 32]], // missing parent
             TestPayload { value: 99 },
-            1000,
         );
 
         dag.add_delta(delta_pending, &applier).await.unwrap();

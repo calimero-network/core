@@ -124,14 +124,12 @@ async fn test_missing_delta_catch_up_single_parent() {
         id: [1; 32],
         parents: vec![[0; 32]],
         payload: vec![], // Empty payload - simpler test
-        timestamp: 1000,
     };
 
     let delta2 = CausalDelta {
         id: [2; 32],
         parents: vec![[1; 32]],
         payload: vec![], // Empty payload - simpler test
-        timestamp: 2000,
     };
 
     // Node A receives both
@@ -177,21 +175,18 @@ async fn test_missing_delta_catch_up_multiple_parents() {
         id: [1; 32],
         parents: vec![[0; 32]],
         payload: vec![],
-        timestamp: 1000,
     };
 
     let delta2 = CausalDelta {
         id: [2; 32],
         parents: vec![[0; 32]],
         payload: vec![],
-        timestamp: 1001,
     };
 
     let delta3_merge = CausalDelta {
         id: [3; 32],
         parents: vec![[1; 32], [2; 32]], // Merge!
         payload: vec![],
-        timestamp: 3000,
     };
 
     // Node A has all deltas
@@ -316,7 +311,6 @@ async fn test_snapshot_transfer_fresh_node() {
         entries: vec![],
         indexes: vec![],
         root_hash: [0; 32],
-        timestamp: 1000,
     };
 
     // After snapshot, node B should have same state
@@ -343,7 +337,6 @@ async fn test_snapshot_excludes_tombstones() {
         entries: live_entries.clone(),
         indexes: vec![],
         root_hash: [1; 32],
-        timestamp: 2000,
     };
 
     // Verify snapshot only contains live entities
@@ -433,7 +426,6 @@ async fn test_hash_heartbeat_detects_silent_divergence() {
         id: [1; 32],
         parents: vec![[0; 32]],
         payload: vec![],
-        timestamp: 1000,
     };
 
     node_a.add_delta(delta1.clone()).await.unwrap();
@@ -565,14 +557,12 @@ async fn test_recovery_via_full_resync() {
         id: [10; 32],
         parents: vec![[0; 32]],
         payload: vec![], // Empty payload
-        timestamp: 1000,
     };
 
     let delta_b = CausalDelta {
         id: [20; 32],
         parents: vec![[0; 32]],
         payload: vec![], // Empty payload
-        timestamp: 1001,
     };
 
     node_a.add_delta(delta_a).await.unwrap();
@@ -592,7 +582,6 @@ async fn test_recovery_via_full_resync() {
         entries: vec![(Id::from([100; 32]), vec![1])],
         indexes: vec![],
         root_hash: [1; 32],
-        timestamp: 3000,
     };
 
     // After resync, node B has node A's state

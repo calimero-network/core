@@ -637,7 +637,6 @@ impl SyncManager {
                                 id: storage_delta.id,
                                 parents: storage_delta.parents,
                                 payload: storage_delta.actions,
-                                timestamp: storage_delta.timestamp,
                             };
 
                             // Get or create DeltaStore for this context

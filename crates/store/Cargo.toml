@@ -20,6 +20,7 @@ thiserror.workspace = true
 thunderdome.workspace = true
 
 calimero-primitives.workspace = true
+calimero-storage.workspace = true
 
 [features]
 borsh = ["borsh/derive"]

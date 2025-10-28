@@ -56,7 +56,7 @@ fn delta_creation_with_single_action() {
     // Verify delta structure
     assert_eq!(delta.parents, vec![[0; 32]]);
     assert_eq!(delta.actions.len(), 1); // One Add action
-    assert!(delta.timestamp > 0);
+    assert!(delta.physical_time() > 0); // HLC contains physical time
 
     // After commit, heads should be updated to this delta
     let heads = get_current_heads();
@@ -94,11 +94,11 @@ fn delta_id_is_content_addressed() {
 
     let parents = vec![[0; 32]];
     let actions = vec![]; // Empty for simplicity
-    let timestamp = 1000_u64;
+    let hlc = crate::env::hlc_timestamp();
 
-    // Compute ID twice
-    let id1 = CausalDelta::compute_id(&parents, &actions, timestamp);
-    let id2 = CausalDelta::compute_id(&parents, &actions, timestamp);
+    // Compute ID twice with same inputs
+    let id1 = CausalDelta::compute_id(&parents, &actions, &hlc);
+    let id2 = CausalDelta::compute_id(&parents, &actions, &hlc);
 
     // Should be identical
     assert_eq!(id1, id2);
@@ -107,24 +107,28 @@ fn delta_id_is_content_addressed() {
 #[test]
 fn delta_id_changes_with_parents() {
     let actions = vec![];
-    let timestamp = 1000_u64;
+    let hlc = crate::env::hlc_timestamp();
 
-    let id1 = CausalDelta::compute_id(&vec![[0; 32]], &actions, timestamp);
-    let id2 = CausalDelta::compute_id(&vec![[1; 32]], &actions, timestamp);
+    let id1 = CausalDelta::compute_id(&vec![[0; 32]], &actions, &hlc);
+    let id2 = CausalDelta::compute_id(&vec![[1; 32]], &actions, &hlc);
 
     // Should be different
     assert_ne!(id1, id2);
 }
 
 #[test]
-fn delta_id_changes_with_timestamp() {
+fn delta_id_changes_with_hlc() {
     let parents = vec![[0; 32]];
     let actions = vec![];
 
-    let id1 = CausalDelta::compute_id(&parents, &actions, 1000);
-    let id2 = CausalDelta::compute_id(&parents, &actions, 2000);
+    let hlc1 = crate::env::hlc_timestamp();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let hlc2 = crate::env::hlc_timestamp();
 
-    // Should be different
+    let id1 = CausalDelta::compute_id(&parents, &actions, &hlc1);
+    let id2 = CausalDelta::compute_id(&parents, &actions, &hlc2);
+
+    // Should be different (different HLC timestamps)
     assert_ne!(id1, id2);
 }
 
@@ -332,8 +336,8 @@ fn delta_timestamp_is_monotonic() {
     TestInterface::add_child_to(page1.id(), &page1.paragraphs, &mut para).unwrap();
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
 
-    // Second should have later timestamp
-    assert!(delta2.timestamp > delta1.timestamp);
+    // Second delta should have later HLC timestamp
+    assert!(delta2.hlc > delta1.hlc);
 }
 
 #[test]

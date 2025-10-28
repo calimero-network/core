@@ -5,6 +5,7 @@ use calimero_vm as imp;
 #[cfg(not(target_arch = "wasm32"))]
 use mocked as imp;
 
+use crate::logical_clock::HybridTimestamp;
 use crate::store::Key;
 
 /// Commits the root hash to the runtime.
@@ -82,10 +83,18 @@ pub fn executor_id() -> [u8; 32] {
     imp::executor_id()
 }
 
-/// Resets the environment state for testing.
-///
-/// This clears the thread-local ROOT_HASH, allowing multiple commits
-/// in the same test execution. Only available in test builds.
+/// Get hybrid timestamp (auto-increments logical clock).
+#[must_use]
+pub fn hlc_timestamp() -> HybridTimestamp {
+    imp::hlc_timestamp()
+}
+
+/// Update HLC with remote timestamp (preserves causality).
+pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+    imp::update_hlc(remote_ts)
+}
+
+/// Reset for testing.
 #[cfg(test)]
 pub fn reset_for_testing() {
     imp::reset_for_testing();
@@ -93,9 +102,17 @@ pub fn reset_for_testing() {
 
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
+    use std::cell::RefCell;
+
     use calimero_sdk::env;
 
+    use crate::logical_clock::{HybridTimestamp, HLC};
     use crate::store::Key;
+
+    thread_local! {
+        // Uses custom getrandom backend (see getrandom_impl.rs)
+        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(HLC::default());
+    }
 
     /// Commits the root hash to the runtime.
     pub(super) fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
@@ -140,10 +157,26 @@ mod calimero_vm {
         env::time_now()
     }
 
-    /// Resets the environment state for testing (no-op in WASM).
+    /// Get a new hybrid timestamp from the HLC
+    pub(super) fn hlc_timestamp() -> HybridTimestamp {
+        HLC_INSTANCE.with(|hlc| HybridTimestamp::from(hlc.borrow().new_timestamp()))
+    }
+
+    /// Update HLC with remote timestamp
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+        HLC_INSTANCE.with(|hlc| {
+            hlc.borrow()
+                .update_with_timestamp(remote_ts.inner())
+                .map_err(|_| ())
+        })
+    }
+
+    /// Resets the environment state for testing.
     #[cfg(test)]
     pub(super) fn reset_for_testing() {
-        // No-op for WASM - not needed since each execution is isolated
+        HLC_INSTANCE.with(|hlc| {
+            *hlc.borrow_mut() = HLC::default();
+        });
     }
 }
 
@@ -154,10 +187,13 @@ mod mocked {
 
     use rand::RngCore;
 
+    use crate::logical_clock::{HybridTimestamp, HLC};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
+        // HLC::default() uses getrandom, which in native/test contexts uses /dev/urandom
+        static HLC_INSTANCE: RefCell<HLC> = RefCell::new(HLC::default());
     }
 
     /// The default storage system.
@@ -218,14 +254,31 @@ mod mocked {
             .as_nanos() as u64
     }
 
+    /// Get a new hybrid timestamp from the HLC
+    pub(super) fn hlc_timestamp() -> HybridTimestamp {
+        HLC_INSTANCE.with(|hlc| HybridTimestamp::from(hlc.borrow().new_timestamp()))
+    }
+
+    /// Update HLC with remote timestamp
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+        HLC_INSTANCE.with(|hlc| {
+            hlc.borrow()
+                .update_with_timestamp(remote_ts.inner())
+                .map_err(|_| ())
+        })
+    }
+
     /// Resets the environment state for testing.
     ///
-    /// Clears the thread-local ROOT_HASH, allowing multiple commits
+    /// Clears the thread-local ROOT_HASH and HLC, allowing multiple commits
     /// in the same test execution context.
     #[cfg(test)]
     pub(super) fn reset_for_testing() {
         ROOT_HASH.with(|rh| {
             *rh.borrow_mut() = None;
+        });
+        HLC_INSTANCE.with(|hlc| {
+            *hlc.borrow_mut() = HLC::default();
         });
     }
 }

@@ -12,14 +12,24 @@ use sha2::{Digest, Sha256};
 use crate::action::Action;
 use crate::env;
 use crate::integration::Comparison;
+use crate::logical_clock::HybridTimestamp;
 
 /// A causal delta in the DAG representing a set of CRDT actions.
 ///
 /// Each delta has a unique ID (content hash) and references its parent delta(s),
 /// forming a DAG structure that preserves causal ordering.
+///
+/// # Timestamp Strategy
+///
+/// Uses Hybrid Logical Clock (HLC) which contains:
+/// - **Logical clock**: Guarantees causal ordering
+/// - **Physical time**: Embedded in NTP64 format (first 32 bits = seconds since epoch)
+///
+/// The DAG provides coarse-grained ordering (delta-level), while HLC provides
+/// fine-grained ordering (action-level).
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize, PartialEq, Eq)]
 pub struct CausalDelta {
-    /// Unique ID: SHA256(parents || actions || timestamp)
+    /// Unique ID: SHA256(parents || actions || hlc_range)
     pub id: [u8; 32],
 
     /// Parent delta IDs (empty for root, 1 for sequential, 2+ for merges)
@@ -28,13 +38,17 @@ pub struct CausalDelta {
     /// CRDT actions in this delta
     pub actions: Vec<Action>,
 
-    /// Timestamp for ordering (nanoseconds since epoch)
-    pub timestamp: u64,
+    /// Hybrid timestamp for this delta (last/max HLC of actions).
+    ///
+    /// Provides both:
+    /// - Causal ordering across deltas (logical clock)
+    /// - Wall-clock semantics (physical time embedded in NTP64)
+    pub hlc: HybridTimestamp,
 }
 
 impl CausalDelta {
     /// Compute the ID for a delta
-    pub fn compute_id(parents: &[[u8; 32]], actions: &[Action], timestamp: u64) -> [u8; 32] {
+    pub fn compute_id(parents: &[[u8; 32]], actions: &[Action], hlc: &HybridTimestamp) -> [u8; 32] {
         let mut hasher = Sha256::new();
 
         // Hash parents
@@ -47,10 +61,28 @@ impl CausalDelta {
             hasher.update(&actions_bytes);
         }
 
-        // Hash timestamp
-        hasher.update(&timestamp.to_le_bytes());
+        // Hash HLC
+        if let Ok(hlc_bytes) = to_vec(hlc) {
+            hasher.update(&hlc_bytes);
+        }
 
         hasher.finalize().into()
+    }
+
+    /// Get the physical timestamp (nanoseconds since epoch).
+    #[must_use]
+    pub fn physical_time(&self) -> u64 {
+        // Extract physical time from HLC (first 32 bits of NTP64)
+        let ntp64 = self.hlc.get_time().as_u64();
+        let seconds = ntp64 >> 32;
+        // Convert to nanoseconds
+        seconds * 1_000_000_000
+    }
+
+    /// Get the logical clock value from HLC.
+    #[must_use]
+    pub fn logical_clock(&self) -> u64 {
+        crate::logical_clock::logical_counter(&self.hlc) as u64
     }
 }
 
@@ -85,6 +117,8 @@ struct DeltaContext {
     actions: Vec<Action>,
     comparisons: Vec<Comparison>,
     current_heads: Vec<[u8; 32]>,
+    /// Maximum HLC timestamp for actions in this delta
+    max_hlc: Option<HybridTimestamp>,
 }
 
 impl DeltaContext {
@@ -93,7 +127,27 @@ impl DeltaContext {
             actions: Vec::new(),
             comparisons: Vec::new(),
             current_heads: Vec::new(),
+            max_hlc: None,
         }
+    }
+
+    /// Record an HLC timestamp for an action (tracks maximum)
+    fn record_hlc(&mut self, ts: HybridTimestamp) {
+        match &mut self.max_hlc {
+            None => {
+                self.max_hlc = Some(ts);
+            }
+            Some(max) => {
+                if ts > *max {
+                    *max = ts;
+                }
+            }
+        }
+    }
+
+    /// Get HLC timestamp, creating default if empty
+    fn get_hlc(&mut self) -> HybridTimestamp {
+        self.max_hlc.unwrap_or_else(|| env::hlc_timestamp())
     }
 }
 
@@ -103,12 +157,22 @@ thread_local! {
 
 /// Records an action for eventual synchronisation.
 ///
+/// This also captures an HLC timestamp to track fine-grained causal ordering.
+///
 /// # Parameters
 ///
 /// * `action` - The action to record.
 ///
 pub fn push_action(action: Action) {
-    DELTA_CONTEXT.with(|ctx| ctx.borrow_mut().actions.push(action));
+    DELTA_CONTEXT.with(|ctx| {
+        let mut context = ctx.borrow_mut();
+
+        // Capture HLC timestamp for this action
+        let hlc_ts = env::hlc_timestamp();
+        context.record_hlc(hlc_ts);
+
+        context.actions.push(action);
+    });
 }
 
 /// Records a comparison for eventual synchronisation.
@@ -151,22 +215,20 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
             return Ok(None);
         }
 
-        // Get current timestamp
-        let timestamp = env::time_now();
-
         // Create delta with current heads as parents
         let parents = std::mem::take(&mut context.current_heads);
         let actions = std::mem::take(&mut context.actions);
+        let hlc = context.get_hlc();
         let _comparisons = std::mem::take(&mut context.comparisons);
 
         // Compute ID
-        let id = CausalDelta::compute_id(&parents, &actions, timestamp);
+        let id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
         let delta = CausalDelta {
             id,
             parents,
             actions,
-            timestamp,
+            hlc,
         };
 
         // Update heads - this delta is now the new head

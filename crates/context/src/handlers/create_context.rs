@@ -297,9 +297,9 @@ async fn create_context(
 
             if !actions.is_empty() {
                 // Create genesis delta (parent is zero hash)
-                let timestamp = calimero_storage::env::time_now();
+                let hlc = calimero_storage::env::hlc_timestamp();
                 let parents = vec![[0u8; 32]]; // Genesis parent
-                let delta_id = CausalDelta::compute_id(&parents, &actions, timestamp);
+                let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
                 // Set dag_heads to the init delta
                 context.dag_heads = vec![delta_id];
@@ -310,7 +310,7 @@ async fn create_context(
                     delta_id,
                     parents,
                     actions: serialized_actions,
-                    timestamp,
+                    hlc,
                     applied: true,
                 };
 

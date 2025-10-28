@@ -52,7 +52,6 @@ impl SyncManager {
                         id: parent_delta.id,
                         parents: parent_delta.parents,
                         payload: parent_delta.actions,
-                        timestamp: parent_delta.timestamp,
                     };
 
                     if let Err(e) = delta_store.add_delta(dag_delta).await {
@@ -200,7 +199,7 @@ impl SyncManager {
                     id: stored_delta.delta_id,
                     parents: stored_delta.parents,
                     actions,
-                    timestamp: stored_delta.timestamp,
+                    hlc: stored_delta.hlc,
                 };
 
                 let serialized = borsh::to_vec(&causal_delta)?;
