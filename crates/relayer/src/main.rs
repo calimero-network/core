@@ -60,6 +60,8 @@ impl RelayerService {
         let mut params = BTreeMap::new();
         let mut protocols = BTreeMap::new();
 
+        info!("Initializing protocol clients...");
+
         // Build configuration for each enabled protocol
         for (protocol_name, protocol_config) in self.config.enabled_protocols() {
             // Add protocol parameters
@@ -81,6 +83,10 @@ impl RelayerService {
             } else {
                 // Skip this protocol if no credentials are provided
                 // The relayer typically doesn't need real credentials for many operations
+                info!(
+                    "Skipping protocol '{}' - no credentials provided",
+                    protocol_name
+                );
                 continue;
             };
 
@@ -93,6 +99,11 @@ impl RelayerService {
             ));
 
             drop(protocols.insert(protocol_name.clone(), ClientLocalConfig { signers }));
+
+            info!(
+                "Initialized '{}' client for network '{}' (RPC: {})",
+                protocol_name, protocol_config.network, protocol_config.rpc_url
+            );
         }
 
         let client_config = ClientConfig {
@@ -157,10 +168,7 @@ impl RelayerService {
 
         let listener = TcpListener::bind(self.config.listen).await?;
 
-        info!(
-            "Listening on '\x1b[1;33mhttp://{}\x1b[0m'",
-            self.config.listen
-        );
+        info!("Listening on 'http://{}'", self.config.listen);
 
         let server = axum::serve(listener, app);
 
@@ -220,7 +228,7 @@ async fn handler(
 /// Standalone Calimero relayer
 #[derive(Debug, Parser)]
 #[command(
-    name = "calimero-relayer",
+    name = "mero-relayer",
     about = "Standalone Calimero relayer for external client interactions",
     version = env!("CARGO_PKG_VERSION")
 )]
@@ -267,7 +275,7 @@ async fn main() -> EyreResult<()> {
 fn setup() -> EyreResult<()> {
     registry()
         .with(EnvFilter::builder().parse(format!(
-            "calimero_relayer=info,calimero_=info,{}",
+            "mero_relayer=info,calimero_=info,{}",
             var("RUST_LOG").unwrap_or_default()
         ))?)
         .with(layer())

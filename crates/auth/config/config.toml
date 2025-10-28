@@ -30,8 +30,7 @@ max_body_size = 1048576          # 1MB default request body size limit
 
 # Rate limiting settings
 [security.rate_limit]
-rate_limit_rpm = 300             # Requests per minute (increased from 50)
-rate_limit_burst = 50            # Burst size for rate limiting (increased from 20)
+rate_limit_rpm = 2000            # Requests per minute (increased from 1000)
 
 # Security headers configuration
 [security.headers]

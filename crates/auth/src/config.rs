@@ -201,10 +201,6 @@ pub struct RateLimitConfig {
     /// Requests per minute
     #[serde(default = "default_rate_limit_rpm")]
     pub rate_limit_rpm: u32,
-
-    /// Burst size for rate limiting
-    #[serde(default = "default_rate_limit_burst")]
-    pub rate_limit_burst: u32,
 }
 
 /// Security headers configuration
@@ -273,7 +269,6 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             rate_limit_rpm: default_rate_limit_rpm(),
-            rate_limit_burst: default_rate_limit_burst(),
         }
     }
 }
@@ -308,11 +303,7 @@ fn default_true() -> bool {
 }
 
 fn default_rate_limit_rpm() -> u32 {
-    100 // 100 requests per minute
-}
-
-fn default_rate_limit_burst() -> u32 {
-    10 // Burst size of 10
+    1000 // 1000 requests per minute
 }
 
 fn default_max_body_size() -> usize {
