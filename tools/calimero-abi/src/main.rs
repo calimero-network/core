@@ -1,8 +1,9 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use wasmparser::{Parser as WasmParser, Payload};
+
+mod extract;
+mod inspect;
 
 #[derive(Parser)]
 #[command(name = "calimero-abi")]
@@ -28,6 +29,12 @@ enum Commands {
         #[arg(long)]
         verify: bool,
     },
+    /// Inspect WASM file sections
+    Inspect {
+        /// Input WASM file
+        #[arg(value_name = "WASM_FILE")]
+        wasm_file: PathBuf,
+    },
 }
 
 fn main() -> eyre::Result<()> {
@@ -39,81 +46,11 @@ fn main() -> eyre::Result<()> {
             output,
             verify,
         } => {
-            extract_abi(&wasm_file, output.as_deref(), verify)?;
+            extract::extract_abi(&wasm_file, output.as_deref(), verify)?;
         }
-    }
-
-    Ok(())
-}
-
-fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> eyre::Result<()> {
-    // Read the WASM file
-    let wasm_bytes = fs::read(wasm_file)?;
-
-    // Parse the WASM file
-    let parser = WasmParser::new(0);
-    let mut abi_section: Option<Vec<u8>> = None;
-    let mut has_get_abi_exports = false;
-
-    for payload in parser.parse_all(&wasm_bytes) {
-        match payload? {
-            Payload::CustomSection(section) => {
-                if section.name() == "calimero_abi_v1" {
-                    abi_section = Some(section.data().to_vec());
-                }
-            }
-            Payload::ExportSection(reader) => {
-                for export in reader {
-                    let export = export?;
-                    if export.name == "get_abi_ptr"
-                        || export.name == "get_abi_len"
-                        || export.name == "get_abi"
-                    {
-                        has_get_abi_exports = true;
-                    }
-                }
-            }
-            _ => {}
+        Commands::Inspect { wasm_file } => {
+            inspect::inspect_wasm(&wasm_file)?;
         }
-    }
-
-    // Check if we found the ABI section
-    let abi_json = match abi_section {
-        Some(data) => {
-            let json_str = String::from_utf8(data)?;
-
-            // Validate JSON
-            drop(serde_json::from_str::<serde_json::Value>(&json_str)?);
-
-            json_str
-        }
-        None => {
-            eyre::bail!("No 'calimero_abi_v1' custom section found in WASM file");
-        }
-    };
-
-    // Verify if requested
-    if verify && !has_get_abi_exports {
-        eyre::bail!("Verification failed: get_abi* exports not found in WASM file");
-    }
-
-    // Determine output path
-    let output_path = match output {
-        Some(path) => path.to_path_buf(),
-        None => {
-            let mut path = wasm_file.clone();
-            let _ = path.set_extension("abi.json");
-            path
-        }
-    };
-
-    // Write the ABI JSON
-    fs::write(&output_path, abi_json)?;
-
-    println!("ABI extracted successfully to: {}", output_path.display());
-
-    if verify {
-        println!("Verification passed: get_abi* exports found");
     }
 
     Ok(())
