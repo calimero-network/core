@@ -9,11 +9,7 @@
       }
     },
     {
-      "contextCreate": {
-        "params": {
-          "title": "Test Document"
-        }
-      }
+      "contextCreate": null
     },
     {
       "contextCreateAlias": {
@@ -44,10 +40,10 @@
       "call": {
         "methodName": "get_title",
         "argsJson": {},
-        "expectedResultJson": "Test Document",
+        "expectedResultJson": "Untitled Document",
         "target": "inviter",
         "description": [
-          "Verify document title was set correctly"
+          "Verify document has default title"
         ]
       }
     },

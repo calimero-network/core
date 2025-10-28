@@ -29,7 +29,6 @@ steps:
     type: create_context
     node: calimero-node-1
     application_id: "{{app_id}}"
-    params: '{"title": "Shared Document"}'
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey
@@ -410,10 +409,10 @@ steps:
     outputs:
       initial_title: result
 
-  - name: Assert title is Shared Document
+  - name: Assert title is Untitled Document
     type: json_assert
     statements:
-      - 'json_equal({{initial_title}}, {"output": "Shared Document"})'
+      - 'json_equal({{initial_title}}, {"output": "Untitled Document"})'
 
   # Step 22: Change document title from Node 2
   - name: Set New Title from Node 2

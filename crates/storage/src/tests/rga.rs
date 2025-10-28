@@ -263,7 +263,7 @@ fn test_rga_special_characters() {
     rga.insert(0, '\0').unwrap();
     let text = rga.get_text().unwrap();
     assert_eq!(text.len(), initial_len + 1); // One more character added
-    // Due to RGA ordering, null char might not be first
+                                             // Due to RGA ordering, null char might not be first
     assert!(text.contains('\0'));
 }
 
@@ -415,7 +415,7 @@ fn test_rga_get_text_after_many_deletes() {
     let mut rga = ReplicatedGrowableArray::new();
 
     rga.insert_str(0, "abcdefghij").unwrap();
-    
+
     // Delete every other character
     rga.delete(1).unwrap(); // b
     rga.delete(2).unwrap(); // d (was at index 3)
@@ -465,4 +465,3 @@ fn test_rga_whitespace_handling() {
     assert_eq!(rga.len().unwrap(), 7);
     assert_eq!(rga.get_text().unwrap(), "   \t\t\n\n");
 }
-

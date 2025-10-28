@@ -36,18 +36,12 @@ This will:
 
 ### Initialization
 
-#### `init(title: String) -> EditorState`
-Initialize a new collaborative document.
+#### `init() -> EditorState`
+Initialize a new collaborative document with a default title "Untitled Document".
 
-**Parameters:**
-- `title`: The document title/name
+**Parameters:** None
 
-**Example:**
-```json
-{
-  "title": "My Shared Document"
-}
-```
+**Note:** After initialization, you can change the title using the `set_title` method.
 
 ---
 

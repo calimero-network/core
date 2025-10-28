@@ -88,14 +88,12 @@ fn encode_identity(identity: &[u8; 32]) -> String {
 
 #[app::logic]
 impl EditorState {
-    /// Initialize a new collaborative document
-    ///
-    /// # Arguments
-    /// * `title` - The document title/name
+    /// Initialize a new collaborative document with a default title
     #[app::init]
-    pub fn init(title: String) -> EditorState {
+    pub fn init() -> EditorState {
         let owner_id = env::executor_id();
         let owner = encode_identity(&owner_id);
+        let title = "Untitled Document".to_string();
 
         app::log!("Initializing collaborative editor: {} by {}", title, owner);
 
