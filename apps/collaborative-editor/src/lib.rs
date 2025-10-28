@@ -10,7 +10,6 @@
 #![allow(clippy::len_without_is_empty)]
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env};
 use calimero_storage::collections::{Counter, ReplicatedGrowableArray};
 

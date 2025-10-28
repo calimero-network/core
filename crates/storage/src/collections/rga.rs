@@ -117,7 +117,7 @@ impl RgaChar {
 /// Replicated Growable Array - A CRDT for collaborative text editing
 ///
 /// Built on UnorderedMap for automatic CRDT behavior, with RGA ordering logic.
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct ReplicatedGrowableArray<S: StorageAdaptor = MainStorage> {
     /// Characters stored by CharKey with ordering metadata
     #[borsh(bound(serialize = "", deserialize = ""))]
@@ -174,7 +174,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         let char_id = CharId::new(timestamp, 0);
         let new_char = RgaChar::new(content, left);
 
-        self.chars.insert(CharKey::new(char_id), new_char)?;
+        let _ = self.chars.insert(CharKey::new(char_id), new_char)?;
 
         Ok(())
     }
@@ -191,7 +191,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             crate::interface::StorageError::InvalidData("position out of bounds".into()),
         ))?;
 
-        self.chars.remove(&CharKey::new(*char_id))?;
+        let _ = self.chars.remove(&CharKey::new(*char_id))?;
 
         Ok(())
     }
@@ -254,7 +254,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             let char_id = CharId::new(timestamp, seq as u32);
             let new_char = RgaChar::new(content, left);
 
-            self.chars.insert(CharKey::new(char_id), new_char)?;
+            let _ = self.chars.insert(CharKey::new(char_id), new_char)?;
 
             // Next char's left is this char
             left = char_id;
@@ -285,7 +285,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
 
         // Delete each character in range
         for (char_id, _) in &ordered[start..end] {
-            self.chars.remove(&CharKey::new(*char_id))?;
+            let _ = self.chars.remove(&CharKey::new(*char_id))?;
         }
 
         Ok(())
@@ -294,7 +294,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     // Helper: Get all characters in RGA order (excludes deleted automatically via UnorderedMap)
     fn get_ordered_chars(&self) -> Result<Vec<(CharId, RgaChar)>, StoreError> {
         // Get all non-deleted characters from UnorderedMap
-        let mut chars: Vec<(CharId, RgaChar)> = self
+        let chars: Vec<(CharId, RgaChar)> = self
             .chars
             .entries()?
             .map(|(key, char)| (key.id(), char))

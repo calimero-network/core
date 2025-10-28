@@ -29,8 +29,7 @@ steps:
     type: create_context
     node: calimero-node-1
     application_id: "{{app_id}}"
-    init_args:
-      title: Shared Document
+    params: '{"title": "Shared Document"}'
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

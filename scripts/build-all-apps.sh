@@ -7,6 +7,7 @@ BUILD_SCRIPTS=(
     "apps/kv-store/build.sh"
     "apps/kv-store-with-handlers/build.sh"
     "apps/kv-store-init/build.sh"
+    "apps/collaborative-editor/build.sh"
 )
 
 run_script() {
