@@ -33,8 +33,9 @@ usage() {
     echo "  -p, --protocol PROTOCOL    Protocol to test:"
     echo "                             - near, icp, ethereum (KV Store only)"
     echo "                             - near-handlers (KV Store with Handlers - NEAR only)"
+    echo "                             - near-blobs (Blob API - NEAR only)"
     echo "                             - near-proposals, icp-proposals, ethereum-proposals"
-    echo "                             - all (runs all tests: KV Store + Handlers + Proposals)"
+    echo "                             - all (runs all tests: KV Store + Handlers + Blobs + Proposals)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
     echo "  -b, --build                Build merod and meroctl binaries before testing"
@@ -46,8 +47,9 @@ usage() {
     echo "Examples:"
     echo "  $0 --protocol near --build                     # Run NEAR KV Store tests"
     echo "  $0 --protocol near-handlers --build --build-apps  # Run NEAR Handlers tests"
+    echo "  $0 --protocol near-blobs --build --build-apps  # Run NEAR Blob API tests"
     echo "  $0 --protocol icp --check-devnets --build      # Check ICP devnet and test"
-    echo "  $0 --protocol all --build --build-apps         # Build and test all (7 suites)"
+    echo "  $0 --protocol all --build --build-apps         # Build and test all (8 suites)"
     echo "  $0 --workflow path/to/custom.yml               # Run custom workflow"
     echo ""
     echo "Devnet Setup (run separately before testing):"
@@ -190,6 +192,13 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${GREEN}✓ KV store with handlers app built successfully${NC}"
     else
         echo -e "${RED}Error: Failed to build kv-store-with-handlers app${NC}"
+        exit 1
+    fi
+    
+    if ./apps/blobs/build.sh; then
+        echo -e "${GREEN}✓ Blobs app built successfully${NC}"
+    else
+        echo -e "${RED}Error: Failed to build blobs app${NC}"
         exit 1
     fi
     echo ""
@@ -430,6 +439,12 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/near.yml" "near-handlers"
             FAILED=$?
             ;;
+        near-blobs)
+            echo -e "${YELLOW}Running NEAR Blob API test...${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/near.yml" "near-blobs"
+            FAILED=$?
+            ;;
         near-proposals)
             echo -e "${YELLOW}Running NEAR proposals comprehensive test...${NC}"
             echo ""
@@ -489,6 +504,15 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/near.yml" "near-handlers"
             NEAR_HANDLERS_RESULT=$?
             
+            # === Blob API Tests ===
+            echo ""
+            echo -e "${BLUE}━━━ Blob API Tests ━━━${NC}"
+            echo ""
+            
+            # Run NEAR Blobs (doesn't need devnet)
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/near.yml" "near-blobs"
+            NEAR_BLOBS_RESULT=$?
+            
             # === Proposals Tests ===
             echo ""
             echo -e "${BLUE}━━━ Proposals Tests ━━━${NC}"
@@ -516,7 +540,7 @@ else
                 ETH_PROP_RESULT=0
             fi
             
-            FAILED=$((NEAR_KV_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
+            FAILED=$((NEAR_KV_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
             ;;
         "")
             echo -e "${RED}Error: Protocol not specified${NC}"

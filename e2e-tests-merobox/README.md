@@ -13,7 +13,8 @@ e2e-tests-merobox/
 │   │   └── ethereum.yml    # Ethereum protocol
 │   ├── kv-store-with-handlers/ # KV Store with Handlers workflows
 │   │   ├── near.yml        # NEAR protocol (handlers test)
-│   │   └── README.md       # Handlers testing guide
+│   ├── blobs/              # Blob API workflows
+│   │   ├── near.yml        # NEAR protocol (blob API test)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -71,16 +72,20 @@ cargo build -p merod -p meroctl
 # Run Ethereum tests (with devnet check)
 ./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
 
-# Run all protocols (KV Store + Handlers + Proposals)
+# Run all protocols (KV Store + Handlers + Blobs + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 7 test suites:
+# Note: This runs 8 test suites:
 # - KV Store: near, icp (if dfx running), ethereum (if anvil running)
 # - Handlers: near-handlers
+# - Blob API: near-blobs
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 
 # Run KV Store with Handlers test (NEAR only)
 ./e2e-tests-merobox/run-local.sh --protocol near-handlers --build --build-apps
+
+# Run Blob API test (NEAR only)
+./e2e-tests-merobox/run-local.sh --protocol near-blobs --build --build-apps
 
 # Run custom workflow
 ./e2e-tests-merobox/run-local.sh --workflow path/to/custom.yml
@@ -343,11 +348,13 @@ The CI workflow uploads:
 | -------------------------- | ------------------- | ----- | ----------- |
 | **KV Store**               | NEAR, ICP, Ethereum | ~48   | Implemented |
 | **KV Store with Handlers** | NEAR                | ~35   | Implemented |
+| **Blob API**               | NEAR                | ~30   | Implemented |
 | **Proposals**              | NEAR, ICP, Ethereum | 70+   | Implemented |
 
 ### Planned Tests
 
 - KV Store with Handlers (ICP, Ethereum)
+- Blob API (ICP, Ethereum)
 - Open Invitations (NEAR, ICP, Ethereum) - requires merobox support
 - External State Verification (all protocols)
 
