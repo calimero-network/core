@@ -9,7 +9,7 @@ use std::str::FromStr;
 // External crates
 use calimero_primitives::alias::{Alias, ScopedAlias};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::blobs::{BlobId, BlobMetadata};
+use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -238,6 +238,43 @@ where
         };
 
         Ok(blob_info)
+    }
+
+    pub async fn upload_blob(
+        &self,
+        data: Vec<u8>,
+        context_id: Option<&ContextId>,
+    ) -> Result<BlobInfo> {
+        let path = if let Some(ctx_id) = context_id {
+            format!("admin-api/blobs?context_id={}", ctx_id)
+        } else {
+            "admin-api/blobs".to_owned()
+        };
+
+        let response = self.connection.put_binary(&path, data).await?;
+
+        #[derive(serde::Deserialize)]
+        struct BlobUploadResponse {
+            data: BlobInfo,
+        }
+
+        let upload_response: BlobUploadResponse = response.json().await?;
+        Ok(upload_response.data)
+    }
+
+    pub async fn download_blob(
+        &self,
+        blob_id: &BlobId,
+        context_id: Option<&ContextId>,
+    ) -> Result<Vec<u8>> {
+        let path = if let Some(ctx_id) = context_id {
+            format!("admin-api/blobs/{}?context_id={}", blob_id, ctx_id)
+        } else {
+            format!("admin-api/blobs/{}", blob_id)
+        };
+
+        let data = self.connection.get_binary(&path).await?;
+        Ok(data)
     }
 
     pub async fn generate_context_identity(&self) -> Result<GenerateContextIdentityResponse> {

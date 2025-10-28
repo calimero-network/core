@@ -441,11 +441,10 @@ impl ContextClient {
             meta.dag_heads.clone(),
         );
 
-        tracing::info!(
+        tracing::debug!(
             %context_id,
             dag_heads_count = meta.dag_heads.len(),
-            dag_heads = ?meta.dag_heads,
-            "Loaded context with dag_heads from database"
+            "Loaded context from database"
         );
 
         Ok(Some(context))
@@ -483,7 +482,6 @@ impl ContextClient {
         tracing::debug!(
             %context_id,
             dag_heads_count = dag_heads.len(),
-            dag_heads = ?dag_heads,
             "Updated dag_heads in database"
         );
 

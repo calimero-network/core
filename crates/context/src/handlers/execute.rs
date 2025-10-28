@@ -726,7 +726,7 @@ async fn internal_execute(
         debug!(
             context_id = %context.id,
             root_hash = ?context.root_hash,
-            dag_heads = ?context.dag_heads,
+            dag_heads_count = context.dag_heads.len(),
             is_state_op,
             "Persisting context metadata to database"
         );
@@ -765,7 +765,7 @@ async fn internal_execute(
         debug!(
             context_id = %context.id,
             root_hash = ?context.root_hash,
-            dag_heads = ?context.dag_heads,
+            dag_heads_count = context.dag_heads.len(),
             is_state_op,
             "Context metadata persisted successfully"
         );

@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
+use calimero_primitives::context::ContextId;
 use futures_util::{AsyncRead, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -20,6 +21,8 @@ use crate::AdminState;
 pub struct BlobUploadQuery {
     /// Expected hash of the blob for verification
     hash: Option<String>,
+    /// Context ID to announce the blob to for network discovery
+    context_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Copy, Clone)]
@@ -63,6 +66,7 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
 ///
 /// Query parameters:
 /// - `hash`: Expected hash of the blob for verification (optional)
+/// - `context_id`: Context ID to announce the blob to for network discovery (optional)
 pub async fn upload_handler(
     Query(query): Query<BlobUploadQuery>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -83,8 +87,27 @@ pub async fn upload_handler(
         None
     };
 
+    let context_id = if let Some(context_id_str) = query.context_id {
+        match context_id_str.parse() {
+            Ok(context_id) => {
+                info!("Uploading blob with context announcement");
+                debug!(context_id=%context_id, "Will announce blob to context");
+                Some(context_id)
+            }
+            Err(_) => {
+                return ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "The provided context_id is not a valid format".to_owned(),
+                }
+                .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     info!("Uploading blob");
-    debug!(has_expected_hash=%expected_hash.is_some(), "Blob upload request");
+    debug!(has_expected_hash=%expected_hash.is_some(), has_context=%context_id.is_some(), "Blob upload request");
 
     let reader = body_to_async_read(body);
 
@@ -101,6 +124,23 @@ pub async fn upload_handler(
                 size_mib=%(size as f64 / (1024.0 * 1024.0)),
                 "Blob upload details"
             );
+
+            // Announce blob to network if context_id is provided
+            if let Some(ctx_id) = context_id {
+                match state
+                    .node_client
+                    .announce_blob_to_network(&blob_id, &ctx_id, size)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(blob_id=%blob_id, context_id=%ctx_id, "Blob announced to network");
+                    }
+                    Err(err) => {
+                        error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to announce blob to network");
+                    }
+                }
+            }
+
             ApiResponse {
                 payload: BlobUploadResponse {
                     data: BlobInfo { blob_id, size },
