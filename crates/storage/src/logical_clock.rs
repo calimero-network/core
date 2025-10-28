@@ -242,6 +242,11 @@ impl LogicalClock {
         }
     }
 
+    #[expect(
+        clippy::integer_division,
+        reason = "Required for nanosecond to NTP64 time conversion"
+    )]
+    #[expect(unsafe_code, reason = "self.id guaranteed non-zero by constructor")]
     pub(crate) fn new_timestamp<F>(&mut self, time_now_fn: F) -> HybridTimestamp
     where
         F: FnOnce() -> u64,
@@ -253,7 +258,7 @@ impl LogicalClock {
         // NTP64: upper 32 bits = seconds, lower 32 bits = fraction of second
         let secs = now_nanos / 1_000_000_000;
         let nanos = now_nanos % 1_000_000_000;
-        let frac = (nanos * (1u64 << 32)) / 1_000_000_000;
+        let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
         let physical_time = (secs << 32) | frac;
 
         // HLC algorithm: time = max(physical, last_observed)
@@ -268,12 +273,17 @@ impl LogicalClock {
         // Embed counter in low 16 bits of timestamp
         let time_with_counter = NTP64((self.last_time & !0xFFFF) | (self.counter as u64 & 0xFFFF));
 
-        let id = ID::from(NonZeroU128::new(self.id).expect("ID is never zero"));
+        // Safety: self.id is initialized to non-zero in `new()` and never changes
+        let id = ID::from(unsafe { NonZeroU128::new_unchecked(self.id) });
 
         HybridTimestamp::from(Timestamp::new(time_with_counter, id))
     }
 
     /// Update with remote timestamp (maintains causality, rejects if >5s in future).
+    #[expect(
+        clippy::integer_division,
+        reason = "Required for nanosecond to NTP64 time conversion"
+    )]
     pub(crate) fn update<F>(
         &mut self,
         remote_ts: &HybridTimestamp,
@@ -290,7 +300,7 @@ impl LogicalClock {
         // Convert nanoseconds to NTP64 format
         let secs = now_nanos / 1_000_000_000;
         let nanos = now_nanos % 1_000_000_000;
-        let frac = (nanos * (1u64 << 32)) / 1_000_000_000;
+        let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
         let local_ntp = (secs << 32) | frac;
 
         // Drift protection: reject if >5s in future
