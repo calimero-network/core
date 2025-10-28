@@ -1,6 +1,6 @@
 # Calimero Relayer
 
-The `calimero-relayer` is a standalone relay server for external client interactions with the Calimero network. It forwards requests to the appropriate blockchain protocols based on its own configuration and operates independently of the main `merod` node.
+The `mero-relayer` is a standalone relay server for external client interactions with the Calimero network. It forwards requests to the appropriate blockchain protocols based on its own configuration and operates independently of the main `merod` node.
 
 ## Usage
 
@@ -10,19 +10,19 @@ The relayer is a self-contained standalone service:
 
 ```bash
 # Build the binary
-cargo build --bin calimero-relayer
+cargo build --bin mero-relayer
 
 # Run with default settings (listens on 0.0.0.0:63529, Near testnet enabled with default credentials)
-calimero-relayer
+mero-relayer
 
 # Run with custom address
-calimero-relayer --listen 127.0.0.1:8080
+mero-relayer --listen 127.0.0.1:8080
 
 # Load configuration from file
-calimero-relayer --config /path/to/relayer-config.toml
+mero-relayer --config /path/to/relayer-config.toml
 
 # Get help
-calimero-relayer --help
+mero-relayer --help
 ```
 
 ### Configuration
@@ -35,13 +35,13 @@ The relayer works **out-of-the-box** with sensible defaults:
 
 ```bash
 # Just run it! Near testnet enabled with working credentials
-calimero-relayer
+mero-relayer
 ```
 
 **Default Configuration:**
 - **Near Protocol**: ✅ Enabled (requires `NEAR_DEFAULT_SECRET_KEY` environment variable)
 - **Starknet**: ❌ Disabled (enable with `ENABLE_STARKNET=true`)
-- **ICP**: ❌ Disabled (enable with `ENABLE_ICP=true`)  
+- **ICP**: ❌ Disabled (enable with `ENABLE_ICP=true`)
 - **Ethereum**: ❌ Disabled (enable with `ENABLE_ETHEREUM=true`)
 
 **Security Note**: For security reasons, secret keys are **never** hardcoded. Even default configurations require environment variables for credentials.
@@ -129,7 +129,7 @@ contract_id = "<PUT_CONTRACT_ID_HERE>"
 
 Then run:
 ```bash
-calimero-relayer --config relayer-config.toml
+mero-relayer --config relayer-config.toml
 ```
 
 ### Migration from Merod
@@ -141,7 +141,7 @@ The relayer functionality has been **completely removed from merod** and is now 
 # merod --node-name my-node relay --listen 127.0.0.1:63529
 
 # NEW (standalone with own config):
-calimero-relayer --listen 127.0.0.1:63529
+mero-relayer --listen 127.0.0.1:63529
 ```
 
 
@@ -174,7 +174,7 @@ NEAR_ACCOUNT_ID=<PUT_YOUR_ACCOUNT_ID_HERE>
 NEAR_PUBLIC_KEY=<PUT_YOUR_PUBLIC_KEY_HERE>
 NEAR_SECRET_KEY=<PUT_YOUR_SECRET_KEY_HERE>
 
-# Ethereum  
+# Ethereum
 ENABLE_ETHEREUM=true
 ETHEREUM_ACCOUNT_ID=<PUT_YOUR_ACCOUNT_ID_HERE>
 ETHEREUM_SECRET_KEY=<PUT_YOUR_SECRET_KEY_HERE>
