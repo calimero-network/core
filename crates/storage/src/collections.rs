@@ -19,6 +19,8 @@ pub mod unordered_set;
 pub use unordered_set::UnorderedSet;
 pub mod vector;
 pub use vector::Vector;
+pub mod rga;
+pub use rga::ReplicatedGrowableArray;
 mod root;
 #[doc(hidden)]
 pub use root::Root;
