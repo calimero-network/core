@@ -72,6 +72,9 @@ pub mod merge;
 pub mod snapshot;
 pub mod store;
 
+// Re-export for convenience
+pub use merge::register_crdt_merge;
+
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
     pub use sha2::{Digest, Sha256};
@@ -96,10 +99,17 @@ pub mod tests {
     pub mod crdt;
     /// Delta creation and commit tests.
     pub mod delta;
+    /// LWW (Last-Write-Wins) Register CRDT tests.
+    pub mod lww_register;
+    /// Merge integration tests (using serialization instead of Clone).
+    pub mod merge_integration;
     /// Merkle hash propagation tests.
     pub mod merkle;
     /// RGA (Replicated Growable Array) CRDT tests.
     pub mod rga;
+    // TODO: Re-enable once Clone is implemented for collections
+    // /// Nested CRDT merge behavior tests.
+    // pub mod nested_crdt_merge;
 }
 
 #[cfg(test)]

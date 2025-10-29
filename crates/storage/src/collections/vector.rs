@@ -35,8 +35,8 @@ where
     V: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    /// Create a new vector collection.
-    fn new_internal() -> Self {
+    /// Create a new vector collection (internal, shared with decompose).
+    pub(super) fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
         }

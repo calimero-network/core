@@ -7028,6 +7028,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nested-crdt-test"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "netlink-packet-core"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
