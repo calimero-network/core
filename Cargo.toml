@@ -380,21 +380,3 @@ multiple_crate_versions = "allow" # Cannot resolve all these
 missing_errors_doc = "allow"      # TODO: Remove later once documentation has been added
 missing_panics_doc = "allow"      # TODO: Remove later once documentation has been added
 future_not_send = "allow"         # TODO: Remove later once Send is implemented
-
-# Patch crates.io to use local workspace versions
-# This allows calimero-context-primitives dev-dependency on calimero-context to use local version
-# during development, avoiding conflicts during dependency upgrades (e.g., alloy 0.11 vs 1.0).
-#
-# CIRCULAR DEV-DEPENDENCY WORKAROUND:
-#   calimero-context → calimero-context-primitives (regular dependency)
-#   calimero-context-primitives → calimero-context (dev-dependency with version range)
-#
-# During local development: This patch makes the version range use the local unpublished version
-# During publishing: The version range allows publishing without requiring the exact version on crates.io
-#
-# TODO: For cleaner architecture, consider:
-#   1. Move tests requiring calimero-context to integration tests in calimero-context itself
-#   2. Create a separate calimero-context-test-utils crate
-#   3. Restructure code to break the dependency cycle
-[patch.crates-io]
-calimero-context = { path = "./crates/context" }
