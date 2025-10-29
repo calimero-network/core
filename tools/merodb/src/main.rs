@@ -11,7 +11,6 @@ use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 
 mod abi;
-mod deserializer;
 mod export;
 mod schema;
 mod types;
@@ -56,7 +55,7 @@ struct Cli {
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
 
-    /// WASM file for ABI-guided state deserialization (optional)
+    /// WASM file providing the ABI schema (required for export)
     #[arg(long, value_name = "WASM_FILE")]
     wasm_file: Option<PathBuf>,
 }
@@ -95,9 +94,7 @@ fn main() -> Result<()> {
                 Some(manifest)
             }
             Err(e) => {
-                eprintln!("Warning: Failed to load ABI from WASM: {e}");
-                eprintln!("Falling back to raw hex output for State and Delta columns");
-                None
+                eyre::bail!("Failed to load ABI from WASM: {e}");
             }
         }
     } else {
@@ -114,7 +111,11 @@ fn main() -> Result<()> {
             eyre::bail!("Must specify either --all or --columns when using --export");
         };
 
-        let data = export::export_data(&db, &columns, abi_manifest.as_ref())?;
+        let manifest = abi_manifest
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("--wasm-file is required when exporting data"))?;
+
+        let data = export::export_data(&db, &columns, manifest)?;
         output_json(&data, cli.output.as_deref())?;
     } else if cli.validate {
         let validation_result = validation::validate_database(&db)?;
