@@ -309,7 +309,7 @@ mod tests {
     fn test_vector_push() {
         let mut vector = Root::new(|| Vector::new());
 
-        let value = "test_data".to_string();
+        let value = "test_data".to_owned();
         let result = vector.push(value.clone());
         assert!(result.is_ok());
         assert_eq!(vector.len().unwrap(), 1);
@@ -319,7 +319,7 @@ mod tests {
     fn test_vector_get() {
         let mut vector = Root::new(|| Vector::new());
 
-        let value = "test_data".to_string();
+        let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
         let retrieved_value = vector.get(0).unwrap();
         assert_eq!(retrieved_value, Some(value));
@@ -329,8 +329,8 @@ mod tests {
     fn test_vector_update() {
         let mut vector = Root::new(|| Vector::new());
 
-        let value1 = "test_data1".to_string();
-        let value2 = "test_data2".to_string();
+        let value1 = "test_data1".to_owned();
+        let value2 = "test_data2".to_owned();
         let _ = vector.push(value1.clone()).unwrap();
         let old = vector.update(0, value2.clone()).unwrap();
         let retrieved_value = vector.get(0).unwrap();
@@ -352,7 +352,7 @@ mod tests {
     fn test_vector_pop() {
         let mut vector = Root::new(|| Vector::new());
 
-        let value = "test_data".to_string();
+        let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
         let popped_value = vector.pop().unwrap();
         assert_eq!(popped_value, Some(value));
@@ -363,8 +363,8 @@ mod tests {
     fn test_vector_items() {
         let mut vector = Root::new(|| Vector::new());
 
-        let value1 = "test_data1".to_string();
-        let value2 = "test_data2".to_string();
+        let value1 = "test_data1".to_owned();
+        let value2 = "test_data2".to_owned();
         let _ = vector.push(value1.clone()).unwrap();
         let _ = vector.push(value2.clone()).unwrap();
         let items: Vec<String> = vector.iter().unwrap().collect();
@@ -375,10 +375,10 @@ mod tests {
     fn test_vector_contains() {
         let mut vector = Root::new(|| Vector::new());
 
-        let value = "test_data".to_string();
+        let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
         assert!(vector.contains(&value).unwrap());
-        let non_existent_value = "non_existent".to_string();
+        let non_existent_value = "non_existent".to_owned();
         assert!(!vector.contains(&non_existent_value).unwrap());
     }
 
@@ -386,7 +386,7 @@ mod tests {
     fn test_vector_clear() {
         let mut vector = Root::new(|| Vector::new());
 
-        let value = "test_data".to_string();
+        let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
         vector.clear().unwrap();
         assert_eq!(vector.len().unwrap(), 0);

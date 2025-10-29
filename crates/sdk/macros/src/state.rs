@@ -81,7 +81,10 @@ struct MaybeBoundEvent {
 // todo! move all errors to ParseError
 
 impl Parse for MaybeBoundEvent {
-    #[expect(clippy::unwrap_in_result, reason = "Error handling verified - errors exist when !fine")]
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "Error handling verified - errors exist when !fine"
+    )]
     fn parse(input: ParseStream<'_>) -> SynResult<Self> {
         let mut lifetime = None;
 

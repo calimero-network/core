@@ -439,10 +439,10 @@ mod tests {
     fn test_lww_register_merge() {
         env::reset_for_testing();
 
-        let mut reg1 = LwwRegister::new("Alice".to_string());
+        let mut reg1 = LwwRegister::new("Alice".to_owned());
         std::thread::sleep(std::time::Duration::from_millis(1));
 
-        let reg2 = LwwRegister::new("Bob".to_string());
+        let reg2 = LwwRegister::new("Bob".to_owned());
 
         // Use the Mergeable trait method
         Mergeable::merge(&mut reg1, &reg2).unwrap();
@@ -534,13 +534,13 @@ mod tests {
 
         // vec1 = [LwwRegister("A")]
         let mut vec1 = Vector::new();
-        vec1.push(LwwRegister::new("A".to_string())).unwrap();
+        vec1.push(LwwRegister::new("A".to_owned())).unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(1));
 
         // vec2 = [LwwRegister("B")]
         let mut vec2 = Vector::new();
-        vec2.push(LwwRegister::new("B".to_string())).unwrap();
+        vec2.push(LwwRegister::new("B".to_owned())).unwrap();
 
         // Merge
         vec1.merge(&vec2).unwrap();
@@ -558,22 +558,22 @@ mod tests {
 
         // set1 = {"alice", "bob"}
         let mut set1 = UnorderedSet::new();
-        set1.insert("alice".to_string()).unwrap();
-        set1.insert("bob".to_string()).unwrap();
+        set1.insert("alice".to_owned()).unwrap();
+        set1.insert("bob".to_owned()).unwrap();
 
         // set2 = {"charlie", "dave"}
         let mut set2 = UnorderedSet::new();
-        set2.insert("charlie".to_string()).unwrap();
-        set2.insert("dave".to_string()).unwrap();
+        set2.insert("charlie".to_owned()).unwrap();
+        set2.insert("dave".to_owned()).unwrap();
 
         // Merge
         set1.merge(&set2).unwrap();
 
         // Verify: Union of both sets
-        assert!(set1.contains(&"alice".to_string()).unwrap());
-        assert!(set1.contains(&"bob".to_string()).unwrap());
-        assert!(set1.contains(&"charlie".to_string()).unwrap());
-        assert!(set1.contains(&"dave".to_string()).unwrap());
+        assert!(set1.contains(&"alice".to_owned()).unwrap());
+        assert!(set1.contains(&"bob".to_owned()).unwrap());
+        assert!(set1.contains(&"charlie".to_owned()).unwrap());
+        assert!(set1.contains(&"dave".to_owned()).unwrap());
     }
 
     #[test]
@@ -584,24 +584,24 @@ mod tests {
 
         // set1 = {"alice", "bob", "charlie"}
         let mut set1 = UnorderedSet::new();
-        set1.insert("alice".to_string()).unwrap();
-        set1.insert("bob".to_string()).unwrap();
-        set1.insert("charlie".to_string()).unwrap();
+        set1.insert("alice".to_owned()).unwrap();
+        set1.insert("bob".to_owned()).unwrap();
+        set1.insert("charlie".to_owned()).unwrap();
 
         // set2 = {"bob", "charlie", "dave"}
         let mut set2 = UnorderedSet::new();
-        set2.insert("bob".to_string()).unwrap();
-        set2.insert("charlie".to_string()).unwrap();
-        set2.insert("dave".to_string()).unwrap();
+        set2.insert("bob".to_owned()).unwrap();
+        set2.insert("charlie".to_owned()).unwrap();
+        set2.insert("dave".to_owned()).unwrap();
 
         // Merge
         set1.merge(&set2).unwrap();
 
         // Verify: Union (duplicates deduplicated)
-        assert!(set1.contains(&"alice".to_string()).unwrap());
-        assert!(set1.contains(&"bob".to_string()).unwrap());
-        assert!(set1.contains(&"charlie".to_string()).unwrap());
-        assert!(set1.contains(&"dave".to_string()).unwrap());
+        assert!(set1.contains(&"alice".to_owned()).unwrap());
+        assert!(set1.contains(&"bob".to_owned()).unwrap());
+        assert!(set1.contains(&"charlie".to_owned()).unwrap());
+        assert!(set1.contains(&"dave".to_owned()).unwrap());
     }
 
     #[test]
@@ -612,7 +612,7 @@ mod tests {
 
         // set1 = {"alice"}
         let mut set1 = UnorderedSet::new();
-        set1.insert("alice".to_string()).unwrap();
+        set1.insert("alice".to_owned()).unwrap();
 
         // set2 = {} (empty)
         let set2 = UnorderedSet::<String>::new();
@@ -621,6 +621,6 @@ mod tests {
         set1.merge(&set2).unwrap();
 
         // Verify: set1 unchanged
-        assert!(set1.contains(&"alice".to_string()).unwrap());
+        assert!(set1.contains(&"alice".to_owned()).unwrap());
     }
 }

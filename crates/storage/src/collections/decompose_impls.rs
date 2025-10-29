@@ -152,10 +152,8 @@ mod tests {
         env::reset_for_testing();
 
         let mut map = Root::new(|| UnorderedMap::new());
-        map.insert("key1".to_string(), "value1".to_string())
-            .unwrap();
-        map.insert("key2".to_string(), "value2".to_string())
-            .unwrap();
+        map.insert("key1".to_owned(), "value1".to_owned()).unwrap();
+        map.insert("key2".to_owned(), "value2".to_owned()).unwrap();
 
         let entries = map.decompose().unwrap();
         assert_eq!(entries.len(), 2);
@@ -166,9 +164,9 @@ mod tests {
         env::reset_for_testing();
 
         let mut original = Root::new(|| UnorderedMap::<String, u64>::new());
-        original.insert("a".to_string(), 1u64).unwrap();
-        original.insert("b".to_string(), 2u64).unwrap();
-        original.insert("c".to_string(), 3u64).unwrap();
+        original.insert("a".to_owned(), 1u64).unwrap();
+        original.insert("b".to_owned(), 2u64).unwrap();
+        original.insert("c".to_owned(), 3u64).unwrap();
 
         // Decompose
         let entries = original.decompose().unwrap();
@@ -177,9 +175,9 @@ mod tests {
         let reconstructed = UnorderedMap::<String, u64>::recompose(entries).unwrap();
 
         // Verify
-        assert_eq!(reconstructed.get(&"a".to_string()).unwrap(), Some(1u64));
-        assert_eq!(reconstructed.get(&"b".to_string()).unwrap(), Some(2u64));
-        assert_eq!(reconstructed.get(&"c".to_string()).unwrap(), Some(3u64));
+        assert_eq!(reconstructed.get(&"a".to_owned()).unwrap(), Some(1u64));
+        assert_eq!(reconstructed.get(&"b".to_owned()).unwrap(), Some(2u64));
+        assert_eq!(reconstructed.get(&"c".to_owned()).unwrap(), Some(3u64));
     }
 
     #[test]
@@ -200,9 +198,9 @@ mod tests {
         env::reset_for_testing();
 
         let mut original = Root::new(|| Vector::<String>::new());
-        original.push("first".to_string()).unwrap();
-        original.push("second".to_string()).unwrap();
-        original.push("third".to_string()).unwrap();
+        original.push("first".to_owned()).unwrap();
+        original.push("second".to_owned()).unwrap();
+        original.push("third".to_owned()).unwrap();
 
         // Decompose
         let entries = original.decompose().unwrap();
@@ -211,9 +209,9 @@ mod tests {
         let reconstructed = Vector::<String>::recompose(entries).unwrap();
 
         // Verify all values are present in correct order
-        assert_eq!(reconstructed.get(0).unwrap(), Some("first".to_string()));
-        assert_eq!(reconstructed.get(1).unwrap(), Some("second".to_string()));
-        assert_eq!(reconstructed.get(2).unwrap(), Some("third".to_string()));
+        assert_eq!(reconstructed.get(0).unwrap(), Some("first".to_owned()));
+        assert_eq!(reconstructed.get(1).unwrap(), Some("second".to_owned()));
+        assert_eq!(reconstructed.get(2).unwrap(), Some("third".to_owned()));
         assert_eq!(reconstructed.len().unwrap(), 3);
     }
 }

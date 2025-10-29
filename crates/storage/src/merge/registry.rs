@@ -75,10 +75,12 @@ where
         borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {}", e).into())
     };
 
-    MERGE_REGISTRY
-        .write()
-        .expect("Merge registry lock poisoned")
-        .insert(type_id, merge_fn);
+    let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
+        // Lock poisoning is a programming error that should never happen
+        // In production, this indicates a bug in the merge system
+        std::process::abort()
+    });
+    registry.insert(type_id, merge_fn);
 }
 
 /// Try to merge using registered merge function

@@ -137,6 +137,10 @@ impl CompositeKey {
     /// let parts = CompositeKey::parse_multi(b"a::b::c")?;
     /// assert_eq!(parts, vec![b"a", b"b", b"c"]);
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParseError::InvalidFormat` if the key format is invalid
     pub fn parse_multi(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ParseError> {
         if bytes.is_empty() {
             return Ok(Vec::new());
