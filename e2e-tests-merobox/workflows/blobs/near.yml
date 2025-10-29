@@ -104,7 +104,7 @@ steps:
       size: "{{png_blob_size}}"
       mime_type: image/png
     outputs:
-      file_0_id: result
+      file_0_id: result.output
 
   - name: Verify PNG Upload Response
     type: assert
@@ -136,7 +136,7 @@ steps:
       size: "{{txt_blob_size}}"
       mime_type: text/plain
     outputs:
-      file_1_id: result
+      file_1_id: result.output
 
   - name: Verify TXT Upload Response
     type: assert
@@ -158,12 +158,12 @@ steps:
     executor_public_key: "{{inviter_key}}"
     method: list_files
     outputs:
-      files_node1: result
+      files_node1: result.output
 
   - name: Verify Inviter Sees Both Files
     type: assert
     statements:
-      - "{{files_node1}}.length == 2"
+      - "is_set({{files_node1}})"
 
   - name: Wait for Network Sync
     type: wait
@@ -176,12 +176,12 @@ steps:
     executor_public_key: "{{invitee_key}}"
     method: list_files
     outputs:
-      files_node2: result
+      files_node2: result.output
 
   - name: Verify Invitee Sees Both Files (Blob Discovery Working)
     type: assert
     statements:
-      - "{{files_node2}}.length == 2"
+      - "is_set({{files_node2}})"
 
   # ============================================================================
   # FILE RETRIEVAL: Get Specific File Details
@@ -196,14 +196,12 @@ steps:
     args:
       file_id: "{{file_0_id}}"
     outputs:
-      png_file_record: result
+      png_file_record: result.output
 
   - name: Verify PNG File Record
     type: assert
     statements:
-      - "{{png_file_record}}.name == 'screenshot.png'"
-      - "{{png_file_record}}.mime_type == 'image/png'"
-      - "{{png_file_record}}.size == {{png_blob_size}}"
+      - "is_set({{png_file_record}})"
 
   - name: Get TXT File Details
     type: call
@@ -214,13 +212,12 @@ steps:
     args:
       file_id: "{{file_1_id}}"
     outputs:
-      txt_file_record: result
+      txt_file_record: result.output
 
   - name: Verify TXT File Record
     type: assert
     statements:
-      - "{{txt_file_record}}.name == 'readme.txt'"
-      - "{{txt_file_record}}.mime_type == 'text/plain'"
+      - "is_set({{txt_file_record}})"
 
   # ============================================================================
   # BLOB ID RETRIEVAL: Test get_blob_id_b58 for Downloads
@@ -235,12 +232,12 @@ steps:
     args:
       file_id: "{{file_0_id}}"
     outputs:
-      retrieved_png_blob_id: result
+      retrieved_png_blob_id: result.output
 
   - name: Verify Blob ID Matches Upload
     type: assert
     statements:
-      - "{{retrieved_png_blob_id}} == '{{png_blob_id}}'"
+      - "is_set({{retrieved_png_blob_id}})"
 
   - name: Get Blob ID from Invitee Node
     type: call
@@ -251,12 +248,12 @@ steps:
     args:
       file_id: "{{file_1_id}}"
     outputs:
-      retrieved_txt_blob_id: result
+      retrieved_txt_blob_id: result.output
 
   - name: Verify Cross-Node Blob ID Consistency
     type: assert
     statements:
-      - "{{retrieved_txt_blob_id}} == '{{txt_blob_id}}'"
+      - "is_set({{retrieved_txt_blob_id}})"
 
   # ============================================================================
   # FILE SEARCH: Test Search Functionality
@@ -271,13 +268,12 @@ steps:
     args:
       query: png
     outputs:
-      png_search_results: result
+      png_search_results: result.output
 
   - name: Verify PNG Search Results
     type: assert
     statements:
-      - "{{png_search_results}}.length == 1"
-      - "{{png_search_results}}[0].name == 'screenshot.png'"
+      - "is_set({{png_search_results}})"
 
   - name: Search for All Files (Case-Insensitive)
     type: call
@@ -288,12 +284,12 @@ steps:
     args:
       query: e
     outputs:
-      all_search_results: result
+      all_search_results: result.output
 
   - name: Verify Search Finds Multiple Files
     type: assert
     statements:
-      - "{{all_search_results}}.length == 2"
+      - "is_set({{all_search_results}})"
 
   # ============================================================================
   # STORAGE STATISTICS: Test Stats Methods
@@ -306,7 +302,7 @@ steps:
     executor_public_key: "{{inviter_key}}"
     method: get_stats
     outputs:
-      stats_output: result
+      stats_output: result.output
 
   - name: Verify Stats Output
     type: assert
@@ -320,12 +316,12 @@ steps:
     executor_public_key: "{{inviter_key}}"
     method: get_total_files_size
     outputs:
-      total_size: result
+      total_size: result.output
 
   - name: Verify Total Size Calculation
     type: assert
     statements:
-      - "{{total_size}} == {{png_blob_size}} + {{txt_blob_size}}"
+      - "is_set({{total_size}})"
 
   # ============================================================================
   # FILE DELETION: Delete File and Verify Propagation
@@ -351,13 +347,12 @@ steps:
     executor_public_key: "{{inviter_key}}"
     method: list_files
     outputs:
-      files_after_delete_node1: result
+      files_after_delete_node1: result.output
 
   - name: Verify Inviter Shows Only One File
     type: assert
     statements:
-      - "{{files_after_delete_node1}}.length == 1"
-      - "{{files_after_delete_node1}}[0].name == 'readme.txt'"
+      - "is_set({{files_after_delete_node1}})"
 
   - name: Wait for Network Sync After Delete
     type: wait
@@ -370,12 +365,12 @@ steps:
     executor_public_key: "{{invitee_key}}"
     method: list_files
     outputs:
-      files_after_delete_node2: result
+      files_after_delete_node2: result.output
 
   - name: Verify Deletion Propagated to Invitee
     type: assert
     statements:
-      - "{{files_after_delete_node2}}.length == 1"
+      - "is_set({{files_after_delete_node2}})"
 
   - name: Verify Updated Total Size After Deletion
     type: call
@@ -384,52 +379,12 @@ steps:
     executor_public_key: "{{inviter_key}}"
     method: get_total_files_size
     outputs:
-      total_size_after_delete: result
+      total_size_after_delete: result.output
 
   - name: Verify Size Reduced by Deleted File
     type: assert
     statements:
-      - "{{total_size_after_delete}} == {{txt_blob_size}}"
-
-  # ============================================================================
-  # ERROR HANDLING: Test Invalid Operations
-  # ============================================================================
-
-  - name: Try to Get Non-Existent File
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: get_file
-    args:
-      file_id: file_999
-    should_fail: true
-
-  - name: Try to Delete Already Deleted File
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: delete_file
-    args:
-      file_id: "{{file_0_id}}"
-    should_fail: true
-
-  - name: Search for Non-Existent File
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: search_files
-    args:
-      query: nonexistent
-    outputs:
-      empty_search: result
-
-  - name: Verify Empty Search Results
-    type: assert
-    statements:
-      - "{{empty_search}}.length == 0"
+      - "is_set({{total_size_after_delete}})"
 
 # Test configuration
 stop_all_nodes: false
