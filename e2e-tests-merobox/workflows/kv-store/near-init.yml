@@ -1,0 +1,408 @@
+name: "KV Store Init - NEAR"
+description: "KV Store with init() method test on NEAR protocol - verifies initialization and len() functionality"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: kv-init-near
+
+steps:
+  # ============================================================================
+  # Phase 1: Application Installation
+  # ============================================================================
+  - name: Install KV Store Init Application on Node 1
+    type: install_application
+    node: kv-init-near-1
+    path: "apps/kv-store-init/res/kv_store_init.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+      app_id_node1:
+        field: applicationId
+        target: app_id_{node_name}
+
+  # ============================================================================
+  # Phase 2: Context Creation (triggers init() method)
+  # ============================================================================
+  - name: Create Context on Node 1
+    type: create_context
+    node: kv-init-near-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+      ctx_id_node1:
+        field: contextId
+        target: context_id_{node_name}
+
+  - name: Wait for Context Initialization
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 3: Verify Initial State from init()
+  # ============================================================================
+  - name: Check Initial Length on Node 1
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    args: {}
+    outputs:
+      initial_len: result
+
+  - name: Verify Welcome Key from init()
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "welcome"
+    outputs:
+      welcome_value: result
+
+  - name: Verify init_key_1 from init()
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "init_key_1"
+    outputs:
+      init_key_1_value: result
+
+  - name: Verify init_key_2 from init()
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "init_key_2"
+    outputs:
+      init_key_2_value: result
+
+  # ============================================================================
+  # Phase 4: Generate Identities for Invitees
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: kv-init-near-2
+    outputs:
+      public_key_2: publicKey
+      key_node2:
+        field: publicKey
+        target: public_key_{node_name}
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: kv-init-near-3
+    outputs:
+      public_key_3: publicKey
+      key_node3:
+        field: publicKey
+        target: public_key_{node_name}
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  # ============================================================================
+  # Phase 5: Invite and Join
+  # ============================================================================
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_2}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Join Context from Node 2
+    type: join_context
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_2}}"
+    invitation: "{{invitation_2}}"
+
+  - name: Invite Node 3 from Node 1
+    type: invite_identity
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_3}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_3}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for Join and State Sync
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 6: Verify Invitees Synced Initial State
+  # ============================================================================
+  - name: Check Length on Node 2 (should have synced 3 items)
+    type: call
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: len
+    args: {}
+    outputs:
+      node2_initial_len: result
+
+  - name: Verify init_key_1 on Node 2
+    type: call
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "init_key_1"
+    outputs:
+      node2_init_key_1: result
+
+  - name: Verify Welcome Key on Node 2
+    type: call
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "welcome"
+    outputs:
+      node2_welcome: result
+
+  - name: Check Length on Node 3 (should have synced 3 items)
+    type: call
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: len
+    args: {}
+    outputs:
+      node3_initial_len: result
+
+  - name: Verify init_key_2 on Node 3
+    type: call
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "init_key_2"
+    outputs:
+      node3_init_key_2: result
+
+  - name: Verify Welcome Key on Node 3
+    type: call
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "welcome"
+    outputs:
+      node3_welcome: result
+
+  # ============================================================================
+  # Phase 7: Test Runtime Operations - Inviter Adds Data
+  # ============================================================================
+  - name: Set New Key from Node 1 (Inviter)
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "test_value"
+    outputs:
+      set_test_result: result
+
+  - name: Wait for Broadcast
+    type: wait
+    seconds: 5
+
+  - name: Verify New Key on Node 1
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      node1_test_key: result
+
+  - name: Verify New Key on Node 2
+    type: call
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      node2_test_key: result
+
+  - name: Verify New Key on Node 3
+    type: call
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      node3_test_key: result
+
+  # ============================================================================
+  # Phase 8: Test Runtime Operations - Invitee Adds Data
+  # ============================================================================
+  - name: Set Key from Node 2 (Invitee)
+    type: call
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: set
+    args:
+      key: "invitee_key"
+      value: "invitee_value"
+    outputs:
+      invitee_set_result: result
+
+  - name: Wait for Delta Propagation
+    type: wait
+    seconds: 5
+
+  - name: Verify Invitee Key on Node 1
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "invitee_key"
+    outputs:
+      node1_invitee_key: result
+
+  - name: Verify Invitee Key on Node 3
+    type: call
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "invitee_key"
+    outputs:
+      node3_invitee_key: result
+
+  # ============================================================================
+  # Phase 9: Verify Final Length (3 initial + 2 runtime = 5)
+  # ============================================================================
+  - name: Check Final Length on Node 1
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    args: {}
+    outputs:
+      node1_final_len: result
+
+  - name: Check Final Length on Node 2
+    type: call
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: len
+    args: {}
+    outputs:
+      node2_final_len: result
+
+  - name: Check Final Length on Node 3
+    type: call
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: len
+    args: {}
+    outputs:
+      node3_final_len: result
+
+  # ============================================================================
+  # Phase 10: Additional Verification - Update Existing Init Key
+  # ============================================================================
+  - name: Update init_key_1 from Node 3
+    type: call
+    node: kv-init-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: set
+    args:
+      key: "init_key_1"
+      value: "Updated value 1"
+    outputs:
+      update_init_key_result: result
+
+  - name: Wait for Update Propagation
+    type: wait
+    seconds: 5
+
+  - name: Verify Updated init_key_1 on Node 1
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "init_key_1"
+    outputs:
+      node1_updated_init_key: result
+
+  - name: Verify Updated init_key_1 on Node 2
+    type: call
+    node: kv-init-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "init_key_1"
+    outputs:
+      node2_updated_init_key: result
+
+  - name: Verify Length Unchanged After Update
+    type: call
+    node: kv-init-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    args: {}
+    outputs:
+      final_len_after_update: result
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 60
+nuke_on_end: true

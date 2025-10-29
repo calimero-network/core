@@ -32,10 +32,11 @@ usage() {
     echo "Options:"
     echo "  -p, --protocol PROTOCOL    Protocol to test:"
     echo "                             - near, icp, ethereum (KV Store only)"
+    echo "                             - near-init (KV Store with init() - NEAR only)"
     echo "                             - near-handlers (KV Store with Handlers - NEAR only)"
     echo "                             - near-blobs (Blob API - NEAR only)"
     echo "                             - near-proposals, icp-proposals, ethereum-proposals"
-    echo "                             - all (runs all tests: KV Store + Handlers + Blobs + Proposals)"
+    echo "                             - all (runs all tests: KV Store + Init + Handlers + Blobs + Proposals)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
     echo "  -b, --build                Build merod and meroctl binaries before testing"
@@ -46,10 +47,11 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  $0 --protocol near --build                     # Run NEAR KV Store tests"
+    echo "  $0 --protocol near-init --build --build-apps   # Run NEAR KV Store Init tests"
     echo "  $0 --protocol near-handlers --build --build-apps  # Run NEAR Handlers tests"
     echo "  $0 --protocol near-blobs --build --build-apps  # Run NEAR Blob API tests"
     echo "  $0 --protocol icp --check-devnets --build      # Check ICP devnet and test"
-    echo "  $0 --protocol all --build --build-apps         # Build and test all (8 suites)"
+    echo "  $0 --protocol all --build --build-apps         # Build and test all (9 suites)"
     echo "  $0 --workflow path/to/custom.yml               # Run custom workflow"
     echo ""
     echo "Devnet Setup (run separately before testing):"
@@ -117,13 +119,46 @@ if [ "$USE_VENV" = true ]; then
         rm -rf "$VENV_DIR"
     fi
     
-    # Create fresh virtual environment
+    # Create fresh virtual environment with Python 3.11 (required for calimero-client-py compatibility)
     echo -e "${BLUE}Creating virtual environment at $VENV_DIR${NC}"
-    if python3.11 -m venv "$VENV_DIR"; then
-        echo -e "${GREEN}✓ Virtual environment created${NC}"
+    
+    # Try to find Python 3.11 or compatible version
+    PYTHON_CMD=""
+    for py_version in python3.11 python3.12 python3.10 python3; do
+        if command -v $py_version &> /dev/null; then
+            PY_VER=$($py_version --version 2>&1 | awk '{print $2}')
+            PY_MAJOR=$(echo $PY_VER | cut -d. -f1)
+            PY_MINOR=$(echo $PY_VER | cut -d. -f2)
+            
+            echo -e "${BLUE}Found $py_version (version $PY_VER)${NC}"
+            
+            # Check if version is compatible (3.10, 3.11, or 3.12 are safe)
+            if [ "$PY_MAJOR" = "3" ] && [ "$PY_MINOR" -ge 10 ] && [ "$PY_MINOR" -le 12 ]; then
+                PYTHON_CMD=$py_version
+                echo -e "${GREEN}✓ Using $py_version (compatible version)${NC}"
+                break
+            elif [ "$PY_MAJOR" = "3" ] && [ "$PY_MINOR" -eq 13 ]; then
+                echo -e "${YELLOW}Warning: Python 3.13 may have compatibility issues with calimero-client-py${NC}"
+                echo -e "${YELLOW}Recommended: Install Python 3.11 with 'brew install python@3.11'${NC}"
+                # Still allow it, but warn
+                PYTHON_CMD=$py_version
+                break
+            fi
+        fi
+    done
+    
+    if [ -z "$PYTHON_CMD" ]; then
+        echo -e "${RED}Error: No compatible Python version found${NC}"
+        echo -e "${YELLOW}Please install Python 3.11 with:${NC}"
+        echo -e "${YELLOW}  brew install python@3.11${NC}"
+        exit 1
+    fi
+    
+    if $PYTHON_CMD -m venv "$VENV_DIR"; then
+        echo -e "${GREEN}✓ Virtual environment created with $PYTHON_CMD${NC}"
     else
         echo -e "${RED}Error: Failed to create virtual environment${NC}"
-        echo -e "${YELLOW}Make sure python3.11-venv is installed${NC}"
+        echo -e "${YELLOW}Make sure python3-venv is installed${NC}"
         exit 1
     fi
     
@@ -184,6 +219,7 @@ if [ "$BUILD_APPS" = true ]; then
     
     # Make build scripts executable
     chmod +x ./apps/kv-store/build.sh
+    chmod +x ./apps/kv-store-init/build.sh
     chmod +x ./apps/kv-store-with-handlers/build.sh
     chmod +x ./apps/blobs/build.sh
     
@@ -191,6 +227,13 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${GREEN}✓ KV store app built successfully${NC}"
     else
         echo -e "${RED}Error: Failed to build kv-store app${NC}"
+        exit 1
+    fi
+    
+    if ./apps/kv-store-init/build.sh; then
+        echo -e "${GREEN}✓ KV store init app built successfully${NC}"
+    else
+        echo -e "${RED}Error: Failed to build kv-store-init app${NC}"
         exit 1
     fi
     
@@ -425,6 +468,12 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near.yml" "near"
             FAILED=$?
             ;;
+        near-init)
+            echo -e "${YELLOW}Running NEAR KV Store Init test...${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near-init.yml" "near-init"
+            FAILED=$?
+            ;;
         icp)
             echo -e "${YELLOW}Note: ICP tests require dfx and a running ICP devnet${NC}"
             echo -e "${YELLOW}Run: ./scripts/icp/deploy-devnet.sh${NC}"
@@ -482,6 +531,10 @@ else
             # Run NEAR KV Store 
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near.yml" "near"
             NEAR_KV_RESULT=$?
+            
+            # Run NEAR KV Store Init
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near-init.yml" "near-init"
+            NEAR_KV_INIT_RESULT=$?
             
             # Check if ICP devnet is available
             if pgrep -f "dfx" > /dev/null; then
@@ -546,7 +599,7 @@ else
                 ETH_PROP_RESULT=0
             fi
             
-            FAILED=$((NEAR_KV_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
+            FAILED=$((NEAR_KV_RESULT + NEAR_KV_INIT_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
             ;;
         "")
             echo -e "${RED}Error: Protocol not specified${NC}"

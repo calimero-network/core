@@ -8,13 +8,14 @@ These tests use [Merobox](https://github.com/calimero-network/merobox) for e2e t
 e2e-tests-merobox/
 ├── workflows/
 │   ├── kv-store/           # KV Store test workflows
-│   │   ├── near.yml        # NEAR protocol
+│   │   ├── near.yml        # NEAR protocol (basic KV store)
+│   │   ├── near-init.yml   # NEAR protocol (KV store with init())
 │   │   ├── icp.yml         # ICP protocol
 │   │   └── ethereum.yml    # Ethereum protocol
 │   ├── kv-store-with-handlers/ # KV Store with Handlers workflows
-│   │   ├── near.yml        # NEAR protocol (handlers test)
+│   │   └── near.yml        # NEAR protocol (handlers test)
 │   ├── blobs/              # Blob API workflows
-│   │   ├── near.yml        # NEAR protocol (blob API test)
+│   │   └── near.yml        # NEAR protocol (blob API test)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -48,14 +49,19 @@ cargo build -p merod -p meroctl
 
 # Build test applications
 ./apps/kv-store/build.sh
+./apps/kv-store-init/build.sh
 ./apps/kv-store-with-handlers/build.sh
+./apps/blobs/build.sh
 ```
 
 ### Run Tests Locally
 
 ```bash
-# Run NEAR tests (no devnet needed)
+# Run NEAR KV Store test (no devnet needed)
 ./e2e-tests-merobox/run-local.sh --protocol near --build
+
+# Run NEAR KV Store Init test (tests init() and len() methods)
+./e2e-tests-merobox/run-local.sh --protocol near-init --build --build-apps
 
 # Run NEAR proposals comprehensive test
 ./e2e-tests-merobox/run-local.sh --protocol near-proposals --build --build-apps
@@ -72,11 +78,11 @@ cargo build -p merod -p meroctl
 # Run Ethereum tests (with devnet check)
 ./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
 
-# Run all protocols (KV Store + Handlers + Blobs + Proposals)
+# Run all protocols (KV Store + Init + Handlers + Blobs + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 8 test suites:
-# - KV Store: near, icp (if dfx running), ethereum (if anvil running)
+# Note: This runs 9 test suites:
+# - KV Store: near, near-init, icp (if dfx running), ethereum (if anvil running)
 # - Handlers: near-handlers
 # - Blob API: near-blobs
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
@@ -347,12 +353,14 @@ The CI workflow uploads:
 | Test Suite                 | Protocols           | Steps | Status      |
 | -------------------------- | ------------------- | ----- | ----------- |
 | **KV Store**               | NEAR, ICP, Ethereum | ~48   | Implemented |
+| **KV Store Init**          | NEAR                | ~50   | Implemented |
 | **KV Store with Handlers** | NEAR                | ~35   | Implemented |
 | **Blob API**               | NEAR                | ~30   | Implemented |
 | **Proposals**              | NEAR, ICP, Ethereum | 70+   | Implemented |
 
 ### Planned Tests
 
+- KV Store Init (ICP, Ethereum)
 - KV Store with Handlers (ICP, Ethereum)
 - Blob API (ICP, Ethereum)
 - Open Invitations (NEAR, ICP, Ethereum) - requires merobox support

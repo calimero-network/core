@@ -51,9 +51,11 @@ jobs:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x apps/kv-store/build.sh
+          chmod +x apps/kv-store-init/build.sh
           chmod +x apps/kv-store-with-handlers/build.sh
           chmod +x apps/blobs/build.sh
           ./apps/kv-store/build.sh
+          ./apps/kv-store-init/build.sh
           ./apps/kv-store-with-handlers/build.sh
           ./apps/blobs/build.sh
           cargo build -p meroctl -p merod
@@ -66,6 +68,7 @@ jobs:
             target/debug/meroctl
             target/debug/merod
             apps/kv-store/res/kv_store.wasm
+            apps/kv-store-init/res/kv_store_init.wasm
             apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
             apps/blobs/res/blobs.wasm
           retention-days: 2
@@ -193,6 +196,35 @@ jobs:
           retention-days: 2
 
       # ============================================================================
+      # Run Merobox Tests - KV Store Init (NEAR only)
+      # ============================================================================
+      - name: Run KV Store Init Tests
+        if: matrix.protocol == 'near'
+        id: kv-store-init-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          echo "=========================================="
+          echo "Running KV Store Init tests for NEAR"
+          echo "=========================================="
+
+          merobox bootstrap run \
+            e2e-tests-merobox/workflows/kv-store/near-init.yml \
+            --no-docker \
+            --binary-path target/debug/merod \
+            --verbose
+
+      - name: Upload KV Store Init Test Results
+        if: matrix.protocol == 'near' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kv-store-init-near
+          path: e2e-tests-merobox/results/near-init/
+          retention-days: 2
+
+      # ============================================================================
       # Run Merobox Tests - Proposals
       # ============================================================================
       - name: Run Proposals Tests
@@ -307,6 +339,13 @@ jobs:
           merge-multiple: false
           path: results/
 
+      - name: Download KV Store Init Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kv-store-init-*
+          merge-multiple: false
+          path: results/
+
       - name: Download Proposals Test Results
         uses: actions/download-artifact@v4
         with:
@@ -384,6 +423,46 @@ jobs:
             fi
             echo "" >> report.md
           done
+
+          # ============================================================================
+          # KV Store Init Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🔄 KV Store Init Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/kv-store-init-near" ]; then
+            if [ -f "results/kv-store-init-near/summary.json" ]; then
+              status=$(jq -r '.status' results/kv-store-init-near/summary.json)
+              duration=$(jq -r '.duration' results/kv-store-init-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/kv-store-init-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/kv-store-init-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/kv-store-init-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
 
           # ============================================================================
           # Proposals Tests Section
