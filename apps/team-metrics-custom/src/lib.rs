@@ -3,7 +3,10 @@
 //! Demonstrates nested CRDTs with CUSTOM merge logic.
 //! This shows the flexibility when you need special merge behavior.
 
-#![allow(unused_crate_dependencies)]
+#![allow(
+    unused_crate_dependencies,
+    reason = "Dependencies used in build process"
+)]
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
@@ -168,7 +171,7 @@ impl TeamMetricsApp {
             .get(&team_id)
             .map_err(|e| format!("Get failed: {:?}", e))?
             .map(|s| s.wins.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_string())
+            .ok_or_else(|| "Team not found".to_owned())
     }
 
     pub fn get_losses(&self, team_id: String) -> Result<u64, String> {
@@ -176,7 +179,7 @@ impl TeamMetricsApp {
             .get(&team_id)
             .map_err(|e| format!("Get failed: {:?}", e))?
             .map(|s| s.losses.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_string())
+            .ok_or_else(|| "Team not found".to_owned())
     }
 
     pub fn get_draws(&self, team_id: String) -> Result<u64, String> {
@@ -184,6 +187,6 @@ impl TeamMetricsApp {
             .get(&team_id)
             .map_err(|e| format!("Get failed: {:?}", e))?
             .map(|s| s.draws.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_string())
+            .ok_or_else(|| "Team not found".to_owned())
     }
 }

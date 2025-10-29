@@ -7,7 +7,10 @@
 //! - Vector<Counter> - element-wise merge
 //! - Map<String, Set<String>> - union merge
 
-#![allow(unused_crate_dependencies)]
+#![allow(
+    unused_crate_dependencies,
+    reason = "Dependencies used in build process"
+)]
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
@@ -104,7 +107,7 @@ impl NestedCrdtTest {
             .get(&key)
             .map_err(|e| format!("Get failed: {:?}", e))?
             .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| "Counter not found".to_string())
+            .ok_or_else(|| "Counter not found".to_owned())
     }
 
     // ===== LwwRegister Operations =====
@@ -126,7 +129,7 @@ impl NestedCrdtTest {
             .get(&key)
             .map_err(|e| format!("Get failed: {:?}", e))?
             .map(|r| r.get().clone())
-            .ok_or_else(|| "Register not found".to_string())
+            .ok_or_else(|| "Register not found".to_owned())
     }
 
     // ===== Nested Map Operations =====
@@ -164,10 +167,10 @@ impl NestedCrdtTest {
         self.metadata
             .get(&outer_key)
             .map_err(|e| format!("Outer get failed: {:?}", e))?
-            .ok_or_else(|| "Outer key not found".to_string())?
+            .ok_or_else(|| "Outer key not found".to_owned())?
             .get(&inner_key)
             .map_err(|e| format!("Inner get failed: {:?}", e))?
-            .ok_or_else(|| "Inner key not found".to_string())
+            .ok_or_else(|| "Inner key not found".to_owned())
     }
 
     // ===== Vector Operations =====
@@ -198,7 +201,7 @@ impl NestedCrdtTest {
         self.metrics
             .get(index)
             .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Index out of bounds".to_string())?
+            .ok_or_else(|| "Index out of bounds".to_owned())?
             .value()
             .map_err(|e| format!("Value failed: {:?}", e))
     }
@@ -235,7 +238,7 @@ impl NestedCrdtTest {
             .get(&key)
             .map_err(|e| format!("Get failed: {:?}", e))?
             .map(|set| set.contains(&tag).unwrap_or(false))
-            .ok_or_else(|| "Key not found".to_string())
+            .ok_or_else(|| "Key not found".to_owned())
     }
 
     pub fn get_tag_count(&self, key: String) -> Result<u64, String> {
@@ -243,7 +246,7 @@ impl NestedCrdtTest {
             .tags
             .get(&key)
             .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Key not found".to_string())?
+            .ok_or_else(|| "Key not found".to_owned())?
             .iter()
             .map_err(|e| format!("Iter failed: {:?}", e))?
             .count();
