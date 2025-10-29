@@ -1,9 +1,12 @@
 [package]
 name = "calimero-dag"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
+publish = true
 
 [dependencies]
 async-trait.workspace = true

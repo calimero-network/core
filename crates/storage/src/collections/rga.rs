@@ -342,10 +342,13 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
                     break;
                 }
             } else {
-                // Sort by CharId (HLC timestamp) for deterministic order
-                candidates.sort_by_key(|(id, _)| *id);
+                // Sort by CharId in REVERSE order (latest timestamp first)
+                // This ensures sequential mid-document insertions are placed correctly:
+                // When inserting at position 6 in "Hello World", the new characters
+                // should come BEFORE 'W', not after it, even though they have the same left neighbor.
+                candidates.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
 
-                // Take the character with lowest CharId (earliest timestamp)
+                // Take the character with highest CharId (latest timestamp)
                 let (next_id, next_char) = candidates[0];
                 ordered.push((*next_id, next_char.clone()));
                 current_left = *next_id;
