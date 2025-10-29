@@ -16,7 +16,7 @@ use calimero_storage::collections::{Counter, ReplicatedGrowableArray, UnorderedM
 // === DATA STRUCTURES ===
 
 /// Application state for the collaborative editor
-/// 
+///
 /// All fields must be CRDTs to avoid divergence during concurrent updates.
 /// Using LWW merge on root state with non-CRDT fields causes data loss.
 #[app::state(emits = EditorEvent)]
@@ -25,10 +25,10 @@ use calimero_storage::collections::{Counter, ReplicatedGrowableArray, UnorderedM
 pub struct EditorState {
     /// The collaborative text document using RGA CRDT
     pub document: ReplicatedGrowableArray,
-    
+
     /// Total number of edits made to the document (CRDT Counter)
     pub edit_count: Counter,
-    
+
     /// Metadata (title, owner) stored as CRDT UnorderedMap to prevent divergence
     /// Keys: "title", "owner"
     pub metadata: UnorderedMap<String, String>,
@@ -228,7 +228,7 @@ impl EditorState {
         let editor = encode_identity(&editor_id);
 
         let old_title = self.get_title();
-        
+
         self.metadata
             .insert("title".to_string(), new_title.clone())
             .map_err(|e| format!("Failed to update title: {:?}", e))?;
@@ -281,9 +281,10 @@ impl EditorState {
             .edit_count
             .value()
             .map_err(|e| format!("Failed to get edit count: {:?}", e))?;
-        
+
         let title = self.get_title();
-        let owner = self.metadata
+        let owner = self
+            .metadata
             .get("owner")
             .ok()
             .flatten()
