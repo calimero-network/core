@@ -23,6 +23,98 @@ counter.increment()?;  // Increments for current node
 let total = counter.value()?;  // Sum across all nodes
 ```
 
+## Hybrid Logical Clock (HLC)
+
+**New in this version**: Calimero now uses [Hybrid Logical Clocks](https://github.com/atolab/uhlc-rs) for causal ordering instead of physical timestamps.
+
+### Why HLC?
+
+Traditional CRDTs using physical timestamps face problems:
+- ❌ **Clock skew**: Different nodes' clocks can drift apart
+- ❌ **No causality**: `timestamp_A < timestamp_B` doesn't mean A happened before B
+- ❌ **Tie-breaking**: Concurrent operations at same timestamp need complex resolution
+
+HLC solves all of these:
+- ✅ **Immune to clock skew**: Logical counter ensures monotonicity
+- ✅ **True causality**: Guarantees happens-before relationships
+- ✅ **Unique timestamps**: Each HLC has unique ID, timestamps never collide
+- ✅ **Physical time proximity**: Timestamps stay close to wall-clock time
+
+### How It Works
+
+```rust
+use calimero_storage::env;
+
+// Get hybrid timestamp (combines logical clock + physical time)
+let ts = env::hlc_timestamp();
+
+// When receiving remote operation
+env::update_hlc(&remote_timestamp)?;
+
+// Next timestamp will be causally ordered
+let next_ts = env::hlc_timestamp();
+assert!(next_ts > ts);
+```
+
+### HLC Format (NTP64)
+
+```text
+┌──────────────────────┬──────────────────────┐
+│   Seconds (32 bits)  │  Fraction (32 bits)  │
+└──────────────────────┴──────────────────────┘
+                             └─ Last 4 bits = logical counter
+```
+
+- **Physical time**: First 32 bits (seconds since epoch)
+- **Logical counter**: Embedded in last 4 bits of fraction
+- **Unique ID**: Each node has u128 identifier
+- **Anti-drift**: Rejects timestamps >500ms in future
+
+### Integration with DAG
+
+HLC and DAG work together at different granularities:
+
+```mermaid
+graph TB
+    subgraph "DAG Layer: Coarse-grained (Delta-level)"
+        D1[Delta 1<br/>parents: root<br/>HLC range: 1000-1003]
+        D2[Delta 2<br/>parents: D1<br/>HLC range: 1004-1006]
+        D3[Delta 3<br/>parents: D2<br/>HLC range: 1007-1010]
+        
+        D1 --> D2 --> D3
+    end
+    
+    subgraph "HLC Layer: Fine-grained (Action-level)"
+        A1[Insert key=foo<br/>HLC: 1000]
+        A2[Update key=bar<br/>HLC: 1001]
+        A3[Delete key=baz<br/>HLC: 1002]
+        
+        A4[Insert key=qux<br/>HLC: 1004]
+        
+        A5[Update key=foo<br/>HLC: 1007]
+    end
+    
+    D1 -.contains.-> A1
+    D1 -.contains.-> A2
+    D1 -.contains.-> A3
+    
+    D2 -.contains.-> A4
+    
+    D3 -.contains.-> A5
+    
+    style D1 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
+    style D2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style D3 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+```
+
+**DAG says**: "Delta 2 depends on Delta 1" (partial ordering)  
+**HLC says**: "Action at HLC=1004 happened after HLC=1001" (total ordering)
+
+Together they provide:
+- **Network-level**: DAG handles out-of-order delivery and batching
+- **Operation-level**: HLC ensures every operation has globally unique, causally-ordered timestamp
+- **Conflict resolution**: LWW uses HLC values (immune to clock skew)
+
 ## Core Concept: Hybrid CRDT
 
 Calimero uses **both** operation-based and state-based CRDTs:

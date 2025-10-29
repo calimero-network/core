@@ -67,6 +67,7 @@ pub mod error;
 pub mod index;
 pub mod integration;
 pub mod interface;
+pub mod logical_clock;
 pub mod merge;
 pub mod snapshot;
 pub mod store;
@@ -97,6 +98,8 @@ pub mod tests {
     pub mod delta;
     /// Merkle hash propagation tests.
     pub mod merkle;
+    /// RGA (Replicated Growable Array) CRDT tests.
+    pub mod rga;
 }
 
 #[cfg(test)]
