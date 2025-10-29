@@ -80,7 +80,7 @@ where
         // In production, this indicates a bug in the merge system
         std::process::abort()
     });
-    registry.insert(type_id, merge_fn);
+    let _ = registry.insert(type_id, merge_fn);
 }
 
 /// Try to merge using registered merge function

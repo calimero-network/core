@@ -100,7 +100,7 @@ where
         let old_value = inner_map.insert(inner_key, value)?;
 
         // Write back the inner map
-        self.insert(outer_key, inner_map)?;
+        drop(self.insert(outer_key, inner_map)?);
 
         Ok(old_value)
     }
@@ -121,7 +121,7 @@ where
         let removed = inner_map.remove(inner_key)?;
 
         // Write back the modified inner map
-        self.insert(outer_key.clone(), inner_map)?;
+        drop(self.insert(outer_key.clone(), inner_map)?);
 
         Ok(removed)
     }
