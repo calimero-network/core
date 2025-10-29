@@ -13,13 +13,12 @@ fn test_rga_basic_insert() {
     rga.insert(1, 'i').unwrap();
     assert_eq!(rga.get_text().unwrap(), "Hi");
 
-    // Insert at position 0 - both 'H' and '!' have left=root
-    // RGA orders by HLC timestamp: 'H' (earlier) comes before '!' (later)
+    // Insert at position 0 (before everything)
+    // Both 'H' and '!' have left=root, but '!' has later timestamp
+    // With REVERSED sort (latest first), '!' comes BEFORE 'H' - correct for sequential edits!
     rga.insert(0, '!').unwrap();
-    // '!' has left=root, later timestamp than 'H', so comes after 'H'
     let text = rga.get_text().unwrap();
-    assert!(text.starts_with('H')); // 'H' was first, has earliest timestamp
-    assert_eq!(text.len(), 3);
+    assert_eq!(text, "!Hi", "Insert at position 0 should prepend");
 }
 
 #[test]
@@ -69,6 +68,32 @@ fn test_rga_insert_str_middle() {
     // Due to RGA ordering, the result depends on HLC timestamps
     assert!(text.contains("Beautiful"));
     assert_eq!(text.len(), 21); // "Hello" + " Beautiful" + " World"
+}
+
+#[test]
+fn test_rga_insert_str_position_bug() {
+    env::reset_for_testing();
+
+    let mut rga = ReplicatedGrowableArray::new();
+
+    // Insert "Hello World" as a single operation
+    rga.insert_str(0, "Hello World").unwrap();
+    assert_eq!(rga.get_text().unwrap(), "Hello World");
+
+    // Insert "Beautiful " at position 6 (after "Hello ", before "World")
+    // Position 6 should be right before 'W'
+    rga.insert_str(6, "Beautiful ").unwrap();
+    let result = rga.get_text().unwrap();
+
+    eprintln!("Result: '{}'", result);
+    eprintln!("Expected: 'Hello Beautiful World'");
+
+    // Expected: "Hello Beautiful World"
+    assert_eq!(
+        result, "Hello Beautiful World",
+        "insert_str at position 6 should insert before 'World', got: '{}'",
+        result
+    );
 }
 
 #[test]
