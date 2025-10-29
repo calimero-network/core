@@ -336,6 +336,8 @@ fn normalize_scalar_type(
                 Ok(TypeRef::i64())
             }
         }
+        // Storage collection wrappers – treat as opaque blobs for now.
+        "Counter" | "ReplicatedGrowableArray" => Ok(TypeRef::bytes()),
         _ => {
             // Check if it's a local type
             resolver.resolve_local(&ident.to_string()).map_or_else(
