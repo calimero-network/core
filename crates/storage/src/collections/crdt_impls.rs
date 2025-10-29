@@ -215,12 +215,18 @@ where
                 // Key exists in both - recursively merge values
                 // This is where nested CRDT merging happens!
                 our_value.merge(&other_value)?;
-                self.insert(key, our_value)
-                    .map_err(|e| MergeError::StorageError(format!("Failed to insert: {:?}", e)))?;
+                drop(
+                    self.insert(key, our_value).map_err(|e| {
+                        MergeError::StorageError(format!("Failed to insert: {:?}", e))
+                    })?,
+                );
             } else {
                 // Key only in other - add it (add-wins semantics)
-                self.insert(key, other_value)
-                    .map_err(|e| MergeError::StorageError(format!("Failed to insert: {:?}", e)))?;
+                drop(
+                    self.insert(key, other_value).map_err(|e| {
+                        MergeError::StorageError(format!("Failed to insert: {:?}", e))
+                    })?,
+                );
             }
         }
 
@@ -359,9 +365,9 @@ where
                 })? {
                     // Recursively merge values at same index
                     our_value.merge(&their_value)?;
-                    self.update(i, our_value).map_err(|e| {
+                    drop(self.update(i, our_value).map_err(|e| {
                         MergeError::StorageError(format!("Failed to update element: {:?}", e))
-                    })?;
+                    })?);
                 }
             }
         }

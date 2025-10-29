@@ -17,7 +17,7 @@ use calimero_storage_macros::Mergeable;
 ///
 /// This struct demonstrates #[derive(Mergeable)] - zero boilerplate!
 /// All fields are CRDTs, so the macro just calls merge on each.
-#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Mergeable, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamStats {
     pub wins: Counter,
@@ -27,7 +27,7 @@ pub struct TeamStats {
 
 /// Application state
 #[app::state(emits = MetricsEvent)]
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamMetricsApp {
     /// Maps team_id → team statistics
@@ -73,9 +73,11 @@ impl TeamMetricsApp {
             .value()
             .map_err(|e| format!("Value failed: {:?}", e))?;
 
-        self.teams
-            .insert(team_id.clone(), stats)
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
+        drop(
+            self.teams
+                .insert(team_id.clone(), stats)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
 
         app::emit!(MetricsEvent::WinRecorded { team_id, total });
 
@@ -102,9 +104,11 @@ impl TeamMetricsApp {
             .value()
             .map_err(|e| format!("Value failed: {:?}", e))?;
 
-        self.teams
-            .insert(team_id.clone(), stats)
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
+        drop(
+            self.teams
+                .insert(team_id.clone(), stats)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
 
         app::emit!(MetricsEvent::LossRecorded { team_id, total });
 
@@ -131,9 +135,11 @@ impl TeamMetricsApp {
             .value()
             .map_err(|e| format!("Value failed: {:?}", e))?;
 
-        self.teams
-            .insert(team_id.clone(), stats)
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
+        drop(
+            self.teams
+                .insert(team_id.clone(), stats)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
 
         app::emit!(MetricsEvent::DrawRecorded { team_id, total });
 

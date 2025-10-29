@@ -55,8 +55,11 @@ where
                 DecomposeError::StorageError(format!("Failed to deserialize key: {:?}", e))
             })?;
 
-            map.insert(key, value)
-                .map_err(|e| DecomposeError::StorageError(format!("Failed to insert: {:?}", e)))?;
+            drop(
+                map.insert(key, value).map_err(|e| {
+                    DecomposeError::StorageError(format!("Failed to insert: {:?}", e))
+                })?,
+            );
         }
 
         Ok(map)

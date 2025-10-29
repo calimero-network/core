@@ -27,7 +27,7 @@
 //! ```
 
 use super::composite_key::CompositeKey;
-use super::crdt_meta::{CrdtMeta, Decomposable, DecomposeError};
+use super::crdt_meta::{CrdtMeta, Decomposable};
 use super::{StoreError, UnorderedMap};
 use crate::store::StorageAdaptor;
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -141,7 +141,7 @@ where
             })?;
 
             // Future: storage.put(full_composite, value_bytes)?;
-            let _ = (full_composite, value_bytes); // Silence unused warning
+            drop((full_composite, value_bytes));
         }
 
         // For now, fall through to standard insert (works correctly, just not optimized)

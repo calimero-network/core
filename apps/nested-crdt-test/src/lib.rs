@@ -17,7 +17,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap, UnorderedSet, Vector};
 
 #[app::state(emits = TestEvent)]
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct NestedCrdtTest {
     /// Map of counters - concurrent increments should sum
@@ -93,9 +93,11 @@ impl NestedCrdtTest {
             .value()
             .map_err(|e| format!("Value failed: {:?}", e))?;
 
-        self.counters
-            .insert(key.clone(), counter)
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
+        drop(
+            self.counters
+                .insert(key.clone(), counter)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
 
         app::emit!(TestEvent::CounterIncremented { key, value });
 
@@ -113,11 +115,13 @@ impl NestedCrdtTest {
     // ===== LwwRegister Operations =====
 
     pub fn set_register(&mut self, key: String, value: String) -> Result<(), String> {
-        let mut register = LwwRegister::new(value.clone());
+        let register = LwwRegister::new(value.clone());
 
-        self.registers
-            .insert(key.clone(), register)
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
+        drop(
+            self.registers
+                .insert(key.clone(), register)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
 
         app::emit!(TestEvent::RegisterSet { key, value });
 
@@ -146,13 +150,17 @@ impl NestedCrdtTest {
             .map_err(|e| format!("Get failed: {:?}", e))?
             .unwrap_or_else(|| UnorderedMap::new());
 
-        inner_map
-            .insert(inner_key.clone(), value.clone())
-            .map_err(|e| format!("Inner insert failed: {:?}", e))?;
+        drop(
+            inner_map
+                .insert(inner_key.clone(), value.clone())
+                .map_err(|e| format!("Inner insert failed: {:?}", e))?,
+        );
 
-        self.metadata
-            .insert(outer_key.clone(), inner_map)
-            .map_err(|e| format!("Outer insert failed: {:?}", e))?;
+        drop(
+            self.metadata
+                .insert(outer_key.clone(), inner_map)
+                .map_err(|e| format!("Outer insert failed: {:?}", e))?,
+        );
 
         app::emit!(TestEvent::MetadataSet {
             outer_key,
@@ -221,12 +229,15 @@ impl NestedCrdtTest {
             .map_err(|e| format!("Get failed: {:?}", e))?
             .unwrap_or_else(|| UnorderedSet::new());
 
-        set.insert(tag.clone())
+        let _ = set
+            .insert(tag.clone())
             .map_err(|e| format!("Insert failed: {:?}", e))?;
 
-        self.tags
-            .insert(key.clone(), set)
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
+        drop(
+            self.tags
+                .insert(key.clone(), set)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
 
         app::emit!(TestEvent::TagAdded { key, tag });
 

@@ -192,7 +192,9 @@ impl<T: NonCrdt> NonCrdt for Option<T> {}
 impl<K: NonCrdt, V: NonCrdt> NonCrdt for std::collections::HashMap<K, V> {}
 impl<K: NonCrdt, V: NonCrdt> NonCrdt for std::collections::BTreeMap<K, V> {}
 
-// Helper to check if a type is a CRDT at compile time
+/// Helper macro to check if a type is a CRDT at compile time.
+///
+/// Returns `true` if the type implements the `CrdtMeta` trait and is marked as a CRDT.
 #[macro_export]
 macro_rules! is_crdt {
     ($t:ty) => {

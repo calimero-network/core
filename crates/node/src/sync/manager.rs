@@ -58,7 +58,7 @@ impl Clone for SyncManager {
 }
 
 impl SyncManager {
-    pub fn new(
+    pub(crate) fn new(
         sync_config: SyncConfig,
         node_client: NodeClient,
         context_client: ContextClient,
@@ -541,7 +541,7 @@ impl SyncManager {
     async fn request_dag_heads_and_sync(
         &self,
         context_id: ContextId,
-        peer_id: PeerId,
+        _peer_id: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
