@@ -31,10 +31,7 @@ calimero-utils-actix.workspace = true
 
 [dev-dependencies]
 calimero-blobstore.workspace = true
-calimero-context.workspace = true
 calimero-network-primitives.workspace = true
-
-actix-rt = "2.11"
 tempfile = "3.23"
 
 [lints]

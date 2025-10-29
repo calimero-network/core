@@ -98,6 +98,8 @@ pub mod tests {
     pub mod delta;
     /// Merkle hash propagation tests.
     pub mod merkle;
+    /// RGA (Replicated Growable Array) CRDT tests.
+    pub mod rga;
 }
 
 #[cfg(test)]

@@ -63,7 +63,6 @@ version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92589714878ca59a7626ea19734f0e07a6a875197eec751bb5d3f99e64998c63"
 dependencies = [
- "actix-macros",
  "futures-core",
  "tokio",
 ]
@@ -2017,11 +2016,9 @@ name = "calimero-context-primitives"
 version = "0.0.0"
 dependencies = [
  "actix",
- "actix-rt",
  "async-stream",
  "borsh",
  "calimero-blobstore",
- "calimero-context",
  "calimero-context-config",
  "calimero-network-primitives",
  "calimero-node-primitives",
@@ -2388,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.7"
+version = "0.10.0-rc.9"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
@@ -2608,6 +2605,18 @@ name = "clap_lex"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
+
+[[package]]
+name = "collaborative-editor"
+version = "0.0.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "color-eyre"

@@ -14,6 +14,7 @@ version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
     "./apps/blobs",
+    "./apps/collaborative-editor",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
@@ -68,6 +69,7 @@ members = [
     "./apps/kv-store-with-handlers",
     "./apps/private_data",
     "./apps/blobs",
+    "./apps/collaborative-editor",
     "./apps/abi_conformance",
     "./apps/xcall-example",
 
@@ -378,21 +380,3 @@ multiple_crate_versions = "allow" # Cannot resolve all these
 missing_errors_doc = "allow"      # TODO: Remove later once documentation has been added
 missing_panics_doc = "allow"      # TODO: Remove later once documentation has been added
 future_not_send = "allow"         # TODO: Remove later once Send is implemented
-
-# Patch crates.io to use local workspace versions
-# This allows calimero-context-primitives dev-dependency on calimero-context to use workspace version,
-# avoiding conflicts during dependency upgrades (e.g., alloy 0.11 vs 1.0).
-#
-# NOTE: This is a workaround for circular dev-dependency:
-#   calimero-context → calimero-context-primitives (regular dependency)
-#   calimero-context-primitives → calimero-context (dev-dependency)
-#
-# TODO: Remove circular dependency. Options:
-#   1. Move tests requiring calimero-context to integration tests in calimero-context itself
-#   2. Create a separate calimero-context-test-utils crate
-#   3. Restructure code to break the dependency cycle
-#
-# After removing circular dependency, remove this patch and update calimero-context-primitives
-# dev-dependency to use version range: { version = ">=0.9.0, <1.0.0" }
-[patch.crates-io]
-calimero-context = { path = "./crates/context" }

@@ -1,0 +1,364 @@
+{
+  "steps": [
+    {
+      "applicationInstall": {
+        "application": {
+          "localFile": "./apps/collaborative-editor/res/collaborative_editor.wasm"
+        },
+        "target": "allMembers"
+      }
+    },
+    {
+      "contextCreate": null
+    },
+    {
+      "contextCreateAlias": {
+        "aliasName": "collaborative_editor"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": "",
+        "target": "inviter",
+        "description": [
+          "Verify document starts empty"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_title",
+        "argsJson": {},
+        "expectedResultJson": "Untitled Document",
+        "target": "inviter",
+        "description": [
+          "Verify document has default title"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "insert_text",
+        "argsJson": {
+          "position": 0,
+          "text": "HelloWorld"
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "description": [
+          "Insert as single string to avoid multiple operations before sync"
+        ]
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for insert operation to complete"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": "HelloWorld",
+        "target": "inviter"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_length",
+        "argsJson": {},
+        "expectedResultJson": 10,
+        "target": "inviter"
+      }
+    },
+    {
+      "contextInviteJoin": null
+    },
+    {
+      "wait": {
+        "for": "consensus",
+        "durationMs": 5000,
+        "description": [
+          "Wait for gossipsub mesh formation + initial sync completion"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": "HelloWorld",
+        "target": "allMembers",
+        "retries": 30,
+        "intervalMs": 2000,
+        "description": [
+          "Verify all nodes have synced initial text 'HelloWorld'"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "insert_text",
+        "argsJson": {
+          "position": 10,
+          "text": "!"
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for insert to propagate to all nodes"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": "HelloWorld!",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify all nodes see 'HelloWorld!'"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "delete_text",
+        "argsJson": {
+          "start": 5,
+          "end": 10
+        },
+        "expectedResultJson": null,
+        "target": "invitees",
+        "description": [
+          "Delete 'World' (positions 5-10 in 'HelloWorld!')"
+        ]
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for delete to propagate to all nodes"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": "Hello!",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify 'World' was deleted, leaving 'Hello!'"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "replace_text",
+        "argsJson": {
+          "start": 5,
+          "end": 6,
+          "text": " CRDT"
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "description": [
+          "Replace '!' with ' CRDT' to get 'Hello CRDT'"
+        ]
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for replace to propagate to all nodes"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": "Hello CRDT",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify text was replaced to 'Hello CRDT!' on all nodes"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "set_title",
+        "argsJson": {
+          "new_title": "Updated Document"
+        },
+        "expectedResultJson": null,
+        "target": "invitees"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for title change to propagate"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_title",
+        "argsJson": {},
+        "expectedResultJson": "Updated Document",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify title was updated on all nodes"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "clear",
+        "argsJson": {},
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for clear to propagate"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": "",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify document was cleared on all nodes"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "is_empty",
+        "argsJson": {},
+        "expectedResultJson": true,
+        "target": "allMembers",
+        "description": [
+          "Verify is_empty returns true after clear"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "insert_text",
+        "argsJson": {
+          "position": 0,
+          "text": "ABC"
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "description": [
+          "Concurrent write test: Node 1 inserts ABC at position 0"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "insert_text",
+        "argsJson": {
+          "position": 0,
+          "text": "XYZ"
+        },
+        "expectedResultJson": null,
+        "target": "invitees",
+        "description": [
+          "Concurrent write test: Both invitees (nodes 2 & 3) insert XYZ at position 0 simultaneously"
+        ]
+      }
+    },
+    {
+      "wait": {
+        "for": "consensus",
+        "durationMs": 5000,
+        "description": [
+          "Wait for concurrent edits to propagate and CRDT to converge.",
+          "All 3 nodes (inviter + 2 invitees) will converge to same state thanks to RGA CRDT."
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_length",
+        "argsJson": {},
+        "expectedResultJson": 9,
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify total length is 9 characters (ABC + XYZ + XYZ) on all nodes",
+          "Note: 'invitees' target means BOTH invitee nodes insert XYZ concurrently"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_text",
+        "argsJson": {},
+        "expectedResultJson": null,
+        "target": "allMembers",
+        "retries": 10,
+        "intervalMs": 1000,
+        "description": [
+          "CRDT Convergence Test: Verify all 3 nodes have identical text after concurrent edits.",
+          "The RGA CRDT ensures deterministic ordering based on HLC timestamps.",
+          "ABC and two XYZ insertions are present, ordered deterministically by their timestamps.",
+          "Using 'allMembers' target ensures the same value is returned from all nodes,",
+          "proving CRDT convergence - a key property of conflict-free replicated data types."
+        ]
+      }
+    }
+  ]
+}
+
