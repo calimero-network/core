@@ -11,6 +11,7 @@ use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 
 mod abi;
+mod deserializer;
 mod export;
 mod schema;
 mod types;
