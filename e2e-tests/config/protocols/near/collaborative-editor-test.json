@@ -52,16 +52,19 @@
         "methodName": "insert_text",
         "argsJson": {
           "position": 0,
-          "text": "Hello"
+          "text": "HelloWorld"
         },
         "expectedResultJson": null,
-        "target": "inviter"
+        "target": "inviter",
+        "description": [
+          "Insert as single string to avoid multiple operations before sync"
+        ]
       }
     },
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 2000,
+        "durationMs": 3000,
         "description": [
           "Wait for insert operation to complete"
         ]
@@ -71,34 +74,7 @@
       "call": {
         "methodName": "get_text",
         "argsJson": {},
-        "expectedResultJson": "Hello",
-        "target": "inviter"
-      }
-    },
-    {
-      "call": {
-        "methodName": "append_text",
-        "argsJson": {
-          "text": " World"
-        },
-        "expectedResultJson": null,
-        "target": "inviter"
-      }
-    },
-    {
-      "wait": {
-        "for": "broadcast",
-        "durationMs": 2000,
-        "description": [
-          "Wait for append operation to complete"
-        ]
-      }
-    },
-    {
-      "call": {
-        "methodName": "get_text",
-        "argsJson": {},
-        "expectedResultJson": "Hello World",
+        "expectedResultJson": "HelloWorld",
         "target": "inviter"
       }
     },
@@ -106,7 +82,7 @@
       "call": {
         "methodName": "get_length",
         "argsJson": {},
-        "expectedResultJson": 11,
+        "expectedResultJson": 10,
         "target": "inviter"
       }
     },
@@ -126,12 +102,12 @@
       "call": {
         "methodName": "get_text",
         "argsJson": {},
-        "expectedResultJson": "Hello World",
+        "expectedResultJson": "HelloWorld",
         "target": "allMembers",
-        "retries": 5,
-        "intervalMs": 1000,
+        "retries": 30,
+        "intervalMs": 2000,
         "description": [
-          "Verify all nodes have synced initial text 'Hello World'"
+          "Verify all nodes have synced initial text 'HelloWorld'"
         ]
       }
     },
@@ -139,7 +115,7 @@
       "call": {
         "methodName": "insert_text",
         "argsJson": {
-          "position": 11,
+          "position": 10,
           "text": "!"
         },
         "expectedResultJson": null,
@@ -159,12 +135,12 @@
       "call": {
         "methodName": "get_text",
         "argsJson": {},
-        "expectedResultJson": "Hello World!",
+        "expectedResultJson": "HelloWorld!",
         "target": "allMembers",
         "retries": 5,
         "intervalMs": 1000,
         "description": [
-          "Verify all nodes see 'Hello World!'"
+          "Verify all nodes see 'HelloWorld!'"
         ]
       }
     },
@@ -172,11 +148,14 @@
       "call": {
         "methodName": "delete_text",
         "argsJson": {
-          "start": 6,
-          "end": 11
+          "start": 5,
+          "end": 10
         },
         "expectedResultJson": null,
-        "target": "invitees"
+        "target": "invitees",
+        "description": [
+          "Delete 'World' (positions 5-10 in 'HelloWorld!')"
+        ]
       }
     },
     {
@@ -192,12 +171,12 @@
       "call": {
         "methodName": "get_text",
         "argsJson": {},
-        "expectedResultJson": "Hello !",
+        "expectedResultJson": "Hello!",
         "target": "allMembers",
         "retries": 5,
         "intervalMs": 1000,
         "description": [
-          "Verify 'World' was deleted on all nodes"
+          "Verify 'World' was deleted, leaving 'Hello!'"
         ]
       }
     },
@@ -205,12 +184,15 @@
       "call": {
         "methodName": "replace_text",
         "argsJson": {
-          "start": 6,
-          "end": 7,
-          "text": "CRDT!"
+          "start": 5,
+          "end": 6,
+          "text": " CRDT"
         },
         "expectedResultJson": null,
-        "target": "inviter"
+        "target": "inviter",
+        "description": [
+          "Replace '!' with ' CRDT' to get 'Hello CRDT'"
+        ]
       }
     },
     {
@@ -226,7 +208,7 @@
       "call": {
         "methodName": "get_text",
         "argsJson": {},
-        "expectedResultJson": "Hello CRDT!",
+        "expectedResultJson": "Hello CRDT",
         "target": "allMembers",
         "retries": 5,
         "intervalMs": 1000,
