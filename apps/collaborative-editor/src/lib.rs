@@ -11,11 +11,14 @@
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
-use calimero_storage::collections::{Counter, ReplicatedGrowableArray};
+use calimero_storage::collections::{Counter, ReplicatedGrowableArray, UnorderedMap};
 
 // === DATA STRUCTURES ===
 
 /// Application state for the collaborative editor
+/// 
+/// All fields must be CRDTs to avoid divergence during concurrent updates.
+/// Using LWW merge on root state with non-CRDT fields causes data loss.
 #[app::state(emits = EditorEvent)]
 #[derive(BorshDeserialize, BorshSerialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -23,14 +26,12 @@ pub struct EditorState {
     /// The collaborative text document using RGA CRDT
     pub document: ReplicatedGrowableArray,
     
-    /// Document title/name
-    pub title: String,
-    
-    /// Context owner's identity
-    pub owner: String,
-    
     /// Total number of edits made to the document (CRDT Counter)
     pub edit_count: Counter,
+    
+    /// Metadata (title, owner) stored as CRDT UnorderedMap to prevent divergence
+    /// Keys: "title", "owner"
+    pub metadata: UnorderedMap<String, String>,
 }
 
 /// Events emitted by the collaborative editor
@@ -97,11 +98,14 @@ impl EditorState {
 
         app::log!("Initializing collaborative editor: {} by {}", title, owner);
 
+        let mut metadata = UnorderedMap::new();
+        let _ = metadata.insert("title".to_string(), title.clone());
+        let _ = metadata.insert("owner".to_string(), owner.clone());
+
         let state = EditorState {
             document: ReplicatedGrowableArray::new(),
-            title: title.clone(),
-            owner: owner.clone(),
             edit_count: Counter::new(),
+            metadata,
         };
 
         app::emit!(EditorEvent::DocumentCreated { title, owner });
@@ -223,8 +227,11 @@ impl EditorState {
         let editor_id = env::executor_id();
         let editor = encode_identity(&editor_id);
 
-        let old_title = self.title.clone();
-        self.title = new_title.clone();
+        let old_title = self.get_title();
+        
+        self.metadata
+            .insert("title".to_string(), new_title.clone())
+            .map_err(|e| format!("Failed to update title: {:?}", e))?;
 
         app::log!(
             "Title changed from '{}' to '{}' by {}",
@@ -247,7 +254,11 @@ impl EditorState {
     /// # Returns
     /// * `String` - The current document title
     pub fn get_title(&self) -> String {
-        self.title.clone()
+        self.metadata
+            .get("title")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Untitled Document".to_string())
     }
 
     /// Get document statistics
@@ -270,6 +281,13 @@ impl EditorState {
             .edit_count
             .value()
             .map_err(|e| format!("Failed to get edit count: {:?}", e))?;
+        
+        let title = self.get_title();
+        let owner = self.metadata
+            .get("owner")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Unknown".to_string());
 
         Ok(format!(
             "Document Statistics:\n\
@@ -277,7 +295,7 @@ impl EditorState {
              - Length: {} characters\n\
              - Total edits: {}\n\
              - Owner: {}",
-            self.title, length, total_edits, self.owner
+            title, length, total_edits, owner
         ))
     }
 
