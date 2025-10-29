@@ -60,11 +60,26 @@ impl CharId {
 }
 
 /// Storage key for a character (owns serialized bytes for AsRef<[u8]>)
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CharKey {
     id: CharId,
-    #[borsh(skip)]
     bytes: Vec<u8>,
+}
+
+impl BorshSerialize for CharKey {
+    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
+        // Only serialize the id, bytes can be reconstructed
+        self.id.serialize(writer)
+    }
+}
+
+impl BorshDeserialize for CharKey {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let id = CharId::deserialize_reader(reader)?;
+        // Reconstruct bytes from id
+        let bytes = borsh::to_vec(&id).map_err(|e| borsh::io::Error::new(borsh::io::ErrorKind::Other, e))?;
+        Ok(Self { id, bytes })
+    }
 }
 
 impl CharKey {

@@ -22,13 +22,13 @@ use calimero_storage::collections::{Counter, ReplicatedGrowableArray};
 pub struct EditorState {
     /// The collaborative text document using RGA CRDT
     pub document: ReplicatedGrowableArray,
-
+    
     /// Document title/name
     pub title: String,
-
+    
     /// Context owner's identity
     pub owner: String,
-
+    
     /// Total number of edits made to the document (CRDT Counter)
     pub edit_count: Counter,
 }
