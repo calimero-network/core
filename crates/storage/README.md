@@ -11,6 +11,7 @@ Build distributed applications that automatically resolve conflicts. Write natur
 ```rust
 use calimero_sdk::app;
 use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap, Vector};
+use calimero_storage_macros::Mergeable;  // For custom structs!
 
 #[app::state(emits = MyEvent)]
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -21,13 +22,16 @@ pub struct MyApp {
     recent_events: Vector<Event>,
 }
 
+// Custom struct with nested CRDTs - just add #[derive(Mergeable)]!
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
 pub struct UserProfile {
     name: LwwRegister<String>,        // Last-Write-Wins with timestamps
     tags: UnorderedSet<String>,        // Add-wins set
     scores: UnorderedMap<String, Counter>,  // Nested CRDTs!
 }
+// Zero boilerplate - macro generates merge code! ✨
 
-// That's it! No merge code, no conflict resolution - it just works! ✨
+// That's it! No manual merge code, no conflict resolution - it just works! ✨
 ```
 
 **What you get:**

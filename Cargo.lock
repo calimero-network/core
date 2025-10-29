@@ -9985,6 +9985,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ac9aa371f599d22256307c24a9d748c041e548cbf599f35d890f9d365361790"
 
 [[package]]
+name = "team-metrics-custom"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
+name = "team-metrics-macro"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-storage-macros",
+]
+
+[[package]]
 name = "tempdir"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

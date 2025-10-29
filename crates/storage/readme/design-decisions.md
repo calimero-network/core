@@ -128,7 +128,63 @@ Merge: [Counter(7), Counter(10)]  // Element-wise sum
 
 ---
 
-## Decision 4: Sets Can't Contain CRDTs
+## Decision 4: Derive Macro for Custom Structs
+
+### What We Chose
+
+**Provide `#[derive(Mergeable)]` for custom structs:**
+
+```rust
+use calimero_storage_macros::Mergeable;
+
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct TeamStats {
+    wins: Counter,
+    losses: Counter,
+}
+// Macro auto-generates merge() implementation
+```
+
+### Alternatives Considered
+
+**No derive - only manual impl:**
+```rust
+// Force developers to always write:
+impl Mergeable for TeamStats {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.wins.merge(&other.wins)?;
+        self.losses.merge(&other.losses)?;
+        Ok(())
+    }
+}
+```
+**Why we didn't:** Too much boilerplate for simple cases
+
+**Auto-detect and merge all fields without derive:**
+- Use reflection/type introspection
+- **Why we didn't:** Doesn't work in Rust (no runtime reflection)
+
+### Trade-offs
+
+| Approach | Boilerplate | Flexibility | When to Use |
+|----------|-------------|-------------|-------------|
+| **#[derive(Mergeable)]** | Zero | Standard | Most cases ✅ |
+| **Manual impl** | ~5 lines | Full control | Custom logic |
+
+### Verdict
+
+**Both options available:**
+- ✅ Derive macro for simple cases (zero boilerplate)
+- ✅ Manual impl when you need custom logic (full control)
+
+**Examples:**
+- `apps/team-metrics-macro` - Shows derive approach
+- `apps/team-metrics-custom` - Shows manual approach
+- Both have identical functionality, different implementation
+
+---
+
+## Decision 5: Sets Can't Contain CRDTs
 
 ### What We Chose
 

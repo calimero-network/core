@@ -22,6 +22,57 @@ Map<K, Map<K2, V>>                      // Map contains Map!
 
 ---
 
+## Using Custom Structs with #[derive(Mergeable)]
+
+**NEW: Zero-boilerplate for custom structs!**
+
+When you have a custom struct with CRDT fields, just add `#[derive(Mergeable)]`:
+
+```rust
+use calimero_storage_macros::Mergeable;
+
+// Before (manual impl):
+pub struct TeamStats {
+    wins: Counter,
+    losses: Counter,
+}
+
+impl Mergeable for TeamStats {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.wins.merge(&other.wins)?;
+        self.losses.merge(&other.losses)?;
+        Ok(())
+    }
+}
+
+// After (with derive macro):
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct TeamStats {
+    wins: Counter,
+    losses: Counter,
+}
+// That's it! ✨
+```
+
+**The macro auto-generates the merge implementation by calling `merge()` on each field.**
+
+**When to use:**
+- ✅ All struct fields are CRDTs
+- ✅ Standard field-by-field merge is what you want
+- ✅ No custom logic needed
+
+**When to use manual impl:**
+- Need custom validation
+- Want to add logging
+- Need to skip certain fields
+- Apply business rules during merge
+
+**Examples:**
+- See `apps/team-metrics-macro` - using derive
+- See `apps/team-metrics-custom` - manual impl
+
+---
+
 ## Nesting Support Matrix
 
 | Container        | Can Contain   | Examples                                |

@@ -4,6 +4,55 @@ Complete guide to all CRDT collections in Calimero Storage.
 
 ---
 
+## Using Custom Structs: #[derive(Mergeable)]
+
+**When you create custom structs with CRDT fields:**
+
+```rust
+use calimero_storage_macros::Mergeable;
+
+// Option 1: Derive macro (recommended)
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct TeamStats {
+    wins: Counter,
+    losses: Counter,
+    draws: Counter,
+}
+// Macro auto-generates merge() - zero boilerplate! ✨
+
+// Option 2: Manual implementation (when you need custom logic)
+impl Mergeable for TeamStats {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.wins.merge(&other.wins)?;
+        self.losses.merge(&other.losses)?;
+        self.draws.merge(&other.draws)?;
+        
+        // Add custom logic here:
+        // - Validation
+        // - Logging
+        // - Business rules
+        
+        Ok(())
+    }
+}
+```
+
+**When to use derive:**
+- ✅ All fields are CRDTs
+- ✅ Standard merge behavior
+- ✅ Recommended for most cases
+
+**When to use manual:**
+- Need custom validation
+- Want logging/metrics
+- Apply business rules
+
+**Examples:**
+- `apps/team-metrics-macro` - derive approach
+- `apps/team-metrics-custom` - manual approach
+
+---
+
 ## Counter
 
 **Use case:** Increment-only counters, metrics, view counts

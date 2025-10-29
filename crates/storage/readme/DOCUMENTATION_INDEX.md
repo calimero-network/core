@@ -15,15 +15,16 @@ Complete guide to Calimero Storage CRDT documentation.
 ## For Developers
 
 ### Getting Started
-1. **[Main README](../README.md)** - Overview, quick start, examples
-2. **[Collections API](collections.md)** - Complete API reference for all 6 CRDT types
-3. **[Nesting Guide](nesting.md)** - How to use nested structures effectively
+1. **[Main README](../README.md)** - Overview, quick start with `#[derive(Mergeable)]`, examples
+2. **[Collections API](collections.md)** - Complete API reference + derive macro
+3. **[Nesting Guide](nesting.md)** - How to use nested structures + custom structs
 
 ### Common Tasks
 - **Add a counter:** See [Collections API - Counter](collections.md#counter)
 - **Store user data:** See [Collections API - LwwRegister](collections.md#lwwregistert)
 - **Build a document editor:** See [Collections API - RGA](collections.md#replicatedgrowablearray-rga)
 - **Create nested maps:** See [Nesting Guide](nesting.md#pattern-3-nested-maps-two-levels)
+- **Use custom structs:** See [Collections API - #[derive(Mergeable)]](collections.md#using-custom-structs-derivemergeable)
 
 ### Troubleshooting
 - **App diverges:** Check root fields are CRDTs ([Migration Guide](migration.md))
@@ -127,6 +128,23 @@ crates/storage/
 4. [Performance Guide](performance.md) - Optimization
 5. [Migration Guide](migration.md) - If upgrading
 6. Deploy and monitor!
+
+---
+
+## Example Apps
+
+Working examples in `apps/`:
+
+| App | Demonstrates | Use Case |
+|-----|--------------|----------|
+| **team-metrics-macro** | `#[derive(Mergeable)]` ✨ | Zero-boilerplate custom structs |
+| **team-metrics-custom** | Manual `Mergeable` impl | Custom merge logic |
+| **nested-crdt-test** | All nesting patterns | Complex nested structures |
+| **collaborative-editor** | RGA + counters | Real-time text editing |
+| **kv-store** | Basic UnorderedMap | Simple key-value storage |
+
+**Compare approaches:**
+- `apps/team-metrics-macro` vs `apps/team-metrics-custom` - Same functionality, different implementation!
 
 ---
 
