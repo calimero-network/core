@@ -1,6 +1,8 @@
 use borsh::BorshDeserialize;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::Manifest;
+use core::convert::TryFrom;
+use core::str;
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
 use serde_json::{json, Value};
@@ -66,26 +68,29 @@ fn extract_state_entry_parts(value: &[u8]) -> Option<(&[u8], &[u8], String)> {
     }
 
     // Iterate possible path lengths (from shortest to longest)
-    for path_len in 0..=(total - 32 - 4) {
-        let path_start = total - path_len;
-        if path_start < 4 {
-            break;
-        }
-        let len_pos = path_start - 4;
-        if len_pos < 32 {
-            break;
-        }
+    let overhead = 32 + 4;
+    let max_path_len = total.checked_sub(overhead)?;
+
+    for path_len in 0..=max_path_len {
+        let Some(path_start) = total.checked_sub(path_len) else {
+            continue;
+        };
+        let Some(len_pos) = path_start.checked_sub(4) else {
+            continue;
+        };
+        let Some(id_start) = len_pos.checked_sub(32) else {
+            continue;
+        };
         let len_bytes = &value[len_pos..path_start];
         let len = u32::from_le_bytes(len_bytes.try_into().ok()?) as usize;
         if len != path_len {
             continue;
         }
-        let id_start = len_pos - 32;
         if id_start > total {
             continue;
         }
         let path_bytes = &value[path_start..];
-        if let Ok(path) = std::str::from_utf8(path_bytes) {
+        if let Ok(path) = str::from_utf8(path_bytes) {
             let item_bytes = &value[..id_start];
             let element_id = &value[id_start..len_pos];
             return Some((item_bytes, element_id, path.to_owned()));
@@ -99,62 +104,53 @@ fn decode_key_prefix(bytes: &[u8]) -> Option<(Value, usize, String)> {
     let mut cursor = Cursor::new(bytes);
 
     if let Ok(value) = String::deserialize_reader(&mut cursor) {
-        return Some((
-            json!(value),
-            cursor.position() as usize,
-            "string".to_owned(),
-        ));
+        let consumed = usize::try_from(cursor.position()).ok()?;
+        return Some((json!(value), consumed, "string".to_owned()));
     }
 
     cursor.set_position(0);
     if let Ok(value) = u64::deserialize_reader(&mut cursor) {
-        return Some((json!(value), cursor.position() as usize, "u64".to_owned()));
+        let consumed = usize::try_from(cursor.position()).ok()?;
+        return Some((json!(value), consumed, "u64".to_owned()));
     }
 
     cursor.set_position(0);
     if let Ok(value) = i64::deserialize_reader(&mut cursor) {
-        return Some((json!(value), cursor.position() as usize, "i64".to_owned()));
+        let consumed = usize::try_from(cursor.position()).ok()?;
+        return Some((json!(value), consumed, "i64".to_owned()));
     }
 
     cursor.set_position(0);
     if let Ok(value) = u32::deserialize_reader(&mut cursor) {
-        return Some((json!(value), cursor.position() as usize, "u32".to_owned()));
+        let consumed = usize::try_from(cursor.position()).ok()?;
+        return Some((json!(value), consumed, "u32".to_owned()));
     }
 
     cursor.set_position(0);
     if let Ok(value) = i32::deserialize_reader(&mut cursor) {
-        return Some((json!(value), cursor.position() as usize, "i32".to_owned()));
+        let consumed = usize::try_from(cursor.position()).ok()?;
+        return Some((json!(value), consumed, "i32".to_owned()));
     }
 
     cursor.set_position(0);
     if let Ok(value) = bool::deserialize_reader(&mut cursor) {
-        return Some((json!(value), cursor.position() as usize, "bool".to_owned()));
+        let consumed = usize::try_from(cursor.position()).ok()?;
+        return Some((json!(value), consumed, "bool".to_owned()));
     }
 
     cursor.set_position(0);
     if let Ok(value) = Vec::<u8>::deserialize_reader(&mut cursor) {
+        let consumed = usize::try_from(cursor.position()).ok()?;
         return Some((
             json!({
                 "bytes_hex": hex::encode(&value),
                 "length": value.len()
             }),
-            cursor.position() as usize,
+            consumed,
             "bytes".to_owned(),
         ));
     }
 
-    None
-}
-
-fn try_deserialize_with_manifest(
-    value_bytes: &[u8],
-    manifest: &Manifest,
-) -> Option<(String, Value)> {
-    for (type_name, _) in &manifest.types {
-        if let Ok(parsed) = deserializer::deserialize_with_abi(value_bytes, manifest, type_name) {
-            return Some((type_name.clone(), parsed));
-        }
-    }
     None
 }
 
@@ -185,6 +181,18 @@ struct RawEntityIndex {
     pub deleted_at: Option<u64>,
 }
 
+fn try_deserialize_with_manifest(
+    value_bytes: &[u8],
+    manifest: &Manifest,
+) -> Option<(String, Value)> {
+    for type_name in manifest.types.keys() {
+        if let Ok(parsed) = deserializer::deserialize_with_abi(value_bytes, manifest, type_name) {
+            return Some((type_name.clone(), parsed));
+        }
+    }
+    None
+}
+
 fn try_parse_entity_index(value: &[u8]) -> Option<Value> {
     let index = RawEntityIndex::try_from_slice(value).ok()?;
 
@@ -203,7 +211,9 @@ fn try_parse_entity_index(value: &[u8]) -> Option<Value> {
                 })
             })
             .collect::<Vec<_>>();
-        let _previous = children_map.insert(collection, Value::Array(entries));
+        if let Some(previous) = children_map.insert(collection, Value::Array(entries)) {
+            drop(previous);
+        }
     }
 
     let parent_id = index.parent_id.map(hex::encode);
@@ -226,6 +236,71 @@ fn try_parse_entity_index(value: &[u8]) -> Option<Value> {
     }))
 }
 
+fn try_parse_collection_entry(value: &[u8], abi_manifest: Option<&Manifest>) -> Option<Value> {
+    let (item_bytes, element_id, path) = extract_state_entry_parts(value)?;
+
+    if item_bytes.is_empty() {
+        return Some(json!({
+            "raw_size": value.len(),
+            "element": {
+                "id": hex::encode(element_id),
+                "path": path
+            },
+            "note": "Collection metadata (no payload)"
+        }));
+    }
+
+    let (key_json, consumed, key_type) = decode_key_prefix(item_bytes)?;
+    let key_bytes = &item_bytes[..consumed];
+    let value_bytes = &item_bytes[consumed..];
+
+    let (value_parsed, value_note, abi_type) = abi_manifest.map_or_else(
+        || {
+            (
+                deserializer::parse_borsh_generic(value_bytes),
+                "No ABI provided; using generic Borsh deserialization".to_owned(),
+                None,
+            )
+        },
+        |manifest| {
+            if let Some((type_name, parsed)) = try_deserialize_with_manifest(value_bytes, manifest)
+            {
+                (
+                    parsed,
+                    format!("ABI-guided deserialization using type '{type_name}'"),
+                    Some(type_name),
+                )
+            } else {
+                (
+                    deserializer::parse_borsh_generic(value_bytes),
+                    "ABI did not match; using generic Borsh deserialization".to_owned(),
+                    None,
+                )
+            }
+        },
+    );
+
+    Some(json!({
+        "raw_size": value.len(),
+        "element": {
+            "id": hex::encode(element_id),
+            "path": path
+        },
+        "key": {
+            "parsed": key_json,
+            "raw_hex": hex::encode(key_bytes),
+            "type": key_type
+        },
+        "value": {
+            "parsed": value_parsed,
+            "raw_hex": hex::encode(value_bytes),
+            "size": value_bytes.len(),
+            "abi_type": abi_type,
+            "note": value_note
+        }
+    }))
+}
+
 /// Parse a value with optional ABI-guided deserialization
 fn parse_value_with_abi(
     column: Column,
@@ -234,77 +309,29 @@ fn parse_value_with_abi(
 ) -> Result<Value> {
     match column {
         Column::State => {
-            if let Some((item_bytes, element_id, path)) = extract_state_entry_parts(value) {
-                if item_bytes.is_empty() {
-                    return Ok(json!({
-                        "raw_size": value.len(),
-                        "element": {
-                            "id": hex::encode(element_id),
-                            "path": path
-                        },
-                        "note": "Collection metadata (no payload)"
-                    }));
-                }
-
-                if let Some((key_json, consumed, key_type)) = decode_key_prefix(item_bytes) {
-                    let key_bytes = &item_bytes[..consumed];
-                    let value_bytes = &item_bytes[consumed..];
-
-                    let (value_parsed, value_note, abi_type) = abi_manifest.map_or_else(|| (
-                            deserializer::parse_borsh_generic(value_bytes),
-                            "No ABI provided; using generic Borsh deserialization".to_owned(),
-                            None,
-                        ), |manifest| if let Some((type_name, parsed)) =
-                            try_deserialize_with_manifest(value_bytes, manifest)
-                        {
-                            (
-                                parsed,
-                                format!("ABI-guided deserialization using type '{type_name}'"),
-                                Some(type_name),
-                            )
-                        } else {
-                            (
-                                deserializer::parse_borsh_generic(value_bytes),
-                                "ABI did not match; using generic Borsh deserialization".to_owned(),
-                                None,
-                            )
-                        });
-
-                    return Ok(json!({
-                        "raw_size": value.len(),
-                        "element": {
-                            "id": hex::encode(element_id),
-                            "path": path
-                        },
-                        "key": {
-                            "parsed": key_json,
-                            "raw_hex": hex::encode(key_bytes),
-                            "type": key_type
-                        },
-                        "value": {
-                            "parsed": value_parsed,
-                            "raw_hex": hex::encode(value_bytes),
-                            "size": value_bytes.len(),
-                            "abi_type": abi_type,
-                            "note": value_note
-                        }
-                    }));
-                }
+            if let Some(entry) = try_parse_collection_entry(value, abi_manifest) {
+                return Ok(entry);
             }
 
             if let Some(entity_index) = try_parse_entity_index(value) {
                 return Ok(entity_index);
             }
 
-            if let Some(manifest) = abi_manifest {
-                match deserializer::deserialize_root_state(value, manifest) {
-                    Ok(deserialized) => {
-                        Ok(json!({
-                            "parsed": deserialized,
-                            "raw_size": value.len(),
-                            "note": "ABI-guided deserialization with field names"
-                        }))
-                    }
+            abi_manifest.map_or_else(
+                || {
+                    let parsed = deserializer::parse_borsh_generic(value);
+                    Ok(json!({
+                        "parsed": parsed,
+                        "raw_size": value.len(),
+                        "note": "Generic Borsh deserialization - actual types may differ"
+                    }))
+                },
+                |manifest| match deserializer::deserialize_root_state(value, manifest) {
+                    Ok(deserialized) => Ok(json!({
+                        "parsed": deserialized,
+                        "raw_size": value.len(),
+                        "note": "ABI-guided deserialization with field names"
+                    })),
                     Err(e) => {
                         let parsed = deserializer::parse_borsh_generic(value);
                         Ok(json!({
@@ -313,61 +340,47 @@ fn parse_value_with_abi(
                             "note": format!("ABI deserialization failed ({e}), using generic fallback")
                         }))
                     }
-                }
-            } else {
-                let parsed = deserializer::parse_borsh_generic(value);
-                Ok(json!({
-                    "parsed": parsed,
-                    "raw_size": value.len(),
-                    "note": "Generic Borsh deserialization - actual types may differ"
-                }))
-            }
+                },
+            )
         }
 
-        Column::Generic => abi_manifest.map_or_else(
-            || {
-                // No ABI, use default parsing
-                parse_value(column, value)
-            },
-            |manifest| {
-                // Generic column can contain ContextDagDelta entries
-                // Try to parse as ContextDagDelta and deserialize its actions with ABI
-                StoreContextDagDelta::try_from_slice(value).map_or_else(
-                    |_| parse_value(column, value),
-                    |delta| {
-                        // Try to deserialize the actions data with ABI
-                        match deserializer::deserialize_root_state(&delta.actions, manifest) {
-                            Ok(deserialized) => Ok(json!({
-                                "type": "context_dag_delta",
-                                "delta_id": hex::encode(delta.delta_id),
-                                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
-                                "actions": {
-                                    "deserialized": deserialized,
-                                    "raw_size": delta.actions.len()
-                                },
-                                "timestamp": delta.timestamp,
-                                "applied": delta.applied
-                            })),
-                            Err(e) => {
-                                // Fall back to hex on error
-                                Ok(json!({
-                                    "type": "context_dag_delta",
-                                    "delta_id": hex::encode(delta.delta_id),
-                                    "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
-                                    "actions": {
-                                        "error": format!("Failed to deserialize: {e}"),
-                                        "hex": hex::encode(&delta.actions),
-                                        "size": delta.actions.len()
-                                    },
-                                    "timestamp": delta.timestamp,
-                                    "applied": delta.applied
-                                }))
-                            }
-                        }
-                    },
-                )
-            },
-        ),
+        Column::Generic => {
+            if let Some(manifest) = abi_manifest {
+                if let Ok(delta) = StoreContextDagDelta::try_from_slice(value) {
+                    return match deserializer::deserialize_root_state(&delta.actions, manifest) {
+                        Ok(deserialized) => Ok(json!({
+                            "type": "context_dag_delta",
+                            "delta_id": hex::encode(delta.delta_id),
+                            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                            "actions": {
+                                "deserialized": deserialized,
+                                "raw_size": delta.actions.len()
+                            },
+                            "timestamp": delta.timestamp,
+                            "applied": delta.applied
+                        })),
+                        Err(e) => Ok(json!({
+                            "type": "context_dag_delta",
+                            "delta_id": hex::encode(delta.delta_id),
+                            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                            "actions": {
+                                "error": format!("Failed to deserialize: {e}"),
+                                "hex": hex::encode(&delta.actions),
+                                "size": delta.actions.len()
+                            },
+                            "timestamp": delta.timestamp,
+                            "applied": delta.applied
+                        })),
+                    };
+                }
+            }
+
+            if let Some(entry) = try_parse_collection_entry(value, abi_manifest) {
+                return Ok(entry);
+            }
+
+            parse_value(column, value)
+        }
         _ => {
             // For other columns, use default parsing
             parse_value(column, value)
