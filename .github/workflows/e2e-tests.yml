@@ -50,6 +50,9 @@ jobs:
           ./apps/kv-store-with-handlers/build.sh
           ./apps/kv-store-init/build.sh
           ./apps/collaborative-editor/build.sh
+          ./apps/nested-crdt-test/build.sh
+          ./apps/team-metrics-macro/build.sh
+          ./apps/team-metrics-custom/build.sh
           cargo build --release -p meroctl -p merod -p e2e-tests
 
       - name: Upload Build Artifacts (Binaries)
@@ -64,6 +67,9 @@ jobs:
             apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
             apps/kv-store-init/res/kv_store_init.wasm
             apps/collaborative-editor/res/collaborative_editor.wasm
+            apps/nested-crdt-test/res/nested_crdt_test.wasm
+            apps/team-metrics-macro/res/team_metrics_macro.wasm
+            apps/team-metrics-custom/res/team_metrics_custom.wasm
           retention-days: 2
 
   test:
