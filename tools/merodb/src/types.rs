@@ -327,14 +327,18 @@ fn parse_alias_target(data: &[u8]) -> Result<Value> {
 fn parse_generic_value(data: &[u8]) -> Result<Value> {
     // Try to parse as ContextDagDelta first
     match StoreContextDagDelta::try_from_slice(data) {
-        Ok(delta) => Ok(json!({
-            "type": "context_dag_delta",
-            "delta_id": hex::encode(delta.delta_id),
-            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
-            "actions_size": delta.actions.len(),
-            "timestamp": delta.timestamp,
-            "applied": delta.applied
-        })),
+        Ok(delta) => {
+            let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
+            Ok(json!({
+                "type": "context_dag_delta",
+                "delta_id": hex::encode(delta.delta_id),
+                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                "actions_size": delta.actions.len(),
+                "timestamp": timestamp_raw,
+                "hlc": hlc_json,
+                "applied": delta.applied
+            }))
+        }
         Err(_) => {
             // Fall back to raw bytes for generic values
             Ok(json!({
@@ -344,4 +348,22 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
             }))
         }
     }
+}
+
+fn delta_hlc_snapshot(delta: &StoreContextDagDelta) -> (u64, Value) {
+    let timestamp = delta.hlc.inner();
+    let raw_time = timestamp.get_time().as_u64();
+    let id_hex = format!("{:032x}", u128::from(*timestamp.get_id()));
+    let physical_seconds = (raw_time >> 32) as u32;
+    let logical_counter = (raw_time & 0xF) as u32;
+
+    let hlc_json = json!({
+        "raw": delta.hlc.to_string(),
+        "time_ntp64": raw_time,
+        "physical_time_secs": physical_seconds,
+        "logical_counter": logical_counter,
+        "id_hex": id_hex,
+    });
+
+    (raw_time, hlc_json)
 }

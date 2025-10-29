@@ -85,6 +85,24 @@ fn map_fields(manifest: &Manifest) -> Vec<MapField> {
     fields
 }
 
+fn delta_hlc_snapshot(delta: &StoreContextDagDelta) -> (u64, Value) {
+    let timestamp = delta.hlc.inner();
+    let raw_time = timestamp.get_time().as_u64();
+    let id_hex = format!("{:032x}", u128::from(*timestamp.get_id()));
+    let physical_seconds = (raw_time >> 32) as u32;
+    let logical_counter = (raw_time & 0xF) as u32;
+
+    let hlc_json = json!({
+        "raw": delta.hlc.to_string(),
+        "time_ntp64": raw_time,
+        "physical_time_secs": physical_seconds,
+        "logical_counter": logical_counter,
+        "id_hex": id_hex,
+    });
+
+    (raw_time, hlc_json)
+}
+
 #[derive(Clone)]
 struct MapField {
     name: String,
@@ -171,6 +189,7 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                     if let Ok(parsed) =
                         deserializer::deserialize_with_abi(&delta.actions, manifest, root)
                     {
+                        let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                         return Ok(json!({
                             "type": "context_dag_delta",
                             "delta_id": hex::encode(delta.delta_id),
@@ -179,12 +198,14 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                                 "parsed": parsed,
                                 "raw_hex": hex::encode(&delta.actions)
                             },
-                            "timestamp": delta.timestamp,
+                            "timestamp": timestamp_raw,
+                            "hlc": hlc_json,
                             "applied": delta.applied
                         }));
                     }
                 }
 
+                let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                 return Ok(json!({
                     "type": "context_dag_delta",
                     "delta_id": hex::encode(delta.delta_id),
@@ -193,7 +214,8 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                         "raw_hex": hex::encode(&delta.actions),
                         "note": "Unable to decode actions with ABI"
                     },
-                    "timestamp": delta.timestamp,
+                    "timestamp": timestamp_raw,
+                    "hlc": hlc_json,
                     "applied": delta.applied
                 }));
             }
