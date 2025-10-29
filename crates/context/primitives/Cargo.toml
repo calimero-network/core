@@ -31,7 +31,13 @@ calimero-utils-actix.workspace = true
 
 [dev-dependencies]
 calimero-blobstore.workspace = true
-calimero-context.workspace = true
+# TODO: Decouple circular dev-dependency. Options:
+#   1. Move tests requiring calimero-context to integration tests in calimero-context itself
+#   2. Create a separate calimero-context-test-utils crate
+#   3. Restructure code to break the dependency cycle
+# Use version range to avoid circular dependency during publish
+# The [patch.crates-io] in workspace root makes this use local version during development
+calimero-context = ">=0.9.0, <1.0.0"
 calimero-network-primitives.workspace = true
 
 actix-rt = "2.11"
