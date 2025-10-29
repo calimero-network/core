@@ -165,7 +165,7 @@ fn deserialize_collection(
             let mut array = Vec::new();
             for _ in 0..len {
                 let value = deserialize_type_ref(cursor, items, manifest)?;
-                array.push(Value::try_from(value).unwrap_or(Value::Null));
+                array.push(value);
             }
             Ok(json!(array))
         }

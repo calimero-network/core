@@ -89,7 +89,7 @@ fn delta_hlc_snapshot(delta: &StoreContextDagDelta) -> (u64, Value) {
     let timestamp = delta.hlc.inner();
     let raw_time = timestamp.get_time().as_u64();
     let id_hex = format!("{:032x}", u128::from(*timestamp.get_id()));
-    let physical_seconds = (raw_time >> 32) as u32;
+    let physical_seconds = (raw_time >> 32_i32) as u32;
     let logical_counter = (raw_time & 0xF) as u32;
 
     let hlc_json = json!({
