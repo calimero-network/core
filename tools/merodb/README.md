@@ -4,9 +4,9 @@ A CLI tool for debugging RocksDB databases used by Calimero.
 
 ## Features
 
-- **Schema Generation**: Generate a JSON schema describing the structure of all column families
-- **Data Export**: Export database contents to pretty-printed JSON
-- **Data Validation**: Validate database integrity and detect corruption
+- **Schema Generation**: Generate a JSON schema describing the structure of all column families.
+- **Data Export**: Export database contents to pretty-printed JSON with ABI-aware decoding of contract state.
+- **Data Validation**: Validate database integrity and detect corruption.
 
 ## Installation
 
@@ -17,6 +17,8 @@ cargo build --package merodb --release
 The binary will be available at `target/release/merodb`.
 
 ## Usage
+
+Most commands operate on a RocksDB data directory. When exporting contract state or Context DAG deltas, you must also supply the compiled WASM artifact that embeds the ABI manifest (`--wasm-file /path/to/contract.wasm`). Without the manifest the tool falls back to hex dumps for state values.
 
 ### Generate Database Schema
 
@@ -37,13 +39,13 @@ merodb --db-path /path/to/rocksdb --schema --output schema.json
 Export all data from the database:
 
 ```bash
-merodb --db-path /path/to/rocksdb --export --all --output export.json
+merodb --db-path /path/to/rocksdb --export --all --output export.json --wasm-file /path/to/contract.wasm
 ```
 
 Export specific column families:
 
 ```bash
-merodb --db-path /path/to/rocksdb --export --columns Meta,Config,State
+merodb --db-path /path/to/rocksdb --export --columns Meta,Config,State --wasm-file /path/to/contract.wasm
 ```
 
 ### Validate Database
@@ -61,12 +63,11 @@ The tool supports all Calimero RocksDB column families:
 - **Meta**: Context metadata (application ID, root hash)
 - **Config**: Context configuration (protocol, network, contracts, revisions)
 - **Identity**: Context membership (private key and sender key pairs)
-- **State**: Application-specific state (raw bytes)
-- **Delta**: State change tracking - either Head (size marker) or Data (actual changes)
+- **State**: Application-specific state values decoded through the contract ABI
 - **Blobs**: Blob metadata (size, hash, links to other blobs)
 - **Application**: Application metadata (bytecode, size, source, metadata, compiled blob)
 - **Alias**: Human-readable aliases for contexts, applications, and public keys
-- **Generic**: Generic key-value storage
+- **Generic**: Generic key-value storage (Context DAG deltas and arbitrary values)
 
 ## Data Formats
 
@@ -77,17 +78,17 @@ The tool automatically detects and decodes known Calimero types using Borsh dese
 - **ContextMeta**: `{ application: ApplicationId, root_hash: Hash }`
 - **ContextConfig**: `{ protocol, network, contract, proxy_contract, application_revision, members_revision }`
 - **ContextIdentity**: `{ private_key: Option<[u8; 32]>, sender_key: Option<[u8; 32]> }`
-- **ContextDelta**: `Head(NonZeroUsize)` or `Data(Cow<[u8]>)` - tracks state changes
 - **BlobMeta**: `{ size: u64, hash: [u8; 32], links: Box<[BlobId]> }`
 - **ApplicationMeta**: `{ bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId }`
+- **ContextDagDelta**: `{ delta_id, parents, actions, timestamp, hlc, applied }` with detailed HLC breakdown
 
 ### Unknown Data
 
-For raw or unknown data types (State, Generic), values are exported as hexadecimal strings.
+When no ABI is supplied (or the ABI lacks a matching record) the tool exports raw hexadecimal strings and records a note explaining the fallback.
 
 ### Implementation Note
 
-The tool imports types directly from `calimero-store` crate to ensure parsing matches the exact structure used by Calimero. This guarantees compatibility and automatic updates when types change.
+The tool imports types directly from the `calimero-store` crate to ensure parsing matches the exact structure used by Calimero. The contract ABI is emitted by `calimero-wasm-abi` at build time and is required to resolve application-specific state keys and values.
 
 ## Read-Only Access
 
@@ -123,7 +124,7 @@ merodb --db-path ~/.calimero/data --export --columns Meta,Config --output contex
 
 # Analyze the JSON to find your context ID
 # Then export state and deltas for that context
-merodb --db-path ~/.calimero/data --export --columns State,Delta --output context-state.json
+merodb --db-path ~/.calimero/data --export --columns State,Generic --output context-state.json --wasm-file ./calimero_marketplace.wasm
 ```
 
 ## Output Format
