@@ -126,7 +126,15 @@ pub fn deserialize_with_abi(data: &[u8], manifest: &Manifest, type_name: &str) -
         .ok_or_else(|| eyre::eyre!("Type '{type_name}' not found in ABI schema"))?;
 
     let mut cursor = Cursor::new(data);
-    deserialize_type_def(&mut cursor, type_def, manifest)
+    let value = deserialize_type_def(&mut cursor, type_def, manifest)?;
+    if cursor.position() != data.len() as u64 {
+        eyre::bail!(
+            "Type '{type_name}' did not consume all bytes (consumed {}, total {})",
+            cursor.position(),
+            data.len()
+        );
+    }
+    Ok(value)
 }
 
 /// Deserialize a type definition from a cursor
