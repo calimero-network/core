@@ -16,6 +16,7 @@ pub struct AbiEmitter {
     local_types: HashMap<String, ResolvedLocal>,
     methods: Vec<Method>,
     events: Vec<Event>,
+    state_type: Option<String>,
 }
 
 impl<'ast> AbiEmitter {
@@ -26,6 +27,13 @@ impl<'ast> AbiEmitter {
             local_types: HashMap::new(),
             methods: Vec::new(),
             events: Vec::new(),
+            state_type: None,
+        }
+    }
+
+    fn record_state_type(&mut self, name: &str) {
+        if self.state_type.is_none() {
+            self.state_type = Some(name.to_owned());
         }
     }
 
@@ -204,6 +212,16 @@ fn extract_newtype_target(item_struct: &ItemStruct) -> Option<&Type> {
 /// Post-process a TypeRef to handle any special cases
 fn post_process_type_ref(type_ref: TypeRef, _resolver: &dyn TypeResolver) -> TypeRef {
     type_ref
+}
+
+/// Returns true when the struct has the `#[app::state]` marker attribute so it can
+/// be treated as the contract's root state during ABI emission.
+fn has_app_state_attribute(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let path = attr.path();
+        let segments: Vec<_> = path.segments.iter().collect();
+        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "state"
+    })
 }
 
 impl<'ast> Visit<'ast> for AbiEmitter {
@@ -418,8 +436,18 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     let file = syn::parse_file(source)?;
     let mut emitter = AbiEmitter::new();
 
-    // First pass: collect all referenced types from public methods
+    // First pass: collect all referenced types from public methods and state definitions
     let mut referenced_types = std::collections::HashSet::new();
+    for item in &file.items {
+        if let Item::Struct(item_struct) = item {
+            if has_app_state_attribute(&item_struct.attrs) {
+                let struct_name = item_struct.ident.to_string();
+                let _ = referenced_types.insert(struct_name.clone());
+                emitter.record_state_type(&struct_name);
+            }
+        }
+    }
+
     for item in &file.items {
         if let Item::Impl(item_impl) = item {
             emitter.collect_referenced_types(item_impl, &mut referenced_types);
@@ -508,6 +536,7 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
         types: emitter.type_definitions.into_iter().collect(),
         methods: emitter.methods,
         events: emitter.events,
+        state_root: emitter.state_type,
     };
 
     // Remove any internal types that shouldn't be exposed
