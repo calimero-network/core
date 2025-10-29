@@ -42,6 +42,7 @@ calimero-utils-actix.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+calimero-dag = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

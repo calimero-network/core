@@ -7,13 +7,16 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-borsh.workspace = true
+borsh = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+calimero-storage.workspace = true
 
 [dev-dependencies]
 calimero-storage = { workspace = true, features = ["testing"] }
 rand.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
 
+[features]
+testing = []

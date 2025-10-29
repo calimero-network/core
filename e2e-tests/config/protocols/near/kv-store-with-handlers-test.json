@@ -17,13 +17,22 @@
       }
     },
     {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
       "contextInviteJoin": null
     },
     {
       "wait": {
-        "durationMs": 1000,
+        "durationMs": 3000,
         "for": "consensus",
-        "description": "Wait for nodes to join and reach consensus"
+        "description": "Wait for key exchange (2-3s) + gossipsub mesh formation + initial sync"
       }
     },
     {

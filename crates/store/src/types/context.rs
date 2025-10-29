@@ -118,7 +118,7 @@ pub struct ContextDagDelta {
     pub delta_id: [u8; 32],
     pub parents: Vec<[u8; 32]>,
     pub actions: Vec<u8>, // Serialized actions
-    pub timestamp: u64,
+    pub hlc: calimero_storage::logical_clock::HybridTimestamp,
     pub applied: bool,
 }
 

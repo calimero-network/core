@@ -67,6 +67,7 @@ pub mod error;
 pub mod index;
 pub mod integration;
 pub mod interface;
+pub mod logical_clock;
 pub mod merge;
 pub mod snapshot;
 pub mod store;

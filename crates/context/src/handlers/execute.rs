@@ -422,6 +422,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     outcome.artifact.clone(),
                                     the_delta.id,
                                     the_delta.parents.clone(),
+                                    the_delta.hlc,
                                     events_data,
                                 )
                                 .await?;
@@ -690,14 +691,14 @@ async fn internal_execute(
                 context.dag_heads.clone()
             };
 
-            let timestamp = calimero_storage::env::time_now();
-            let delta_id = CausalDelta::compute_id(&parents, &actions, timestamp);
+            let hlc = calimero_storage::env::hlc_timestamp();
+            let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
             let delta = CausalDelta {
-                id: delta_id, // Computed from delta content (parents + actions + timestamp)
+                id: delta_id,
                 parents,
-                actions, // ✅ Real actions extracted from artifact!
-                timestamp,
+                actions,
+                hlc,
             };
 
             // Update context's DAG heads to this new delta
@@ -750,7 +751,7 @@ async fn internal_execute(
                     delta_id: delta.id,
                     parents: delta.parents.clone(),
                     actions: serialized_actions,
-                    timestamp: delta.timestamp,
+                    hlc: delta.hlc,
                     applied: true,
                 },
             )?;
