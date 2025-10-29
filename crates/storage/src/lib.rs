@@ -100,6 +100,8 @@ pub mod tests {
     pub mod merkle;
     /// RGA (Replicated Growable Array) CRDT tests.
     pub mod rga;
+    /// RGA synchronization tests.
+    pub mod rga_sync;
 }
 
 #[cfg(test)]
