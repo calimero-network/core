@@ -355,14 +355,14 @@ pub trait Mergeable {
 
 All 6 CRDT types implement both traits:
 
-| Type | crdt_type() | can_contain_crdts() | Merge Strategy |
-|------|-------------|---------------------|----------------|
-| Counter | Counter | false | Sum values |
-| LwwRegister | LwwRegister | false | Compare timestamps |
-| RGA | Rga | false | Tombstone-based |
-| UnorderedMap | UnorderedMap | **true** | Entry-wise recursive |
-| Vector | Vector | **true** | Element-wise recursive |
-| UnorderedSet | UnorderedSet | false | Union |
+| Type         | crdt_type()   | can_contain_crdts()   | Merge Strategy         |
+| ------------ | ------------- | --------------------- | ---------------------- |
+| Counter      | Counter       | false                 | Sum values             |
+| LwwRegister  | LwwRegister   | false                 | Compare timestamps     |
+| RGA          | Rga           | false                 | Tombstone-based        |
+| UnorderedMap | UnorderedMap  | **true**              | Entry-wise recursive   |
+| Vector       | Vector        | **true**              | Element-wise recursive |
+| UnorderedSet | UnorderedSet  | false                 | Union                  |
 
 ---
 
@@ -422,12 +422,12 @@ pub extern "C" fn __calimero_register_merge() {
 
 ### Trade-offs Made
 
-| Choice | Pro | Con |
-|--------|-----|-----|
-| Element IDs | O(1) for most conflicts | Larger storage footprint |
-| HLC timestamps | Deterministic ordering | Clock synchronization needed |
-| Auto-merge via macro | Zero code | Magic (harder to debug) |
-| LWW for non-CRDTs | Simple fallback | May lose updates |
+| Choice               | Pro                     | Con                          |
+| -------------------- | ----------------------- | ---------------------------- |
+| Element IDs          | O(1) for most conflicts | Larger storage footprint     |
+| HLC timestamps       | Deterministic ordering  | Clock synchronization needed |
+| Auto-merge via macro | Zero code               | Magic (harder to debug)      |
+| LWW for non-CRDTs    | Simple fallback         | May lose updates             |
 
 ### Alternative Approaches (Not Chosen)
 
@@ -456,24 +456,24 @@ pub extern "C" fn __calimero_register_merge() {
 
 **Expected performance based on design:**
 
-| Scenario | Operations | Time | Merge? |
-|----------|------------|------|--------|
-| 1000 local writes | 1000 × insert() | ~10ms | ❌ |
-| 100 remote syncs (diff elements) | 100 × apply | ~2ms | ❌ |
-| 10 remote syncs (same element) | 10 × LWW | ~0.1ms | ❌ |
-| 1 root conflict | 1 × merge | ~1-2ms | ✅ |
+| Scenario                         | Operations      | Time   | Merge?   |
+| -------------------------------- | --------------- | ------ | -------- |
+| 1000 local writes                | 1000 × insert() | ~10ms  | ❌        |
+| 100 remote syncs (diff elements) | 100 × apply     | ~2ms   | ❌        |
+| 10 remote syncs (same element)   | 10 × LWW        | ~0.1ms | ❌        |
+| 1 root conflict                  | 1 × merge       | ~1-2ms | ✅        |
 
 **Bottleneck:** Network latency (50-200ms) >> merge time (1-2ms)
 
 ### Memory Usage
 
-| Collection | Overhead | Notes |
-|------------|----------|-------|
-| Counter | ~100 bytes | Element + metadata |
-| LwwRegister | ~150 bytes | Value + timestamp + node_id |
-| Map entry | ~200 bytes | Per entry (key + value + metadata) |
-| Vector element | ~150 bytes | Per element |
-| Set element | ~150 bytes | Per element |
+| Collection     | Overhead   | Notes                              |
+| -------------- | ---------- | ---------------------------------- |
+| Counter        | ~100 bytes | Element + metadata                 |
+| LwwRegister    | ~150 bytes | Value + timestamp + node_id        |
+| Map entry      | ~200 bytes | Per entry (key + value + metadata) |
+| Vector element | ~150 bytes | Per element                        |
+| Set element    | ~150 bytes | Per element                        |
 
 **Nested overhead:** Each level adds one collection element (~100 bytes)
 

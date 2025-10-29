@@ -26,12 +26,12 @@ map.insert("key", value)
 
 ### Trade-offs
 
-| Aspect | Element IDs | Full OT |
-|--------|-------------|---------|
-| **Complexity** | Simple | Complex |
-| **Performance** | O(1) for most | O(N) always |
-| **Storage** | More (IDs+metadata) | Less |
-| **Correctness** | Proven | Hard to get right |
+| Aspect          | Element IDs         | Full OT           |
+| --------------- | ------------------- | ----------------- |
+| **Complexity**  | Simple              | Complex           |
+| **Performance** | O(1) for most       | O(N) always       |
+| **Storage**     | More (IDs+metadata) | Less              |
+| **Correctness** | Proven              | Hard to get right |
 
 **Verdict:** Element IDs win for simplicity and performance.
 
@@ -73,11 +73,11 @@ pub struct MyApp { ... }
 
 ### Trade-offs
 
-| Approach | Code | Flexibility | Errors |
-|----------|------|-------------|--------|
-| **Manual** | Lots | Full | Common |
-| **Derive** | Medium | Medium | Rare |
-| **Auto (#[app::state])** | **Zero** | **Good** | **Rare** |
+| Approach                 | Code     | Flexibility   | Errors   |
+| ------------------------ | -------- | ------------- | -------- |
+| **Manual**               | Lots     | Full          | Common   |
+| **Derive**               | Medium   | Medium        | Rare     |
+| **Auto (#[app::state])** | **Zero** | **Good**      | **Rare** |
 
 **Verdict:** Auto-generation via existing macro wins for DX.
 
@@ -106,10 +106,10 @@ Merge: [Counter(7), Counter(10)]  // Element-wise sum
 
 ### Trade-offs
 
-| Approach | Complexity | Use Cases | Performance |
-|----------|------------|-----------|-------------|
-| **Element-wise** | Simple | Append-heavy | O(N) |
-| **Full OT** | Complex | Arbitrary edits | O(N×M) |
+| Approach         | Complexity   | Use Cases       | Performance   |
+| ---------------- | ------------ | --------------- | ------------- |
+| **Element-wise** | Simple       | Append-heavy    | O(N)          |
+| **Full OT**      | Complex      | Arbitrary edits | O(N×M)        |
 
 **Verdict:** Element-wise for now, OT if needed later.
 
@@ -194,10 +194,10 @@ field: String
 
 ### Trade-offs
 
-| Approach | Verbosity | Timestamps | Correctness |
-|----------|-----------|------------|-------------|
-| **Auto LWW** | Low | Implicit | Good enough |
-| **Require LwwRegister** | High | Explicit | Better |
+| Approach                | Verbosity   | Timestamps   | Correctness   |
+| ----------------------- | ----------- | ------------ | ------------- |
+| **Auto LWW**            | Low         | Implicit     | Good enough   |
+| **Require LwwRegister** | High        | Explicit     | Better        |
 
 **Verdict:** Auto LWW now, can be improved in Phase 3.
 
@@ -351,8 +351,8 @@ Graceful fallback enables:
 fn is_crdt_type(ty: &Type) -> bool {
     let type_str = quote!(#ty).to_string();
     type_str.contains("UnorderedMap")
-        || type_str.contains("Counter")
-        || type_str.contains("Vector")
+|  |
+|  |
         // ...
 }
 ```

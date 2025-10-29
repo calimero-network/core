@@ -24,11 +24,11 @@ Map<K, Map<K2, V>>                      // Map contains Map!
 
 ## Nesting Support Matrix
 
-| Container | Can Contain | Examples |
-|-----------|-------------|----------|
-| **UnorderedMap** | ✅ Any CRDT | `Map<K, Counter>`, `Map<K, Map<K2, V>>` |
-| **Vector** | ✅ Any CRDT | `Vector<Counter>`, `Vector<Map<K, V>>` |
-| **UnorderedSet** | ❌ Values only | `Set<String>` ✅, `Set<Counter>` ❌ |
+| Container        | Can Contain   | Examples                                |
+| ---------------- | ------------- | --------------------------------------- |
+| **UnorderedMap** | ✅ Any CRDT    | `Map<K, Counter>`, `Map<K, Map<K2, V>>` |
+| **Vector**       | ✅ Any CRDT    | `Vector<Counter>`, `Vector<Map<K, V>>`  |
+| **UnorderedSet** | ❌ Values only | `Set<String>` ✅, `Set<Counter>` ❌       |
 
 **Unlimited depth:** `Map<K, Map<K2, Map<K3, Counter>>>` works!
 
@@ -297,21 +297,21 @@ Need per-entity values?
 
 ### Access Complexity
 
-| Nesting | Access Cost | Example |
-|---------|-------------|---------|
-| 1 level | O(1) | `map.get(key)` |
-| 2 levels | O(1) + O(1) | `map.get(k1)?.get(k2)` |
-| 3 levels | O(1)×3 | `map.get(k1)?.get(k2)?.get(k3)` |
+| Nesting   | Access Cost   | Example                         |
+| --------- | ------------- | ------------------------------- |
+| 1 level   | O(1)          | `map.get(key)`                  |
+| 2 levels  | O(1) + O(1)   | `map.get(k1)?.get(k2)`          |
+| 3 levels  | O(1)×3        | `map.get(k1)?.get(k2)?.get(k3)` |
 
 **Vectors:** O(N) per level for index access
 
 ### Merge Complexity
 
-| Nesting | Merge Cost | Frequency |
-|---------|------------|-----------|
-| Map<K, Counter> | O(N) | < 1% of ops |
-| Map<K, Map<K2, V>> | O(N×M) | < 1% of ops |
-| Vector<Counter> | O(N) | < 1% of ops |
+| Nesting            | Merge Cost   | Frequency   |
+| ------------------ | ------------ | ----------- |
+| Map<K, Counter>    | O(N)         | < 1% of ops |
+| Map<K, Map<K2, V>> | O(N×M)       | < 1% of ops |
+| Vector<Counter>    | O(N)         | < 1% of ops |
 
 **Key insight:** Merge is rare (< 1% of operations) and network-bound anyway!
 

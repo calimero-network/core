@@ -29,12 +29,12 @@ Merge: counter = 12 ✅ (5 + 7, both increments preserved)
 
 ### Performance
 
-| Operation | Complexity | Storage |
-|-----------|------------|---------|
-| new() | O(1) | Single element |
-| increment() | O(1) | Update element |
-| value() | O(1) | Read element |
-| merge() | O(N) | N=other's value |
+| Operation   | Complexity   | Storage         |
+| ----------- | ------------ | --------------- |
+| new()       | O(1)         | Single element  |
+| increment() | O(1)         | Update element  |
+| value()     | O(1)         | Read element    |
+| merge()     | O(N)         | N=other's value |
 
 ### Nesting
 
@@ -98,12 +98,12 @@ Merge: register = "Bob" ✅ (higher node_id wins)
 
 ### Performance
 
-| Operation | Complexity | Storage |
-|-----------|------------|---------|
-| new(value) | O(1) | Value + timestamp |
-| set(value) | O(1) | Update both |
-| get() | O(1) | Read value |
-| merge() | O(1) | Timestamp compare |
+| Operation   | Complexity   | Storage           |
+| ----------- | ------------ | ----------------- |
+| new(value)  | O(1)         | Value + timestamp |
+| set(value)  | O(1)         | Update both       |
+| get()       | O(1)         | Read value        |
+| merge()     | O(1)         | Timestamp compare |
 
 ### Nesting
 
@@ -164,12 +164,12 @@ Merge: "HelloWorld" or "WorldHello" (deterministic by timestamp)
 
 ### Performance
 
-| Operation | Complexity | Storage |
-|-----------|------------|---------|
-| new() | O(1) | Single element |
-| insert_str(pos, text) | O(M) | M=text length |
-| get_text() | O(N) | N=char count |
-| delete_range() | O(K) | K=range size |
+| Operation             | Complexity   | Storage        |
+| --------------------- | ------------ | -------------- |
+| new()                 | O(1)         | Single element |
+| insert_str(pos, text) | O(M)         | M=text length  |
+| get_text()            | O(N)         | N=char count   |
+| delete_range()        | O(K)         | K=range size   |
 
 ### Nesting
 
@@ -231,14 +231,14 @@ Merge: Both fields present ✅ (recursive merge)
 
 ### Performance
 
-| Operation | Complexity | Storage |
-|-----------|------------|---------|
-| new() | O(1) | Single collection |
-| insert(k, v) | O(1) | One element |
-| get(k) | O(1) | Lookup by ID |
-| remove(k) | O(1) | Mark deleted |
-| entries() | O(N) | Iterate all |
-| merge() | O(N×M) | N=entries, M=nested |
+| Operation    | Complexity   | Storage             |
+| ------------ | ------------ | ------------------- |
+| new()        | O(1)         | Single collection   |
+| insert(k, v) | O(1)         | One element         |
+| get(k)       | O(1)         | Lookup by ID        |
+| remove(k)    | O(1)         | Mark deleted        |
+| entries()    | O(N)         | Iterate all         |
+| merge()      | O(N×M)       | N=entries, M=nested |
 
 ### Nesting
 
@@ -299,14 +299,14 @@ Merge: [Counter(5), Counter(5)] ✅ (merge + append)
 
 ### Performance
 
-| Operation | Complexity | Storage |
-|-----------|------------|---------|
-| new() | O(1) | Single collection |
-| push(v) | O(1) | One element |
-| get(i) | O(N) | Linear scan |
-| pop() | O(1) | Remove last |
-| update(i, v) | O(N) | Find + update |
-| merge() | O(min(N,M)) | Element-wise |
+| Operation    | Complexity   | Storage           |
+| ------------ | ------------ | ----------------- |
+| new()        | O(1)         | Single collection |
+| push(v)      | O(1)         | One element       |
+| get(i)       | O(N)         | Linear scan       |
+| pop()        | O(1)         | Remove last       |
+| update(i, v) | O(N)         | Find + update     |
+| merge()      | O(min(N,M))  | Element-wise      |
 
 ### Merge Strategy Details
 
@@ -408,14 +408,14 @@ Merge: {"alice", "bob", "charlie"} ✅ (union)
 
 ### Performance
 
-| Operation | Complexity | Storage |
-|-----------|------------|---------|
-| new() | O(1) | Single collection |
-| insert(v) | O(1) | One element |
-| contains(v) | O(1) | Lookup by ID |
-| remove(v) | O(1) | Mark deleted |
-| iter() | O(N) | Iterate all |
-| merge() | O(N) | N=other's size |
+| Operation   | Complexity   | Storage           |
+| ----------- | ------------ | ----------------- |
+| new()       | O(1)         | Single collection |
+| insert(v)   | O(1)         | One element       |
+| contains(v) | O(1)         | Lookup by ID      |
+| remove(v)   | O(1)         | Mark deleted      |
+| iter()      | O(N)         | Iterate all       |
+| merge()     | O(N)         | N=other's size    |
 
 ### Merge Strategy Details
 
@@ -485,14 +485,14 @@ impl UserManager {
 
 ## Comparison Table
 
-| Collection | Best For | Merge | Nesting | Performance |
-|------------|----------|-------|---------|-------------|
-| **Counter** | Metrics, counts | Sum | Leaf | O(1) all ops |
-| **LwwRegister** | Single values | LWW | Leaf | O(1) all ops |
-| **RGA** | Text editing | Char-level | Leaf | O(N) get |
-| **Map** | Key-value | Recursive | ✅ Full | O(1) get/set |
-| **Vector** | Ordered lists | Element-wise | ✅ Full | O(N) get |
-| **Set** | Membership | Union | Values only | O(1) ops |
+| Collection      | Best For        | Merge        | Nesting     | Performance   |
+| --------------- | --------------- | ------------ | ----------- | ------------- |
+| **Counter**     | Metrics, counts | Sum          | Leaf        | O(1) all ops  |
+| **LwwRegister** | Single values   | LWW          | Leaf        | O(1) all ops  |
+| **RGA**         | Text editing    | Char-level   | Leaf        | O(N) get      |
+| **Map**         | Key-value       | Recursive    | ✅ Full      | O(1) get/set  |
+| **Vector**      | Ordered lists   | Element-wise | ✅ Full      | O(N) get      |
+| **Set**         | Membership      | Union        | Values only | O(1) ops      |
 
 ---
 

@@ -40,14 +40,14 @@ pub struct UserProfile {
 
 ## Available Collections
 
-| Collection | Use Case | Merge Strategy | Nesting |
-|------------|----------|----------------|---------|
-| **Counter** | Counters, metrics | **Sum** | Leaf |
-| **LwwRegister&lt;T&gt;** | Single values | **Latest timestamp** | Leaf |
-| **ReplicatedGrowableArray** | Text, documents | **Character-level** | Leaf |
-| **UnorderedMap&lt;K,V&gt;** | Key-value storage | **Recursive per-entry** | ✅ Can nest |
-| **Vector&lt;T&gt;** | Ordered lists | **Element-wise** | ✅ Can nest |
-| **UnorderedSet&lt;T&gt;** | Unique values | **Union** | Simple values |
+| Collection                        | Use Case            | Merge Strategy            | Nesting         |
+| --------------------------------- | ------------------- | ------------------------- | --------------- |
+| **Counter**                       | Counters, metrics   | **Sum**                   | Leaf            |
+| **LwwRegister&lt;T&gt;**          | Single values       | **Latest timestamp**      | Leaf            |
+| **ReplicatedGrowableArray**       | Text, documents     | **Character-level**       | Leaf            |
+| **UnorderedMap&lt;K,V&gt;**       | Key-value storage   | **Recursive per-entry**   | ✅ Can nest      |
+| **Vector&lt;T&gt;**               | Ordered lists       | **Element-wise**          | ✅ Can nest      |
+| **UnorderedSet&lt;T&gt;**         | Unique values       | **Union**                 | Simple values   |
 
 ---
 
@@ -113,12 +113,12 @@ pub struct ActivityTracker {
 
 ## Performance Characteristics
 
-| Operation | Complexity | When Merge Called | Impact |
-|-----------|------------|-------------------|--------|
-| **Local insert** | O(1) | ❌ Never | None |
-| **Remote sync (diff keys)** | O(1) | ❌ Never | None |
-| **Remote sync (same key)** | O(1) | ❌ HLC+LWW | None |
-| **Root conflict** | O(F×E) | ✅ Rare | < 1% |
+| Operation                      | Complexity   | When Merge Called   | Impact   |
+| ------------------------------ | ------------ | ------------------- | -------- |
+| **Local insert**               | O(1)         | ❌ Never             | None     |
+| **Remote sync (diff keys)**    | O(1)         | ❌ Never             | None     |
+| **Remote sync (same key)**     | O(1)         | ❌ HLC+LWW           | None     |
+| **Root conflict**              | O(F×E)       | ✅ Rare              | < 1%     |
 
 **F** = number of root fields (typically 3-10)  
 **E** = entries per field (typically 10-100)
@@ -215,12 +215,12 @@ Need unique membership?
 
 ## Limitations & Gotchas
 
-| Collection | Limitation | Workaround |
-|------------|-----------|------------|
-| **Vector** | Concurrent inserts at arbitrary positions may conflict | Use for append-heavy workloads |
-| **UnorderedSet** | Can't contain CRDTs (no update semantics) | Use UnorderedMap instead |
-| **LwwRegister** | Concurrent updates lose one (LWW) | Expected behavior for single values |
-| **All Collections** | Root-level non-CRDTs use LWW | Use LwwRegister for explicit timestamps |
+| Collection             | Limitation                                             | Workaround                              |
+| ---------------------- | ------------------------------------------------------ | --------------------------------------- |
+| **Vector**             | Concurrent inserts at arbitrary positions may conflict | Use for append-heavy workloads          |
+| **UnorderedSet**       | Can't contain CRDTs (no update semantics)              | Use UnorderedMap instead                |
+| **LwwRegister**        | Concurrent updates lose one (LWW)                      | Expected behavior for single values     |
+| **All Collections**    | Root-level non-CRDTs use LWW                           | Use LwwRegister for explicit timestamps |
 
 ---
 

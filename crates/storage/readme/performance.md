@@ -18,63 +18,63 @@ Optimization tips and performance characteristics for Calimero Storage CRDTs.
 
 ### Counter
 
-| Operation | Time | Storage I/O |
-|-----------|------|-------------|
-| new() | O(1) | 1 write |
-| increment() | O(1) | 1 write |
-| value() | O(1) | 1 read |
-| merge() | O(N) | N=other's value (increments) |
+| Operation   | Time   | Storage I/O                  |
+| ----------- | ------ | ---------------------------- |
+| new()       | O(1)   | 1 write                      |
+| increment() | O(1)   | 1 write                      |
+| value()     | O(1)   | 1 read                       |
+| merge()     | O(N)   | N=other's value (increments) |
 
 **Best for:** High-frequency incrementing (views, clicks, scores)
 
 ### LwwRegister<T>
 
-| Operation | Time | Storage I/O |
-|-----------|------|-------------|
-| new(value) | O(1) | 1 write |
-| set(value) | O(1) | 1 write |
-| get() | O(1) | 1 read |
-| merge() | O(1) | Timestamp compare |
+| Operation   | Time   | Storage I/O       |
+| ----------- | ------ | ----------------- |
+| new(value)  | O(1)   | 1 write           |
+| set(value)  | O(1)   | 1 write           |
+| get()       | O(1)   | 1 read            |
+| merge()     | O(1)   | Timestamp compare |
 
 **Best for:** Single values that change occasionally
 
 ### UnorderedMap<K, V>
 
-| Operation | Time | Storage I/O |
-|-----------|------|-------------|
-| new() | O(1) | 1 write |
-| insert(k, v) | O(1) | 1 write |
-| get(k) | O(1) | 1 read |
-| remove(k) | O(1) | 1 write (tombstone) |
-| entries() | O(N) | N reads |
-| merge() | O(N) | N=entries in other |
+| Operation    | Time   | Storage I/O         |
+| ------------ | ------ | ------------------- |
+| new()        | O(1)   | 1 write             |
+| insert(k, v) | O(1)   | 1 write             |
+| get(k)       | O(1)   | 1 read              |
+| remove(k)    | O(1)   | 1 write (tombstone) |
+| entries()    | O(N)   | N reads             |
+| merge()      | O(N)   | N=entries in other  |
 
 **Best for:** Key-value lookups, dictionaries
 
 ### Vector<T>
 
-| Operation | Time | Storage I/O |
-|-----------|------|-------------|
-| new() | O(1) | 1 write |
-| push(v) | O(1) | 1 write |
-| get(i) | O(N) | Linear scan |
-| pop() | O(1) | 1 write |
-| update(i, v) | O(N) | Scan + write |
-| merge() | O(min(N,M)) | Element-wise |
+| Operation    | Time        | Storage I/O   |
+| ------------ | ----------- | ------------- |
+| new()        | O(1)        | 1 write       |
+| push(v)      | O(1)        | 1 write       |
+| get(i)       | O(N)        | Linear scan   |
+| pop()        | O(1)        | 1 write       |
+| update(i, v) | O(N)        | Scan + write  |
+| merge()      | O(min(N,M)) | Element-wise  |
 
 **Best for:** Append-heavy workloads (logs, events)  
 **Avoid for:** Random access (use Map with numeric keys)
 
 ### UnorderedSet<T>
 
-| Operation | Time | Storage I/O |
-|-----------|------|-------------|
-| new() | O(1) | 1 write |
-| insert(v) | O(1) | 1 write |
-| contains(v) | O(1) | 1 read (by hash) |
-| remove(v) | O(1) | 1 write (tombstone) |
-| iter() | O(N) | N reads |
-| merge() | O(N) | N=other's size |
+| Operation   | Time   | Storage I/O         |
+| ----------- | ------ | ------------------- |
+| new()       | O(1)   | 1 write             |
+| insert(v)   | O(1)   | 1 write             |
+| contains(v) | O(1)   | 1 read (by hash)    |
+| remove(v)   | O(1)   | 1 write (tombstone) |
+| iter()      | O(N)   | N reads             |
+| merge()     | O(N)   | N=other's size      |
 
 **Best for:** Unique membership testing
 
@@ -284,12 +284,12 @@ let overhead = mem_after - mem_before;
 
 ### Calimero CRDTs vs Alternatives
 
-| Approach | Insert | Get | Sync | Merge |
-|----------|--------|-----|------|-------|
-| **Calimero** | O(1) | O(1) | O(1) | O(N) rare |
-| **Manual merge** | O(1) | O(1) | O(1) | O(N) always |
-| **Automerge** | O(log N) | O(log N) | O(N) | O(N) |
-| **Yjs** | O(1) | O(1) | O(N) | O(N) |
+| Approach         | Insert   | Get      | Sync   | Merge       |
+| ---------------- | -------- | -------- | ------ | ----------- |
+| **Calimero**     | O(1)     | O(1)     | O(1)   | O(N) rare   |
+| **Manual merge** | O(1)     | O(1)     | O(1)   | O(N) always |
+| **Automerge**    | O(log N) | O(log N) | O(N)   | O(N)        |
+| **Yjs**          | O(1)     | O(1)     | O(N)   | O(N)        |
 
 **Calimero advantage:** Element IDs eliminate most merge operations!
 
