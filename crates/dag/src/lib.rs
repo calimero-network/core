@@ -31,6 +31,9 @@ pub struct CausalDelta<T> {
 
     /// Hybrid Logical Clock timestamp for fine-grained causal ordering
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
+
+    /// Expected root hash after applying this delta
+    pub expected_root_hash: [u8; 32],
 }
 
 impl<T> CausalDelta<T> {
@@ -39,12 +42,14 @@ impl<T> CausalDelta<T> {
         parents: Vec<[u8; 32]>,
         payload: T,
         hlc: calimero_storage::logical_clock::HybridTimestamp,
+        expected_root_hash: [u8; 32],
     ) -> Self {
         Self {
             id,
             parents,
             payload,
             hlc,
+            expected_root_hash,
         }
     }
 
@@ -56,6 +61,7 @@ impl<T> CausalDelta<T> {
             parents,
             payload,
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
+            expected_root_hash: [0; 32],
         }
     }
 }
