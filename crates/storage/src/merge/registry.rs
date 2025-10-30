@@ -83,6 +83,15 @@ where
     let _ = registry.insert(type_id, merge_fn);
 }
 
+/// Clear the merge registry (for testing only)
+#[cfg(test)]
+pub fn clear_merge_registry() {
+    let mut registry = MERGE_REGISTRY
+        .write()
+        .unwrap_or_else(|_| std::process::abort());
+    registry.clear();
+}
+
 /// Try to merge using registered merge function
 ///
 /// If the type is registered, uses its merge function.
@@ -132,13 +141,15 @@ mod tests {
         // Register the type
         register_crdt_merge::<TestState>();
 
-        // Create two states
+        // Create two states with different executor IDs (use unique IDs to avoid test contamination)
+        env::set_executor_id([10; 32]);
         let mut state1 = TestState {
             counter: Counter::new(),
         };
         state1.counter.increment().unwrap();
         state1.counter.increment().unwrap(); // value = 2
 
+        env::set_executor_id([20; 32]);
         let mut state2 = TestState {
             counter: Counter::new(),
         };

@@ -45,7 +45,7 @@ use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
 use crate::address::{Id, Path};
-use crate::entities::{ChildInfo, Collection, Data, Metadata};
+use crate::entities::{ChildInfo, Data, Metadata};
 use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
@@ -71,11 +71,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `SerializationError` if child can't be encoded
     /// - `IndexNotFound` if parent doesn't exist
     ///
-    pub fn add_child_to<C: Collection, D: Data>(
-        parent_id: Id,
-        collection: &C,
-        child: &mut D,
-    ) -> Result<bool, StorageError> {
+    pub fn add_child_to<D: Data>(parent_id: Id, child: &mut D) -> Result<bool, StorageError> {
         if !child.element().is_dirty() {
             return Ok(false);
         }
@@ -86,7 +82,6 @@ impl<S: StorageAdaptor> Interface<S> {
 
         <Index<S>>::add_child_to(
             parent_id,
-            collection.name(),
             ChildInfo::new(child.id(), own_hash, child.element().metadata),
         )?;
 
@@ -139,11 +134,8 @@ impl<S: StorageAdaptor> Interface<S> {
                         continue;
                     };
 
-                    <Index<S>>::add_child_to(
-                        parent.id(),
-                        "no collection, remove this nonsense",
-                        *this,
-                    )?;
+                    // Set up parent-child relationship
+                    <Index<S>>::add_child_to(parent.id(), *this)?;
                 }
 
                 // For new entities, create a minimal index entry first to avoid orphan errors
@@ -155,7 +147,6 @@ impl<S: StorageAdaptor> Interface<S> {
                         let placeholder_hash = Sha256::digest(&data).into();
                         <Index<S>>::add_child_to(
                             parent.id(),
-                            "no collection, remove this nonsense",
                             ChildInfo::new(id, placeholder_hash, metadata),
                         )?;
                     }
@@ -169,17 +160,12 @@ impl<S: StorageAdaptor> Interface<S> {
 
                 // ALWAYS update parent with correct hash after save (handles merging)
                 // save_internal calls update_hash_for which updates child_index.own_hash
-                // Then add_child_to reads from index and uses correct full_hash
                 if let Some(parent) = parent {
                     let (_, own_hash) =
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
-                    // Update parent with the actual hash after any merging
-                    <Index<S>>::add_child_to(
-                        parent.id(),
-                        "no collection, remove this nonsense",
-                        ChildInfo::new(id, own_hash, metadata),
-                    )?;
+                    // Update parent relationship with the actual hash after any merging
+                    <Index<S>>::add_child_to(parent.id(), ChildInfo::new(id, own_hash, metadata))?;
                 }
 
                 crate::delta::push_action(Action::Compare { id });
@@ -242,11 +228,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if parent doesn't exist
     /// - `DeserializationError` if child data is corrupt
     ///
-    pub fn children_of<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-    ) -> Result<Vec<C::Child>, StorageError> {
-        let children_info = <Index<S>>::get_children_of(parent_id, collection.name())?;
+    pub fn children_of<D: Data>(parent_id: Id) -> Result<Vec<D>, StorageError> {
+        let children_info = <Index<S>>::get_children_of(parent_id)?;
         let mut children = Vec::new();
         for child_info in children_info {
             if let Some(child) = Self::find_by_id(child_info.id())? {
@@ -263,11 +246,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// Returns error if index lookup fails.
     ///
-    pub fn child_info_for<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-    ) -> Result<Vec<ChildInfo>, StorageError> {
-        <Index<S>>::get_children_of(parent_id, collection.name())
+    pub fn child_info_for(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+        <Index<S>>::get_children_of(parent_id)
     }
 
     /// Compares local and remote entity trees, generating sync actions.
@@ -344,7 +324,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let local_collections = local_collection_names
             .into_iter()
             .map(|name| {
-                let children = <Index<S>>::get_children_of(id, &name)?;
+                let children = <Index<S>>::get_children_of(id)?;
                 Ok((name, children))
             })
             .collect::<Result<BTreeMap<_, _>, StorageError>>()?;
@@ -527,7 +507,7 @@ impl<S: StorageAdaptor> Interface<S> {
         parent_id: Id,
         collection: &str,
     ) -> Result<Vec<D>, StorageError> {
-        let child_infos = <Index<S>>::get_children_of(parent_id, collection)?;
+        let child_infos = <Index<S>>::get_children_of(parent_id)?;
         let mut children = Vec::new();
         for child_info in child_infos {
             if let Some(child) = Self::find_by_id(child_info.id())? {
@@ -558,8 +538,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let children = collection_names
             .into_iter()
             .map(|collection_name| {
-                <Index<S>>::get_children_of(id, &collection_name)
-                    .map(|children| (collection_name.clone(), children))
+                <Index<S>>::get_children_of(id).map(|children| (collection_name.clone(), children))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
 
@@ -578,11 +557,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// Returns error if index lookup fails.
     ///
-    pub fn has_children<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-    ) -> Result<bool, StorageError> {
-        <Index<S>>::has_children(parent_id, collection.name())
+    pub fn has_children(parent_id: Id) -> Result<bool, StorageError> {
+        <Index<S>>::has_children(parent_id)
     }
 
     /// Retrieves the parent entity of a child.
@@ -602,12 +578,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// Returns error if parent or child doesn't exist.
     ///
-    pub fn remove_child_from<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-        child_id: Id,
-    ) -> Result<bool, StorageError> {
-        let child_exists = <Index<S>>::get_children_of(parent_id, collection.name())?
+    pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
+        let child_exists = <Index<S>>::get_children_of(parent_id)?
             .iter()
             .any(|child| child.id() == child_id);
         if !child_exists {
@@ -616,7 +588,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let deleted_at = time_now();
 
-        <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
+        <Index<S>>::remove_child_from(parent_id, child_id)?;
 
         // Use DeleteRef for efficient tombstone-based deletion
         // More efficient than Delete: only sends ID + timestamp vs full ancestor tree

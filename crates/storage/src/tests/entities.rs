@@ -14,8 +14,7 @@ mod collection__public_methods {
 
     #[test]
     fn name() {
-        let paras = Paragraphs::new();
-        assert_eq!(paras.name(), "Paragraphs");
+        let _paras = Paragraphs::new();
     }
 }
 
@@ -25,24 +24,23 @@ mod data__public_methods {
 
     #[test]
     fn collections() {
-        let parent = Element::new(&Path::new("::root::node").unwrap(), None);
+        let parent = Element::new(None);
         let page = Page::new_from_element("Node", parent);
         assert_eq!(
             page.collections(),
             btree_map! {
-                "Paragraphs".to_owned(): MainInterface::child_info_for(page.id(), &page.paragraphs).unwrap_or_default(),
+                "Paragraphs".to_owned(): MainInterface::child_info_for(page.id()).unwrap_or_default(),
             }
         );
 
-        let child = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
+        let child = Element::new(None);
         let para = Paragraph::new_from_element("Leaf", child);
         assert_eq!(para.collections(), BTreeMap::new());
     }
 
     #[test]
     fn element() {
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
+        let element = Element::new(None);
         let person = Person {
             name: "Alice".to_owned(),
             age: 30,
@@ -53,8 +51,7 @@ mod data__public_methods {
 
     #[test]
     fn element_mut() {
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
+        let element = Element::new(None);
         let mut person = Person {
             name: "Bob".to_owned(),
             age: 40,
@@ -69,8 +66,7 @@ mod data__public_methods {
 
     #[test]
     fn id() {
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
+        let element = Element::new(None);
         let id = element.id;
         let person = Person {
             name: "Eve".to_owned(),
@@ -78,18 +74,6 @@ mod data__public_methods {
             storage: element,
         };
         assert_eq!(person.id(), id);
-    }
-
-    #[test]
-    fn path() {
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
-        let person = Person {
-            name: "Steve".to_owned(),
-            age: 50,
-            storage: element,
-        };
-        assert_eq!(person.path(), path);
     }
 }
 
@@ -172,13 +156,11 @@ mod element__constructor {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
+        let element = Element::new(None);
         let timestamp2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        assert_eq!(element.path, path);
         assert_ge!(element.metadata.created_at, timestamp1);
         assert_le!(element.metadata.created_at, timestamp2);
         assert_ge!(*element.metadata.updated_at, timestamp1);
@@ -197,7 +179,7 @@ mod element__public_methods {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
+        let element = Element::new(None);
         let timestamp2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -208,8 +190,7 @@ mod element__public_methods {
 
     #[test]
     fn id() {
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
+        let element = Element::new(None);
         assert_eq!(element.id(), element.id);
     }
 
@@ -237,13 +218,6 @@ mod element__public_methods {
     }
 
     #[test]
-    fn path() {
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
-        assert_eq!(element.path(), element.path);
-    }
-
-    #[test]
     fn update() {
         let element = Element::root();
         let updated_at = element.metadata.updated_at;
@@ -266,7 +240,7 @@ mod element__public_methods {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
+        let element = Element::new(None);
         let mut person = Person {
             name: "Eve".to_owned(),
             age: 20,
@@ -295,16 +269,9 @@ mod element__traits {
 
     #[test]
     fn display() {
-        let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path, None);
-        assert_eq!(
-            format!("{element}"),
-            format!("Element {}: ::root::node::leaf", element.id())
-        );
-        assert_eq!(
-            element.to_string(),
-            format!("Element {}: ::root::node::leaf", element.id())
-        );
+        let element = Element::new(None);
+        assert_eq!(format!("{element}"), format!("Element {}", element.id()));
+        assert_eq!(element.to_string(), format!("Element {}", element.id()));
     }
 }
 

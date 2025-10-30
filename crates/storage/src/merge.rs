@@ -6,6 +6,9 @@
 pub mod registry;
 pub use registry::{register_crdt_merge, try_merge_registered};
 
+#[cfg(test)]
+pub use registry::clear_merge_registry;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 /// Attempts to merge two Borsh-serialized app state blobs using CRDT semantics.

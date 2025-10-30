@@ -1,3 +1,4 @@
+#![allow(unused_results)] // Test code doesn't need to check all return values
 //! Delta creation and commit tests
 //!
 //! Tests for the storage delta lifecycle:
@@ -71,14 +72,11 @@ fn delta_creation_with_multiple_actions() {
     let mut page = Page::new_from_element("Page", Element::root());
     TestInterface::save(&mut page).unwrap();
 
-    let para1_path = Path::new("::para1").unwrap();
-    let para2_path = Path::new("::para2").unwrap();
+    let mut para1 = Paragraph::new_from_element("Para 1", Element::new(None));
+    let mut para2 = Paragraph::new_from_element("Para 2", Element::new(None));
 
-    let mut para1 = Paragraph::new_from_element("Para 1", Element::new(&para1_path, None));
-    let mut para2 = Paragraph::new_from_element("Para 2", Element::new(&para2_path, None));
-
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para1).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para2).unwrap();
 
     // Commit delta
     let root_hash = [1; 32];
@@ -155,9 +153,8 @@ fn delta_sequential_commits() {
     set_current_heads(vec![delta1.id]);
 
     // Second commit (should have delta1 as parent)
-    let para_path = Path::new("::para").unwrap();
-    let mut para = Paragraph::new_from_element("Para", Element::new(&para_path, None));
-    TestInterface::add_child_to(page1.id(), &page1.paragraphs, &mut para).unwrap();
+    let mut para = Paragraph::new_from_element("Para", Element::new(None));
+    TestInterface::add_child_to(page1.id(), &mut para).unwrap();
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
 
     // Delta2 should have delta1 as parent
@@ -265,9 +262,8 @@ fn delta_clears_actions_after_commit() {
     set_current_heads(vec![delta1.id]);
 
     // Create another action
-    let para_path = Path::new("::para").unwrap();
-    let mut para = Paragraph::new_from_element("Para", Element::new(&para_path, None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+    let mut para = Paragraph::new_from_element("Para", Element::new(None));
+    TestInterface::add_child_to(page.id(), &mut para).unwrap();
 
     // Commit again
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
@@ -332,9 +328,8 @@ fn delta_timestamp_is_monotonic() {
     set_current_heads(vec![delta1.id]);
 
     // Create second delta
-    let para_path = Path::new("::para").unwrap();
-    let mut para = Paragraph::new_from_element("Para", Element::new(&para_path, None));
-    TestInterface::add_child_to(page1.id(), &page1.paragraphs, &mut para).unwrap();
+    let mut para = Paragraph::new_from_element("Para", Element::new(None));
+    TestInterface::add_child_to(page1.id(), &mut para).unwrap();
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
 
     // Second delta should have later HLC timestamp

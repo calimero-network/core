@@ -282,10 +282,6 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         impl #impl_generics calimero_storage::entities::Collection for #name #ty_generics #collection_where_clause {
             type Child = #child_type;
-
-            fn name(&self) -> &str {
-                stringify!(#name)
-            }
         }
 
         #default_impl

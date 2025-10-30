@@ -1,3 +1,4 @@
+#![allow(unused_results)] // Test code doesn't need to check all return values
 //! Comprehensive CRDT storage tests
 //!
 //! Tests cover:
@@ -6,8 +7,6 @@
 //! - Concurrent updates
 //! - Action merging
 //! - Edge cases
-
-use borsh::to_vec;
 
 use super::common::{Page, Paragraph};
 use crate::action::Action;
@@ -213,7 +212,7 @@ fn delete_vs_update_conflict() {
 
     // Behavior depends on implementation
     // Just verify no panic
-    let _ = TestInterface::find_by_id::<Page>(id).unwrap();
+    drop(TestInterface::find_by_id::<Page>(id).unwrap());
 }
 
 #[test]
@@ -275,18 +274,15 @@ fn concurrent_adds_to_collection() {
     let mut page = Page::new_from_element("Parent", Element::root());
     assert!(TestInterface::save(&mut page).unwrap());
 
-    let para1_path = Path::new("::para1").unwrap();
-    let para2_path = Path::new("::para2").unwrap();
-
-    let mut para1 = Paragraph::new_from_element("Para 1", Element::new(&para1_path, None));
-    let mut para2 = Paragraph::new_from_element("Para 2", Element::new(&para2_path, None));
+    let mut para1 = Paragraph::new_from_element("Para 1", Element::new(None));
+    let mut para2 = Paragraph::new_from_element("Para 2", Element::new(None));
 
     // Add both concurrently
-    assert!(TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap());
-    assert!(TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap());
+    assert!(TestInterface::add_child_to(page.id(), &mut para1).unwrap());
+    assert!(TestInterface::add_child_to(page.id(), &mut para2).unwrap());
 
     // Both should be in collection
-    let children = TestInterface::children_of(page.id(), &page.paragraphs).unwrap();
+    let children: Vec<Paragraph> = TestInterface::children_of(page.id()).unwrap();
     assert_eq!(children.len(), 2);
 }
 
@@ -463,7 +459,7 @@ fn empty_entity_data() {
     // Should handle gracefully - expect deserialization to fail
     let result = TestInterface::apply_action(action);
     // Just verify it doesn't panic - result may vary
-    let _ = result;
+    drop(result);
 }
 
 #[test]
