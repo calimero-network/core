@@ -263,10 +263,16 @@ fn parse_context_identity(data: &[u8]) -> Result<Value> {
         Ok(identity) => {
             let mut result = serde_json::Map::new();
             if let Some(private_key) = identity.private_key {
-                drop(result.insert("private_key".to_owned(), json!(String::from_utf8_lossy(&private_key))));
+                drop(result.insert(
+                    "private_key".to_owned(),
+                    json!(String::from_utf8_lossy(&private_key)),
+                ));
             }
             if let Some(sender_key) = identity.sender_key {
-                drop(result.insert("sender_key".to_owned(), json!(String::from_utf8_lossy(&sender_key))));
+                drop(result.insert(
+                    "sender_key".to_owned(),
+                    json!(String::from_utf8_lossy(&sender_key)),
+                ));
             }
             Ok(json!(result))
         }

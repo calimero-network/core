@@ -2,6 +2,7 @@ use borsh::BorshDeserialize;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{CollectionType, Field, Manifest, TypeDef, TypeRef};
 use core::convert::TryFrom;
+use core::ops::Deref;
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
 use serde_json::{json, Value};
@@ -59,32 +60,6 @@ pub fn export_data(
     }))
 }
 
-fn map_fields(manifest: &Manifest) -> Vec<MapField> {
-    let mut fields = Vec::new();
-    let Some(root_name) = manifest.state_root.as_ref() else {
-        return fields;
-    };
-
-    let Some(TypeDef::Record {
-        fields: record_fields,
-    }) = manifest.types.get(root_name)
-    else {
-        return fields;
-    };
-
-    for field in record_fields {
-        if let TypeRef::Collection(CollectionType::Map { key, value }) = &field.type_ {
-            fields.push(MapField {
-                name: field.name.clone(),
-                key_type: *key.clone(),
-                value_type: *value.clone(),
-            });
-        }
-    }
-
-    fields
-}
-
 fn delta_hlc_snapshot(delta: &StoreContextDagDelta) -> (u64, Value) {
     let timestamp = delta.hlc.inner();
     let raw_time = timestamp.get_time().as_u64();
@@ -121,11 +96,13 @@ fn type_ref_label(type_ref: &TypeRef) -> String {
 fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Result<Value> {
     let mut cursor = Cursor::new(bytes);
 
-    let key_value = deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.key_type, manifest)?;
+    let key_value =
+        deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.key_type, manifest)?;
     let key_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let key_raw = bytes[..key_end].to_vec();
 
-    let value_value = deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.value_type, manifest)?;
+    let value_value =
+        deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.value_type, manifest)?;
     let value_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let value_raw = bytes[key_end..value_end].to_vec();
 
@@ -166,7 +143,7 @@ fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
             "type": "EntityIndex",
             "id": String::from_utf8_lossy(index.id.as_bytes()),
             "parent_id": index.parent_id.map(|id| String::from_utf8_lossy(id.as_bytes()).to_string()),
-            "children_count": index.children.as_ref().map(|c| c.len()).unwrap_or(0),
+            "children_count": index.children.as_ref().map_or(0, Vec::len),
             "full_hash": String::from_utf8_lossy(&index.full_hash),
             "own_hash": String::from_utf8_lossy(&index.own_hash),
             "created_at": index.metadata.created_at,
@@ -187,10 +164,11 @@ fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
     }
 
     // Get all fields from the state root
-    let Some(root_name) = manifest.state_root.as_ref() else {
-        return None;
-    };
-    let Some(TypeDef::Record { fields: record_fields }) = manifest.types.get(root_name) else {
+    let root_name = manifest.state_root.as_ref()?;
+    let Some(TypeDef::Record {
+        fields: record_fields,
+    }) = manifest.types.get(root_name)
+    else {
         return None;
     };
 
@@ -211,7 +189,10 @@ fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
     // Try to decode as scalar entry (Entry<T> where T is a scalar/enum/reference)
     for field in record_fields {
         // Skip map fields (already tried above)
-        if matches!(&field.type_, TypeRef::Collection(CollectionType::Map { .. })) {
+        if matches!(
+            &field.type_,
+            TypeRef::Collection(CollectionType::Map { .. })
+        ) {
             continue;
         }
 
@@ -227,7 +208,8 @@ fn decode_scalar_entry(bytes: &[u8], field: &Field, manifest: &Manifest) -> Resu
     let mut cursor = Cursor::new(bytes);
 
     // Deserialize the value (not a tuple, just the value itself)
-    let value_parsed = deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.type_, manifest)?;
+    let value_parsed =
+        deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.type_, manifest)?;
     let value_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let value_raw = bytes[..value_end].to_vec();
 
@@ -273,12 +255,13 @@ struct Id {
 }
 
 impl Id {
-    fn as_bytes(&self) -> &[u8; 32] {
+    const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
 }
 
 #[derive(borsh::BorshDeserialize)]
+#[expect(dead_code, reason = "Fields required for Borsh deserialization structure")]
 struct ChildInfo {
     id: Id,
     merkle_hash: [u8; 32],
@@ -294,7 +277,7 @@ struct Metadata {
 #[derive(borsh::BorshDeserialize)]
 struct UpdatedAt(u64);
 
-impl std::ops::Deref for UpdatedAt {
+impl Deref for UpdatedAt {
     type Target = u64;
     fn deref(&self) -> &Self::Target {
         &self.0

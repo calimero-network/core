@@ -342,9 +342,9 @@ mod tests {
 
         // Add a simple method
         manifest.methods.push(Method {
-            name: "test_method".to_string(),
+            name: "test_method".to_owned(),
             params: vec![Parameter {
-                name: "param1".to_string(),
+                name: "param1".to_owned(),
                 type_: TypeRef::string(),
                 nullable: None,
             }],
@@ -355,7 +355,7 @@ mod tests {
 
         // Serialize and deserialize
         let json = serde_json::to_string_pretty(&manifest).unwrap();
-       let deserialized: Manifest = serde_json::from_str(&json).unwrap();
+        let deserialized: Manifest = serde_json::from_str(&json).unwrap();
 
         assert_eq!(manifest.schema_version, deserialized.schema_version);
         assert_eq!(manifest.state_root, deserialized.state_root);
