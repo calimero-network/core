@@ -7,8 +7,7 @@ use eyre::Result;
 use mero_auth::auth::token::TokenManager;
 use mero_auth::config::{
     load_config, AuthConfig, ContentSecurityPolicyConfig, DevelopmentConfig, JwtConfig,
-    NearWalletConfig, RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig,
-    UserPasswordConfig,
+    NearWalletConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
 };
 use mero_auth::secrets::SecretManager;
 use mero_auth::server::{shutdown_signal, start_server};
@@ -50,9 +49,6 @@ fn create_default_config() -> AuthConfig {
         storage: StorageConfig::Memory,
         cors: Default::default(),
         security: SecurityConfig {
-            rate_limit: RateLimitConfig {
-                rate_limit_rpm: 1000,
-            },
             max_body_size: 1024 * 1024, // 1MB
             headers: SecurityHeadersConfig {
                 enabled: true,
