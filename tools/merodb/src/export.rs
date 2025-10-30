@@ -261,7 +261,10 @@ impl Id {
 }
 
 #[derive(borsh::BorshDeserialize)]
-#[expect(dead_code, reason = "Fields required for Borsh deserialization structure")]
+#[expect(
+    dead_code,
+    reason = "Fields required for Borsh deserialization structure"
+)]
 struct ChildInfo {
     id: Id,
     merkle_hash: [u8; 32],
