@@ -269,16 +269,15 @@ mod tests {
     fn test_unordered_set_operations() {
         let mut set = Root::new(|| UnorderedSet::new());
 
-        assert!(set.insert("value1".to_string()).expect("insert failed"));
+        assert!(set.insert("value1".to_owned()).expect("insert failed"));
 
         assert_eq!(
-            set.contains(&"value1".to_string())
-                .expect("contains failed"),
+            set.contains(&"value1".to_owned()).expect("contains failed"),
             true
         );
 
-        assert!(!set.insert("value1".to_string()).expect("insert failed"));
-        assert!(set.insert("value2".to_string()).expect("insert failed"));
+        assert!(!set.insert("value1".to_owned()).expect("insert failed"));
+        assert!(set.insert("value2".to_owned()).expect("insert failed"));
 
         assert_eq!(set.contains("value3").expect("get failed"), false);
         assert_eq!(set.contains("value2").expect("get failed"), true);
@@ -297,9 +296,9 @@ mod tests {
     fn test_unordered_set_len() {
         let mut set = Root::new(|| UnorderedSet::new());
 
-        assert!(set.insert("value1".to_string()).expect("insert failed"));
-        assert!(set.insert("value2".to_string()).expect("insert failed"));
-        assert!(!set.insert("value2".to_string()).expect("insert failed"));
+        assert!(set.insert("value1".to_owned()).expect("insert failed"));
+        assert!(set.insert("value2".to_owned()).expect("insert failed"));
+        assert!(!set.insert("value2".to_owned()).expect("insert failed"));
 
         assert_eq!(set.len().expect("len failed"), 2);
 
@@ -312,8 +311,8 @@ mod tests {
     fn test_unordered_set_clear() {
         let mut set = Root::new(|| UnorderedSet::new());
 
-        assert!(set.insert("value1".to_string()).expect("insert failed"));
-        assert!(set.insert("value2".to_string()).expect("insert failed"));
+        assert!(set.insert("value1".to_owned()).expect("insert failed"));
+        assert!(set.insert("value2".to_owned()).expect("insert failed"));
 
         assert_eq!(set.len().expect("len failed"), 2);
 
@@ -328,14 +327,14 @@ mod tests {
     fn test_unordered_set_items() {
         let mut set = Root::new(|| UnorderedSet::new());
 
-        assert!(set.insert("value1".to_string()).expect("insert failed"));
-        assert!(set.insert("value2".to_string()).expect("insert failed"));
+        assert!(set.insert("value1".to_owned()).expect("insert failed"));
+        assert!(set.insert("value2".to_owned()).expect("insert failed"));
 
         let items: Vec<String> = set.iter().expect("items failed").collect();
 
         assert_eq!(items.len(), 2);
-        assert!(items.contains(&"value1".to_string()));
-        assert!(items.contains(&"value2".to_string()));
+        assert!(items.contains(&"value1".to_owned()));
+        assert!(items.contains(&"value2".to_owned()));
 
         assert!(set.remove("value1").expect("remove failed"));
         let items: Vec<String> = set.iter().expect("items failed").collect();

@@ -137,7 +137,7 @@ impl ListVersionsResponse {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetLatestVersionResponse {
     pub application_id: Option<ApplicationId>,

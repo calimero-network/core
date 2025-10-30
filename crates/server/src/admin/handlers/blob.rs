@@ -7,7 +7,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
-use calimero_primitives::context::ContextId;
 use futures_util::{AsyncRead, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::TokioAsyncReadCompatExt;

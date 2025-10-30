@@ -21,6 +21,18 @@ pub mod vector;
 pub use vector::Vector;
 pub mod rga;
 pub use rga::ReplicatedGrowableArray;
+pub mod lww_register;
+pub use lww_register::LwwRegister;
+pub mod crdt_meta;
+pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy};
+pub mod composite_key;
+mod crdt_impls;
+mod decompose_impls;
+pub use composite_key::CompositeKey;
+pub mod nested;
+pub use nested::{get_nested, insert_nested, insert_nested_decomposable, NestedConfig};
+pub mod nested_map;
+pub use nested_map::NestedMapOps;
 mod root;
 #[doc(hidden)]
 pub use root::Root;

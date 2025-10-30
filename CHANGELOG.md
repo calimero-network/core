@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic nested CRDT support** - Applications can now use natural nested structures without state divergence
+  - `LwwRegister<T>` - Last-Write-Wins register for any value with timestamp-based conflict resolution
+  - `Mergeable` trait - Universal merge interface for all CRDT types
+  - Automatic merge code generation via `#[app::state]` macro
+  - Global merge registry for runtime type dispatch
+  - Runtime integration - WASM modules auto-register merge functions on load
+  - Supports unlimited nesting depth: `Map<K, Map<K2, Map<K3, V>>>` works
+  - Zero developer burden - no registration code, no merge calls needed
+  - Backward compatible - existing apps work unchanged
+  
+### Fixed
+
+- **RGA insert_str position bug** - Text was appending to end instead of inserting at specified position
+  - Fixed tie-breaking logic in `get_ordered_chars()` to sort by descending timestamp
+  - Ensures sequential mid-document insertions work correctly
+  - Added regression test to prevent future breakage
+
+### Documentation
+
+- Added comprehensive nested CRDT documentation
+  - User guide: `crates/storage/NESTED_CRDTS.md`
+  - Architecture docs: `NESTED_CRDT_SOLUTION_COMPLETE.md`
+  - Performance analysis: `WHEN_MERGE_IS_CALLED.md`
+  - Implementation guides for future enhancements
+
 ## [0.8.0] - 2025-01-07
 
 - Introduced comprehensive blob storage system with runtime API, peer-to-peer

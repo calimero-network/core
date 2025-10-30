@@ -1,0 +1,19 @@
+[package]
+name = "team-metrics-macro"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+calimero-storage-macros.workspace = true
+
+[lints]
+workspace = true
+

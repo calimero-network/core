@@ -126,6 +126,20 @@ impl Module {
             }
         };
 
+        // Call the auto-generated registration hook if it exists
+        // This enables automatic CRDT merge during sync
+        if let Ok(register_fn) = instance
+            .exports
+            .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
+        {
+            if let Err(err) = register_fn.call(&mut store) {
+                // Log but don't fail - registration is optional (backward compat)
+                debug!(%context_id, error=?err, "Failed to call merge registration hook");
+            } else {
+                debug!(%context_id, "Successfully registered CRDT merge function");
+            }
+        }
+
         let _ = match instance.exports.get_memory("memory") {
             Ok(memory) => logic.with_memory(memory.clone()),
             // todo! test memory returns MethodNotFound
