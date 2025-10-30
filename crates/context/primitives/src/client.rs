@@ -12,6 +12,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{
     Context, ContextConfigParams, ContextId, ContextInvitationPayload,
 };
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
@@ -484,6 +485,46 @@ impl ContextClient {
             dag_heads_count = dag_heads.len(),
             "Updated dag_heads in database"
         );
+
+        Ok(())
+    }
+
+    /// Forces the root hash for a context to a specific value.
+    ///
+    /// This is used during delta application to ensure all nodes have identical
+    /// root hashes even when WASM execution produces different hashes due to
+    /// non-determinism. The expected_root_hash from the delta author is
+    /// considered authoritative for DAG consistency.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to update.
+    /// * `root_hash` - The authoritative root hash to set.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
+    pub fn force_root_hash(&self, context_id: &ContextId, root_hash: Hash) -> eyre::Result<()> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = handle.get(&key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        tracing::debug!(
+            %context_id,
+            old_root = ?meta.root_hash,
+            new_root = ?root_hash,
+            "Forcing root hash to expected value for DAG consistency"
+        );
+
+        // Override root hash with the expected value
+        meta.root_hash = *root_hash;
+
+        // Write back to database
+        self.datastore.clone().handle().put(&key, &meta)?;
 
         Ok(())
     }

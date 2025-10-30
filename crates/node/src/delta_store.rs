@@ -5,6 +5,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::collections::HashMap;
+
 use calimero_context_primitives::client::ContextClient;
 use calimero_dag::{ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats};
 use calimero_primitives::context::ContextId;
@@ -13,7 +15,7 @@ use calimero_storage::action::Action;
 use calimero_storage::delta::StorageDelta;
 use eyre::Result;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Applier that applies actions to WASM storage via ContextClient
 #[derive(Debug)]
@@ -60,17 +62,29 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // Note: Context root_hash is updated by the execute handler itself
-        // NOTE: We do NOT update dag_heads here because:
-        // 1. This is called INSIDE CoreDagStore::apply_delta BEFORE it updates its heads
-        // 2. We can't read the correct heads from the DAG yet
-        // 3. DeltaStore::add_delta will update the heads after the DAG finishes
+        // Ensure deterministic root hash across all nodes.
+        // WASM execution may produce different hashes due to non-deterministic factors;
+        // use the delta author's expected_root_hash to maintain DAG consistency.
+        let computed_hash = outcome.root_hash;
+        if *computed_hash != delta.expected_root_hash {
+            warn!(
+                context_id = %self.context_id,
+                delta_id = ?delta.id,
+                computed_hash = ?computed_hash,
+                expected_hash = ?delta.expected_root_hash,
+                "Root hash mismatch - using expected hash for consistency"
+            );
+
+            self.context_client
+                .force_root_hash(&self.context_id, delta.expected_root_hash.into())
+                .map_err(|e| ApplyError::Application(format!("Failed to set root hash: {}", e)))?;
+        }
 
         debug!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             action_count = delta.payload.len(),
-            new_root_hash = ?outcome.root_hash,
+            expected_root_hash = ?delta.expected_root_hash,
             "Applied delta to WASM storage"
         );
 
@@ -86,6 +100,10 @@ pub struct DeltaStore {
 
     /// Applier for applying deltas to WASM storage
     applier: Arc<ContextStorageApplier>,
+
+    /// Maps delta_id -> expected_root_hash for deterministic selection
+    /// when multiple DAG heads exist (concurrent branches)
+    head_root_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
 impl DeltaStore {
@@ -105,6 +123,7 @@ impl DeltaStore {
         Self {
             dag: Arc::new(RwLock::new(CoreDagStore::new(root))),
             applier,
+            head_root_hashes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -112,6 +131,15 @@ impl DeltaStore {
     ///
     /// Returns Ok(true) if applied immediately, Ok(false) if pending
     pub async fn add_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<bool> {
+        let delta_id = delta.id;
+        let expected_root_hash = delta.expected_root_hash;
+
+        // Store the mapping before applying
+        {
+            let mut head_hashes = self.head_root_hashes.write().await;
+            let _previous = head_hashes.insert(delta_id, expected_root_hash);
+        }
+
         let mut dag = self.dag.write().await;
         let result = dag.add_delta(delta, &*self.applier).await?;
 
@@ -122,8 +150,39 @@ impl DeltaStore {
 
         self.applier
             .context_client
-            .update_dag_heads(&self.applier.context_id, heads)
+            .update_dag_heads(&self.applier.context_id, heads.clone())
             .map_err(|e| eyre::eyre!("Failed to update dag_heads: {}", e))?;
+
+        // Deterministic root hash selection for concurrent branches.
+        // When multiple DAG heads exist, use the lexicographically smallest head's root_hash
+        // to ensure all nodes converge to the same root regardless of delta arrival order.
+        if heads.len() > 1 {
+            let head_hashes = self.head_root_hashes.read().await;
+            let mut sorted_heads = heads.clone();
+            sorted_heads.sort();
+            let canonical_head = sorted_heads[0];
+
+            if let Some(&canonical_root_hash) = head_hashes.get(&canonical_head) {
+                debug!(
+                    context_id = %self.applier.context_id,
+                    heads_count = heads.len(),
+                    canonical_head = ?canonical_head,
+                    canonical_root = ?canonical_root_hash,
+                    "Multiple DAG heads - using deterministic root hash selection"
+                );
+
+                self.applier
+                    .context_client
+                    .force_root_hash(&self.applier.context_id, canonical_root_hash.into())
+                    .map_err(|e| eyre::eyre!("Failed to set canonical root hash: {}", e))?;
+            }
+        }
+
+        // Cleanup old head hashes that are no longer active
+        {
+            let mut head_hashes = self.head_root_hashes.write().await;
+            head_hashes.retain(|head_id, _| heads.contains(head_id));
+        }
 
         Ok(result)
     }

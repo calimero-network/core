@@ -11,15 +11,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier};
-use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
-use calimero_storage::delta::StorageDelta;
 use calimero_storage::snapshot::Snapshot;
-use calimero_storage::store::{IterableStorage, MainStorage};
+use calimero_storage::store::MainStorage;
 use calimero_storage::Interface;
 use tokio::sync::RwLock;
 
@@ -120,19 +117,8 @@ async fn test_missing_delta_catch_up_single_parent() {
     let node_b = SimulatedNode::new("node_b");
 
     // Node A has deltas 1 and 2 (using empty payloads to avoid entity index issues)
-    let delta1 = CausalDelta {
-        id: [1; 32],
-        parents: vec![[0; 32]],
-        payload: vec![], // Empty payload - simpler test
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
-
-    let delta2 = CausalDelta {
-        id: [2; 32],
-        parents: vec![[1; 32]],
-        payload: vec![], // Empty payload - simpler test
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![]);
 
     // Node A receives both
     node_a.add_delta(delta1.clone()).await.unwrap();
@@ -173,26 +159,9 @@ async fn test_missing_delta_catch_up_multiple_parents() {
     let node_b = SimulatedNode::new("node_b");
 
     // Create a merge scenario: delta3 merges delta1 and delta2
-    let delta1 = CausalDelta {
-        id: [1; 32],
-        parents: vec![[0; 32]],
-        payload: vec![],
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
-
-    let delta2 = CausalDelta {
-        id: [2; 32],
-        parents: vec![[0; 32]],
-        payload: vec![],
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
-
-    let delta3_merge = CausalDelta {
-        id: [3; 32],
-        parents: vec![[1; 32], [2; 32]], // Merge!
-        payload: vec![],
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[0; 32]], vec![]);
+    let delta3_merge = CausalDelta::new_test([3; 32], vec![[1; 32], [2; 32]], vec![]);
 
     // Node A has all deltas
     node_a.add_delta(delta1.clone()).await.unwrap();
@@ -233,12 +202,7 @@ async fn test_deep_chain_catch_up() {
         let mut id = [0; 32];
         id[0] = i;
 
-        let delta = CausalDelta {
-            id,
-            parents: vec![prev_id],
-            payload: vec![],
-            hlc: calimero_storage::env::hlc_timestamp(),
-        };
+        let delta = CausalDelta::new_test(id, vec![prev_id], vec![]);
 
         deltas.push(delta.clone());
         prev_id = id;
@@ -289,12 +253,11 @@ async fn test_snapshot_transfer_fresh_node() {
 
     // Node A applies some deltas (empty payloads for simplicity)
     for i in 1u8..=5u8 {
-        let delta = CausalDelta {
-            id: [i; 32], // Use [i; 32] for simpler IDs
-            parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
-            payload: vec![], // Empty payload to avoid entity index issues
-            hlc: calimero_storage::env::hlc_timestamp(),
-        };
+        let delta = CausalDelta::new_test(
+            [i; 32],
+            vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
+            vec![],
+        );
 
         node_a.add_delta(delta).await.unwrap();
     }
@@ -429,12 +392,7 @@ async fn test_hash_heartbeat_detects_silent_divergence() {
     let node_b = SimulatedNode::new("node_b");
 
     // Both nodes receive and apply the SAME delta
-    let delta1 = CausalDelta {
-        id: [1; 32],
-        parents: vec![[0; 32]],
-        payload: vec![],
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
 
     node_a.add_delta(delta1.clone()).await.unwrap();
     node_b.add_delta(delta1).await.unwrap();
@@ -482,12 +440,8 @@ async fn test_heartbeat_with_same_state_no_divergence() {
         let mut id = [0; 32];
         id[0] = i;
 
-        let delta = CausalDelta {
-            id,
-            parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
-            payload: vec![],
-            hlc: calimero_storage::env::hlc_timestamp(),
-        };
+        let delta =
+            CausalDelta::new_test(id, vec![if i == 1 { [0; 32] } else { [i - 1; 32] }], vec![]);
 
         node_a.add_delta(delta.clone()).await.unwrap();
         node_b.add_delta(delta).await.unwrap();
@@ -561,19 +515,8 @@ async fn test_recovery_via_full_resync() {
     let node_b = SimulatedNode::new("node_b");
 
     // Nodes have diverged (simulated by different deltas)
-    let delta_a = CausalDelta {
-        id: [10; 32],
-        parents: vec![[0; 32]],
-        payload: vec![], // Empty payload
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
-
-    let delta_b = CausalDelta {
-        id: [20; 32],
-        parents: vec![[0; 32]],
-        payload: vec![], // Empty payload
-        hlc: calimero_storage::env::hlc_timestamp(),
-    };
+    let delta_a = CausalDelta::new_test([10; 32], vec![[0; 32]], vec![]);
+    let delta_b = CausalDelta::new_test([20; 32], vec![[0; 32]], vec![]);
 
     node_a.add_delta(delta_a).await.unwrap();
     node_b.add_delta(delta_b).await.unwrap();
@@ -610,12 +553,8 @@ async fn test_recovery_via_delta_replay() {
         let mut id = [0; 32];
         id[0] = i;
 
-        let delta = CausalDelta {
-            id,
-            parents: vec![if i == 1 { [0; 32] } else { [i - 1; 32] }],
-            payload: vec![],
-            hlc: calimero_storage::env::hlc_timestamp(),
-        };
+        let delta =
+            CausalDelta::new_test(id, vec![if i == 1 { [0; 32] } else { [i - 1; 32] }], vec![]);
 
         deltas.push(delta.clone());
         node_a.add_delta(delta).await.unwrap();
