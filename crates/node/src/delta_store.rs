@@ -62,28 +62,9 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        // CRITICAL FIX: Ensure deterministic root hash across all nodes
-        // ═══════════════════════════════════════════════════════════════
-        //
-        // When nodes sync deltas, WASM execution may produce different root hashes
-        // due to non-deterministic factors (CRDT merge order, timing, etc).
-        // To maintain DAG consistency, we MUST use the expected_root_hash from
-        // the delta author rather than the computed hash.
-        //
-        // SAFETY: This is safe because:
-        // 1. The DAG ensures deltas are applied in topological order
-        // 2. The DAG prevents re-applying the same delta (duplicate check)
-        // 3. The expected_root_hash represents the state AFTER applying THIS delta
-        //
-        // LIMITATION: When multiple DAG heads exist (concurrent branches), Context
-        // stores only ONE root_hash. The current implementation uses whichever delta
-        // was applied most recently, which can cause non-deterministic root_hash
-        // selection across nodes if deltas arrive in different orders.
-        //
-        // FUTURE FIX: Use deterministic selection (e.g., lexicographically smallest
-        // head_id's root_hash) when multiple heads exist.
-
+        // Ensure deterministic root hash across all nodes.
+        // WASM execution may produce different hashes due to non-deterministic factors;
+        // use the delta author's expected_root_hash to maintain DAG consistency.
         let computed_hash = outcome.root_hash;
         if *computed_hash != delta.expected_root_hash {
             warn!(
@@ -91,29 +72,20 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 delta_id = ?delta.id,
                 computed_hash = ?computed_hash,
                 expected_hash = ?delta.expected_root_hash,
-                "Root hash mismatch detected - using expected hash for DAG consistency"
+                "Root hash mismatch - using expected hash for consistency"
             );
 
-            // OVERRIDE: Use the expected root hash from the delta to ensure
-            // all nodes have identical DAG structure regardless of WASM execution differences.
-            // Note: execute() already set context.root_hash and persisted it, so we're
-            // correcting it here if it differs from the expected value.
             self.context_client
                 .force_root_hash(&self.context_id, delta.expected_root_hash.into())
                 .map_err(|e| ApplyError::Application(format!("Failed to set root hash: {}", e)))?;
         }
-
-        // Note: We do NOT update dag_heads here because:
-        // 1. This is called INSIDE CoreDagStore::apply_delta BEFORE it updates its heads
-        // 2. We can't read the correct heads from the DAG yet
-        // 3. DeltaStore::add_delta will update the heads after the DAG finishes
 
         debug!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             action_count = delta.payload.len(),
             expected_root_hash = ?delta.expected_root_hash,
-            "Applied delta to WASM storage with expected root hash"
+            "Applied delta to WASM storage"
         );
 
         Ok(())
@@ -181,23 +153,11 @@ impl DeltaStore {
             .update_dag_heads(&self.applier.context_id, heads.clone())
             .map_err(|e| eyre::eyre!("Failed to update dag_heads: {}", e))?;
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // CRITICAL: Deterministic root hash selection for multiple DAG heads
-        // ═══════════════════════════════════════════════════════════════════════
-        //
-        // When multiple DAG heads exist (concurrent branches), we must deterministically
-        // select which root_hash to use as the Context's root_hash. Without this, nodes
-        // receiving deltas in different orders would have different root_hashes even
-        // though they have identical DAG structure.
-        //
-        // Strategy: Use the lexicographically smallest head_id's root_hash.
-        // This ensures all nodes make the same choice regardless of delta arrival order.
-
+        // Deterministic root hash selection for concurrent branches.
+        // When multiple DAG heads exist, use the lexicographically smallest head's root_hash
+        // to ensure all nodes converge to the same root regardless of delta arrival order.
         if heads.len() > 1 {
-            // Multiple heads - select deterministically
             let head_hashes = self.head_root_hashes.read().await;
-
-            // Find the lexicographically smallest head
             let mut sorted_heads = heads.clone();
             sorted_heads.sort();
             let canonical_head = sorted_heads[0];
@@ -208,7 +168,7 @@ impl DeltaStore {
                     heads_count = heads.len(),
                     canonical_head = ?canonical_head,
                     canonical_root = ?canonical_root_hash,
-                    "Multiple DAG heads detected - using deterministic root hash selection"
+                    "Multiple DAG heads - using deterministic root hash selection"
                 );
 
                 self.applier
@@ -218,7 +178,7 @@ impl DeltaStore {
             }
         }
 
-        // Cleanup: Remove old head hashes that are no longer heads
+        // Cleanup old head hashes that are no longer active
         {
             let mut head_hashes = self.head_root_hashes.write().await;
             head_hashes.retain(|head_id, _| heads.contains(head_id));
