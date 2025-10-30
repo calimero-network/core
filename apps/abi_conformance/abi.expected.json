@@ -1,6 +1,32 @@
 {
   "schema_version": "wasm-abi/1",
   "types": {
+    "AbiState": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "counters",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "u32"
+            }
+          }
+        },
+        {
+          "name": "users",
+          "type": {
+            "kind": "list",
+            "items": {
+              "$ref": "UserId32"
+            }
+          }
+        }
+      ]
+    },
     "Action": {
       "kind": "variant",
       "variants": [
@@ -652,5 +678,6 @@
         "$ref": "Action"
       }
     }
-  ]
+  ],
+  "state_root": "AbiState"
 }

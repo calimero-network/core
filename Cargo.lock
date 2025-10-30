@@ -17,6 +17,7 @@ name = "abi_conformance"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",
+ "calimero-storage",
  "calimero-wasm-abi",
  "serde_json",
  "thiserror 1.0.69",
@@ -6441,6 +6442,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "merodb"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-store",
+ "calimero-wasm-abi",
+ "clap",
+ "eyre",
+ "hex",
+ "rocksdb",
+ "serde_json",
+ "wasmparser 0.118.2",
 ]
 
 [[package]]

@@ -1,0 +1,23 @@
+[package]
+name = "merodb"
+description = "CLI tool for debugging RocksDB in Calimero"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rocksdb = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+borsh = { workspace = true, features = ["derive"] }
+eyre = { workspace = true }
+hex = { workspace = true }
+calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-wasm-abi = { workspace = true }
+wasmparser = "0.118"
+
+[lints]
+workspace = true
