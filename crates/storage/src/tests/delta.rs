@@ -75,8 +75,8 @@ fn delta_creation_with_multiple_actions() {
     let mut para1 = Paragraph::new_from_element("Para 1", Element::new(None));
     let mut para2 = Paragraph::new_from_element("Para 2", Element::new(None));
 
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para1).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para2).unwrap();
 
     // Commit delta
     let root_hash = [1; 32];
@@ -154,7 +154,7 @@ fn delta_sequential_commits() {
 
     // Second commit (should have delta1 as parent)
     let mut para = Paragraph::new_from_element("Para", Element::new(None));
-    TestInterface::add_child_to(page1.id(), &page1.paragraphs, &mut para).unwrap();
+    TestInterface::add_child_to(page1.id(), &mut para).unwrap();
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
 
     // Delta2 should have delta1 as parent
@@ -263,7 +263,7 @@ fn delta_clears_actions_after_commit() {
 
     // Create another action
     let mut para = Paragraph::new_from_element("Para", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para).unwrap();
 
     // Commit again
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
@@ -329,7 +329,7 @@ fn delta_timestamp_is_monotonic() {
 
     // Create second delta
     let mut para = Paragraph::new_from_element("Para", Element::new(None));
-    TestInterface::add_child_to(page1.id(), &page1.paragraphs, &mut para).unwrap();
+    TestInterface::add_child_to(page1.id(), &mut para).unwrap();
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
 
     // Second delta should have later HLC timestamp

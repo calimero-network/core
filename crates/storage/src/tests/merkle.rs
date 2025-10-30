@@ -26,7 +26,7 @@ fn merkle_hash_changes_when_child_added() {
 
     // Add child
     let mut para = Paragraph::new_from_element("Child", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para).unwrap();
 
     // Reload parent
     let page_after = TestInterface::find_by_id::<Page>(page.id())
@@ -48,7 +48,7 @@ fn merkle_hash_includes_multiple_children() {
 
     // Add first child
     let mut para1 = Paragraph::new_from_element("Child 1", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para1).unwrap();
 
     let hash_one_child = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()
@@ -58,7 +58,7 @@ fn merkle_hash_includes_multiple_children() {
 
     // Add second child
     let mut para2 = Paragraph::new_from_element("Child 2", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para2).unwrap();
 
     let hash_two_children = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()
@@ -84,7 +84,7 @@ fn merkle_hash_propagates_on_child_update() {
     TestInterface::save(&mut page).unwrap();
 
     let mut para = Paragraph::new_from_element("Original", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para).unwrap();
 
     let parent_hash_before = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()
@@ -116,7 +116,7 @@ fn merkle_hash_stable_when_child_unchanged() {
     TestInterface::save(&mut page).unwrap();
 
     let mut para = Paragraph::new_from_element("Child", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para).unwrap();
 
     let hash1 = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()
@@ -145,7 +145,7 @@ fn merkle_hash_propagates_through_deep_hierarchy() {
     TestInterface::save(&mut page).unwrap();
 
     let mut para1 = Paragraph::new_from_element("Parent", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para1).unwrap();
 
     let grandparent_hash_before = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()
@@ -260,8 +260,8 @@ fn merkle_hash_with_concurrent_child_updates() {
     let mut para1 = Paragraph::new_from_element("Child 1", Element::new(None));
     let mut para2 = Paragraph::new_from_element("Child 2", Element::new(None));
 
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para1).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para2).unwrap();
 
     let hash_before = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()
@@ -307,8 +307,8 @@ fn merkle_hash_deterministic() {
     let mut para1a = Paragraph::new_from_element("Para 1", Element::new(None));
     let mut para1b = Paragraph::new_from_element("Para 1", Element::new(None));
 
-    Interface::<Storage1>::add_child_to(page1.id(), &page1.paragraphs, &mut para1a).unwrap();
-    Interface::<Storage2>::add_child_to(page2.id(), &page2.paragraphs, &mut para1b).unwrap();
+    Interface::<Storage1>::add_child_to(page1.id(), &mut para1a).unwrap();
+    Interface::<Storage2>::add_child_to(page2.id(), &mut para1b).unwrap();
 
     // Verify both pages have their Merkle hashes computed
     let hash1 = Interface::<Storage1>::find_by_id::<Page>(page1.id())
@@ -335,7 +335,7 @@ fn merkle_hash_child_removal_updates_parent() {
     TestInterface::save(&mut page).unwrap();
 
     let mut para = Paragraph::new_from_element("Child", Element::new(None));
-    TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+    TestInterface::add_child_to(page.id(), &mut para).unwrap();
 
     let hash_with_child = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()
@@ -344,7 +344,7 @@ fn merkle_hash_child_removal_updates_parent() {
         .merkle_hash;
 
     // Remove child
-    TestInterface::remove_child_from(page.id(), &page.paragraphs, para.id()).unwrap();
+    TestInterface::remove_child_from(page.id(), para.id()).unwrap();
 
     let hash_without_child = TestInterface::find_by_id::<Page>(page.id())
         .unwrap()

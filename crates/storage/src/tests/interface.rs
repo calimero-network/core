@@ -20,7 +20,7 @@ mod interface__public_methods {
         let mut page = Page::new_from_element("Node", element);
         assert!(MainInterface::save(&mut page).unwrap());
         assert_eq!(
-            MainInterface::children_of(page.id(), &page.paragraphs).unwrap(),
+            MainInterface::children_of::<Paragraph>(page.id()).unwrap(),
             vec![]
         );
 
@@ -33,11 +33,11 @@ mod interface__public_methods {
 
         assert!(!MainInterface::save(&mut page).unwrap());
 
-        assert!(MainInterface::add_child_to(page.id(), &mut page.paragraphs, &mut para1).unwrap());
-        assert!(MainInterface::add_child_to(page.id(), &mut page.paragraphs, &mut para2).unwrap());
-        assert!(MainInterface::add_child_to(page.id(), &mut page.paragraphs, &mut para3).unwrap());
+        assert!(MainInterface::add_child_to(page.id(), &mut para1).unwrap());
+        assert!(MainInterface::add_child_to(page.id(), &mut para2).unwrap());
+        assert!(MainInterface::add_child_to(page.id(), &mut para3).unwrap());
 
-        let mut children = MainInterface::children_of(page.id(), &page.paragraphs).unwrap();
+        let mut children: Vec<Paragraph> = MainInterface::children_of(page.id()).unwrap();
         let mut expected = vec![para1, para2, para3];
 
         // Sort both by ID for deterministic comparison
@@ -430,32 +430,12 @@ mod interface__comparison {
         let mut foreign_para3 = Paragraph::new_from_element("Foreign Paragraph 3", para3_element);
 
         assert!(MainInterface::save(&mut local_page).unwrap());
-        assert!(MainInterface::add_child_to(
-            local_page.id(),
-            &mut local_page.paragraphs,
-            &mut local_para1
-        )
-        .unwrap());
-        assert!(MainInterface::add_child_to(
-            local_page.id(),
-            &mut local_page.paragraphs,
-            &mut local_para2
-        )
-        .unwrap());
+        assert!(MainInterface::add_child_to(local_page.id(), &mut local_para1).unwrap());
+        assert!(MainInterface::add_child_to(local_page.id(), &mut local_para2).unwrap());
 
         assert!(ForeignInterface::save(&mut foreign_page).unwrap());
-        assert!(ForeignInterface::add_child_to(
-            foreign_page.id(),
-            &mut foreign_page.paragraphs,
-            &mut foreign_para1
-        )
-        .unwrap());
-        assert!(ForeignInterface::add_child_to(
-            foreign_page.id(),
-            &mut foreign_page.paragraphs,
-            &mut foreign_para3
-        )
-        .unwrap());
+        assert!(ForeignInterface::add_child_to(foreign_page.id(), &mut foreign_para1).unwrap());
+        assert!(ForeignInterface::add_child_to(foreign_page.id(), &mut foreign_para3).unwrap());
 
         let (local_actions, foreign_actions) = compare_trees(
             Some(&foreign_page),
@@ -593,8 +573,8 @@ mod snapshot_and_resync {
         let mut para2 = Paragraph::new_from_element("Para 2", Element::new(None));
 
         TestInterface::save(&mut page).unwrap();
-        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
-        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+        TestInterface::add_child_to(page.id(), &mut para1).unwrap();
+        TestInterface::add_child_to(page.id(), &mut para2).unwrap();
 
         // Generate snapshot
         let snapshot = generate_snapshot::<TestStorage>().unwrap();
@@ -621,12 +601,7 @@ mod snapshot_and_resync {
         let mut foreign_para = Paragraph::new_from_element("Foreign Para", Element::new(None));
 
         ForeignInterface::save(&mut foreign_page).unwrap();
-        ForeignInterface::add_child_to(
-            foreign_page.id(),
-            &foreign_page.paragraphs,
-            &mut foreign_para,
-        )
-        .unwrap();
+        ForeignInterface::add_child_to(foreign_page.id(), &mut foreign_para).unwrap();
 
         // Generate snapshot from foreign
         let snapshot = generate_snapshot::<ForeignStorage>().unwrap();
@@ -656,8 +631,8 @@ mod snapshot_and_resync {
         let mut para2 = Paragraph::new_from_element("Para 2", Element::new(None));
 
         TestInterface::save(&mut page).unwrap();
-        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap();
-        TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap();
+        TestInterface::add_child_to(page.id(), &mut para1).unwrap();
+        TestInterface::add_child_to(page.id(), &mut para2).unwrap();
 
         // Verify different IDs
         assert_ne!(para1.id(), para2.id());
@@ -702,7 +677,7 @@ mod snapshot_and_resync {
         let mut para = Paragraph::new_from_element("Source Para", Element::new(None));
 
         SourceInterface::save(&mut page).unwrap();
-        SourceInterface::add_child_to(page.id(), &page.paragraphs, &mut para).unwrap();
+        SourceInterface::add_child_to(page.id(), &mut para).unwrap();
 
         // Generate snapshot
         let snapshot = generate_snapshot::<SourceStorage>().unwrap();

@@ -278,11 +278,11 @@ fn concurrent_adds_to_collection() {
     let mut para2 = Paragraph::new_from_element("Para 2", Element::new(None));
 
     // Add both concurrently
-    assert!(TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para1).unwrap());
-    assert!(TestInterface::add_child_to(page.id(), &page.paragraphs, &mut para2).unwrap());
+    assert!(TestInterface::add_child_to(page.id(), &mut para1).unwrap());
+    assert!(TestInterface::add_child_to(page.id(), &mut para2).unwrap());
 
     // Both should be in collection
-    let children = TestInterface::children_of(page.id(), &page.paragraphs).unwrap();
+    let children: Vec<Paragraph> = TestInterface::children_of(page.id()).unwrap();
     assert_eq!(children.len(), 2);
 }
 

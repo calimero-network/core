@@ -55,48 +55,6 @@ fn compute_id(parent: Id, key: &[u8]) -> Id {
     Id::new(hasher.finalize().into())
 }
 
-mod compat {
-    use std::collections::BTreeMap;
-
-    use borsh::{BorshDeserialize, BorshSerialize};
-
-    use crate::entities::{ChildInfo, Collection, Data, Element};
-
-    /// Handle for internal collection operations.
-    ///
-    /// Used by `Collection<T>` to manage its entries. This is an internal implementation
-    /// detail - entries are stored in a flat collection without nested structure.
-    #[derive(Copy, Clone, Debug)]
-    pub(super) struct RootHandle;
-
-    #[derive(BorshSerialize, BorshDeserialize)]
-    pub(super) struct RootChildDud;
-
-    impl Data for RootChildDud {
-        fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
-            unimplemented!()
-        }
-
-        fn element(&self) -> &Element {
-            unimplemented!()
-        }
-
-        fn element_mut(&mut self) -> &mut Element {
-            unimplemented!()
-        }
-    }
-
-    impl Collection for RootHandle {
-        type Child = RootChildDud;
-
-        fn name(&self) -> &str {
-            "_entries"
-        }
-    }
-}
-
-use compat::RootHandle;
-
 #[derive(BorshSerialize, BorshDeserialize)]
 struct Collection<T, S: StorageAdaptor = MainStorage> {
     storage: Element,
@@ -160,8 +118,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if id.is_root() {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
         } else {
-            let _ =
-                <Interface<S>>::add_child_to(*ROOT_ID, &RootHandle, &mut this).expect("add child");
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
         }
 
         this
@@ -247,7 +204,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             // Try to load children from index
             // After CRDT sync, newly created collections might not have index entries yet
             // In that case, start with an empty set
-            let children = match <Interface<S>>::child_info_for(self.id(), &RootHandle) {
+            let children = match <Interface<S>>::child_info_for(self.id()) {
                 Ok(info) => info.into_iter().map(|c| c.id()).collect(),
                 Err(StorageError::IndexNotFound(_)) => {
                     // Collection was just created/synced, no children yet
@@ -287,8 +244,7 @@ where
                 self.entry.id(),
             )))?;
 
-        let _ =
-            <Interface<S>>::remove_child_from(self.collection.id(), &RootHandle, self.entry.id())?;
+        let _ = <Interface<S>>::remove_child_from(self.collection.id(), self.entry.id())?;
 
         let _ = self
             .collection
@@ -346,7 +302,7 @@ where
     }
 
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
-        let _ = <Interface<S>>::add_child_to(self.collection.id(), &RootHandle, item)?;
+        let _ = <Interface<S>>::add_child_to(self.collection.id(), item)?;
 
         let _ignored = self.collection.children_cache()?.insert(item.id());
 
@@ -357,7 +313,7 @@ where
         let children = self.collection.children_cache()?;
 
         for child in children.drain(..) {
-            let _ = <Interface<S>>::remove_child_from(self.collection.id(), &RootHandle, child)?;
+            let _ = <Interface<S>>::remove_child_from(self.collection.id(), child)?;
         }
 
         Ok(())

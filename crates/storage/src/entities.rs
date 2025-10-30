@@ -71,9 +71,6 @@ pub trait AtomicUnit: Data {}
 pub trait Collection {
     /// Child type.
     type Child: Data;
-
-    /// Collection name for indexing.
-    fn name(&self) -> &str;
 }
 
 /// Base trait for storable user data. Requires an associated [`Element`].

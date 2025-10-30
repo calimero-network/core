@@ -45,7 +45,7 @@ use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
 use crate::address::{Id, Path};
-use crate::entities::{ChildInfo, Collection, Data, Metadata};
+use crate::entities::{ChildInfo, Data, Metadata};
 use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
@@ -71,11 +71,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `SerializationError` if child can't be encoded
     /// - `IndexNotFound` if parent doesn't exist
     ///
-    pub fn add_child_to<C: Collection, D: Data>(
-        parent_id: Id,
-        collection: &C,
-        child: &mut D,
-    ) -> Result<bool, StorageError> {
+    pub fn add_child_to<D: Data>(parent_id: Id, child: &mut D) -> Result<bool, StorageError> {
         if !child.element().is_dirty() {
             return Ok(false);
         }
@@ -232,10 +228,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if parent doesn't exist
     /// - `DeserializationError` if child data is corrupt
     ///
-    pub fn children_of<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-    ) -> Result<Vec<C::Child>, StorageError> {
+    pub fn children_of<D: Data>(parent_id: Id) -> Result<Vec<D>, StorageError> {
         let children_info = <Index<S>>::get_children_of(parent_id)?;
         let mut children = Vec::new();
         for child_info in children_info {
@@ -253,10 +246,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// Returns error if index lookup fails.
     ///
-    pub fn child_info_for<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-    ) -> Result<Vec<ChildInfo>, StorageError> {
+    pub fn child_info_for(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
         <Index<S>>::get_children_of(parent_id)
     }
 
@@ -567,10 +557,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// Returns error if index lookup fails.
     ///
-    pub fn has_children<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-    ) -> Result<bool, StorageError> {
+    pub fn has_children(parent_id: Id) -> Result<bool, StorageError> {
         <Index<S>>::has_children(parent_id)
     }
 
@@ -591,11 +578,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// Returns error if parent or child doesn't exist.
     ///
-    pub fn remove_child_from<C: Collection>(
-        parent_id: Id,
-        collection: &C,
-        child_id: Id,
-    ) -> Result<bool, StorageError> {
+    pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
         let child_exists = <Index<S>>::get_children_of(parent_id)?
             .iter()
             .any(|child| child.id() == child_id);

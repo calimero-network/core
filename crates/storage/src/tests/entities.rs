@@ -14,8 +14,7 @@ mod collection__public_methods {
 
     #[test]
     fn name() {
-        let paras = Paragraphs::new();
-        assert_eq!(paras.name(), "Paragraphs");
+        let _paras = Paragraphs::new();
     }
 }
 
@@ -30,7 +29,7 @@ mod data__public_methods {
         assert_eq!(
             page.collections(),
             btree_map! {
-                "Paragraphs".to_owned(): MainInterface::child_info_for(page.id(), &page.paragraphs).unwrap_or_default(),
+                "Paragraphs".to_owned(): MainInterface::child_info_for(page.id()).unwrap_or_default(),
             }
         );
 
