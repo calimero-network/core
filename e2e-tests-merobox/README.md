@@ -20,6 +20,8 @@ e2e-tests-merobox/
 │   │   ├── near.yml        # NEAR protocol (CRDT text editing)
 │   ├── nested-crdt/        # Nested CRDT workflows
 │   │   ├── near.yml        # NEAR protocol (nested CRDT compositions)
+│   ├── team-metrics/       # Team Metrics workflows
+│   │   └── near.yml        # NEAR protocol (#[derive(Mergeable)] testing)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -58,6 +60,7 @@ cargo build -p merod -p meroctl
 ./apps/blobs/build.sh
 ./apps/collaborative-editor/build.sh
 ./apps/nested-crdt-test/build.sh
+./apps/team-metrics-macro/build.sh
 ```
 
 ### Run Tests Locally
@@ -84,15 +87,16 @@ cargo build -p merod -p meroctl
 # Run Ethereum tests (with devnet check)
 ./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
 
-# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Proposals)
+# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Team Metrics + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 11 test suites:
+# Note: This runs 12 test suites:
 # - KV Store: near, near-init, icp (if dfx running), ethereum (if anvil running)
 # - Handlers: near-handlers
 # - Blob API: near-blobs
 # - Collaborative Editor: near-collab
 # - Nested CRDT: near-nested
+# - Team Metrics: near-metrics
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 
 # Run KV Store with Handlers test (NEAR only)
@@ -106,6 +110,9 @@ cargo build -p merod -p meroctl
 
 # Run Nested CRDT test (NEAR only)
 ./e2e-tests-merobox/run-local.sh --protocol near-nested --build --build-apps
+
+# Run Team Metrics test (NEAR only)
+./e2e-tests-merobox/run-local.sh --protocol near-metrics --build --build-apps
 
 # Run custom workflow
 ./e2e-tests-merobox/run-local.sh --workflow path/to/custom.yml
@@ -372,6 +379,7 @@ The CI workflow uploads:
 | **Blob API**               | NEAR                | ~30   | Implemented |
 | **Collaborative Editor**   | NEAR                | ~50   | Implemented |
 | **Nested CRDT**            | NEAR                | ~80   | Implemented |
+| **Team Metrics**           | NEAR                | ~45   | Implemented |
 | **Proposals**              | NEAR, ICP, Ethereum | 70+   | Implemented |
 
 ### Planned Tests
@@ -381,6 +389,7 @@ The CI workflow uploads:
 - Blob API (ICP, Ethereum)
 - Collaborative Editor (ICP, Ethereum)
 - Nested CRDT (ICP, Ethereum)
+- Team Metrics (ICP, Ethereum)
 - Open Invitations (NEAR, ICP, Ethereum) - requires merobox support
 - External State Verification (all protocols)
 

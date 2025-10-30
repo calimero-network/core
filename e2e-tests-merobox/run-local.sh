@@ -37,8 +37,9 @@ usage() {
     echo "                             - near-blobs (Blob API - NEAR only)"
     echo "                             - near-collab (Collaborative Editor - NEAR only)"
     echo "                             - near-nested (Nested CRDT - NEAR only)"
+    echo "                             - near-metrics (Team Metrics - NEAR only)"
     echo "                             - near-proposals, icp-proposals, ethereum-proposals"
-    echo "                             - all (runs all tests: 11 suites)"
+    echo "                             - all (runs all tests: 12 suites)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
     echo "  -b, --build                Build merod and meroctl binaries before testing"
@@ -54,8 +55,9 @@ usage() {
     echo "  $0 --protocol near-blobs --build --build-apps  # Run NEAR Blob API tests"
     echo "  $0 --protocol near-collab --build --build-apps # Run NEAR Collaborative Editor tests"
     echo "  $0 --protocol near-nested --build --build-apps # Run NEAR Nested CRDT tests"
+    echo "  $0 --protocol near-metrics --build --build-apps # Run NEAR Team Metrics tests"
     echo "  $0 --protocol icp --check-devnets --build      # Check ICP devnet and test"
-    echo "  $0 --protocol all --build --build-apps         # Build and test all (11 suites)"
+    echo "  $0 --protocol all --build --build-apps         # Build and test all (12 suites)"
     echo "  $0 --workflow path/to/custom.yml               # Run custom workflow"
     echo ""
     echo "Devnet Setup (run separately before testing):"
@@ -228,6 +230,7 @@ if [ "$BUILD_APPS" = true ]; then
     chmod +x ./apps/blobs/build.sh
     chmod +x ./apps/collaborative-editor/build.sh
     chmod +x ./apps/nested-crdt-test/build.sh
+    chmod +x ./apps/team-metrics-macro/build.sh
     
     if ./apps/kv-store/build.sh; then
         echo -e "${GREEN}✓ KV store app built successfully${NC}"
@@ -268,6 +271,13 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${GREEN}✓ Nested CRDT app built successfully${NC}"
     else
         echo -e "${RED}Error: Failed to build nested-crdt-test app${NC}"
+        exit 1
+    fi
+    
+    if ./apps/team-metrics-macro/build.sh; then
+        echo -e "${GREEN}✓ Team Metrics app built successfully${NC}"
+    else
+        echo -e "${RED}Error: Failed to build team-metrics-macro app${NC}"
         exit 1
     fi
     echo ""
@@ -532,6 +542,12 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/nested-crdt/near.yml" "near-nested"
             FAILED=$?
             ;;
+        near-metrics)
+            echo -e "${YELLOW}Running NEAR Team Metrics test...${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/team-metrics/near.yml" "near-metrics"
+            FAILED=$?
+            ;;
         near-proposals)
             echo -e "${YELLOW}Running NEAR proposals comprehensive test...${NC}"
             echo ""
@@ -622,6 +638,15 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/nested-crdt/near.yml" "near-nested"
             NEAR_NESTED_RESULT=$?
             
+            # === Team Metrics Tests ===
+            echo ""
+            echo -e "${BLUE}━━━ Team Metrics Tests ━━━${NC}"
+            echo ""
+            
+            # Run NEAR Team Metrics (doesn't need devnet)
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/team-metrics/near.yml" "near-metrics"
+            NEAR_METRICS_RESULT=$?
+            
             # === Proposals Tests ===
             echo ""
             echo -e "${BLUE}━━━ Proposals Tests ━━━${NC}"
@@ -649,7 +674,7 @@ else
                 ETH_PROP_RESULT=0
             fi
             
-            FAILED=$((NEAR_KV_RESULT + NEAR_KV_INIT_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_COLLAB_RESULT + NEAR_NESTED_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
+            FAILED=$((NEAR_KV_RESULT + NEAR_KV_INIT_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_COLLAB_RESULT + NEAR_NESTED_RESULT + NEAR_METRICS_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
             ;;
         "")
             echo -e "${RED}Error: Protocol not specified${NC}"

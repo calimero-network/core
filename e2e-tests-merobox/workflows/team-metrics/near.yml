@@ -1,0 +1,387 @@
+name: "Team Metrics - NEAR"
+description: "Team Metrics test on NEAR protocol - verifies #[derive(Mergeable)] macro for nested struct CRDT merging"
+
+# Use --no-docker mode with native merod processes
+
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: metrics-near
+
+steps:
+  # ============================================================================
+  # Phase 1: Application Installation
+  # ============================================================================
+  - name: Install Team Metrics Application on Node 1
+    type: install_application
+    node: metrics-near-1
+    path: "apps/team-metrics-macro/res/team_metrics_macro.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # ============================================================================
+  # Phase 2: Context Creation
+  # ============================================================================
+  - name: Create Context on Node 1
+    type: create_context
+    node: metrics-near-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Wait for Context Initialization
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 3: Initial Wins Recording
+  # ============================================================================
+  - name: Record first win for team-a (Node 1)
+    type: call
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: record_win
+    args:
+      team_id: "team-a"
+    outputs:
+      win_1: result
+
+  - name: Assert wins is 1
+    type: json_assert
+    statements:
+      - 'json_equal({{win_1}}, {"output": 1})'
+
+  - name: Record second win for team-a (Node 1)
+    type: call
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: record_win
+    args:
+      team_id: "team-a"
+    outputs:
+      win_2: result
+
+  - name: Assert wins is 2
+    type: json_assert
+    statements:
+      - 'json_equal({{win_2}}, {"output": 2})'
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  # ============================================================================
+  # Phase 4: Multi-Node Setup
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: metrics-near-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: metrics-near-3
+    outputs:
+      public_key_3: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_2}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3 from Node 1
+    type: invite_identity
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_3}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Node 2 Joins Context
+    type: join_context
+    node: metrics-near-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_2}}"
+    invitation: "{{invitation_2}}"
+
+  - name: Node 3 Joins Context
+    type: join_context
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_3}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for nodes to join and sync
+    type: wait
+    seconds: 15
+
+  # ============================================================================
+  # Phase 5: Verify Wins Sync
+  # ============================================================================
+  - name: Get wins from Node 1
+    type: call
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+    outputs:
+      wins_node1: result
+
+  - name: Get wins from Node 2
+    type: call
+    node: metrics-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+    outputs:
+      wins_node2: result
+
+  - name: Get wins from Node 3
+    type: call
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+    outputs:
+      wins_node3: result
+
+  - name: Assert all nodes have 2 wins
+    type: json_assert
+    statements:
+      - 'json_equal({{wins_node1}}, {"output": 2})'
+      - 'json_equal({{wins_node2}}, {"output": 2})'
+      - 'json_equal({{wins_node3}}, {"output": 2})'
+
+  # ============================================================================
+  # Phase 6: Concurrent Updates to Different Fields
+  # ============================================================================
+  - name: Node 1 records win (concurrent test)
+    type: call
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: record_win
+    args:
+      team_id: "team-a"
+
+  - name: Node 2 records loss (concurrent with win)
+    type: call
+    node: metrics-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: record_loss
+    args:
+      team_id: "team-a"
+
+  - name: Node 3 records loss (concurrent with win)
+    type: call
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: record_loss
+    args:
+      team_id: "team-a"
+
+  - name: Wait for consensus - different field updates
+    type: wait
+    seconds: 35
+
+  - name: Get wins from Node 1 after concurrent
+    type: call
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+    outputs:
+      wins_after_1: result
+
+  - name: Wait after Node 1 query
+    type: wait
+    seconds: 15
+
+  - name: Get wins from Node 2 after concurrent
+    type: call
+    node: metrics-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+    outputs:
+      wins_after_2: result
+
+  - name: Wait after Node 2 query
+    type: wait
+    seconds: 15
+
+  - name: Get wins from Node 3 after concurrent (attempt 1)
+    type: call
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+
+  - name: Wait before retry attempt 2
+    type: wait
+    seconds: 10
+
+  - name: Get wins from Node 3 after concurrent (attempt 2)
+    type: call
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+
+  - name: Wait before retry attempt 3
+    type: wait
+    seconds: 10
+
+  - name: Get wins from Node 3 after concurrent (attempt 3)
+    type: call
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_wins
+    args:
+      team_id: "team-a"
+    outputs:
+      wins_after_3: result
+
+  - name: Wait after Node 3 query
+    type: wait
+    seconds: 5
+
+  - name: Assert wins is 3 on all nodes (2 + 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{wins_after_1}}, {"output": 3})'
+      - 'json_equal({{wins_after_2}}, {"output": 3})'
+      - 'json_equal({{wins_after_3}}, {"output": 3})'
+
+  - name: Wait for losses to propagate
+    type: wait
+    seconds: 20
+
+  - name: Get losses from Node 1 (attempt 1)
+    type: call
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_losses
+    args:
+      team_id: "team-a"
+
+  - name: Wait before retry Node 1 losses
+    type: wait
+    seconds: 10
+
+  - name: Get losses from Node 1 (attempt 2)
+    type: call
+    node: metrics-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_losses
+    args:
+      team_id: "team-a"
+    outputs:
+      losses_1: result
+
+  - name: Wait after Node 1 losses query
+    type: wait
+    seconds: 10
+
+  - name: Get losses from Node 2 (attempt 1)
+    type: call
+    node: metrics-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_losses
+    args:
+      team_id: "team-a"
+
+  - name: Wait before retry Node 2 losses
+    type: wait
+    seconds: 10
+
+  - name: Get losses from Node 2 (attempt 2)
+    type: call
+    node: metrics-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_losses
+    args:
+      team_id: "team-a"
+    outputs:
+      losses_2: result
+
+  - name: Wait after Node 2 losses query
+    type: wait
+    seconds: 10
+
+  - name: Get losses from Node 3 (attempt 1)
+    type: call
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_losses
+    args:
+      team_id: "team-a"
+
+  - name: Wait before retry Node 3 losses
+    type: wait
+    seconds: 10
+
+  - name: Get losses from Node 3 (attempt 2)
+    type: call
+    node: metrics-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_losses
+    args:
+      team_id: "team-a"
+    outputs:
+      losses_3: result
+
+  - name: Assert losses is 2 on all nodes (0 + 1 + 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{losses_1}}, {"output": 2})'
+      - 'json_equal({{losses_2}}, {"output": 2})'
+      - 'json_equal({{losses_3}}, {"output": 2})'
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
