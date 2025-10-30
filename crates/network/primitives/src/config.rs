@@ -32,6 +32,7 @@ pub struct NetworkConfig {
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
+    pub gossipsub: GossipsubConfig,
 }
 
 impl NetworkConfig {
@@ -41,12 +42,14 @@ impl NetworkConfig {
         swarm: SwarmConfig,
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
+        gossipsub: GossipsubConfig,
     ) -> Self {
         Self {
             identity,
             swarm,
             bootstrap,
             discovery,
+            gossipsub,
         }
     }
 }
@@ -155,6 +158,61 @@ impl Default for DiscoveryConfig {
             rendezvous: RendezvousConfig::default(),
             relay: RelayConfig::default(),
             autonat: AutonatConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct GossipsubConfig {
+    /// Minimum number of peers in mesh (D_low in spec)
+    /// For 2-node networks, this should be 1
+    pub mesh_n_low: usize,
+
+    /// Target number of peers in mesh (D in spec)
+    /// For small networks (2-5 nodes), 2 is reasonable
+    pub mesh_n: usize,
+
+    /// Maximum number of peers in mesh (D_high in spec)
+    /// For larger networks, can go higher
+    pub mesh_n_high: usize,
+
+    /// Number of outbound-only peers to keep (D_out in spec)
+    pub mesh_outbound_min: usize,
+
+    /// Target for heartbeat interval in seconds
+    pub heartbeat_interval_secs: u64,
+}
+
+impl GossipsubConfig {
+    #[must_use]
+    pub const fn new(
+        mesh_n_low: usize,
+        mesh_n: usize,
+        mesh_n_high: usize,
+        mesh_outbound_min: usize,
+        heartbeat_interval_secs: u64,
+    ) -> Self {
+        Self {
+            mesh_n_low,
+            mesh_n,
+            mesh_n_high,
+            mesh_outbound_min,
+            heartbeat_interval_secs,
+        }
+    }
+}
+
+impl Default for GossipsubConfig {
+    fn default() -> Self {
+        // These values are optimized for small networks (2-20 nodes)
+        // while still providing good performance for larger networks
+        Self {
+            mesh_n_low: 1,              // Allow mesh with just 1 peer (for 2-node networks)
+            mesh_n: 2,                  // Target 2 peers (works for 2-5 node networks)
+            mesh_n_high: 4,             // Max 4 peers in mesh (good for up to 20 nodes)
+            mesh_outbound_min: 1,       // Keep at least 1 outbound connection
+            heartbeat_interval_secs: 1, // Default heartbeat
         }
     }
 }

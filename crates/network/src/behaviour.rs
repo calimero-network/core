@@ -99,10 +99,23 @@ impl Behaviour {
 
                         kad
                     },
-                    gossipsub: gossipsub::Behaviour::new(
-                        gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        gossipsub::Config::default(),
-                    )?,
+                    gossipsub: {
+                        let gossipsub_config = gossipsub::ConfigBuilder::default()
+                            .mesh_n_low(config.gossipsub.mesh_n_low)
+                            .mesh_n(config.gossipsub.mesh_n)
+                            .mesh_n_high(config.gossipsub.mesh_n_high)
+                            .mesh_outbound_min(config.gossipsub.mesh_outbound_min)
+                            .heartbeat_interval(Duration::from_secs(
+                                config.gossipsub.heartbeat_interval_secs,
+                            ))
+                            .build()
+                            .map_err(|e| eyre::eyre!("Failed to build gossipsub config: {}", e))?;
+
+                        gossipsub::Behaviour::new(
+                            gossipsub::MessageAuthenticity::Signed(key.clone()),
+                            gossipsub_config,
+                        )?
+                    },
                     ping: ping::Behaviour::default(),
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
                     relay: relay_behaviour,

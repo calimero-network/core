@@ -40,6 +40,7 @@ impl RunCommand {
                 config.network.swarm,
                 config.network.bootstrap,
                 config.network.discovery,
+                config.network.gossipsub,
             ),
             sync: SyncConfig {
                 timeout: config.sync.timeout,

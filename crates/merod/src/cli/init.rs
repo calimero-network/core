@@ -17,8 +17,8 @@ use calimero_context_config::client::protocol::{
     starknet as starknet_protocol,
 };
 use calimero_network_primitives::config::{
-    AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
-    SwarmConfig,
+    AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, GossipsubConfig, RelayConfig,
+    RendezvousConfig, SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
@@ -343,6 +343,7 @@ impl InitCommand {
                     Some(WsConfig::new(true)),
                     Some(SseConfig::new(true)),
                 ),
+                GossipsubConfig::default(), // Use default config optimized for 2-20 node networks
             ),
             SyncConfig {
                 timeout: DEFAULT_SYNC_TIMEOUT,
