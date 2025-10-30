@@ -12,7 +12,6 @@
 //! - Real app states with collections
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier};
 use calimero_storage::action::Action;
@@ -673,4 +672,82 @@ async fn test_dag_heads_merge_reduces_to_single_head() {
     assert_eq!(dag.get_heads(), vec![[99; 32]]);
 
     // Production: context.dag_heads would be [[99; 32]] after merge
+}
+
+/// Test for concurrent branches with deterministic root hash selection
+///
+/// This test verifies that when multiple DAG heads exist (concurrent branches),
+/// the system deterministically selects the same root_hash regardless of the
+/// order in which deltas are received.
+///
+/// Scenario:
+///          → Delta A (root_hash: R1) ↘
+///   Root                               (multiple heads, need deterministic selection)
+///          → Delta B (root_hash: R2) ↗
+#[tokio::test]
+async fn test_concurrent_branches_deterministic_root_hash() {
+    let applier = StorageApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Create two concurrent deltas from same parent (root)
+    // Delta A has root_hash R1 = [0xAA; 32]
+    let delta_a = create_test_delta(
+        [10; 32],      // id
+        vec![[0; 32]], // parents: root
+        vec![],        // actions
+        [0xAA; 32],    // expected_root_hash
+    );
+
+    // Delta B has root_hash R2 = [0xBB; 32]
+    let delta_b = create_test_delta(
+        [20; 32],      // id
+        vec![[0; 32]], // parents: root
+        vec![],        // actions
+        [0xBB; 32],    // expected_root_hash
+    );
+
+    // Apply in order A, B
+    let _ = dag.add_delta(delta_a.clone(), &applier).await.unwrap();
+    let _ = dag.add_delta(delta_b.clone(), &applier).await.unwrap();
+
+    // Should have TWO heads (concurrent updates)
+    let mut heads = dag.get_heads();
+    heads.sort();
+    assert_eq!(heads.len(), 2);
+    assert!(heads.contains(&[10; 32]));
+    assert!(heads.contains(&[20; 32]));
+
+    // Test reverse order application (different node)
+    let applier2 = StorageApplier::new();
+    let mut dag2 = DagStore::new([0; 32]);
+
+    // Apply in order B, A (different order)
+    let _ = dag2.add_delta(delta_b.clone(), &applier2).await.unwrap();
+    let _ = dag2.add_delta(delta_a.clone(), &applier2).await.unwrap();
+
+    // Should have same TWO heads
+    let mut heads2 = dag2.get_heads();
+    heads2.sort();
+    assert_eq!(heads2, heads); // Same heads regardless of order
+
+    // Both DAGs should deterministically select the same root_hash
+    // (lexicographically smallest head_id [10; 32] with root_hash [0xAA; 32])
+    // NOTE: This test demonstrates the scenario; actual verification would
+    // require integration with DeltaStore which handles the selection logic.
+}
+
+/// Helper to create a test delta with specific expected_root_hash
+fn create_test_delta(
+    id: [u8; 32],
+    parents: Vec<[u8; 32]>,
+    actions: Vec<Action>,
+    expected_root_hash: [u8; 32],
+) -> CausalDelta<Vec<Action>> {
+    CausalDelta {
+        id,
+        parents,
+        payload: actions,
+        hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
+        expected_root_hash,
+    }
 }

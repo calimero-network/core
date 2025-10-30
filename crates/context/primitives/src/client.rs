@@ -504,11 +504,7 @@ impl ContextClient {
     /// # Returns
     ///
     /// A `Result` indicating success or failure.
-    pub fn force_root_hash(
-        &self,
-        context_id: &ContextId,
-        root_hash: Hash,
-    ) -> eyre::Result<()> {
+    pub fn force_root_hash(&self, context_id: &ContextId, root_hash: Hash) -> eyre::Result<()> {
         let handle = self.datastore.handle();
 
         let key = key::ContextMeta::new(*context_id);

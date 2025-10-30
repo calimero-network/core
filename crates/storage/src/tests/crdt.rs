@@ -10,7 +10,7 @@
 
 use super::common::{Page, Paragraph};
 use crate::action::Action;
-use crate::address::{Id, Path};
+use crate::address::Id;
 use crate::entities::{Data, Element, Metadata};
 use crate::env::time_now;
 use crate::index::Index;

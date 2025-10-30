@@ -13,11 +13,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_dag::{CausalDelta, DagStore};
 use calimero_primitives::context::ContextId;
-use calimero_primitives::hash::Hash;
 
 // Re-export types for convenience
 type ContextHash = [u8; 32];
@@ -183,6 +181,7 @@ impl MockNetwork {
                                 parents: msg.parent_ids.clone(),
                                 payload: actions,
                                 hlc: calimero_storage::env::hlc_timestamp(),
+                                expected_root_hash: msg.root_hash.into(),
                             };
 
                             // Note: In real implementation, this would use DeltaApplier
@@ -357,7 +356,7 @@ async fn test_p2p_delta_request() {
     network.add_peer(peer_b.clone());
 
     // Peer A has a delta that peer B needs
-    let delta = CausalDelta {
+    let _delta = CausalDelta {
         id: [50; 32],
         parents: vec![[0; 32]],
         payload: vec![Action::Update {
@@ -367,6 +366,7 @@ async fn test_p2p_delta_request() {
             metadata: Default::default(),
         }],
         hlc: calimero_storage::env::hlc_timestamp(),
+        expected_root_hash: [0xDE; 32],
     };
 
     // Manually add to peer A's DAG (simulating it received this earlier)
