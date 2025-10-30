@@ -1,0 +1,969 @@
+name: "Nested CRDT - NEAR"
+description: "Nested CRDT test on NEAR protocol - verifies Map<String, Counter>, Map<String, LWW>, Vector, and Map<String, Set>"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: nested-near
+
+steps:
+  # ============================================================================
+  # Phase 1: Application Installation
+  # ============================================================================
+  - name: Install Nested CRDT Application on Node 1
+    type: install_application
+    node: nested-near-1
+    path: "apps/nested-crdt-test/res/nested_crdt_test.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # ============================================================================
+  # Phase 2: Context Creation
+  # ============================================================================
+  - name: Create Context on Node 1
+    type: create_context
+    node: nested-near-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Wait for Context Initialization
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 3: Initial Counter Operations (Map<String, Counter>)
+  # ============================================================================
+  - name: Increment views counter to 1 (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_counter
+    args:
+      key: "views"
+    outputs:
+      counter_1: result
+
+  - name: Assert counter is 1
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_1}}, {"output": 1})'
+
+  - name: Increment views counter to 2 (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_counter
+    args:
+      key: "views"
+    outputs:
+      counter_2: result
+
+  - name: Assert counter is 2
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_2}}, {"output": 2})'
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  # ============================================================================
+  # Phase 4: Multi-Node Setup
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: nested-near-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: nested-near-3
+    outputs:
+      public_key_3: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_2}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3 from Node 1
+    type: invite_identity
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_3}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Node 2 Joins Context
+    type: join_context
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_2}}"
+    invitation: "{{invitation_2}}"
+
+  - name: Node 3 Joins Context
+    type: join_context
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_3}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for mesh formation and sync
+    type: wait
+    seconds: 10
+
+  # ============================================================================
+  # Phase 5: Verify Counter Sync
+  # ============================================================================
+  - name: Get counter from Node 1
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_counter
+    args:
+      key: "views"
+    outputs:
+      counter_node1: result
+
+  - name: Get counter from Node 2
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_counter
+    args:
+      key: "views"
+    outputs:
+      counter_node2: result
+
+  - name: Get counter from Node 3
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_counter
+    args:
+      key: "views"
+    outputs:
+      counter_node3: result
+
+  - name: Assert all nodes have counter=2
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_node1}}, {"output": 2})'
+      - 'json_equal({{counter_node2}}, {"output": 2})'
+      - 'json_equal({{counter_node3}}, {"output": 2})'
+
+  # ============================================================================
+  # Phase 6: Concurrent Counter Increments
+  # ============================================================================
+  - name: Node 1 increments to 3
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_counter
+    args:
+      key: "views"
+
+  - name: Node 2 increments concurrently
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: increment_counter
+    args:
+      key: "views"
+
+  - name: Node 3 increments concurrently
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: increment_counter
+    args:
+      key: "views"
+
+  - name: Wait for concurrent increments to merge
+    type: wait
+    seconds: 20
+
+  - name: Get counter from Node 1 after concurrent
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_counter
+    args:
+      key: "views"
+    outputs:
+      counter_after_concurrent_1: result
+
+  - name: Wait after Node 1 query
+    type: wait
+    seconds: 7
+
+  - name: Get counter from Node 2 after concurrent
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_counter
+    args:
+      key: "views"
+    outputs:
+      counter_after_concurrent_2: result
+
+  - name: Wait after Node 2 query
+    type: wait
+    seconds: 7
+
+  - name: Get counter from Node 3 after concurrent
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_counter
+    args:
+      key: "views"
+    outputs:
+      counter_after_concurrent_3: result
+
+  - name: Assert counter is 5 on all nodes (2 + 1 + 1 + 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_after_concurrent_1}}, {"output": 5})'
+      - 'json_equal({{counter_after_concurrent_2}}, {"output": 5})'
+      - 'json_equal({{counter_after_concurrent_3}}, {"output": 5})'
+
+  # ============================================================================
+  # Phase 7: LWW Register (Map<String, LWW>)
+  # ============================================================================
+  - name: Set status to online (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_register
+    args:
+      key: "status"
+      value: "online"
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get status from Node 1
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_register
+    args:
+      key: "status"
+    outputs:
+      status_node1: result
+
+  - name: Get status from Node 2
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_register
+    args:
+      key: "status"
+    outputs:
+      status_node2: result
+
+  - name: Get status from Node 3
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_register
+    args:
+      key: "status"
+    outputs:
+      status_node3: result
+
+  - name: Assert all nodes have status=online
+    type: json_assert
+    statements:
+      - 'json_equal({{status_node1}}, {"output": "online"})'
+      - 'json_equal({{status_node2}}, {"output": "online"})'
+      - 'json_equal({{status_node3}}, {"output": "online"})'
+
+  # ============================================================================
+  # Phase 8: Concurrent LWW Register Updates
+  # ============================================================================
+  - name: Node 2 sets status to busy
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: set_register
+    args:
+      key: "status"
+      value: "busy"
+
+  - name: Node 3 sets status to busy
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: set_register
+    args:
+      key: "status"
+      value: "busy"
+
+  - name: Wait for consensus
+    type: wait
+    seconds: 5
+
+  - name: Get status from Node 1 after update
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_register
+    args:
+      key: "status"
+    outputs:
+      status_after_1: result
+
+  - name: Get status from Node 2 after update
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_register
+    args:
+      key: "status"
+    outputs:
+      status_after_2: result
+
+  - name: Get status from Node 3 after update
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_register
+    args:
+      key: "status"
+    outputs:
+      status_after_3: result
+
+  - name: Assert latest timestamp wins - status is busy
+    type: json_assert
+    statements:
+      - 'json_equal({{status_after_1}}, {"output": "busy"})'
+      - 'json_equal({{status_after_2}}, {"output": "busy"})'
+      - 'json_equal({{status_after_3}}, {"output": "busy"})'
+
+  # ============================================================================
+  # Phase 9: Nested Map Field-Level Merge
+  # ============================================================================
+  - name: Set doc-1 title (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "title"
+      value: "My Document"
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get doc-1 title from Node 1
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "title"
+    outputs:
+      title_node1: result
+
+  - name: Get doc-1 title from Node 2
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "title"
+    outputs:
+      title_node2: result
+
+  - name: Get doc-1 title from Node 3
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "title"
+    outputs:
+      title_node3: result
+
+  - name: Assert all nodes have title
+    type: json_assert
+    statements:
+      - 'json_equal({{title_node1}}, {"output": "My Document"})'
+      - 'json_equal({{title_node2}}, {"output": "My Document"})'
+      - 'json_equal({{title_node3}}, {"output": "My Document"})'
+
+  # ============================================================================
+  # Phase 10: Concurrent Nested Map Updates
+  # ============================================================================
+  - name: Node 2 sets author field
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: set_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "author"
+      value: "Alice"
+
+  - name: Node 3 sets author field
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: set_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "author"
+      value: "Alice"
+
+  - name: Node 1 sets status field (concurrent)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "status"
+      value: "draft"
+
+  - name: Wait for consensus - nested map field-level merge
+    type: wait
+    seconds: 5
+
+  - name: Verify title still present (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "title"
+    outputs:
+      title_after_merge_1: result
+
+  - name: Verify title still present (Node 2)
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "title"
+    outputs:
+      title_after_merge_2: result
+
+  - name: Verify title still present (Node 3)
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "title"
+    outputs:
+      title_after_merge_3: result
+
+  - name: Assert title field present on all nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{title_after_merge_1}}, {"output": "My Document"})'
+      - 'json_equal({{title_after_merge_2}}, {"output": "My Document"})'
+      - 'json_equal({{title_after_merge_3}}, {"output": "My Document"})'
+
+  - name: Verify author field present (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "author"
+    outputs:
+      author_1: result
+
+  - name: Verify author field present (Node 2)
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "author"
+    outputs:
+      author_2: result
+
+  - name: Verify author field present (Node 3)
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "author"
+    outputs:
+      author_3: result
+
+  - name: Assert author field present on all nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{author_1}}, {"output": "Alice"})'
+      - 'json_equal({{author_2}}, {"output": "Alice"})'
+      - 'json_equal({{author_3}}, {"output": "Alice"})'
+
+  - name: Verify status field present (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "status"
+    outputs:
+      status_field_1: result
+
+  - name: Verify status field present (Node 2)
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "status"
+    outputs:
+      status_field_2: result
+
+  - name: Verify status field present (Node 3)
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_metadata
+    args:
+      outer_key: "doc-1"
+      inner_key: "status"
+    outputs:
+      status_field_3: result
+
+  - name: Assert status field present - nested map merge worked
+    type: json_assert
+    statements:
+      - 'json_equal({{status_field_1}}, {"output": "draft"})'
+      - 'json_equal({{status_field_2}}, {"output": "draft"})'
+      - 'json_equal({{status_field_3}}, {"output": "draft"})'
+
+  # ============================================================================
+  # Phase 11: Vector CRDT
+  # ============================================================================
+  - name: Push Counter(5) to metrics (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: push_metric
+    args:
+      value: 5
+    outputs:
+      push_1: result
+
+  - name: Assert length is 1
+    type: json_assert
+    statements:
+      - 'json_equal({{push_1}}, {"output": 1})'
+
+  - name: Push Counter(10) to metrics (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: push_metric
+    args:
+      value: 10
+    outputs:
+      push_2: result
+
+  - name: Assert length is 2
+    type: json_assert
+    statements:
+      - 'json_equal({{push_2}}, {"output": 2})'
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get metrics length from Node 1
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: metrics_len
+    args: {}
+    outputs:
+      metrics_len_1: result
+
+  - name: Get metrics length from Node 2
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: metrics_len
+    args: {}
+    outputs:
+      metrics_len_2: result
+
+  - name: Get metrics length from Node 3
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: metrics_len
+    args: {}
+    outputs:
+      metrics_len_3: result
+
+  - name: Assert metrics length is 2 on all nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{metrics_len_1}}, {"output": 2})'
+      - 'json_equal({{metrics_len_2}}, {"output": 2})'
+      - 'json_equal({{metrics_len_3}}, {"output": 2})'
+
+  - name: Get metric at index 0 from Node 1
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_metric
+    args:
+      index: 0
+    outputs:
+      metric_0_1: result
+
+  - name: Get metric at index 0 from Node 2
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_metric
+    args:
+      index: 0
+    outputs:
+      metric_0_2: result
+
+  - name: Get metric at index 0 from Node 3
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_metric
+    args:
+      index: 0
+    outputs:
+      metric_0_3: result
+
+  - name: Assert metric at index 0 is 5
+    type: json_assert
+    statements:
+      - 'json_equal({{metric_0_1}}, {"output": 5})'
+      - 'json_equal({{metric_0_2}}, {"output": 5})'
+      - 'json_equal({{metric_0_3}}, {"output": 5})'
+
+  # ============================================================================
+  # Phase 12: Set CRDT (Map<String, Set>)
+  # ============================================================================
+  - name: Add rust tag for user-1 (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_tag
+    args:
+      key: "user-1"
+      tag: "rust"
+
+  - name: Add backend tag for user-1 (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_tag
+    args:
+      key: "user-1"
+      tag: "backend"
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Check if user-1 has rust tag (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "rust"
+    outputs:
+      has_rust_1: result
+
+  - name: Check if user-1 has rust tag (Node 2)
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "rust"
+    outputs:
+      has_rust_2: result
+
+  - name: Check if user-1 has rust tag (Node 3)
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "rust"
+    outputs:
+      has_rust_3: result
+
+  - name: Assert all nodes have rust tag
+    type: json_assert
+    statements:
+      - 'json_equal({{has_rust_1}}, {"output": true})'
+      - 'json_equal({{has_rust_2}}, {"output": true})'
+      - 'json_equal({{has_rust_3}}, {"output": true})'
+
+  # ============================================================================
+  # Phase 13: Concurrent Set Additions (Union Merge)
+  # ============================================================================
+  - name: Node 2 adds crdt tag
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: add_tag
+    args:
+      key: "user-1"
+      tag: "crdt"
+
+  - name: Node 3 adds crdt tag
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: add_tag
+    args:
+      key: "user-1"
+      tag: "crdt"
+
+  - name: Node 1 adds distributed tag (concurrent)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_tag
+    args:
+      key: "user-1"
+      tag: "distributed"
+
+  - name: Wait for concurrent tag additions to merge
+    type: wait
+    seconds: 5
+
+  - name: Check if user-1 has crdt tag (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "crdt"
+    outputs:
+      has_crdt_1: result
+
+  - name: Check if user-1 has crdt tag (Node 2)
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "crdt"
+    outputs:
+      has_crdt_2: result
+
+  - name: Check if user-1 has crdt tag (Node 3)
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "crdt"
+    outputs:
+      has_crdt_3: result
+
+  - name: Assert crdt tag present on all nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{has_crdt_1}}, {"output": true})'
+      - 'json_equal({{has_crdt_2}}, {"output": true})'
+      - 'json_equal({{has_crdt_3}}, {"output": true})'
+
+  - name: Check if user-1 has distributed tag (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "distributed"
+    outputs:
+      has_distributed_1: result
+
+  - name: Check if user-1 has distributed tag (Node 2)
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "distributed"
+    outputs:
+      has_distributed_2: result
+
+  - name: Check if user-1 has distributed tag (Node 3)
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: has_tag
+    args:
+      key: "user-1"
+      tag: "distributed"
+    outputs:
+      has_distributed_3: result
+
+  - name: Assert distributed tag present on all nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{has_distributed_1}}, {"output": true})'
+      - 'json_equal({{has_distributed_2}}, {"output": true})'
+      - 'json_equal({{has_distributed_3}}, {"output": true})'
+
+  - name: Get tag count for user-1 (Node 1)
+    type: call
+    node: nested-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_tag_count
+    args:
+      key: "user-1"
+    outputs:
+      tag_count_1: result
+
+  - name: Get tag count for user-1 (Node 2)
+    type: call
+    node: nested-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get_tag_count
+    args:
+      key: "user-1"
+    outputs:
+      tag_count_2: result
+
+  - name: Get tag count for user-1 (Node 3)
+    type: call
+    node: nested-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get_tag_count
+    args:
+      key: "user-1"
+    outputs:
+      tag_count_3: result
+
+  - name: Assert all 4 tags present (union merge)
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_count_1}}, {"output": 4})'
+      - 'json_equal({{tag_count_2}}, {"output": 4})'
+      - 'json_equal({{tag_count_3}}, {"output": 4})'
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

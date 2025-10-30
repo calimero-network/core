@@ -16,6 +16,10 @@ e2e-tests-merobox/
 │   │   └── near.yml        # NEAR protocol (handlers test)
 │   ├── blobs/              # Blob API workflows
 │   │   └── near.yml        # NEAR protocol (blob API test)
+│   ├── collaborative-editor/ # Collaborative Editor workflows
+│   │   ├── near.yml        # NEAR protocol (CRDT text editing)
+│   ├── nested-crdt/        # Nested CRDT workflows
+│   │   ├── near.yml        # NEAR protocol (nested CRDT compositions)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -52,6 +56,8 @@ cargo build -p merod -p meroctl
 ./apps/kv-store-init/build.sh
 ./apps/kv-store-with-handlers/build.sh
 ./apps/blobs/build.sh
+./apps/collaborative-editor/build.sh
+./apps/nested-crdt-test/build.sh
 ```
 
 ### Run Tests Locally
@@ -78,13 +84,15 @@ cargo build -p merod -p meroctl
 # Run Ethereum tests (with devnet check)
 ./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
 
-# Run all protocols (KV Store + Init + Handlers + Blobs + Proposals)
+# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 9 test suites:
+# Note: This runs 11 test suites:
 # - KV Store: near, near-init, icp (if dfx running), ethereum (if anvil running)
 # - Handlers: near-handlers
 # - Blob API: near-blobs
+# - Collaborative Editor: near-collab
+# - Nested CRDT: near-nested
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 
 # Run KV Store with Handlers test (NEAR only)
@@ -92,6 +100,12 @@ cargo build -p merod -p meroctl
 
 # Run Blob API test (NEAR only)
 ./e2e-tests-merobox/run-local.sh --protocol near-blobs --build --build-apps
+
+# Run Collaborative Editor test (NEAR only)
+./e2e-tests-merobox/run-local.sh --protocol near-collab --build --build-apps
+
+# Run Nested CRDT test (NEAR only)
+./e2e-tests-merobox/run-local.sh --protocol near-nested --build --build-apps
 
 # Run custom workflow
 ./e2e-tests-merobox/run-local.sh --workflow path/to/custom.yml
@@ -356,6 +370,8 @@ The CI workflow uploads:
 | **KV Store Init**          | NEAR                | ~50   | Implemented |
 | **KV Store with Handlers** | NEAR                | ~35   | Implemented |
 | **Blob API**               | NEAR                | ~30   | Implemented |
+| **Collaborative Editor**   | NEAR                | ~50   | Implemented |
+| **Nested CRDT**            | NEAR                | ~80   | Implemented |
 | **Proposals**              | NEAR, ICP, Ethereum | 70+   | Implemented |
 
 ### Planned Tests
@@ -363,6 +379,8 @@ The CI workflow uploads:
 - KV Store Init (ICP, Ethereum)
 - KV Store with Handlers (ICP, Ethereum)
 - Blob API (ICP, Ethereum)
+- Collaborative Editor (ICP, Ethereum)
+- Nested CRDT (ICP, Ethereum)
 - Open Invitations (NEAR, ICP, Ethereum) - requires merobox support
 - External State Verification (all protocols)
 

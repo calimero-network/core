@@ -55,11 +55,13 @@ jobs:
           chmod +x apps/kv-store-with-handlers/build.sh
           chmod +x apps/blobs/build.sh
           chmod +x apps/collaborative-editor/build.sh
+          chmod +x apps/nested-crdt-test/build.sh
           ./apps/kv-store/build.sh
           ./apps/kv-store-init/build.sh
           ./apps/kv-store-with-handlers/build.sh
           ./apps/blobs/build.sh
           ./apps/collaborative-editor/build.sh
+          ./apps/nested-crdt-test/build.sh
           cargo build -p meroctl -p merod
 
       - name: Upload Build Artifacts
@@ -74,6 +76,7 @@ jobs:
             apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
             apps/blobs/res/blobs.wasm
             apps/collaborative-editor/res/collaborative_editor.wasm
+            apps/nested-crdt-test/res/nested_crdt_test.wasm
           retention-days: 2
 
   test:
@@ -343,6 +346,35 @@ jobs:
           retention-days: 2
 
       # ============================================================================
+      # Run Merobox Tests - Nested CRDT (NEAR only)
+      # ============================================================================
+      - name: Run Nested CRDT Tests
+        if: matrix.protocol == 'near'
+        id: nested-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          echo "=========================================="
+          echo "Running Nested CRDT tests for NEAR"
+          echo "=========================================="
+
+          merobox bootstrap run \
+            e2e-tests-merobox/workflows/nested-crdt/near.yml \
+            --no-docker \
+            --binary-path target/debug/merod \
+            --verbose
+
+      - name: Upload Nested CRDT Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nested-near
+          path: e2e-tests-merobox/results/near-nested/
+          retention-days: 2
+
+      # ============================================================================
       # Upload Logs (Combined for all tests)
       # ============================================================================
       - name: Upload Test Logs
@@ -403,6 +435,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: collab-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Nested CRDT Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nested-*
           merge-multiple: false
           path: results/
 
@@ -640,6 +679,46 @@ jobs:
               total_steps=$(jq -r '.total_steps // 0' results/collab-near/summary.json)
               passed_steps=$(jq -r '.passed_steps // 0' results/collab-near/summary.json)
               failed_steps=$(jq -r '.failed_steps // 0' results/collab-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Nested CRDT Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🧩 Nested CRDT Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/nested-near" ]; then
+            if [ -f "results/nested-near/summary.json" ]; then
+              status=$(jq -r '.status' results/nested-near/summary.json)
+              duration=$(jq -r '.duration' results/nested-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/nested-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/nested-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/nested-near/summary.json)
               
               total_tests=$((total_tests + 1))
               
