@@ -11,6 +11,7 @@ use crate::collections::{
 use crate::env;
 use crate::merge::{clear_merge_registry, merge_root_state, register_crdt_merge};
 use borsh::{BorshDeserialize, BorshSerialize};
+use serial_test::serial;
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 struct TestApp {
@@ -27,6 +28,7 @@ impl Mergeable for TestApp {
 }
 
 #[test]
+#[serial]
 fn test_merge_via_registry() {
     env::reset_for_testing();
     clear_merge_registry(); // Clear any previous test registrations
@@ -102,6 +104,7 @@ fn test_merge_via_registry() {
 }
 
 #[test]
+#[serial]
 fn test_merge_with_nested_map() {
     env::reset_for_testing();
 
@@ -192,6 +195,7 @@ fn test_merge_with_nested_map() {
 }
 
 #[test]
+#[serial]
 fn test_merge_map_of_counters() {
     env::reset_for_testing();
 
@@ -264,6 +268,7 @@ fn test_merge_map_of_counters() {
 }
 
 #[test]
+#[serial]
 fn test_merge_map_of_lww_registers() {
     env::reset_for_testing();
 
@@ -333,6 +338,7 @@ fn test_merge_map_of_lww_registers() {
 }
 
 #[test]
+#[serial]
 fn test_merge_vector_of_counters() {
     env::reset_for_testing();
 
@@ -411,6 +417,7 @@ fn test_merge_vector_of_counters() {
 }
 
 #[test]
+#[serial]
 fn test_merge_map_of_sets() {
     env::reset_for_testing();
 
@@ -493,6 +500,7 @@ fn test_merge_map_of_sets() {
 /// Before fix: RGA.merge() was a NO-OP, causing permanent divergence
 /// After fix: RGA.merge() properly combines character sets from both nodes
 #[test]
+#[serial]
 fn test_merge_nested_document_with_rga() {
     env::reset_for_testing();
     clear_merge_registry(); // Clear any previous test registrations

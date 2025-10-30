@@ -53,11 +53,7 @@ pub struct Index<S: StorageAdaptor>(PhantomData<S>);
 
 impl<S: StorageAdaptor> Index<S> {
     /// Adds a child to a parent's collection.
-    pub(crate) fn add_child_to(
-        parent_id: Id,
-        collection: &str,
-        child: ChildInfo,
-    ) -> Result<(), StorageError> {
+    pub(crate) fn add_child_to(parent_id: Id, child: ChildInfo) -> Result<(), StorageError> {
         // Get or create parent index
         let mut parent_index = Self::get_index(parent_id)?.unwrap_or_else(|| EntityIndex {
             id: parent_id,
@@ -196,10 +192,7 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// Collection param is ignored - entity only has one collection.
     /// Kept in API for backwards compatibility.
-    pub(crate) fn get_children_of(
-        parent_id: Id,
-        _collection: &str,
-    ) -> Result<Vec<ChildInfo>, StorageError> {
+    pub(crate) fn get_children_of(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
         let index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
         Ok(index.children.unwrap_or_default())
@@ -249,7 +242,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// Checks if a collection has any children.
     ///
     /// Collection param ignored - just checks if entity has any children.
-    pub(crate) fn has_children(parent_id: Id, _collection: &str) -> Result<bool, StorageError> {
+    pub(crate) fn has_children(parent_id: Id) -> Result<bool, StorageError> {
         let parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
@@ -293,13 +286,9 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// Uses tombstone-based deletion. To move a child to a different parent,
     /// just add it to the new parent instead.
-    pub(crate) fn remove_child_from(
-        parent_id: Id,
-        collection: &str,
-        child_id: Id,
-    ) -> Result<(), StorageError> {
+    pub(crate) fn remove_child_from(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
         Self::delete_entity_and_create_tombstone(child_id)?;
-        Self::update_parent_after_child_removal(parent_id, collection, child_id)?;
+        Self::update_parent_after_child_removal(parent_id, child_id)?;
         Self::recalculate_ancestor_hashes_for(parent_id)?;
         Ok(())
     }
@@ -318,11 +307,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// Updates parent's children list and hash after child removal.
     ///
     /// Step 2 of deletion: Remove child from parent's index and recalculate hash.
-    fn update_parent_after_child_removal(
-        parent_id: Id,
-        collection: &str,
-        child_id: Id,
-    ) -> Result<(), StorageError> {
+    fn update_parent_after_child_removal(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
