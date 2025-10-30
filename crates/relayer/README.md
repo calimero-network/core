@@ -69,7 +69,7 @@ export RELAYER_LISTEN_URL="0.0.0.0:63529"
 export ENABLE_NEAR=true
 export NEAR_NETWORK="testnet"
 export NEAR_RPC_URL="https://rpc.testnet.near.org"
-export NEAR_CONTRACT_ID="calimero-context-config.testnet"
+export NEAR_CONTRACT_ID="v0-6.config.calimero-context.testnet"
 export NEAR_ACCOUNT_ID="<PUT_YOUR_ACCOUNT_ID_HERE>"
 export NEAR_PUBLIC_KEY="<PUT_YOUR_PUBLIC_KEY_HERE>"
 export NEAR_SECRET_KEY="<PUT_YOUR_SECRET_KEY_HERE>"
@@ -112,7 +112,7 @@ listen = "0.0.0.0:63529"
 [protocols.near]
 network = "testnet"
 rpc_url = "https://rpc.testnet.near.org"
-contract_id = "calimero-context-config.testnet"
+contract_id = "v0-6.config.calimero-context.testnet"
 
 [protocols.near.credentials]
 type = "near"
