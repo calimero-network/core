@@ -39,7 +39,7 @@ use crate::store::MainStorage;
 pub struct Counter<S: StorageAdaptor = MainStorage> {
     /// Maps executor_id (hex string) -> count
     #[borsh(bound(serialize = "", deserialize = ""))]
-    inner: UnorderedMap<String, u64, S>,
+    pub(crate) inner: UnorderedMap<String, u64, S>,
 }
 
 impl Counter<MainStorage> {
@@ -114,8 +114,9 @@ mod tests {
 
     #[test]
     fn test_counter_increment() {
+        crate::env::reset_for_testing();
         let mut counter = Root::new(|| Counter::new());
-        let executor_id = [1u8; 32];
+        let executor_id = [91u8; 32]; // Unique ID to avoid test contamination
 
         // Increment
         counter.increment_for(&executor_id).unwrap();
@@ -134,15 +135,17 @@ mod tests {
 
     #[test]
     fn test_counter_starts_at_zero() {
+        crate::env::reset_for_testing();
         let counter = Root::new(|| Counter::new());
         assert_eq!(counter.value().unwrap(), 0);
     }
 
     #[test]
     fn test_counter_multiple_executors() {
+        crate::env::reset_for_testing();
         let mut counter = Root::new(|| Counter::new());
-        let executor_a = [1u8; 32];
-        let executor_b = [2u8; 32];
+        let executor_a = [92u8; 32]; // Unique IDs to avoid test contamination
+        let executor_b = [93u8; 32];
 
         counter.increment_for(&executor_a).unwrap();
         counter.increment_for(&executor_a).unwrap();

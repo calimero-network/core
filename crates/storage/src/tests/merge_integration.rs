@@ -1,13 +1,15 @@
+#![allow(unused_results)] // Test code doesn't need to check all return values
 //! Integration test demonstrating automatic merge via registry
 //!
 //! These tests prove that the Mergeable trait + registry system works end-to-end
 //! without requiring Clone implementations.
 
 use crate::collections::{
-    Counter, LwwRegister, Mergeable, Root, UnorderedMap, UnorderedSet, Vector,
+    Counter, LwwRegister, Mergeable, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet,
+    Vector,
 };
 use crate::env;
-use crate::merge::{merge_root_state, register_crdt_merge};
+use crate::merge::{clear_merge_registry, merge_root_state, register_crdt_merge};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -27,18 +29,20 @@ impl Mergeable for TestApp {
 #[test]
 fn test_merge_via_registry() {
     env::reset_for_testing();
+    clear_merge_registry(); // Clear any previous test registrations
 
     // Register the type
     register_crdt_merge::<TestApp>();
 
-    // Create state on node 1
+    // Create state on node 1 with unique executor ID
+    env::set_executor_id([100; 32]);
     let mut state1 = Root::new(|| TestApp {
         counter: Counter::new(),
         metadata: UnorderedMap::new(),
     });
 
     state1.counter.increment().unwrap();
-    state1.counter.increment().unwrap(); // value = 2
+    state1.counter.increment().unwrap(); // value = 2 for executor [100; 32]
     state1
         .metadata
         .insert("key1".to_string(), "from_node1".to_string())
@@ -47,18 +51,21 @@ fn test_merge_via_registry() {
     // Serialize state1
     let bytes1 = borsh::to_vec(&*state1).unwrap();
 
-    // Create state on node 2 (simulated by deserializing and modifying)
-    let mut state2: TestApp = borsh::from_slice(&bytes1).unwrap();
+    // Create state on node 2 with different executor ID
+    env::set_executor_id([200; 32]);
+    let mut state2 = Root::new(|| TestApp {
+        counter: Counter::new(),
+        metadata: UnorderedMap::new(),
+    });
 
-    // Node 2 modifications
-    state2.counter.increment().unwrap(); // value = 3 (2 + 1)
+    state2.counter.increment().unwrap(); // value = 1 for executor [200; 32]
     state2
         .metadata
         .insert("key2".to_string(), "from_node2".to_string())
         .unwrap();
 
     // Serialize state2
-    let bytes2 = borsh::to_vec(&state2).unwrap();
+    let bytes2 = borsh::to_vec(&*state2).unwrap();
 
     // MERGE via registry (simulates sync)
     let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 200).unwrap();
@@ -474,4 +481,159 @@ fn test_merge_map_of_sets() {
     assert!(bob_final.contains(&"frontend".to_string()).unwrap());
 
     println!("✅ Map of Sets merge test PASSED - union semantics work!");
+}
+
+/// Regression test for RGA merge bug that caused divergence in collab editor
+///
+/// This test reproduces the exact scenario that was failing in production:
+/// - Map containing Documents with RGA content
+/// - Concurrent edits to the same document on different nodes
+/// - Root-level merge must correctly merge nested RGA content
+///
+/// Before fix: RGA.merge() was a NO-OP, causing permanent divergence
+/// After fix: RGA.merge() properly combines character sets from both nodes
+#[test]
+fn test_merge_nested_document_with_rga() {
+    env::reset_for_testing();
+    clear_merge_registry(); // Clear any previous test registrations
+
+    // Define Document structure matching the collab editor
+    #[derive(BorshSerialize, BorshDeserialize, Debug)]
+    struct Document {
+        content: ReplicatedGrowableArray,
+        edit_count: Counter,
+        metadata: UnorderedMap<String, String>,
+    }
+
+    impl Mergeable for Document {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.content.merge(&other.content)?;
+            self.edit_count.merge(&other.edit_count)?;
+            self.metadata.merge(&other.metadata)?;
+            Ok(())
+        }
+    }
+
+    #[derive(BorshSerialize, BorshDeserialize, Debug)]
+    struct CollabEditor {
+        documents: UnorderedMap<String, Document>,
+    }
+
+    impl Mergeable for CollabEditor {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.documents.merge(&other.documents)?;
+            Ok(())
+        }
+    }
+
+    register_crdt_merge::<CollabEditor>();
+
+    // Node 1: Create document with "Hello" (use unique executor [111; 32])
+    env::set_executor_id([111; 32]);
+    let mut editor1 = Root::new(|| CollabEditor {
+        documents: UnorderedMap::new(),
+    });
+
+    let mut doc1 = Document {
+        content: ReplicatedGrowableArray::new(),
+        edit_count: Counter::new(),
+        metadata: UnorderedMap::new(),
+    };
+    doc1.content.insert_str(0, "Hello").unwrap();
+    doc1.edit_count.increment().unwrap(); // Counter: {[111;32]: 1}
+    doc1.metadata
+        .insert("title".to_owned(), "My Doc".to_owned())
+        .unwrap();
+
+    editor1.documents.insert("doc-1".to_owned(), doc1).unwrap();
+
+    // Serialize state from node 1
+    let bytes1 = borsh::to_vec(&*editor1).unwrap();
+
+    // Node 2: Same document base, but add " World" (use unique executor [222; 32])
+    env::set_executor_id([222; 32]);
+    let mut editor2 = Root::new(|| CollabEditor {
+        documents: UnorderedMap::new(),
+    });
+
+    let mut doc2 = Document {
+        content: ReplicatedGrowableArray::new(),
+        edit_count: Counter::new(),
+        metadata: UnorderedMap::new(),
+    };
+    doc2.content.insert_str(0, "Hello").unwrap(); // Same base
+    doc2.content.insert_str(5, " World").unwrap(); // Concurrent edit
+    doc2.edit_count.increment().unwrap();
+    doc2.edit_count.increment().unwrap(); // 2 edits, Counter: {[222;32]: 2}
+    doc2.metadata
+        .insert("title".to_owned(), "My Doc".to_owned())
+        .unwrap();
+
+    editor2.documents.insert("doc-1".to_owned(), doc2).unwrap();
+
+    // Serialize state from node 2
+    let bytes2 = borsh::to_vec(&*editor2).unwrap();
+
+    // THIS IS THE CRITICAL MERGE that was failing!
+    // Before fix: RGA merge was NO-OP → states stayed different
+    // After fix: RGA merge combines character sets → convergence
+    // Note: Using same timestamp forces merge logic instead of LWW
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 100).unwrap();
+    let merged_state: CollabEditor = borsh::from_slice(&merged_bytes).unwrap();
+
+    // Verify merge results
+    let merged_doc = merged_state
+        .documents
+        .get(&"doc-1".to_owned())
+        .unwrap()
+        .unwrap();
+
+    // Edit counts should sum (Counter CRDT)
+    let merged_count = merged_doc.edit_count.value().unwrap();
+    println!("Forward merge edit_count: {}", merged_count);
+    assert_eq!(merged_count, 3); // 1 + 2
+
+    // Content should contain all characters from both RGAs
+    // Note: Both RGAs inserted "Hello" separately (5+5) + " World" (6) = 16 total
+    let len = merged_doc.content.len().unwrap();
+    println!("Forward merge content len: {}", len);
+    assert_eq!(
+        len, 16,
+        "Expected 16 chars (Hello + Hello +  World), got {}",
+        len
+    );
+
+    // Metadata should be present
+    assert_eq!(
+        merged_doc.metadata.get(&"title".to_owned()).unwrap(),
+        Some("My Doc".to_owned())
+    );
+
+    // Most importantly: both nodes should compute the SAME state
+    // Let's verify by doing reverse merge (node2 state + node1 state)
+    let reverse_bytes = merge_root_state(&bytes2, &bytes1, 100, 100).unwrap();
+    let reverse_state: CollabEditor = borsh::from_slice(&reverse_bytes).unwrap();
+
+    let reverse_doc = reverse_state
+        .documents
+        .get(&"doc-1".to_owned())
+        .unwrap()
+        .unwrap();
+
+    // CRITICAL: Both merge directions should produce identical state
+    let reverse_count = reverse_doc.edit_count.value().unwrap();
+    let reverse_len = reverse_doc.content.len().unwrap();
+    println!("Reverse merge edit_count: {}", reverse_count);
+    println!("Reverse merge content len: {}", reverse_len);
+
+    assert_eq!(
+        len, reverse_len,
+        "Merge is not commutative - this indicates divergence!"
+    );
+    assert_eq!(
+        merged_count, reverse_count,
+        "Counter merge is not commutative!"
+    );
+
+    println!("✅ Nested Document RGA merge test PASSED - no divergence!");
 }

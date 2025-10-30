@@ -61,7 +61,7 @@ impl CharId {
 
 /// Storage key for a character (owns serialized bytes for AsRef<[u8]>)
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CharKey {
+pub(crate) struct CharKey {
     id: CharId,
     bytes: Vec<u8>,
 }
@@ -110,7 +110,7 @@ impl From<CharId> for CharKey {
 
 /// A character in the RGA with ordering metadata
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-struct RgaChar {
+pub(crate) struct RgaChar {
     /// The actual character content (stored as u32 for Borsh compatibility)
     content: u32,
     /// ID of the character to the left (for RGA ordering)
@@ -137,7 +137,7 @@ impl RgaChar {
 pub struct ReplicatedGrowableArray<S: StorageAdaptor = MainStorage> {
     /// Characters stored by CharKey with ordering metadata
     #[borsh(bound(serialize = "", deserialize = ""))]
-    chars: UnorderedMap<CharKey, RgaChar, S>,
+    pub(crate) chars: UnorderedMap<CharKey, RgaChar, S>,
 }
 
 impl ReplicatedGrowableArray<MainStorage> {

@@ -41,7 +41,7 @@ pub use error::StoreError;
 
 // fixme! macro expects `calimero_storage` to be in deps
 use crate as calimero_storage;
-use crate::address::{Id, Path};
+use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element};
 use crate::interface::{Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
@@ -62,7 +62,10 @@ mod compat {
 
     use crate::entities::{ChildInfo, Collection, Data, Element};
 
-    /// Thing.
+    /// Handle for internal collection operations.
+    ///
+    /// Used by `Collection<T>` to manage its entries. This is an internal implementation
+    /// detail - entries are stored in a flat collection without nested structure.
     #[derive(Copy, Clone, Debug)]
     pub(super) struct RootHandle;
 
@@ -87,7 +90,7 @@ mod compat {
         type Child = RootChildDud;
 
         fn name(&self) -> &str {
-            "no collection, remove this nonsense"
+            "_entries"
         }
     }
 }
@@ -150,7 +153,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
         let mut this = Self {
             children_ids: RefCell::new(None),
-            storage: Element::new(&Path::new("::unused").expect("valid path"), Some(id)),
+            storage: Element::new(Some(id)),
             _priv: PhantomData,
         };
 
@@ -166,13 +169,11 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     /// Inserts an item into the collection.
     fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
-        let path = self.path();
-
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
             item,
-            storage: Element::new(&path, id),
+            storage: Element::new(id),
         };
 
         collection.insert(&mut entry)?;
@@ -453,14 +454,12 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Extend<(Option<Id>
 {
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn extend<I: IntoIterator<Item = (Option<Id>, T)>>(&mut self, iter: I) {
-        let path = self.path();
-
         let mut collection = CollectionMut::new(self);
 
         for (id, item) in iter {
             let mut entry = Entry {
                 item,
-                storage: Element::new(&path, id),
+                storage: Element::new(id),
             };
 
             collection

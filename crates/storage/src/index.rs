@@ -5,7 +5,7 @@
 mod tests;
 
 use core::marker::PhantomData;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
@@ -25,8 +25,12 @@ pub struct EntityIndex {
     /// Parent ID.
     parent_id: Option<Id>,
 
-    /// Children organized by collection name.
-    children: BTreeMap<String, Vec<ChildInfo>>,
+    /// Children list.
+    ///
+    /// Collection name not stored - entity can only have one collection,
+    /// so the name is redundant. API still accepts collection param for
+    /// backwards compatibility but it's ignored internally.
+    children: Option<Vec<ChildInfo>>,
 
     /// Full hash (entity + descendants).
     full_hash: [u8; 32],
@@ -54,11 +58,11 @@ impl<S: StorageAdaptor> Index<S> {
         collection: &str,
         child: ChildInfo,
     ) -> Result<(), StorageError> {
-        // Get or create parent index (might not exist after CRDT sync for nested collections)
+        // Get or create parent index
         let mut parent_index = Self::get_index(parent_id)?.unwrap_or_else(|| EntityIndex {
             id: parent_id,
             parent_id: None,
-            children: BTreeMap::new(),
+            children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: Metadata::default(),
@@ -69,7 +73,7 @@ impl<S: StorageAdaptor> Index<S> {
         let mut child_index = Self::get_index(child.id())?.unwrap_or_else(|| EntityIndex {
             id: child.id(),
             parent_id: None,
-            children: BTreeMap::new(),
+            children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: child.metadata,
@@ -78,15 +82,14 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.parent_id = Some(parent_id);
         child_index.own_hash = child.merkle_hash();
         child_index.full_hash =
-            Self::calculate_full_hash_from(child_index.own_hash, &child_index.children, false)?;
+            Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
         Self::save_index(&child_index)?;
 
-        let children = parent_index
-            .children
-            .entry(collection.to_owned())
-            .or_insert_with(Vec::new);
+        // Get or create the children list
+        // Collection name param is ignored - entity can only have one collection
+        let children_vec = parent_index.children.get_or_insert_with(Vec::new);
 
-        let mut ordered = children.drain(..).collect::<BTreeSet<_>>();
+        let mut ordered = children_vec.drain(..).collect::<BTreeSet<_>>();
 
         let _ignored = ordered.replace(ChildInfo::new(
             child.id(),
@@ -94,10 +97,10 @@ impl<S: StorageAdaptor> Index<S> {
             child.metadata,
         ));
 
-        children.extend(ordered.into_iter());
+        *children_vec = ordered.into_iter().collect();
 
         parent_index.full_hash =
-            Self::calculate_full_hash_from(parent_index.own_hash, &parent_index.children, false)?;
+            Self::calculate_full_hash_for_children(parent_index.own_hash, &parent_index.children)?;
         Self::save_index(&parent_index)?;
 
         Self::recalculate_ancestor_hashes_for(parent_id)?;
@@ -112,7 +115,7 @@ impl<S: StorageAdaptor> Index<S> {
         let mut index = Self::get_index(root.id())?.unwrap_or_else(|| EntityIndex {
             id: root.id(),
             parent_id: None,
-            children: BTreeMap::new(),
+            children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: root.metadata,
@@ -124,25 +127,16 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Calculates full Merkle hash from own hash and children.
-    ///
-    /// Combines entity's own hash with child hashes. More efficient than
-    /// `calculate_full_merkle_hash_for` when own_hash is already in memory.
-    fn calculate_full_hash_from(
+    fn calculate_full_hash_for_children(
         own_hash: [u8; 32],
-        children: &BTreeMap<String, Vec<ChildInfo>>,
-        recalculate: bool,
+        children: &Option<Vec<ChildInfo>>,
     ) -> Result<[u8; 32], StorageError> {
         let mut hasher = Sha256::new();
         hasher.update(own_hash);
 
-        for children_list in children.values() {
-            for child in children_list {
-                let child_hash = if recalculate {
-                    Self::calculate_full_merkle_hash_for(child.id(), true)?
-                } else {
-                    child.merkle_hash()
-                };
-                hasher.update(child_hash);
+        if let Some(children_vec) = children {
+            for child in children_vec {
+                hasher.update(child.merkle_hash());
             }
         }
 
@@ -150,15 +144,9 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Calculates full Merkle hash by loading from storage.
-    ///
-    /// Reads own_hash from index. Use `calculate_full_hash_from` when own_hash
-    /// is already in memory to avoid redundant DB reads.
-    pub(crate) fn calculate_full_merkle_hash_for(
-        id: Id,
-        recalculate: bool,
-    ) -> Result<[u8; 32], StorageError> {
+    pub(crate) fn calculate_full_merkle_hash_for(id: Id) -> Result<[u8; 32], StorageError> {
         let index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
-        Self::calculate_full_hash_from(index.own_hash, &index.children, recalculate)
+        Self::calculate_full_hash_for_children(index.own_hash, &index.children)
     }
 
     /// Returns ancestors from immediate parent to root.
@@ -205,25 +193,28 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Returns children from a specific collection.
+    ///
+    /// Collection param is ignored - entity only has one collection.
+    /// Kept in API for backwards compatibility.
     pub(crate) fn get_children_of(
         parent_id: Id,
-        collection: &str,
+        _collection: &str,
     ) -> Result<Vec<ChildInfo>, StorageError> {
-        Ok(Self::get_index(parent_id)?
-            .ok_or(StorageError::IndexNotFound(parent_id))?
-            .children
-            .get(collection)
-            .cloned()
-            .unwrap_or_default())
+        let index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+
+        Ok(index.children.unwrap_or_default())
     }
 
     /// Returns all collection names for an entity.
+    ///
+    /// Legacy function - always returns at most one name (or empty).
+    /// Kept for backwards compatibility with tree comparison logic.
     pub(crate) fn get_collection_names_for(parent_id: Id) -> Result<Vec<String>, StorageError> {
+        // Return a dummy name if children exist, for tree comparison
+        // The actual name doesn't matter since it's not stored
         Ok(Self::get_index(parent_id)?
-            .iter()
-            .flat_map(|e| e.children.keys())
-            .cloned()
-            .collect())
+            .and_then(|index| index.children.as_ref().map(|_| vec!["_".to_owned()]))
+            .unwrap_or_default())
     }
 
     /// Returns (full_hash, own_hash) tuple for an entity.
@@ -256,14 +247,16 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Checks if a collection has any children.
-    pub(crate) fn has_children(parent_id: Id, collection: &str) -> Result<bool, StorageError> {
+    ///
+    /// Collection param ignored - just checks if entity has any children.
+    pub(crate) fn has_children(parent_id: Id, _collection: &str) -> Result<bool, StorageError> {
         let parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
         Ok(parent_index
             .children
-            .get(collection)
-            .map_or(false, |children| !children.is_empty()))
+            .as_ref()
+            .map_or(false, |c| !c.is_empty()))
     }
 
     /// Recalculates ancestor hashes recursively up to root.
@@ -275,21 +268,19 @@ impl<S: StorageAdaptor> Index<S> {
                 Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
             // Update the child's hash in the parent's children list
-            for children in &mut parent_index.children.values_mut() {
+            if let Some(children) = &mut parent_index.children {
                 if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
-                    let new_child_hash = Self::calculate_full_merkle_hash_for(current_id, false)?;
+                    let new_child_hash = Self::calculate_full_merkle_hash_for(current_id)?;
                     if child.merkle_hash() != new_child_hash {
                         *child = ChildInfo::new(current_id, new_child_hash, child.metadata);
                     }
-                    break;
                 }
             }
 
             // Recalculate the parent's full hash
-            parent_index.full_hash = Self::calculate_full_hash_from(
+            parent_index.full_hash = Self::calculate_full_hash_for_children(
                 parent_index.own_hash,
                 &parent_index.children,
-                false,
             )?;
             Self::save_index(&parent_index)?;
             current_id = parent_id;
@@ -335,14 +326,18 @@ impl<S: StorageAdaptor> Index<S> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
-        // Remove child from collection
-        if let Some(children) = parent_index.children.get_mut(collection) {
+        // Remove child from collection (collection name ignored)
+        if let Some(children) = &mut parent_index.children {
             children.retain(|child| child.id() != child_id);
+            // Clear children if empty
+            if children.is_empty() {
+                parent_index.children = None;
+            }
         }
 
         // Recalculate parent's hash
         parent_index.full_hash =
-            Self::calculate_full_hash_from(parent_index.own_hash, &parent_index.children, false)?;
+            Self::calculate_full_hash_for_children(parent_index.own_hash, &parent_index.children)?;
         Self::save_index(&parent_index)?;
 
         Ok(())
@@ -373,7 +368,7 @@ impl<S: StorageAdaptor> Index<S> {
     ) -> Result<[u8; 32], StorageError> {
         let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
         index.own_hash = merkle_hash;
-        index.full_hash = Self::calculate_full_hash_from(index.own_hash, &index.children, false)?;
+        index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
         if let Some(updated_at) = updated_at {
             index.metadata.updated_at = updated_at;
         }

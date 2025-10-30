@@ -139,11 +139,8 @@ impl<S: StorageAdaptor> Interface<S> {
                         continue;
                     };
 
-                    <Index<S>>::add_child_to(
-                        parent.id(),
-                        "no collection, remove this nonsense",
-                        *this,
-                    )?;
+                    // Set up parent-child relationship in generic internal collection
+                    <Index<S>>::add_child_to(parent.id(), "_internal", *this)?;
                 }
 
                 // For new entities, create a minimal index entry first to avoid orphan errors
@@ -155,7 +152,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         let placeholder_hash = Sha256::digest(&data).into();
                         <Index<S>>::add_child_to(
                             parent.id(),
-                            "no collection, remove this nonsense",
+                            "_internal",
                             ChildInfo::new(id, placeholder_hash, metadata),
                         )?;
                     }
@@ -169,15 +166,14 @@ impl<S: StorageAdaptor> Interface<S> {
 
                 // ALWAYS update parent with correct hash after save (handles merging)
                 // save_internal calls update_hash_for which updates child_index.own_hash
-                // Then add_child_to reads from index and uses correct full_hash
                 if let Some(parent) = parent {
                     let (_, own_hash) =
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
-                    // Update parent with the actual hash after any merging
+                    // Update parent relationship with the actual hash after any merging
                     <Index<S>>::add_child_to(
                         parent.id(),
-                        "no collection, remove this nonsense",
+                        "_internal",
                         ChildInfo::new(id, own_hash, metadata),
                     )?;
                 }

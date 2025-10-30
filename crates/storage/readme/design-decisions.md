@@ -494,6 +494,67 @@ This document exists so future maintainers understand our choices.
 
 ---
 
+## Decision 11: Single Collection Per Entity
+
+### The Design
+
+**Each entity stores at most one children list:**
+
+```rust
+pub struct EntityIndex {
+    id: Id,
+    parent_id: Option<Id>,
+    children: Option<Vec<ChildInfo>>,  // Simple list, no names
+    full_hash: [u8; 32],
+    own_hash: [u8; 32],
+    //...
+}
+```
+
+### Why This Works
+
+In production, entities have exactly one type of children:
+
+```rust
+// Library collections store their entries:
+UnorderedMap → has children (map entries)
+Vector → has children (vector elements)  
+Counter → has children (per-node counts)
+
+// App state stores its CRDTs:
+MyApp → has children (the root-level collections)
+
+// Nested structures:
+MyApp.documents (Map) → has children (document entries)
+Document.metadata (Map) → has children (metadata entries)
+```
+
+Each entity has ONE collection of children. No entity ever has both "paragraphs" AND "images" as child types.
+
+### API Design
+
+**Collection parameter exists but is ignored:**
+
+```rust
+// User code:
+add_child_to(parent_id, &paragraphs_collection, &child)
+get_children_of(parent_id, &paragraphs_collection)
+
+// Internally:
+// - "paragraphs" param ignored
+// - Just add/get from the single children list
+// - Kept for API backwards compatibility
+```
+
+### Benefits
+
+- **Storage**: Minimal overhead (~1 byte for Option discriminant)
+- **Performance**: Direct Vec access, no BTreeMap lookups
+- **Correctness**: Matches actual production usage patterns
+- **Simplicity**: No collection name bookkeeping
+
+---
+
 ## Future Decisions
 
 See [TODO.md](../../../TODO.md) for upcoming design decisions:
