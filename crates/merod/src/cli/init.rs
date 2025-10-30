@@ -64,7 +64,7 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
     ProtocolConfig {
         name: "near",
         default_network: "testnet",
-        default_contract: "calimero-context-config.testnet",
+        default_contract: "v0-6.config.calimero-context.testnet",
         signer_type: ClientSelectedSigner::Relayer,
         networks: &[
             ("mainnet", "https://rpc.mainnet.near.org"),

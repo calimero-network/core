@@ -48,7 +48,7 @@ The relayer supports the following environment variables:
 #### Near Protocol
 - `NEAR_NETWORK`: Network name (default: `testnet`)
 - `NEAR_RPC_URL`: RPC endpoint (default: `https://rpc.testnet.near.org`)
-- `NEAR_CONTRACT_ID`: Contract address (default: `calimero-context-config.testnet`)
+- `NEAR_CONTRACT_ID`: Contract address (default: `v0-6.config.calimero-context.testnet`)
 - `NEAR_ACCOUNT_ID`: Account ID (custom credentials)
 - `NEAR_PUBLIC_KEY`: Public key (custom credentials)
 - `NEAR_SECRET_KEY`: Secret key (custom credentials)
@@ -341,7 +341,7 @@ curl -X POST http://localhost:63529/ \
   -d '{
     "protocol": "near",
     "network_id": "testnet", 
-    "contract_id": "calimero-context-config.testnet",
+    "contract_id": "v0-6.config.calimero-context.testnet",
     "operation": "Read",
     "payload": "{\"method_name\":\"get_context_ids\"}"
   }'
