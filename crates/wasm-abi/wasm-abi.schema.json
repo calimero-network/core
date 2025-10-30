@@ -27,6 +27,10 @@
       "items": {
         "$ref": "#/definitions/Event"
       }
+    },
+    "state_root": {
+      "type": "string",
+      "description": "Name of the type that represents the application state"
     }
   },
   "definitions": {

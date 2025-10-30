@@ -454,6 +454,15 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
         }
     }
 
+    // Also collect types from event payloads
+    for item in &file.items {
+        if let Item::Enum(item_enum) = item {
+            if item_enum.ident == "Event" {
+                emitter.collect_types_from_enum_variants(item_enum, &mut referenced_types);
+            }
+        }
+    }
+
     // Second pass: iteratively collect all transitively referenced types
     let mut changed = true;
     while changed {
