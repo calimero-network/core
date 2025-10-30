@@ -35,8 +35,9 @@ usage() {
     echo "                             - near-init (KV Store with init() - NEAR only)"
     echo "                             - near-handlers (KV Store with Handlers - NEAR only)"
     echo "                             - near-blobs (Blob API - NEAR only)"
+    echo "                             - near-collab (Collaborative Editor - NEAR only)"
     echo "                             - near-proposals, icp-proposals, ethereum-proposals"
-    echo "                             - all (runs all tests: KV Store + Init + Handlers + Blobs + Proposals)"
+    echo "                             - all (runs all tests: 10 suites)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
     echo "  -b, --build                Build merod and meroctl binaries before testing"
@@ -50,8 +51,9 @@ usage() {
     echo "  $0 --protocol near-init --build --build-apps   # Run NEAR KV Store Init tests"
     echo "  $0 --protocol near-handlers --build --build-apps  # Run NEAR Handlers tests"
     echo "  $0 --protocol near-blobs --build --build-apps  # Run NEAR Blob API tests"
+    echo "  $0 --protocol near-collab --build --build-apps # Run NEAR Collaborative Editor tests"
     echo "  $0 --protocol icp --check-devnets --build      # Check ICP devnet and test"
-    echo "  $0 --protocol all --build --build-apps         # Build and test all (9 suites)"
+    echo "  $0 --protocol all --build --build-apps         # Build and test all (10 suites)"
     echo "  $0 --workflow path/to/custom.yml               # Run custom workflow"
     echo ""
     echo "Devnet Setup (run separately before testing):"
@@ -222,6 +224,7 @@ if [ "$BUILD_APPS" = true ]; then
     chmod +x ./apps/kv-store-init/build.sh
     chmod +x ./apps/kv-store-with-handlers/build.sh
     chmod +x ./apps/blobs/build.sh
+    chmod +x ./apps/collaborative-editor/build.sh
     
     if ./apps/kv-store/build.sh; then
         echo -e "${GREEN}✓ KV store app built successfully${NC}"
@@ -248,6 +251,13 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${GREEN}✓ Blobs app built successfully${NC}"
     else
         echo -e "${RED}Error: Failed to build blobs app${NC}"
+        exit 1
+    fi
+    
+    if ./apps/collaborative-editor/build.sh; then
+        echo -e "${GREEN}✓ Collaborative editor app built successfully${NC}"
+    else
+        echo -e "${RED}Error: Failed to build collaborative-editor app${NC}"
         exit 1
     fi
     echo ""
@@ -500,6 +510,12 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/near.yml" "near-blobs"
             FAILED=$?
             ;;
+        near-collab)
+            echo -e "${YELLOW}Running NEAR Collaborative Editor test...${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/collaborative-editor/near.yml" "near-collab"
+            FAILED=$?
+            ;;
         near-proposals)
             echo -e "${YELLOW}Running NEAR proposals comprehensive test...${NC}"
             echo ""
@@ -572,6 +588,15 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/near.yml" "near-blobs"
             NEAR_BLOBS_RESULT=$?
             
+            # === Collaborative Editor Tests ===
+            echo ""
+            echo -e "${BLUE}━━━ Collaborative Editor Tests ━━━${NC}"
+            echo ""
+            
+            # Run NEAR Collaborative Editor (doesn't need devnet)
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/collaborative-editor/near.yml" "near-collab"
+            NEAR_COLLAB_RESULT=$?
+            
             # === Proposals Tests ===
             echo ""
             echo -e "${BLUE}━━━ Proposals Tests ━━━${NC}"
@@ -599,7 +624,7 @@ else
                 ETH_PROP_RESULT=0
             fi
             
-            FAILED=$((NEAR_KV_RESULT + NEAR_KV_INIT_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
+            FAILED=$((NEAR_KV_RESULT + NEAR_KV_INIT_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_COLLAB_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
             ;;
         "")
             echo -e "${RED}Error: Protocol not specified${NC}"
