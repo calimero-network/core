@@ -2,7 +2,7 @@ name: "Team Metrics - NEAR"
 description: "Team Metrics test on NEAR protocol - verifies #[derive(Mergeable)] macro for nested struct CRDT merging"
 
 # Use --no-docker mode with native merod processes
-
+no_docker: true
 force_pull_image: false
 
 nodes:
