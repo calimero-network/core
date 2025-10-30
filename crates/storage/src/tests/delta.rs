@@ -8,7 +8,7 @@
 //! - Action recording
 
 use super::common::{Page, Paragraph};
-use crate::address::{Id, Path};
+use crate::address::Id;
 use crate::delta::{
     commit_causal_delta, get_current_heads, push_action, set_current_heads, CausalDelta,
 };

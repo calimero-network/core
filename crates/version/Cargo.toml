@@ -1,6 +1,6 @@
 [package]
 name = "calimero-version"
-version = "0.10.0-rc.10"
+version = "0.10.0-rc.12"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true

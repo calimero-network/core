@@ -91,6 +91,7 @@ pub async fn handle_state_delta(
         parents: parent_ids,
         payload: actions, // Note: renamed from 'actions' to 'payload'
         hlc,
+        expected_root_hash: *root_hash,
     };
 
     // Get our identity for applying deltas
@@ -408,6 +409,7 @@ async fn request_missing_deltas(
                     parents: storage_delta.parents,
                     payload: storage_delta.actions,
                     hlc: storage_delta.hlc,
+                    expected_root_hash: storage_delta.expected_root_hash,
                 };
 
                 if let Err(e) = delta_store.add_delta(dag_delta).await {

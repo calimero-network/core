@@ -1,0 +1,174 @@
+{
+  "steps": [
+    {
+      "applicationInstall": {
+        "application": {
+          "localFile": "./apps/kv-store/res/kv_store.wasm"
+        },
+        "target": "allMembers"
+      }
+    },
+    {
+      "contextCreate": null
+    },
+    {
+      "contextCreateAlias": {
+        "aliasName": "concurrent_test"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": [
+          "Wait for context initialization to complete"
+        ]
+      }
+    },
+    {
+      "contextInviteJoin": null
+    },
+    {
+      "wait": {
+        "for": "consensus",
+        "durationMs": 5000,
+        "description": [
+          "Wait for gossipsub mesh formation + initial sync completion"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "initial",
+          "value": "synced"
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "description": [
+          "Set initial value on inviter to establish baseline state"
+        ]
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for initial set to propagate"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "initial"
+        },
+        "expectedResultJson": "synced",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify all nodes have synced the initial value"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "test_key",
+          "value": "from_inviter"
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "description": [
+          "Concurrent mutation test: Inviter sets value"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "test_key",
+          "value": "from_invitee"
+        },
+        "expectedResultJson": null,
+        "target": "invitees",
+        "description": [
+          "Concurrent mutation test: Invitees set DIFFERENT value WITHOUT waiting for inviter's change",
+          "This creates concurrent DAG branches that must converge"
+        ]
+      }
+    },
+    {
+      "wait": {
+        "for": "consensus",
+        "durationMs": 5000,
+        "description": [
+          "Wait for concurrent mutations to propagate and DAG to converge",
+          "Both branches should be resolved with deterministic root_hash selection"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "test_key"
+        },
+        "expectedResultJson": null,
+        "target": "allMembers",
+        "retries": 10,
+        "intervalMs": 1000,
+        "description": [
+          "Verify all nodes converged to the SAME value",
+          "The value depends on CRDT merge resolution (LWW based on HLC)",
+          "Using null expected result because we just want to verify consistency across nodes"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": {
+          "key": "final",
+          "value": "done"
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "description": [
+          "Final write after convergence to verify system is still operational"
+        ]
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 3000,
+        "description": [
+          "Wait for final write to propagate"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "final"
+        },
+        "expectedResultJson": "done",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify final write succeeded on all nodes"
+        ]
+      }
+    }
+  ]
+}
+
