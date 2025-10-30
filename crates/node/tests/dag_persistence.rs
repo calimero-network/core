@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_dag::{CausalDelta, DagStats};
+use calimero_dag::CausalDelta;
 use calimero_storage::action::Action;
 
 /// Serializable DAG state for persistence

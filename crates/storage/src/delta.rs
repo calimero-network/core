@@ -47,6 +47,14 @@ pub struct CausalDelta {
     /// - Causal ordering across deltas (logical clock)
     /// - Wall-clock semantics (physical time embedded in NTP64)
     pub hlc: HybridTimestamp,
+
+    /// Expected root hash after applying this delta.
+    ///
+    /// This ensures deterministic DAG structure across nodes even when
+    /// WASM execution produces different root hashes due to non-determinism.
+    /// During sync, receiving nodes MUST use this hash rather than their
+    /// computed hash to maintain DAG consistency.
+    pub expected_root_hash: [u8; 32],
 }
 
 impl CausalDelta {
@@ -254,6 +262,7 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
             parents,
             actions,
             hlc,
+            expected_root_hash: *root_hash,
         };
 
         // Update heads - this delta is now the new head
