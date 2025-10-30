@@ -46,8 +46,6 @@ pub enum AuthError {
     TokenGenerationFailed(String),
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
-    #[error("Rate limit exceeded: {0}")]
-    RateLimitExceeded(String),
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 }

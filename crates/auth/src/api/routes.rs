@@ -19,7 +19,7 @@ use crate::api::handlers::{
     asset_handler, health_handler, identity_handler, metrics_handler, providers_handler,
 };
 use crate::auth::middleware::auth_middleware;
-use crate::auth::security::{create_body_limit_layer, create_security_headers, RateLimitLayer};
+use crate::auth::security::{create_body_limit_layer, create_security_headers};
 use crate::config::AuthConfig;
 use crate::server::AppState;
 
@@ -118,10 +118,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         }
     }
 
-    // 3. Add rate limiting
-    router = router.layer(RateLimitLayer::new(config.security.rate_limit.clone()));
-
-    // 4. Add body size limiting (innermost)
+    // 3. Add body size limiting (innermost)
     router = router.layer(create_body_limit_layer(config.security.max_body_size));
 
     router
