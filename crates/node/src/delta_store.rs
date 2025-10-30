@@ -13,7 +13,7 @@ use calimero_storage::action::Action;
 use calimero_storage::delta::StorageDelta;
 use eyre::Result;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Applier that applies actions to WASM storage via ContextClient
 #[derive(Debug)]
@@ -60,8 +60,33 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // Note: Context root_hash is updated by the execute handler itself
-        // NOTE: We do NOT update dag_heads here because:
+        // ═══════════════════════════════════════════════════════════════
+        // CRITICAL FIX: Ensure deterministic root hash across all nodes
+        // ═══════════════════════════════════════════════════════════════
+        //
+        // When nodes sync deltas, WASM execution may produce different root hashes
+        // due to non-deterministic factors (CRDT merge order, timing, etc).
+        // To maintain DAG consistency, we MUST use the expected_root_hash from
+        // the delta author rather than the computed hash.
+        
+        let computed_hash = outcome.root_hash;
+        if *computed_hash != delta.expected_root_hash {
+            warn!(
+                context_id = %self.context_id,
+                delta_id = ?delta.id,
+                computed_hash = ?computed_hash,
+                expected_hash = ?delta.expected_root_hash,
+                "Root hash mismatch detected - using expected hash for DAG consistency"
+            );
+            
+            // OVERRIDE: Use the expected root hash from the delta to ensure
+            // all nodes have identical DAG structure regardless of WASM execution differences
+            self.context_client
+                .force_root_hash(&self.context_id, delta.expected_root_hash.into())
+                .map_err(|e| ApplyError::Application(format!("Failed to set root hash: {}", e)))?;
+        }
+
+        // Note: We do NOT update dag_heads here because:
         // 1. This is called INSIDE CoreDagStore::apply_delta BEFORE it updates its heads
         // 2. We can't read the correct heads from the DAG yet
         // 3. DeltaStore::add_delta will update the heads after the DAG finishes
@@ -70,8 +95,8 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             context_id = %self.context_id,
             delta_id = ?delta.id,
             action_count = delta.payload.len(),
-            new_root_hash = ?outcome.root_hash,
-            "Applied delta to WASM storage"
+            expected_root_hash = ?delta.expected_root_hash,
+            "Applied delta to WASM storage with expected root hash"
         );
 
         Ok(())

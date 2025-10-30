@@ -699,6 +699,7 @@ async fn internal_execute(
                 parents,
                 actions,
                 hlc,
+                expected_root_hash: root_hash,
             };
 
             // Update context's DAG heads to this new delta
@@ -753,6 +754,7 @@ async fn internal_execute(
                     actions: serialized_actions,
                     hlc: delta.hlc,
                     applied: true,
+                    expected_root_hash: delta.expected_root_hash,
                 },
             )?;
 

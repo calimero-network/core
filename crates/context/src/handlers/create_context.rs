@@ -312,6 +312,7 @@ async fn create_context(
                     actions: serialized_actions,
                     hlc,
                     applied: true,
+                    expected_root_hash: root_hash,
                 };
 
                 debug!(

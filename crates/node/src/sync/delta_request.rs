@@ -53,6 +53,7 @@ impl SyncManager {
                         parents: parent_delta.parents,
                         payload: parent_delta.actions,
                         hlc: parent_delta.hlc,
+                        expected_root_hash: parent_delta.expected_root_hash,
                     };
 
                     if let Err(e) = delta_store.add_delta(dag_delta).await {
@@ -176,6 +177,7 @@ impl SyncManager {
                 parents: stored_delta.parents,
                 actions,
                 hlc: stored_delta.hlc,
+                expected_root_hash: stored_delta.expected_root_hash,
             };
 
             let serialized = borsh::to_vec(&causal_delta)?;
@@ -200,6 +202,7 @@ impl SyncManager {
                     parents: dag_delta.parents,
                     actions: dag_delta.payload,
                     hlc: dag_delta.hlc,
+                    expected_root_hash: dag_delta.expected_root_hash,
                 };
 
                 let serialized = borsh::to_vec(&causal_delta)?;
