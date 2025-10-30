@@ -71,11 +71,11 @@ fn deserialize_type_def(
                 cursor
                     .read_exact(&mut bytes)
                     .wrap_err("Failed to read fixed-size bytes")?;
-                Ok(json!(hex::encode(bytes)))
+                Ok(json!(String::from_utf8_lossy(&bytes)))
             } else {
                 let bytes = Vec::<u8>::deserialize_reader(cursor)
                     .wrap_err("Failed to deserialize bytes")?;
-                Ok(json!(hex::encode(bytes)))
+                Ok(json!(String::from_utf8_lossy(&bytes)))
             }
         }
         TypeDef::Alias { target } => deserialize_type_ref(cursor, target, manifest),
@@ -141,11 +141,11 @@ fn deserialize_scalar(cursor: &mut Cursor<&[u8]>, scalar_type: &ScalarType) -> R
                 cursor
                     .read_exact(&mut bytes)
                     .wrap_err("Failed to read fixed-size bytes")?;
-                Ok(json!(hex::encode(bytes)))
+                Ok(json!(String::from_utf8_lossy(&bytes)))
             } else {
                 let bytes = Vec::<u8>::deserialize_reader(cursor)
                     .wrap_err("Failed to deserialize bytes")?;
-                Ok(json!(hex::encode(bytes)))
+                Ok(json!(String::from_utf8_lossy(&bytes)))
             }
         }
         ScalarType::Unit => Ok(json!(null)),

@@ -143,17 +143,17 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
     Ok(json!({
         "field": field.name.clone(),
         "element": {
-            "id": hex::encode(element_id),
+            "id": String::from_utf8_lossy(&element_id),
             "path": path
         },
         "key": {
             "parsed": key_value,
-            "raw_hex": hex::encode(key_raw),
+            "raw": String::from_utf8_lossy(&key_raw),
             "type": type_ref_label(&field.key_type)
         },
         "value": {
             "parsed": value_value,
-            "raw_hex": hex::encode(value_raw),
+            "raw": String::from_utf8_lossy(&value_raw),
             "type": type_ref_label(&field.value_type)
         }
     }))
@@ -178,7 +178,7 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
             }
 
             Ok(json!({
-                "raw_hex": hex::encode(value),
+                "raw": String::from_utf8_lossy(value),
                 "size": value.len(),
                 "note": "Unable to decode with ABI"
             }))
@@ -192,11 +192,11 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                         let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                         return Ok(json!({
                             "type": "context_dag_delta",
-                            "delta_id": hex::encode(delta.delta_id),
-                            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                            "delta_id": String::from_utf8_lossy(&delta.delta_id),
+                            "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
                             "actions": {
                                 "parsed": parsed,
-                                "raw_hex": hex::encode(&delta.actions)
+                                "raw": String::from_utf8_lossy(&delta.actions)
                             },
                             "timestamp": timestamp_raw,
                             "hlc": hlc_json,
@@ -208,10 +208,10 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                 let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                 return Ok(json!({
                     "type": "context_dag_delta",
-                    "delta_id": hex::encode(delta.delta_id),
-                    "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                    "delta_id": String::from_utf8_lossy(&delta.delta_id),
+                    "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
                     "actions": {
-                        "raw_hex": hex::encode(&delta.actions),
+                        "raw": String::from_utf8_lossy(&delta.actions),
                         "note": "Unable to decode actions with ABI"
                     },
                     "timestamp": timestamp_raw,
@@ -221,7 +221,7 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
             }
 
             Ok(json!({
-                "raw_hex": hex::encode(value),
+                "raw": String::from_utf8_lossy(value),
                 "size": value.len(),
                 "note": "Unable to decode with ABI"
             }))

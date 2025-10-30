@@ -117,7 +117,7 @@ fn validate_column(
             result.invalid_entries = result.invalid_entries.saturating_add(1);
             result.errors.push(ValidationError {
                 column: cf_name.to_owned(),
-                key_hex: hex::encode(&key),
+                key_hex: String::from_utf8_lossy(&key).to_string(),
                 error_type: ErrorType::InvalidKeySize,
                 message: format!(
                     "Expected key size {expected_key_size} bytes, found {} bytes",
@@ -134,7 +134,7 @@ fn validate_column(
                     result.invalid_entries = result.invalid_entries.saturating_add(1);
                     result.errors.push(ValidationError {
                         column: cf_name.to_owned(),
-                        key_hex: hex::encode(&key),
+                        key_hex: String::from_utf8_lossy(&key).to_string(),
                         error_type: ErrorType::UnexpectedData,
                         message: format!("Key parsing reported error: {key_json}"),
                     });
@@ -145,7 +145,7 @@ fn validate_column(
                 result.invalid_entries = result.invalid_entries.saturating_add(1);
                 result.errors.push(ValidationError {
                     column: cf_name.to_owned(),
-                    key_hex: hex::encode(&key),
+                    key_hex: String::from_utf8_lossy(&key).to_string(),
                     error_type: ErrorType::DeserializationError,
                     message: format!("Failed to parse key: {e}"),
                 });
@@ -160,7 +160,7 @@ fn validate_column(
                     result.invalid_entries = result.invalid_entries.saturating_add(1);
                     result.errors.push(ValidationError {
                         column: cf_name.to_owned(),
-                        key_hex: hex::encode(&key),
+                        key_hex: String::from_utf8_lossy(&key).to_string(),
                         error_type: ErrorType::DeserializationError,
                         message: format!("Value parsing reported error: {value_json}"),
                     });
@@ -171,7 +171,7 @@ fn validate_column(
                 result.invalid_entries = result.invalid_entries.saturating_add(1);
                 result.errors.push(ValidationError {
                     column: cf_name.to_owned(),
-                    key_hex: hex::encode(&key),
+                    key_hex: String::from_utf8_lossy(&key).to_string(),
                     error_type: ErrorType::DeserializationError,
                     message: format!("Failed to parse value: {e}"),
                 });

@@ -122,7 +122,7 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
                     "error": "Invalid key size",
                     "expected": 32,
                     "actual": key.len(),
-                    "hex": hex::encode(key)
+                    "raw": String::from_utf8_lossy(key)
                 }));
             }
             Ok(json!({
@@ -135,12 +135,12 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
                     "error": "Invalid key size",
                     "expected": 64,
                     "actual": key.len(),
-                    "hex": hex::encode(key)
+                    "raw": String::from_utf8_lossy(key)
                 }));
             }
             Ok(json!({
-                "context_id": String::from_utf8_lossy(&key[0..32]).to_string(),
-                "public_key": hex::encode(&key[32..64])
+                "context_id": hex::encode(&key[0..32]),
+                "public_key": String::from_utf8_lossy(&key[32..64])
             }))
         }
         Column::State => {
@@ -149,11 +149,11 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
                     "error": "Invalid key size",
                     "expected": 64,
                     "actual": key.len(),
-                    "hex": hex::encode(key)
+                    "raw": String::from_utf8_lossy(key)
                 }));
             }
             Ok(json!({
-                "context_id": String::from_utf8_lossy(&key[0..32]).to_string(),
+                "context_id": hex::encode(&key[0..32]),
                 "state_key": hex::encode(&key[32..64])
             }))
         }
@@ -163,7 +163,7 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
                     "error": "Invalid key size",
                     "expected": 83,
                     "actual": key.len(),
-                    "hex": hex::encode(key)
+                    "raw": String::from_utf8_lossy(key)
                 }));
             }
             let kind = match key[0] {
@@ -178,7 +178,7 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
                 .to_owned();
             Ok(json!({
                 "kind": kind,
-                "scope": hex::encode(&key[1..33]),
+                "scope": String::from_utf8_lossy(&key[1..33]),
                 "name": name
             }))
         }
@@ -189,19 +189,19 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
             match key.len() {
                 48 => Ok(json!({
                     "type": "generic",
-                    "scope": hex::encode(&key[0..16]),
-                    "fragment": hex::encode(&key[16..48])
+                    "scope": String::from_utf8_lossy(&key[0..16]),
+                    "fragment": String::from_utf8_lossy(&key[16..48])
                 })),
                 64 => Ok(json!({
                     "type": "context_dag_delta",
-                    "context_id": String::from_utf8_lossy(&key[0..32]).to_string(),
-                    "delta_id": hex::encode(&key[32..64])
+                    "context_id": hex::encode(&key[0..32]),
+                    "delta_id": String::from_utf8_lossy(&key[32..64])
                 })),
                 _ => Ok(json!({
                     "error": "Invalid key size",
                     "expected": "48 (generic) or 64 (context_dag_delta)",
                     "actual": key.len(),
-                    "hex": hex::encode(key)
+                    "raw": String::from_utf8_lossy(key)
                 })),
             }
         }
@@ -215,7 +215,7 @@ pub fn parse_value(column: Column, value: &[u8]) -> Result<Value> {
         Column::Config => parse_context_config(value),
         Column::Identity => parse_context_identity(value),
         Column::State => Ok(json!({
-            "hex": hex::encode(value),
+            "raw": String::from_utf8_lossy(value),
             "size": value.len()
         })),
         Column::Blobs => parse_blob_meta(value),
@@ -230,13 +230,13 @@ pub fn parse_value(column: Column, value: &[u8]) -> Result<Value> {
 fn parse_context_meta(data: &[u8]) -> Result<Value> {
     match StoreContextMeta::try_from_slice(data) {
         Ok(meta) => Ok(json!({
-            "application_id": hex::encode(*meta.application.application_id()),
-            "root_hash": hex::encode(meta.root_hash),
-            "dag_heads": meta.dag_heads.iter().map(hex::encode).collect::<Vec<_>>()
+            "application_id": String::from_utf8_lossy(meta.application.application_id().as_ref()),
+            "root_hash": String::from_utf8_lossy(&meta.root_hash),
+            "dag_heads": meta.dag_heads.iter().map(|h| String::from_utf8_lossy(h).to_string()).collect::<Vec<_>>()
         })),
         Err(e) => Ok(json!({
             "error": format!("Failed to parse ContextMeta: {e}"),
-            "hex": hex::encode(data)
+            "raw": String::from_utf8_lossy(data)
         })),
     }
 }
@@ -253,7 +253,7 @@ fn parse_context_config(data: &[u8]) -> Result<Value> {
         })),
         Err(e) => Ok(json!({
             "error": format!("Failed to parse ContextConfig: {e}"),
-            "hex": hex::encode(data)
+            "raw": String::from_utf8_lossy(data)
         })),
     }
 }
@@ -263,16 +263,16 @@ fn parse_context_identity(data: &[u8]) -> Result<Value> {
         Ok(identity) => {
             let mut result = serde_json::Map::new();
             if let Some(private_key) = identity.private_key {
-                drop(result.insert("private_key".to_owned(), json!(hex::encode(private_key))));
+                drop(result.insert("private_key".to_owned(), json!(String::from_utf8_lossy(&private_key))));
             }
             if let Some(sender_key) = identity.sender_key {
-                drop(result.insert("sender_key".to_owned(), json!(hex::encode(sender_key))));
+                drop(result.insert("sender_key".to_owned(), json!(String::from_utf8_lossy(&sender_key))));
             }
             Ok(json!(result))
         }
         Err(e) => Ok(json!({
             "error": format!("Failed to parse ContextIdentity: {e}"),
-            "hex": hex::encode(data)
+            "raw": String::from_utf8_lossy(data)
         })),
     }
 }
@@ -281,12 +281,12 @@ fn parse_blob_meta(data: &[u8]) -> Result<Value> {
     match StoreBlobMeta::try_from_slice(data) {
         Ok(meta) => Ok(json!({
             "size": meta.size,
-            "hash": hex::encode(meta.hash),
+            "hash": String::from_utf8_lossy(&meta.hash),
             "links_count": meta.links.len()
         })),
         Err(e) => Ok(json!({
             "error": format!("Failed to parse BlobMeta: {e}"),
-            "hex": hex::encode(data)
+            "raw": String::from_utf8_lossy(data)
         })),
     }
 }
@@ -294,17 +294,17 @@ fn parse_blob_meta(data: &[u8]) -> Result<Value> {
 fn parse_application_meta(data: &[u8]) -> Result<Value> {
     match StoreApplicationMeta::try_from_slice(data) {
         Ok(meta) => Ok(json!({
-            "bytecode": hex::encode(*meta.bytecode.blob_id()),
+            "bytecode": String::from_utf8_lossy(meta.bytecode.blob_id().as_ref()),
             "size": meta.size,
             "source": meta.source.as_ref(),
-            "metadata": hex::encode(&meta.metadata),
-            "compiled": hex::encode(*meta.compiled.blob_id()),
+            "metadata": String::from_utf8_lossy(&meta.metadata),
+            "compiled": String::from_utf8_lossy(meta.compiled.blob_id().as_ref()),
             "package": meta.package.as_ref(),
             "version": meta.version.as_ref()
         })),
         Err(e) => Ok(json!({
             "error": format!("Failed to parse ApplicationMeta: {e}"),
-            "hex": hex::encode(data)
+            "raw": String::from_utf8_lossy(data)
         })),
     }
 }
@@ -312,14 +312,14 @@ fn parse_application_meta(data: &[u8]) -> Result<Value> {
 fn parse_alias_target(data: &[u8]) -> Result<Value> {
     if data.len() == 32 {
         Ok(json!({
-            "hash": hex::encode(data)
+            "hash": String::from_utf8_lossy(data)
         }))
     } else {
         Ok(json!({
             "error": "Invalid alias hash size",
             "expected": 32,
             "actual": data.len(),
-            "hex": hex::encode(data)
+            "raw": String::from_utf8_lossy(data)
         }))
     }
 }
@@ -331,8 +331,8 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
             let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
             Ok(json!({
                 "type": "context_dag_delta",
-                "delta_id": hex::encode(delta.delta_id),
-                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                "delta_id": String::from_utf8_lossy(&delta.delta_id),
+                "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,
@@ -343,7 +343,7 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
             // Fall back to raw bytes for generic values
             Ok(json!({
                 "type": "generic",
-                "hex": hex::encode(data),
+                "raw": String::from_utf8_lossy(data),
                 "size": data.len()
             }))
         }
