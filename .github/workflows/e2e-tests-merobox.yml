@@ -64,6 +64,7 @@ jobs:
           ./apps/collaborative-editor/build.sh
           ./apps/nested-crdt-test/build.sh
           ./apps/team-metrics-macro/build.sh
+          echo "Note: concurrent-mutations uses kv_store.wasm (already built)"
           cargo build -p meroctl -p merod
 
       - name: Upload Build Artifacts
@@ -407,6 +408,35 @@ jobs:
           retention-days: 2
 
       # ============================================================================
+      # Run Merobox Tests - Concurrent Mutations (NEAR only)
+      # ============================================================================
+      - name: Run Concurrent Mutations Tests
+        if: matrix.protocol == 'near'
+        id: concurrent-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          echo "=========================================="
+          echo "Running Concurrent Mutations tests for NEAR"
+          echo "=========================================="
+
+          merobox bootstrap run \
+            e2e-tests-merobox/workflows/concurrent-mutations/near.yml \
+            --no-docker \
+            --binary-path target/debug/merod \
+            --verbose
+
+      - name: Upload Concurrent Mutations Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: concurrent-near
+          path: e2e-tests-merobox/results/near-concurrent/
+          retention-days: 2
+
+      # ============================================================================
       # Upload Logs (Combined for all tests)
       # ============================================================================
       - name: Upload Test Logs
@@ -481,6 +511,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: metrics-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Concurrent Mutations Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: concurrent-*
           merge-multiple: false
           path: results/
 
@@ -798,6 +835,46 @@ jobs:
               total_steps=$(jq -r '.total_steps // 0' results/metrics-near/summary.json)
               passed_steps=$(jq -r '.passed_steps // 0' results/metrics-near/summary.json)
               failed_steps=$(jq -r '.failed_steps // 0' results/metrics-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Concurrent Mutations Tests Section (NEAR only)
+          # ============================================================================
+          echo "## ⚡ Concurrent Mutations Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/concurrent-near" ]; then
+            if [ -f "results/concurrent-near/summary.json" ]; then
+              status=$(jq -r '.status' results/concurrent-near/summary.json)
+              duration=$(jq -r '.duration' results/concurrent-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/concurrent-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/concurrent-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/concurrent-near/summary.json)
               
               total_tests=$((total_tests + 1))
               

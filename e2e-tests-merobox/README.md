@@ -22,6 +22,8 @@ e2e-tests-merobox/
 │   │   ├── near.yml        # NEAR protocol (nested CRDT compositions)
 │   ├── team-metrics/       # Team Metrics workflows
 │   │   └── near.yml        # NEAR protocol (#[derive(Mergeable)] testing)
+│   ├── concurrent-mutations/ # Concurrent Mutations workflows
+│   │   └── near.yml        # NEAR protocol (DAG convergence testing)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -61,6 +63,7 @@ cargo build -p merod -p meroctl
 ./apps/collaborative-editor/build.sh
 ./apps/nested-crdt-test/build.sh
 ./apps/team-metrics-macro/build.sh
+# Note: concurrent-mutations uses kv-store app (already built above)
 ```
 
 ### Run Tests Locally
@@ -87,16 +90,17 @@ cargo build -p merod -p meroctl
 # Run Ethereum tests (with devnet check)
 ./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
 
-# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Team Metrics + Proposals)
+# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Team Metrics + Concurrent Mutations + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 12 test suites:
+# Note: This runs 13 test suites:
 # - KV Store: near, near-init, icp (if dfx running), ethereum (if anvil running)
 # - Handlers: near-handlers
 # - Blob API: near-blobs
 # - Collaborative Editor: near-collab
 # - Nested CRDT: near-nested
 # - Team Metrics: near-metrics
+# - Concurrent Mutations: near-concurrent
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 
 # Run KV Store with Handlers test (NEAR only)
@@ -113,6 +117,9 @@ cargo build -p merod -p meroctl
 
 # Run Team Metrics test (NEAR only)
 ./e2e-tests-merobox/run-local.sh --protocol near-metrics --build --build-apps
+
+# Run Concurrent Mutations test (NEAR only)
+./e2e-tests-merobox/run-local.sh --protocol near-concurrent --build --build-apps
 
 # Run custom workflow
 ./e2e-tests-merobox/run-local.sh --workflow path/to/custom.yml
@@ -380,6 +387,7 @@ The CI workflow uploads:
 | **Collaborative Editor**   | NEAR                | ~50   | Implemented |
 | **Nested CRDT**            | NEAR                | ~80   | Implemented |
 | **Team Metrics**           | NEAR                | ~45   | Implemented |
+| **Concurrent Mutations**   | NEAR                | ~35   | Implemented |
 | **Proposals**              | NEAR, ICP, Ethereum | 70+   | Implemented |
 
 ### Planned Tests
@@ -390,6 +398,7 @@ The CI workflow uploads:
 - Collaborative Editor (ICP, Ethereum)
 - Nested CRDT (ICP, Ethereum)
 - Team Metrics (ICP, Ethereum)
+- Concurrent Mutations (ICP, Ethereum)
 - Open Invitations (NEAR, ICP, Ethereum) - requires merobox support
 - External State Verification (all protocols)
 
