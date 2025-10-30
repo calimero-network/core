@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -87,7 +88,8 @@ pub enum ConformanceError {
     NotFound(String),
 }
 
-// Events - now just a regular enum, no macro
+// Events
+#[app::event]
 #[derive(Debug)]
 pub enum Event {
     Ping,
@@ -97,7 +99,8 @@ pub enum Event {
     ActionTaken(Action),
 }
 
-// State - now just a regular struct, no macro
+// State
+#[app::state(emits = Event)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
@@ -105,16 +108,10 @@ pub struct AbiState {
     users: Vec<UserId32>,            // list<UserId32>
 }
 
-// Expose AbiState as a public type for ABI
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(crate = "calimero_sdk::serde")]
-pub struct AbiStateExposed {
-    counters: BTreeMap<String, u32>, // map<string,u32>
-    users: Vec<UserId32>,            // list<UserId32>
-}
-
-// Implementation - now just a regular impl, no macro
+// Implementation
+#[app::logic]
 impl AbiState {
+    #[app::init]
     #[must_use]
     pub const fn init() -> Self {
         Self {
@@ -285,7 +282,7 @@ impl AbiState {
 
     // Test case: public method that calls a private method
     #[must_use]
-    pub fn public_with_private_helper(value: u32) -> u32 {
+    pub const fn public_with_private_helper(value: u32) -> u32 {
         Self::private_helper(value)
     }
 
