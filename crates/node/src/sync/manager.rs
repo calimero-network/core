@@ -638,6 +638,7 @@ impl SyncManager {
                                 parents: storage_delta.parents,
                                 payload: storage_delta.actions,
                                 hlc: storage_delta.hlc,
+                                expected_root_hash: storage_delta.expected_root_hash,
                             };
 
                             // Get or create DeltaStore for this context

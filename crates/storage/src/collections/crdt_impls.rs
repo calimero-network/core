@@ -114,15 +114,26 @@ impl CrdtMeta for Counter {
 
 impl Mergeable for Counter {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        // Counter merge: sum the values
-        let other_value = other.value().map_err(|e| {
-            MergeError::StorageError(format!("Failed to get counter value: {:?}", e))
-        })?;
+        // Counter is a G-Counter: Map<executor_id, count>
+        // For each executor in other, take the max of their counts
+        for (executor_id, other_count) in other.inner.entries().map_err(|e| {
+            MergeError::StorageError(format!("Failed to get counter entries: {:?}", e))
+        })? {
+            let self_count = self
+                .inner
+                .get(&executor_id)
+                .map_err(|e| {
+                    MergeError::StorageError(format!("Failed to get counter value: {:?}", e))
+                })?
+                .unwrap_or(0);
 
-        // Increment by other's value
-        for _ in 0..other_value {
-            self.increment()
-                .map_err(|e| MergeError::StorageError(format!("Failed to increment: {:?}", e)))?;
+            // Take max for this executor (G-Counter property: monotonic)
+            let new_count = self_count.max(other_count);
+            if new_count > self_count {
+                drop(self.inner.insert(executor_id, new_count).map_err(|e| {
+                    MergeError::StorageError(format!("Failed to insert counter value: {:?}", e))
+                })?);
+            }
         }
         Ok(())
     }
@@ -150,9 +161,29 @@ impl CrdtMeta for ReplicatedGrowableArray {
 
 impl Mergeable for ReplicatedGrowableArray {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        let _ = other; // RGA merge is handled at the storage layer through tombstone preservation
-                       // The UnorderedMap inside RGA already handles the merge
-                       // This is a no-op at this level
+        // RGA is built on UnorderedMap which has element-level DAG synchronization.
+        // During root-level merge (e.g., periodic full state sync or conflict resolution),
+        // we need to merge the RGA contents by ensuring both nodes have all characters.
+        //
+        // We can't use `chars.merge()` because RgaChar doesn't implement Mergeable
+        // (it's a simple data struct, not a CRDT). Instead, we copy all characters
+        // from `other` that we don't have yet.
+        let other_chars = other
+            .chars
+            .entries()
+            .map_err(|e| MergeError::StorageError(format!("Failed to get RGA chars: {:?}", e)))?;
+
+        for (key, char_data) in other_chars {
+            if self.chars.get(&key).ok().flatten().is_none() {
+                // Character exists in other but not in self - add it
+                drop(self.chars.insert(key, char_data).map_err(|e| {
+                    MergeError::StorageError(format!("Failed to insert char: {:?}", e))
+                })?);
+            }
+            // If character exists in both, keep ours (they should be identical anyway,
+            // since characters are immutable once inserted)
+        }
+
         Ok(())
     }
 }
@@ -428,16 +459,21 @@ mod tests {
     fn test_counter_merge() {
         env::reset_for_testing();
 
+        // Node 1 increments twice
+        env::set_executor_id([11; 32]);
         let mut c1 = Counter::new();
         c1.increment().unwrap();
         c1.increment().unwrap();
 
+        // Node 2 increments once
+        env::set_executor_id([22; 32]);
         let mut c2 = Counter::new();
         c2.increment().unwrap();
 
+        // Merge: should have both executors' counts
         c1.merge(&c2).unwrap();
 
-        // Should sum: 2 + 1 = 3
+        // Should sum: {[1;32]: 2} + {[2;32]: 1} = 3
         assert_eq!(c1.value().unwrap(), 3);
     }
 
@@ -461,7 +497,8 @@ mod tests {
     fn test_vector_merge_same_length() {
         env::reset_for_testing();
 
-        // Create two vectors with counters
+        // vec1 = [Counter(2), Counter(1)] - Node 1 creates these
+        env::set_executor_id([33; 32]);
         let mut vec1 = Vector::new();
         let mut c1 = Counter::new();
         c1.increment().unwrap();
@@ -472,7 +509,8 @@ mod tests {
         c2.increment().unwrap(); // value = 1
         vec1.push(c2).unwrap();
 
-        // Create second vector
+        // vec2 = [Counter(1), Counter(3)] - Node 2 creates these
+        env::set_executor_id([44; 32]);
         let mut vec2 = Vector::new();
         let mut c3 = Counter::new();
         c3.increment().unwrap(); // value = 1
@@ -497,14 +535,16 @@ mod tests {
     fn test_vector_merge_different_length() {
         env::reset_for_testing();
 
-        // vec1 = [Counter(2)]
+        // vec1 = [Counter(2)] - Node 1
+        env::set_executor_id([55; 32]);
         let mut vec1 = Vector::new();
         let mut c1 = Counter::new();
         c1.increment().unwrap();
         c1.increment().unwrap();
         vec1.push(c1).unwrap();
 
-        // vec2 = [Counter(3), Counter(5), Counter(7)]
+        // vec2 = [Counter(3), Counter(5), Counter(7)] - Node 2
+        env::set_executor_id([66; 32]);
         let mut vec2 = Vector::new();
         let mut c2 = Counter::new();
         c2.increment().unwrap();
@@ -532,6 +572,78 @@ mod tests {
         assert_eq!(vec1.get(0).unwrap().unwrap().value().unwrap(), 5); // 2 + 3
         assert_eq!(vec1.get(1).unwrap().unwrap().value().unwrap(), 5); // Added from vec2
         assert_eq!(vec1.get(2).unwrap().unwrap().value().unwrap(), 7); // Added from vec2
+    }
+
+    #[test]
+    fn test_rga_merge_disjoint_characters() {
+        env::reset_for_testing();
+
+        // Create two RGAs with different content
+        let mut rga1 = ReplicatedGrowableArray::new();
+        rga1.insert_str(0, "Hello").unwrap();
+
+        let mut rga2 = ReplicatedGrowableArray::new();
+        rga2.insert_str(0, "World").unwrap();
+
+        // Merge rga2 into rga1
+        rga1.merge(&rga2).unwrap();
+
+        // After merge, rga1 should contain all characters from both
+        let text = rga1.get_text().unwrap();
+        // The exact order depends on RGA's causal ordering, but all chars should be present
+        assert!(text.contains('H') || text.contains('W'));
+        assert_eq!(rga1.len().unwrap(), 10); // "Hello" (5) + "World" (5)
+    }
+
+    #[test]
+    fn test_rga_merge_overlapping_edits() {
+        env::reset_for_testing();
+
+        // NOTE: This test demonstrates RGA merge behavior
+        // When both RGAs insert "Base" independently, they create separate
+        // character sets (different IDs). Merge unions all characters.
+
+        let mut rga1 = ReplicatedGrowableArray::new();
+        rga1.insert_str(0, "Base").unwrap();
+        rga1.insert_str(4, " Text1").unwrap();
+
+        let mut rga2 = ReplicatedGrowableArray::new();
+        rga2.insert_str(0, "Base").unwrap(); // Different characters (different timestamps)
+        rga2.insert_str(4, " Text2").unwrap();
+
+        // Merge: Union of all characters from both RGAs
+        rga1.merge(&rga2).unwrap();
+
+        // Result: All characters from both (including duplicate "Base" chars)
+        let len = rga1.len().unwrap();
+        assert_eq!(len, 20); // "Base" (4) + " Text1" (6) + "Base" (4) + " Text2" (6)
+    }
+
+    #[test]
+    fn test_rga_merge_with_deletions() {
+        env::reset_for_testing();
+
+        // RGA 1: Insert then delete
+        let mut rga1 = ReplicatedGrowableArray::new();
+        rga1.insert_str(0, "HelloWorld").unwrap();
+        rga1.delete_range(5, 10).unwrap(); // Delete "World" → visible text: "Hello"
+
+        // RGA 2: Different "HelloWorld" (different character IDs)
+        let mut rga2 = ReplicatedGrowableArray::new();
+        rga2.insert_str(0, "HelloWorld").unwrap();
+
+        // Merge: Union adds rga2's characters to rga1
+        // rga1 has: "Hello" (visible) + "World" (deleted/tombstones)
+        // rga2 has: "HelloWorld" (all visible)
+        // After merge: rga1 gets rga2's "HelloWorld" characters too
+
+        let len_before = rga1.get_text().unwrap().len(); // "Hello" = 5
+        rga1.merge(&rga2).unwrap();
+        let len_after = rga1.get_text().unwrap().len(); // "Hello" + "HelloWorld" = 15
+
+        // We now have characters from both RGAs
+        assert_eq!(len_before, 5); // Just "Hello" before
+        assert_eq!(len_after, 15); // "Hello" + "HelloWorld" after
     }
 
     #[test]

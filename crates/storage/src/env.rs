@@ -107,6 +107,12 @@ pub fn reset_for_testing() {
     imp::reset_for_testing();
 }
 
+/// Set executor ID for testing purposes
+#[cfg(test)]
+pub fn set_executor_id(id: [u8; 32]) {
+    imp::set_executor_id(id);
+}
+
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
     use std::cell::RefCell;
@@ -268,9 +274,19 @@ mod mocked {
         [236; 32]
     }
 
+    thread_local! {
+        static EXECUTOR_ID: std::cell::Cell<[u8; 32]> = const { std::cell::Cell::new([237; 32]) };
+    }
+
     /// Return the executor id (for testing, returns a fixed value).
-    pub(super) const fn executor_id() -> [u8; 32] {
-        [237; 32]
+    pub(super) fn executor_id() -> [u8; 32] {
+        EXECUTOR_ID.with(|id| id.get())
+    }
+
+    /// Set executor ID for testing purposes
+    #[cfg(test)]
+    pub(super) fn set_executor_id(new_id: [u8; 32]) {
+        EXECUTOR_ID.with(|id| id.set(new_id));
     }
 
     /// Gets the current time.
@@ -301,8 +317,8 @@ mod mocked {
 
     /// Resets the environment state for testing.
     ///
-    /// Clears the thread-local ROOT_HASH and HLC, allowing multiple commits
-    /// in the same test execution context.
+    /// Clears the thread-local ROOT_HASH, HLC, and STORAGE, allowing multiple tests
+    /// to run in sequence without contaminating each other.
     #[cfg(test)]
     pub(super) fn reset_for_testing() {
         ROOT_HASH.with(|rh| {
@@ -310,6 +326,12 @@ mod mocked {
         });
         NATIVE_HLC.with(|hlc| {
             *hlc.borrow_mut() = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        });
+        // Reset executor ID to default
+        EXECUTOR_ID.with(|id| id.set([237; 32]));
+        // Clear the mock storage to prevent test contamination
+        crate::store::mocked::STORAGE.with(|storage| {
+            storage.borrow_mut().clear();
         });
     }
 }

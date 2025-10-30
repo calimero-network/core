@@ -27,6 +27,7 @@ rand.workspace = true
 [dev-dependencies]
 claims.workspace = true
 hex.workspace = true
+serial_test.workspace = true
 velcro.workspace = true
 
 calimero-sdk.workspace = true

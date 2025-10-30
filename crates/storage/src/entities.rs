@@ -19,7 +19,7 @@ use std::ops::{Deref, DerefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::address::{Id, Path};
+use crate::address::Id;
 use crate::env::time_now;
 
 /// Marker trait for atomic, persistable entities.
@@ -71,9 +71,6 @@ pub trait AtomicUnit: Data {}
 pub trait Collection {
     /// Child type.
     type Child: Data;
-
-    /// Collection name for indexing.
-    fn name(&self) -> &str;
 }
 
 /// Base trait for storable user data. Requires an associated [`Element`].
@@ -91,12 +88,6 @@ pub trait Data: BorshDeserialize + BorshSerialize {
     #[must_use]
     fn id(&self) -> Id {
         self.element().id()
-    }
-
-    /// Hierarchical path (delegates to element).
-    #[must_use]
-    fn path(&self) -> Path {
-        self.element().path()
     }
 }
 
@@ -170,7 +161,7 @@ impl Display for ChildInfo {
     }
 }
 
-/// Storage metadata for entities (ID, path, timestamps, dirty flag, Merkle hash).
+/// Storage metadata for entities (ID, timestamps, dirty flag, Merkle hash).
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Element {
@@ -181,13 +172,12 @@ pub struct Element {
     pub(crate) merkle_hash: [u8; 32],
     #[borsh(skip)]
     pub(crate) metadata: Metadata,
-    path: Path,
 }
 
 impl Element {
     /// Creates a new element (marked dirty, empty hash until saved).
     #[must_use]
-    pub fn new(path: &Path, id: Option<Id>) -> Self {
+    pub fn new(id: Option<Id>) -> Self {
         let timestamp = time_now();
         let element_id = id.unwrap_or_else(Id::random);
         Self {
@@ -198,13 +188,11 @@ impl Element {
                 updated_at: timestamp.into(),
             },
             merkle_hash: [0; 32],
-            path: path.clone(),
         }
     }
 
     /// Creates the root element.
     #[must_use]
-    #[expect(clippy::missing_panics_doc, reason = "This is expected to be valid")]
     pub fn root() -> Self {
         let timestamp = time_now();
         Self {
@@ -215,8 +203,6 @@ impl Element {
                 updated_at: timestamp.into(),
             },
             merkle_hash: [0; 32],
-            #[expect(clippy::unwrap_used, reason = "This is expected to be valid")]
-            path: Path::new("::root").unwrap(),
         }
     }
 
@@ -248,12 +234,6 @@ impl Element {
     #[must_use]
     pub const fn metadata(&self) -> &Metadata {
         &self.metadata
-    }
-
-    /// Returns the entity path.
-    #[must_use]
-    pub fn path(&self) -> Path {
-        self.path.clone()
     }
 
     /// Marks dirty and updates timestamp.
@@ -295,7 +275,7 @@ impl Element {
 
 impl Display for Element {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "Element {}: {}", self.id, self.path)
+        write!(f, "Element {}", self.id)
     }
 }
 
