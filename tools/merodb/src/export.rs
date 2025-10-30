@@ -1,6 +1,6 @@
 use borsh::BorshDeserialize;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
-use calimero_wasm_abi::schema::{CollectionType, Manifest, TypeDef, TypeRef};
+use calimero_wasm_abi::schema::{CollectionType, Field, Manifest, TypeDef, TypeRef};
 use core::convert::TryFrom;
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
@@ -159,19 +159,9 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
     }))
 }
 
-fn decode_state_entry(value: &[u8], manifest: &Manifest) -> Option<Value> {
+fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
     // Try to decode as EntityIndex first (these are smaller, metadata-only)
-    // EntityIndex structure:
-    // - id: Id (32 bytes)
-    // - parent_id: Option<Id> (1 byte discriminant + maybe 32 bytes)
-    // - children: Option<Vec<ChildInfo>>
-    // - full_hash: [u8; 32]
-    // - own_hash: [u8; 32]
-    // - metadata: Metadata
-    // - deleted_at: Option<u64>
-
-    // Try to decode as EntityIndex - this will tell us if it's an Index entry
-    if let Ok(index) = borsh::from_slice::<EntityIndex>(value) {
+    if let Ok(index) = borsh::from_slice::<EntityIndex>(bytes) {
         return Some(json!({
             "type": "EntityIndex",
             "id": String::from_utf8_lossy(index.id.as_bytes()),
@@ -185,19 +175,84 @@ fn decode_state_entry(value: &[u8], manifest: &Manifest) -> Option<Value> {
         }));
     }
 
-    // Try to decode as map entry (Entry<(K, V)>)
-    let fields = map_fields(manifest);
-    if fields.is_empty() {
-        return None;
+    // Check if it's just a raw ID (32 bytes)
+    if bytes.len() == 32 {
+        if let Ok(id) = borsh::from_slice::<Id>(bytes) {
+            return Some(json!({
+                "type": "RawId",
+                "id": String::from_utf8_lossy(id.as_bytes()),
+                "note": "Direct ID storage (possibly root collection reference or internal metadata)"
+            }));
+        }
     }
 
-    for field in fields {
-        if let Ok(decoded) = decode_map_entry(value, &field, manifest) {
+    // Get all fields from the state root
+    let Some(root_name) = manifest.state_root.as_ref() else {
+        return None;
+    };
+    let Some(TypeDef::Record { fields: record_fields }) = manifest.types.get(root_name) else {
+        return None;
+    };
+
+    // Try to decode as map entry (Entry<(K, V)>)
+    for field in record_fields {
+        if let TypeRef::Collection(CollectionType::Map { key, value }) = &field.type_ {
+            let map_field = MapField {
+                name: field.name.clone(),
+                key_type: (**key).clone(),
+                value_type: (**value).clone(),
+            };
+            if let Ok(decoded) = decode_map_entry(bytes, &map_field, manifest) {
+                return Some(decoded);
+            }
+        }
+    }
+
+    // Try to decode as scalar entry (Entry<T> where T is a scalar/enum/reference)
+    for field in record_fields {
+        // Skip map fields (already tried above)
+        if matches!(&field.type_, TypeRef::Collection(CollectionType::Map { .. })) {
+            continue;
+        }
+
+        if let Ok(decoded) = decode_scalar_entry(bytes, field, manifest) {
             return Some(decoded);
         }
     }
 
     None
+}
+
+fn decode_scalar_entry(bytes: &[u8], field: &Field, manifest: &Manifest) -> Result<Value> {
+    let mut cursor = Cursor::new(bytes);
+
+    // Deserialize the value (not a tuple, just the value itself)
+    let value_parsed = deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.type_, manifest)?;
+    let value_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
+    let value_raw = bytes[..value_end].to_vec();
+
+    // Read the Element ID
+    let mut element_id = [0_u8; 32];
+    cursor
+        .read_exact(&mut element_id)
+        .wrap_err("Failed to read entry element id")?;
+
+    if cursor.position() != bytes.len() as u64 {
+        eyre::bail!("Entry bytes not fully consumed");
+    }
+
+    Ok(json!({
+        "type": "ScalarEntry",
+        "field": field.name.clone(),
+        "element": {
+            "id": String::from_utf8_lossy(&element_id)
+        },
+        "value": {
+            "parsed": value_parsed,
+            "raw": String::from_utf8_lossy(&value_raw),
+            "type": type_ref_label(&field.type_)
+        }
+    }))
 }
 
 // EntityIndex structure for decoding
