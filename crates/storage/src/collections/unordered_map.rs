@@ -310,7 +310,7 @@ mod tests {
         let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
-            .insert("key".to_string(), "value".to_string())
+            .insert("key".to_owned(), "value".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -324,13 +324,13 @@ mod tests {
         );
 
         assert_eq!(
-            map.insert("key".to_string(), "value2".to_string())
+            map.insert("key".to_owned(), "value2".to_owned())
                 .expect("insert failed")
                 .as_deref(),
             Some("value")
         );
         assert!(map
-            .insert("key2".to_string(), "value".to_string())
+            .insert("key2".to_owned(), "value".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -359,11 +359,11 @@ mod tests {
         let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
-            .insert("key1".to_string(), "value1".to_string())
+            .insert("key1".to_owned(), "value1".to_owned())
             .expect("insert failed")
             .is_none());
         assert!(map
-            .insert("key2".to_string(), "value2".to_string())
+            .insert("key2".to_owned(), "value2".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -382,11 +382,11 @@ mod tests {
         let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
-            .insert("key".to_string(), "value".to_string())
+            .insert("key".to_owned(), "value".to_owned())
             .expect("insert failed")
             .is_none());
         assert!(!map
-            .insert("key".to_string(), "new_value".to_string())
+            .insert("key".to_owned(), "new_value".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -401,7 +401,7 @@ mod tests {
         let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
-            .insert("key".to_string(), "value".to_string())
+            .insert("key".to_owned(), "value".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -417,11 +417,11 @@ mod tests {
         let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
-            .insert("key1".to_string(), "value1".to_string())
+            .insert("key1".to_owned(), "value1".to_owned())
             .expect("insert failed")
             .is_none());
         assert!(map
-            .insert("key2".to_string(), "value2".to_string())
+            .insert("key2".to_owned(), "value2".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -438,15 +438,15 @@ mod tests {
         assert_eq!(map.len().expect("len failed"), 0);
 
         assert!(map
-            .insert("key1".to_string(), "value1".to_string())
+            .insert("key1".to_owned(), "value1".to_owned())
             .expect("insert failed")
             .is_none());
         assert!(map
-            .insert("key2".to_string(), "value2".to_string())
+            .insert("key2".to_owned(), "value2".to_owned())
             .expect("insert failed")
             .is_none());
         assert!(!map
-            .insert("key2".to_string(), "value3".to_string())
+            .insert("key2".to_owned(), "value3".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -465,7 +465,7 @@ mod tests {
         let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
-            .insert("key".to_string(), "value".to_string())
+            .insert("key".to_owned(), "value".to_owned())
             .expect("insert failed")
             .is_none());
 
@@ -478,22 +478,22 @@ mod tests {
         let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
-            .insert("key1".to_string(), "value1".to_string())
+            .insert("key1".to_owned(), "value1".to_owned())
             .expect("insert failed")
             .is_none());
         assert!(map
-            .insert("key2".to_string(), "value2".to_string())
+            .insert("key2".to_owned(), "value2".to_owned())
             .expect("insert failed")
             .is_none());
         assert!(!map
-            .insert("key2".to_string(), "value3".to_string())
+            .insert("key2".to_owned(), "value3".to_owned())
             .expect("insert failed")
             .is_none());
 
         let entries: Vec<(String, String)> = map.entries().expect("entries failed").collect();
 
         assert_eq!(entries.len(), 2);
-        assert!(entries.contains(&("key1".to_string(), "value1".to_string())));
-        assert!(entries.contains(&("key2".to_string(), "value3".to_string())));
+        assert!(entries.contains(&("key1".to_owned(), "value1".to_owned())));
+        assert!(entries.contains(&("key2".to_owned(), "value3".to_owned())));
     }
 }

@@ -101,6 +101,44 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
+// Implement Mergeable for FileRecord
+//
+// **Why is this needed?**
+// The auto-generated merge for FileShareState includes:
+//   self.files.merge(&other.files)?;
+//
+// UnorderedMap::merge() requires V: Mergeable, so FileRecord must implement it.
+//
+// **When is this actually called?**
+// - NOT on different files (DAG handles via element IDs)
+// - NOT on sequential updates (HLC provides ordering)
+// - ONLY on concurrent updates to the SAME file key (rare!)
+//
+// **What does it do?**
+// Simple LWW based on uploaded_at timestamp. For file uploads, this is correct
+// since uploads are atomic (you upload the whole file, not partial updates).
+//
+// **Could we avoid this?**
+// Yes! If FileShareState used proper CRDT types for root fields:
+//   owner: LwwRegister<String> instead of String
+//   file_counter: Counter instead of u64
+// Then this Mergeable impl wouldn't be needed at all - DAG would handle everything!
+//
+// See: crates/storage/DAG_VS_MERGE.md for full explanation
+impl calimero_storage::collections::Mergeable for FileRecord {
+    fn merge(
+        &mut self,
+        other: &Self,
+    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
+        // Simple LWW: take the version with later uploaded_at timestamp
+        // This is correct for file uploads (atomic operations)
+        if other.uploaded_at > self.uploaded_at {
+            *self = other.clone();
+        }
+        Ok(())
+    }
+}
+
 /// Application state for the file sharing system
 #[app::state(emits = FileShareEvent)]
 #[derive(BorshDeserialize, BorshSerialize)]
