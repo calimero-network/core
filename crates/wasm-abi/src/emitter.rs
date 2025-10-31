@@ -432,6 +432,16 @@ impl<'ast> Visit<'ast> for AbiEmitter {
 }
 
 /// Emit ABI manifest from multiple source files (lib.rs + modules)
+///
+/// # Requirements
+/// - The `sources` slice must include a file named "lib.rs" which contains the main
+///   implementation with `#[app::state]` and public methods. Method processing only
+///   happens on lib.rs.
+/// - Additional module files can be included to resolve types defined in separate modules.
+/// - The order of files in the slice doesn't matter - lib.rs is found by name.
+///
+/// # Errors
+/// Returns an error if lib.rs is not found in the sources or if parsing fails.
 pub fn emit_manifest_from_crate(
     sources: &[(String, String)],
 ) -> Result<Manifest, Box<dyn error::Error>> {
@@ -571,11 +581,16 @@ pub fn emit_manifest_from_crate(
     }
 
     // Fourth pass: process methods (after all types are defined) - only from lib.rs
-    if let Some(lib_file) = files.first() {
-        for item in &lib_file.items {
-            if let Item::Impl(item_impl) = item {
-                emitter.visit_item_impl(item_impl);
-            }
+    // Find lib.rs explicitly by name to avoid silent failures if files are in wrong order
+    let lib_index = sources
+        .iter()
+        .position(|(name, _)| name == "lib.rs")
+        .ok_or("lib.rs not found in sources - ABI generation requires lib.rs as the main implementation file")?;
+
+    let lib_file = &files[lib_index];
+    for item in &lib_file.items {
+        if let Item::Impl(item_impl) = item {
+            emitter.visit_item_impl(item_impl);
         }
     }
 
