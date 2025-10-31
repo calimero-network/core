@@ -630,6 +630,260 @@ impl UserManager {
 
 ---
 
+## Primitive Types (String, u64, bool, etc.)
+
+**Use case:** Simple values in structs, when timestamp-based resolution isn't critical
+
+### What Are Primitives?
+
+Primitive types include: `String`, `u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i64`, `i128`, `bool`, `char`
+
+### API
+
+Primitives work directly in your structs:
+
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: String,        // Primitive - simple LWW
+    age: u64,            // Primitive - simple LWW
+    is_verified: bool,   // Primitive - simple LWW
+}
+```
+
+### Merge Behavior
+
+**🚨 CRITICAL WARNING: Primitives Can Cause State Divergence!**
+
+```rust
+impl Mergeable for String {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        *self = other.clone();  // Always takes "other" - NOT COMMUTATIVE!
+    }
+}
+```
+
+**The fatal flaw:**
+```
+Initial state: Both nodes synced
+
+Node A: name = "Alice"
+Node B: name = "Bob" (concurrent update to same field)
+
+After sync:
+Node A receives "Bob" from B: "Alice".merge(&"Bob") → "Bob"
+Node B receives "Alice" from A: "Bob".merge(&"Alice") → "Alice"
+
+RESULT: PERMANENT STATE DIVERGENCE! 🚨
+- Node A: name = "Bob"
+- Node B: name = "Alice"
+- Nodes NEVER converge to same state
+```
+
+**Why this violates CRDT properties:**
+- ❌ **Not commutative**: merge(A, B) ≠ merge(B, A)
+- ❌ **No convergence**: Nodes end up in different states
+- ❌ **No timestamps**: Can't determine ordering
+- ❌ **Breaks distributed guarantees**: Application state becomes inconsistent
+
+**This is a critical bug pattern that will break production systems!**
+
+### When to Use Primitives
+
+**✅ ONLY Safe use cases (very limited!):**
+
+1. **Immutable fields** - Set once, never modified:
+```rust
+#[derive(Mergeable)]
+pub struct Document {
+    id: String,           // Set once at creation, never changes
+    created_at: u64,      // Immutable timestamp
+    author_id: String,    // Set once, immutable
+}
+// Safe because no concurrent modifications possible
+```
+
+2. **Single-writer fields** - Only one specific node modifies:
+```rust
+#[derive(Mergeable)]
+pub struct NodeStatus {
+    node_id: String,      // Each node only updates its own
+    last_heartbeat: u64,  // Only this node updates this
+}
+// Safe because no concurrent writes to same field
+```
+
+3. **Different fields per node** - Partitioned by node:
+```rust
+#[derive(Mergeable)]
+pub struct UserSettings {
+    theme: String,           // User A updates
+    language: String,        // User B updates  
+    timezone: String,        // User C updates
+}
+// Each user updates their own fields → No conflicts!
+```
+
+
+**❌ NEVER use primitives when:**
+
+1. **ANY possibility of concurrent updates** - Even rarely:
+```rust
+// ❌ Bad: Multiple nodes update same fields
+pub struct SharedCounter {
+    count: u64,  // Both nodes increment → one increment lost!
+}
+
+// ✅ Better: Use Counter
+pub struct SharedCounter {
+    count: Counter,  // Increments sum correctly!
+}
+```
+
+2. **Need deterministic resolution** - Must know which update wins:
+```rust
+// ❌ Bad: Can't tell which is "latest"
+pub struct Document {
+    title: String,  // No timestamp - arbitrary winner
+}
+
+// ✅ Better: Use LwwRegister
+pub struct Document {
+    title: LwwRegister<String>,  // Timestamp tells us which is latest
+}
+```
+
+3. **Production apps** - Multiple concurrent writers:
+```rust
+// ❌ Bad for production
+pub struct UserProfile {
+    name: String,       // Concurrent edits → arbitrary winner
+    email: String,      // May lose updates!
+}
+
+// ✅ Better for production
+pub struct UserProfile {
+    name: LwwRegister<String>,   // Deterministic resolution
+    email: LwwRegister<String>,  // Proper timestamps
+}
+```
+
+### Primitives vs LwwRegister
+
+| Aspect               | Primitive (String)      | LwwRegister<String>       |
+| -------------------- | ----------------------- | ------------------------- |
+| **Syntax**           | `name: String`          | `name: LwwRegister<String>` |
+| **Timestamps**       | ❌ None                  | ✅ Hybrid Logical Clock    |
+| **Merge logic**      | Take "other" value      | Compare timestamps        |
+| **Deterministic**    | ❌ Arbitrary             | ✅ Latest wins             |
+| **Concurrent safety**| ⚠️ May lose updates      | ✅ Correct resolution      |
+| **When to use**      | Low contention          | Concurrent updates        |
+| **Verbosity**        | Low                     | Slightly higher           |
+| **Ergonomics**       | Natural                 | Deref, AsRef (seamless)   |
+
+### Example: Migration from Primitives
+
+**Before (prototyping):**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct Document {
+    title: String,
+    author: String,
+    created_at: u64,
+}
+
+// Problem: Concurrent edits to title lose updates
+```
+
+**After (production-ready):**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct Document {
+    title: LwwRegister<String>,    // Deterministic conflict resolution
+    author: LwwRegister<String>,   // Latest update wins
+    created_at: LwwRegister<u64>,  // Immutable in practice, but consistent
+}
+
+// Benefit: Concurrent edits resolve correctly with timestamps
+```
+
+### Implementation Details
+
+Primitives implement `Mergeable` with a simple macro:
+
+```rust
+impl Mergeable for String {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // ⚠️ Warning: This loses information!
+        // No timestamp comparison - just overwrites
+        *self = other.clone();
+        Ok(())
+    }
+}
+```
+
+**Supported primitives:**
+- Integers: `u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i64`, `i128`
+- Text: `String`, `char`
+- Boolean: `bool`
+
+### Performance
+
+| Operation   | Complexity   | Notes                     |
+| ----------- | ------------ | ------------------------- |
+| merge()     | O(1)         | Simple clone operation    |
+| No overhead | -            | No timestamp storage      |
+
+**Trade-off:** Lower overhead vs less correctness
+
+### Best Practices
+
+```rust
+// ✅ Good: Low-contention struct
+#[derive(Mergeable)]
+pub struct Config {
+    server_url: String,      // Rarely changes, okay
+    api_key: String,         // Set once, okay
+    version: String,         // Read-only in practice, okay
+}
+
+// ⚠️ Risky: High-contention fields
+#[derive(Mergeable)]
+pub struct EditableDocument {
+    title: String,           // Multiple users edit → use LwwRegister!
+    content: String,         // High contention → use RGA!
+}
+
+// ✅ Best: Mix based on contention
+#[derive(Mergeable)]
+pub struct SmartDocument {
+    id: String,                        // Immutable, primitive okay
+    title: LwwRegister<String>,        // Editable, use LwwRegister
+    content: ReplicatedGrowableArray,  // Text editing, use RGA
+    created_at: u64,                   // Immutable, primitive okay
+    view_count: Counter,               // Increments, use Counter
+}
+```
+
+### Summary
+
+**🚨 Primitives are DANGEROUS - can cause state divergence:**
+- ❌ **NOT a proper CRDT**: Violates convergence property
+- ❌ **State divergence**: Nodes end up in different states permanently
+- ❌ **No timestamps**: Can't determine ordering
+- ❌ **Not commutative**: merge(A,B) ≠ merge(B,A)
+- ⚠️ **ONLY safe for**: Immutable fields or single-writer scenarios
+- ❌ **DO NOT use in production** if any concurrent updates possible
+
+**For ANY field that might have concurrent updates:**
+- ✅ **MUST use** `LwwRegister<T>` for proper timestamps and convergence
+- ✅ Use specialized CRDTs (`Counter`, `RGA`) for specific use cases
+- ✅ Never use bare primitives in multi-writer scenarios
+
+**The golden rule:** When in doubt, use `LwwRegister<T>` instead of primitives!
+
+---
+
 ## Option<T>
 
 **Use case:** Optional CRDT fields, nullable values with merge semantics
@@ -799,12 +1053,13 @@ impl UserProfile {
 | Collection      | Best For        | Merge        | Nesting     | Performance   |
 | --------------- | --------------- | ------------ | ----------- | ------------- |
 | **Counter**     | Metrics, counts | Sum          | Leaf        | O(1) all ops  |
-| **LwwRegister** | Single values   | LWW          | Leaf        | O(1) all ops  |
+| **LwwRegister** | Single values   | LWW + time   | Leaf        | O(1) all ops  |
 | **RGA**         | Text editing    | Char-level   | Leaf        | O(N) get      |
 | **Map**         | Key-value       | Recursive    | ✅ Full      | O(1) get/set  |
 | **Vector**      | Ordered lists   | Element-wise | ✅ Full      | O(N) get      |
 | **Set**         | Membership      | Union        | Values only | O(1) ops      |
 | **Option<T>**   | Optional fields | Recursive    | ✅ Wrapper   | O(M) merge    |
+| **Primitives**  | Simple fields   | LWW no time  | Leaf        | O(1) all ops  |
 
 ---
 
@@ -813,6 +1068,8 @@ impl UserProfile {
 ```
 Counting things? → Counter
 Single value with conflicts? → LwwRegister<T>
+  - Low contention, prototyping? → String/u64/bool (primitives)
+  - Production, concurrent writes? → LwwRegister<T> (timestamps!)
 Text editing? → ReplicatedGrowableArray
 Key-value pairs? → UnorderedMap<K, V>
 Ordered list? → Vector<T>
@@ -820,6 +1077,8 @@ Ordered list? → Vector<T>
 Unique membership? → UnorderedSet<T>
 Optional CRDT field? → Option<T> where T: Mergeable
 Optional value with LWW? → LwwRegister<Option<T>>
+Simple struct fields? → Primitives okay for prototyping
+  - ⚠️ Warning: No timestamps, arbitrary conflict resolution
 ```
 
 ---
