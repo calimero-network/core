@@ -92,11 +92,11 @@ flowchart TD
     ReturnTrue --> End
     Error --> End
     
-    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style Apply fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style MarkApplied fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style Pending fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style ReturnTrue fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Start fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style Apply fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style MarkApplied fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style Pending fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style ReturnTrue fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **Time Complexity**: O(1) for check + O(P) for cascade where P = pending count

@@ -51,7 +51,7 @@ sequenceDiagram
     Client->>Node: call("add_item", args)
     Node->>WASM: execute(method, args)
     
-    rect rgb(240, 248, 255)
+    rect rgb(220, 237, 255)
         Note over WASM,Storage: Transaction Execution
         WASM->>Storage: map.insert(key, value)
         Storage->>Storage: Generate Action::Update
@@ -61,7 +61,7 @@ sequenceDiagram
     
     WASM-->>Node: ExecutionOutcome {<br/>root_hash, events, ...}
     
-    rect rgb(255, 250, 240)
+    rect rgb(255, 237, 220)
         Note over Node,Network: Delta Propagation
         Node->>Node: Create CausalDelta {<br/>parents: dag_heads,<br/>payload: actions}
         Node->>Network: Broadcast StateDelta
@@ -176,10 +176,10 @@ flowchart TB
     
     LWW --> Converge([Both nodes:<br/>key = 'value_B'])
     
-    style Fork fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style Merge fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style LWW fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style Converge fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Fork fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style Merge fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style LWW fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
+    style Converge fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 ### G-Counter (Distributed Counter)
@@ -215,10 +215,10 @@ flowchart LR
     B3 --> S1
     S1 --> S2
     
-    style I fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style A3 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style B3 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style S2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style I fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style A3 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style B3 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style S2 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 ### Events and Handlers
@@ -280,20 +280,20 @@ flowchart TD
     Fix3 --> Start
     Fix4 --> Start
     
-    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style Q1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Q2 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Q3 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Q4 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Safe fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style Unsafe1 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
-    style Unsafe2 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
-    style Unsafe3 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
-    style Unsafe4 fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
-    style Fix1 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style Fix2 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style Fix3 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style Fix4 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
+    style Start fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style Q1 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Q2 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Q3 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Q4 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Safe fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style Unsafe1 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style Unsafe2 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style Unsafe3 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style Unsafe4 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style Fix1 fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
+    style Fix2 fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
+    style Fix3 fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
+    style Fix4 fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
 ```
 
 Your handlers **MUST** be:
@@ -500,7 +500,7 @@ sequenceDiagram
     participant NodeInv2 as Node Invitee
     participant RPC as JSON-RPC
     
-    rect rgb(240, 248, 255)
+    rect rgb(220, 237, 255)
         Note over Test,RPC: Setup: Start 2 nodes, create context
         Test->>NodeInv: Start merod (inviter)
         Test->>NodeInv2: Start merod (invitee)
@@ -508,7 +508,7 @@ sequenceDiagram
         RPC-->>Test: context_id
     end
     
-    rect rgb(255, 250, 240)
+    rect rgb(255, 237, 220)
         Note over Test,NodeInv2: Test 1: set_value (inviter)
         Test->>RPC: call("set_value", {key: "test", value: "hello"})
         RPC->>NodeInv: Execute WASM
@@ -521,7 +521,7 @@ sequenceDiagram
         NodeInv2->>NodeInv2: counter.increment()
     end
     
-    rect rgb(240, 255, 240)
+    rect rgb(220, 255, 237)
         Note over Test,NodeInv2: Test 2: Verify handler execution count
         Test->>RPC: call("get_handler_execution_count")
         
@@ -534,7 +534,7 @@ sequenceDiagram
         Note over Test: ✅ PASS: Global count = 1<br/>(only receiving node executed)
     end
     
-    rect rgb(250, 240, 255)
+    rect rgb(237, 220, 255)
         Note over Test,NodeInv2: Test 3: Multiple operations
         Test->>RPC: call("set_value", {key: "k2", value: "v2"})
         Test->>RPC: call("set_value", {key: "k3", value: "v3"})
@@ -589,14 +589,14 @@ flowchart TB
     
     Cleanup --> Success([✅ Test Passed])
     
-    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style Success fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style Fail fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
-    style Wait1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Wait2 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Verify1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Verify2 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Verify3 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
+    style Start fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style Success fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style Fail fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#fff
+    style Wait1 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Wait2 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Verify1 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Verify2 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Verify3 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **E2E Test Configuration**:
