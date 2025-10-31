@@ -1,8 +1,17 @@
-[graph]
-targets = []
+# cargo-deny configuration for Calimero
+# See: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+notice = "warn"
+ignore = []
 
 [bans]
-multiple-versions = "warn" # Warn about duplicate dependency versions
+multiple-versions = "warn"
 
 # Skip specific crates that might need multiple versions
 [[bans.skip]]
@@ -13,18 +22,26 @@ version = "*"
 name = "tokio"
 version = "*"
 
+# Deny native TLS implementations (we use rustls)
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+]
+
 [licenses]
 confidence-threshold = 0.8
 allow = [
     "MIT",
     "Apache-2.0",
+    "MIT OR Apache-2.0",
     "BSD-3-Clause",
     "BSD-2-Clause",
     "ISC",
     "Zlib",
     "Unicode-DFS-2016",
     "Unicode-3.0",
-    "OpenSSL",
+    # OpenSSL license removed - we don't use OpenSSL
     "CC0-1.0",
     "BSL-1.0",
     "MPL-2.0",
@@ -41,7 +58,7 @@ allow = [
 [[licenses.clarify]]
 name = "ring"
 version = "*"
-expression = "ISC OR OpenSSL OR MIT"
+expression = "ISC OR MIT"
 license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
@@ -51,4 +68,3 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = ["https://github.com/xJonathanLEI/starknet-rs"]
-

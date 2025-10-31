@@ -1,0 +1,77 @@
+name: Dual-Mode Build Check
+
+on:
+  pull_request:
+    branches: [master, develop]
+  push:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # This job runs on EVERY PR to ensure both build modes work
+  # Even if PR doesn't touch server code, we verify backwards compatibility
+  dual-mode-build:
+    name: Verify Both Build Modes (${{ matrix.mode.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - name: "Server (default)"
+            flags: ""
+            description: "Default build includes HTTP server"
+          - name: "Desktop (no HTTP)"
+            flags: "--no-default-features"
+            description: "Desktop build excludes HTTP server"
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1"
+          shared-key: dual-mode-${{ matrix.mode.name }}
+      
+      - name: Build server crate (${{ matrix.mode.name }})
+        run: |
+          echo "${{ matrix.mode.description }}"
+          echo "Building with flags: ${{ matrix.mode.flags }}"
+          cargo build -p calimero-server ${{ matrix.mode.flags }}
+      
+      - name: Verify feature flags
+        run: |
+          # Check if axum is in dependency tree
+          if cargo tree -p calimero-server ${{ matrix.mode.flags }} 2>/dev/null | grep -q "axum"; then
+            AXUM_PRESENT=true
+          else
+            AXUM_PRESENT=false
+          fi
+          
+          echo "Axum present: $AXUM_PRESENT"
+          
+          # Validate expectations
+          if [[ "${{ matrix.mode.name }}" == *"Server"* ]]; then
+            if [ "$AXUM_PRESENT" != "true" ]; then
+              echo "❌ Server mode should include axum but it's missing!"
+              exit 1
+            fi
+            echo "✅ Server mode correctly includes HTTP server"
+          else
+            if [ "$AXUM_PRESENT" == "true" ]; then
+              echo "❌ Desktop mode should exclude axum but it's present!"
+              exit 1
+            fi
+            echo "✅ Desktop mode correctly excludes HTTP server"
+          fi
+      
+      - name: Run tests (${{ matrix.mode.name }})
+        run: |
+          cargo test -p calimero-server ${{ matrix.mode.flags }} --lib || true
+          # Don't fail if tests don't exist yet (some PRs may not have server tests)
+

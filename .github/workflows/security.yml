@@ -1,0 +1,75 @@
+name: Security Checks
+
+on:
+  pull_request:
+    branches: [master, develop]
+  push:
+    branches: [master]
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1"
+          shared-key: security
+      
+      - name: Run cargo audit
+        uses: EmbarkStudios/cargo-audit-action@v1
+        with:
+          deny-warnings: false  # Start soft, tighten later
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Run cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          log-level: warn
+          command: check advisories bans licenses sources
+
+  openssl-check:
+    name: Verify No OpenSSL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1"
+          shared-key: openssl-check
+      
+      - name: Check for OpenSSL/native-tls
+        run: |
+          echo "Checking dependency tree for native TLS implementations..."
+          if cargo tree -p calimero-node --all-features | grep -Ei 'openssl|native-tls|security-framework|schannel'; then
+            echo "❌ ERROR: Found native TLS backend in dependency tree!"
+            echo "Calimero must use pure Rust TLS (rustls) for cross-platform compatibility."
+            exit 1
+          else
+            echo "✅ OK: Pure rustls stack confirmed"
+          fi
+
