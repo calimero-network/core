@@ -238,8 +238,8 @@ if [ "$BUILD_APPS" = true ]; then
     chmod +x ./apps/blobs/build.sh
     chmod +x ./apps/collaborative-editor/build.sh
     chmod +x ./apps/nested-crdt-test/build.sh
+    chmod +x ./apps/private_data/build.sh
     chmod +x ./apps/team-metrics-macro/build.sh
-    chmod +x ./apps/private-data/build.sh.
     
     if ./apps/kv-store/build.sh; then
         echo -e "${GREEN}✓ KV store app built successfully${NC}"
@@ -280,6 +280,13 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${GREEN}✓ Nested CRDT app built successfully${NC}"
     else
         echo -e "${RED}Error: Failed to build nested-crdt-test app${NC}"
+        exit 1
+    fi
+
+    if ./apps/private_data/build.sh; then
+        echo -e "${GREEN}✓ Private Data app built successfully${NC}"
+    else
+        echo -e "${RED}Error: Failed to build private-data app${NC}"
         exit 1
     fi
     
