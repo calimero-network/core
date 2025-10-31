@@ -17,14 +17,18 @@ mod schema;
 mod types;
 mod validation;
 
+#[cfg(feature = "gui")]
+mod gui;
+
 use types::Column;
 
 #[derive(Parser)]
 #[command(name = "merodb")]
 #[command(author, version, about = "CLI tool for debugging RocksDB in Calimero", long_about = None)]
 struct Cli {
-    /// Path to the RocksDB database (not required for --schema)
-    #[arg(long, value_name = "PATH", required_unless_present = "schema")]
+    /// Path to the RocksDB database (not required for --schema or --gui)
+    #[cfg_attr(feature = "gui", arg(long, value_name = "PATH", required_unless_present_any = ["schema", "gui"]))]
+    #[cfg_attr(not(feature = "gui"), arg(long, value_name = "PATH", required_unless_present = "schema"))]
     db_path: Option<PathBuf>,
 
     /// Generate JSON schema of the database structure
@@ -59,10 +63,26 @@ struct Cli {
     /// WASM file providing the ABI schema (required for export)
     #[arg(long, value_name = "WASM_FILE")]
     wasm_file: Option<PathBuf>,
+
+    /// Launch interactive GUI (requires 'gui' feature)
+    #[cfg(feature = "gui")]
+    #[arg(long, conflicts_with_all = &["schema", "export", "validate"])]
+    gui: bool,
+
+    /// Port for the GUI server (default: 8080)
+    #[cfg(feature = "gui")]
+    #[arg(long, default_value = "8080", requires = "gui")]
+    port: u16,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Handle GUI mode
+    #[cfg(feature = "gui")]
+    if cli.gui {
+        return run_gui(cli.port);
+    }
 
     // Handle schema generation (doesn't require opening the database)
     if cli.schema {
@@ -182,6 +202,25 @@ fn output_json(value: &serde_json::Value, output_path: Option<&Path>) -> Result<
     } else {
         println!("{json_string}");
     }
+
+    Ok(())
+}
+
+#[cfg(feature = "gui")]
+fn run_gui(port: u16) -> Result<()> {
+    use tokio::runtime::Runtime;
+
+    println!("Starting MeroDB GUI...");
+    println!("The GUI will be available at http://127.0.0.1:{}", port);
+    println!();
+    println!("Instructions:");
+    println!("1. Export your database using: merodb --export --all --wasm-file contract.wasm --output export.json");
+    println!("2. Open the GUI in your browser and load the exported JSON file");
+    println!("3. Use JQ queries to explore and analyze your database");
+    println!();
+
+    let rt = Runtime::new()?;
+    rt.block_on(gui::start_gui_server(port))?;
 
     Ok(())
 }
