@@ -43,7 +43,7 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
 }
 
 async fn render_app() -> Html<String> {
-    Html(include_str!("index.html").to_string())
+    Html(include_str!("index.html").to_owned())
 }
 
 async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
@@ -52,7 +52,7 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
 
     // Parse multipart form data
     while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
+        let name = field.name().unwrap_or("").to_owned();
 
         match name.as_str() {
             "db_path" => {
@@ -70,28 +70,24 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
     }
 
     // Validate inputs
-    let db_path = match db_path {
-        Some(path) => path,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Database path is required".to_string(),
-                }),
-            ).into_response();
-        }
+    let Some(db_path) = db_path else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Database path is required".to_owned(),
+            }),
+        )
+            .into_response();
     };
 
-    let wasm_bytes = match wasm_bytes {
-        Some(bytes) => bytes,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "WASM file is required".to_string(),
-                }),
-            ).into_response();
-        }
+    let Some(wasm_bytes) = wasm_bytes else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "WASM file is required".to_owned(),
+            }),
+        )
+            .into_response();
     };
 
     // Check if database path exists
@@ -101,7 +97,8 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             Json(ErrorResponse {
                 error: format!("Database path does not exist: {}", db_path.display()),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Extract ABI from WASM bytes
@@ -111,9 +108,10 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: format!("Failed to extract ABI from WASM: {}", e),
+                    error: format!("Failed to extract ABI from WASM: {e}"),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -124,9 +122,10 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to open database: {}", e),
+                    error: format!("Failed to open database: {e}"),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -138,9 +137,10 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to export data: {}", e),
+                    error: format!("Failed to export data: {e}"),
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 

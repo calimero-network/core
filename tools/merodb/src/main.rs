@@ -28,7 +28,10 @@ use types::Column;
 struct Cli {
     /// Path to the RocksDB database (not required for --schema or --gui)
     #[cfg_attr(feature = "gui", arg(long, value_name = "PATH", required_unless_present_any = ["schema", "gui"]))]
-    #[cfg_attr(not(feature = "gui"), arg(long, value_name = "PATH", required_unless_present = "schema"))]
+    #[cfg_attr(
+        not(feature = "gui"),
+        arg(long, value_name = "PATH", required_unless_present = "schema")
+    )]
     db_path: Option<PathBuf>,
 
     /// Generate JSON schema of the database structure
@@ -211,7 +214,7 @@ fn run_gui(port: u16) -> Result<()> {
     use tokio::runtime::Runtime;
 
     println!("Starting MeroDB GUI...");
-    println!("The GUI will be available at http://127.0.0.1:{}", port);
+    println!("The GUI will be available at http://127.0.0.1:{port}");
     println!();
     println!("Instructions:");
     println!("1. Export your database using: merodb --export --all --wasm-file contract.wasm --output export.json");
