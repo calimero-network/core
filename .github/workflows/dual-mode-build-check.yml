@@ -9,12 +9,17 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   # This job runs on EVERY PR to ensure both build modes work
   # Even if PR doesn't touch server code, we verify backwards compatibility
   dual-mode-build:
     name: Verify Both Build Modes (${{ matrix.mode.name }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
