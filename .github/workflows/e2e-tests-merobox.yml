@@ -57,6 +57,7 @@ jobs:
           chmod +x apps/collaborative-editor/build.sh
           chmod +x apps/nested-crdt-test/build.sh
           chmod +x apps/team-metrics-macro/build.sh
+          chmod +x apps/private-data/build.sh
           ./apps/kv-store/build.sh
           ./apps/kv-store-init/build.sh
           ./apps/kv-store-with-handlers/build.sh
@@ -64,6 +65,7 @@ jobs:
           ./apps/collaborative-editor/build.sh
           ./apps/nested-crdt-test/build.sh
           ./apps/team-metrics-macro/build.sh
+          ./apps/private-data/build.sh
           cargo build -p meroctl -p merod
 
       - name: Upload Build Artifacts
@@ -465,6 +467,35 @@ jobs:
           retention-days: 2
 
       # ============================================================================
+      # Run Merobox Tests - Private Data (NEAR only)
+      # ============================================================================
+      - name: Run Private Data Tests
+        if: matrix.protocol == 'near'
+        id: private-data-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          echo "=========================================="
+          echo "Running Private Data tests for NEAR"
+          echo "=========================================="
+
+          merobox bootstrap run \
+            e2e-tests-merobox/workflows/private-data/near.yml \
+            --no-docker \
+            --binary-path target/debug/merod \
+            --verbose
+
+      - name: Upload Private Data Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-data-near
+          path: e2e-tests-merobox/results/near-private-data/
+          retention-days: 2
+
+      # ============================================================================
       # Run Merobox Tests - XCall Example (NEAR only)
       # ============================================================================
       - name: Run XCall Example Tests
@@ -582,6 +613,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: open-invitation-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Private Data Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: private-data-*
           merge-multiple: false
           path: results/
 
@@ -997,6 +1035,46 @@ jobs:
                 failed_tests=$((failed_tests + 1))
               fi
               
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Private Data Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🔐 Private Data Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/private-data-near" ]; then
+            if [ -f "results/private-data-near/summary.json" ]; then
+              status=$(jq -r '.status' results/private-data-near/summary.json)
+              duration=$(jq -r '.duration' results/private-data-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/private-data-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/private-data-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/private-data-near/summary.json)
+
+              total_tests=$((total_tests + 1))
+
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+
               echo "- **Duration:** ${duration}s" >> report.md
               echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
             else

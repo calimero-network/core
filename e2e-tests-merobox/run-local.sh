@@ -40,9 +40,10 @@ usage() {
     echo "                             - near-metrics (Team Metrics - NEAR only)"
     echo "                             - near-concurrent (Concurrent Mutations - NEAR only)"
     echo "                             - near-open-invitation (Open Invitation - NEAR only)"
+    echo "                             - near-private-data (Private Data - NEAR only)"
     echo "                             - near-xcall (XCall Ping-Pong - NEAR only)"
     echo "                             - near-proposals, icp-proposals, ethereum-proposals"
-    echo "                             - all (runs all tests: 15 suites)"
+    echo "                             - all (runs all tests: 16 suites)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
     echo "  -b, --build                Build merod and meroctl binaries before testing"
@@ -61,9 +62,10 @@ usage() {
     echo "  $0 --protocol near-metrics --build --build-apps # Run NEAR Team Metrics tests"
     echo "  $0 --protocol near-concurrent --build --build-apps # Run NEAR Concurrent Mutations tests"
     echo "  $0 --protocol near-open-invitation --build --build-apps # Run NEAR Open Invitation tests"
+    echo "  $0 --protocol near-private-data --build --build-apps # Run NEAR Private Data tests"
     echo "  $0 --protocol near-xcall --build --build-apps        # Run NEAR XCall tests"
     echo "  $0 --protocol icp --check-devnets --build      # Check ICP devnet and test"
-    echo "  $0 --protocol all --build --build-apps         # Build and test all (15 suites)"
+    echo "  $0 --protocol all --build --build-apps         # Build and test all (16 suites)"
     echo "  $0 --workflow path/to/custom.yml               # Run custom workflow"
     echo ""
     echo "Devnet Setup (run separately before testing):"
@@ -237,6 +239,7 @@ if [ "$BUILD_APPS" = true ]; then
     chmod +x ./apps/collaborative-editor/build.sh
     chmod +x ./apps/nested-crdt-test/build.sh
     chmod +x ./apps/team-metrics-macro/build.sh
+    chmod +x ./apps/private-data/build.sh.
     
     if ./apps/kv-store/build.sh; then
         echo -e "${GREEN}✓ KV store app built successfully${NC}"
@@ -566,6 +569,12 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/open-invitation/near.yml" "near-open-invitation"
             FAILED=$?
             ;;
+        near-private-data)
+            echo -e "${YELLOW}Running NEAR Private Data test...${NC}"
+            echo ""
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/private-data/near.yml" "near-private-data"
+            FAILED=$?
+            ;;
         near-xcall)
             echo -e "${YELLOW}Running NEAR XCall test...${NC}"
             echo ""
@@ -689,6 +698,15 @@ else
             run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/open-invitation/near.yml" "near-open-invitation"
             NEAR_OPEN_INV_RESULT=$?
             
+            # === Private Data Tests ===
+            echo ""
+            echo -e "${BLUE}━━━ Private Data Tests ━━━${NC}"
+            echo ""
+
+            # Run NEAR Private Data (doesn't need devnet)
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/private-data/near.yml" "near-private-data"
+            NEAR_PRIVATE_DATA_RESULT=$?
+
             # === XCall Example Tests ===
             echo ""
             echo -e "${BLUE}━━━ XCall Example Tests ━━━${NC}"
@@ -725,7 +743,7 @@ else
                 ETH_PROP_RESULT=0
             fi
             
-            FAILED=$((NEAR_KV_RESULT + NEAR_KV_INIT_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_COLLAB_RESULT + NEAR_NESTED_RESULT + NEAR_METRICS_RESULT + NEAR_CONCURRENT_RESULT + NEAR_OPEN_INV_RESULT + NEAR_XCALL_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
+            FAILED=$((NEAR_KV_RESULT + NEAR_KV_INIT_RESULT + ICP_KV_RESULT + ETH_KV_RESULT + NEAR_HANDLERS_RESULT + NEAR_BLOBS_RESULT + NEAR_COLLAB_RESULT + NEAR_NESTED_RESULT + NEAR_METRICS_RESULT + NEAR_CONCURRENT_RESULT + NEAR_OPEN_INV_RESULT + NEAR_PRIVATE_DATA_RESULT + NEAR_XCALL_RESULT + NEAR_PROP_RESULT + ICP_PROP_RESULT + ETH_PROP_RESULT))
             ;;
         "")
             echo -e "${RED}Error: Protocol not specified${NC}"

@@ -27,6 +27,9 @@ e2e-tests-merobox/
 │   ├── open-invitation/    # Open Invitation workflows
 │   │   ├── near.yml        # NEAR protocol (open invitation join)
 │   │   └── README.md       # Open invitation testing guide
+│   ├── private-data/       # Private Data workflows
+│   │   ├── near.yml        # NEAR protocol (secret sharing & guessing)
+│   │   └── README.md       # Private data testing guide
 │   ├── xcall-example/      # Cross-context XCall workflows
 │   │   ├── near.yml        # NEAR protocol (ping-pong between contexts)
 │   └── proposals/          # Proposals test workflows
@@ -98,6 +101,9 @@ cargo build -p merod -p meroctl
 # Run Open Invitation tests
 ./e2e-tests-merobox/run-local.sh --protocol near-open-invitation --build --build-apps
 
+# Run Private Data tests
+./e2e-tests-merobox/run-local.sh --protocol near-private-data --build --build-apps
+
 # Run XCall example tests
 ./e2e-tests-merobox/run-local.sh --protocol near-xcall --build --build-apps
 
@@ -113,6 +119,7 @@ cargo build -p merod -p meroctl
 # - Team Metrics: near-metrics
 # - Concurrent Mutations: near-concurrent
 # - Open Invitation: near-open-invitation
+# - Private Data: near-private-data
 # - XCall Example: near-xcall
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 

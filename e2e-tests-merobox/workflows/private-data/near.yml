@@ -1,0 +1,178 @@
+name: "Private Data - NEAR"
+description: "Secret sharing and guessing workflow using private data application on NEAR"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: private-data-near
+
+steps:
+  # ============================================================================
+  # Phase 1: Install application and create context on Node 1
+  # ============================================================================
+  - name: Install Private Data Application on Node 1
+    type: install_application
+    node: private-data-near-1
+    path: "apps/private_data/res/private_data.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: private-data-near-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Assert Context Created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{member_public_key}})"
+
+  # ============================================================================
+  # Phase 2: Provision identity on Node 2 and join context
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: private-data-near-2
+    outputs:
+      public_key: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 5
+
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: private-data-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation: invitation
+
+  - name: Join Context from Node 2
+    type: join_context
+    node: private-data-near-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key}}"
+    invitation: "{{invitation}}"
+
+  # ============================================================================
+  # Phase 3: Add secret and verify local/private visibility
+  # ============================================================================
+  - name: Add Secret from Node 1
+    type: call
+    node: private-data-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_secret
+    args:
+      game_id: "game-1"
+      secret: "s3cr3t"
+    outputs:
+      add_secret_result: result
+
+  - name: Assert Add Secret Result Present
+    type: assert
+    statements:
+      - "is_set({{add_secret_result}})"
+
+  - name: Wait for Secret Propagation
+    type: wait
+    seconds: 3
+
+  - name: View Secrets on Node 1
+    type: call
+    node: private-data-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: my_secrets
+    outputs:
+      my_secrets_node1_result: result
+
+  - name: Assert Node 1 Sees Private Secret
+    type: json_assert
+    statements:
+      - 'json_subset({{my_secrets_node1_result}}, {"output": {"game-1": "s3cr3t"}})'
+
+  - name: View Games Map on Node 2
+    type: call
+    node: private-data-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: games
+    outputs:
+      games_result: result
+
+  - name: Assert Games Contains Hashed Secret
+    type: json_assert
+    statements:
+      - 'json_subset({{games_result}}, {"output": {"game-1": "4e738ca5563c06cfd0018299933d58db1dd8bf97f6973dc99bf6cdc64b5550bd"}})'
+
+  - name: View Secrets on Node 2
+    type: call
+    node: private-data-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: my_secrets
+    outputs:
+      my_secrets_node2_result: result
+
+  - name: Assert Node 2 Has No Private Secrets
+    type: json_assert
+    statements:
+      - 'json_equal({{my_secrets_node2_result}}, {"output": {}})'
+
+  # ============================================================================
+  # Phase 4: Guessing game validation
+  # ============================================================================
+  - name: Submit Correct Guess from Node 1
+    type: call
+    node: private-data-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_guess
+    args:
+      game_id: "game-1"
+      guess: "s3cr3t"
+    outputs:
+      guess_ok_result: result
+
+  - name: Assert Correct Guess Returns True
+    type: json_assert
+    statements:
+      - 'json_equal({{guess_ok_result}}, {"output": true})'
+
+  - name: Submit Incorrect Guess from Node 2
+    type: call
+    node: private-data-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: add_guess
+    args:
+      game_id: "game-1"
+      guess: "wrong"
+    outputs:
+      guess_bad_result: result
+
+  - name: Assert Incorrect Guess Returns False
+    type: json_assert
+    statements:
+      - 'json_equal({{guess_bad_result}}, {"output": false})'
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 60
+nuke_on_end: true
