@@ -26,6 +26,9 @@ e2e-tests-merobox/
 │   │   └── near.yml        # NEAR protocol (DAG convergence testing)
 │   ├── open-invitation/    # Open Invitation workflows
 │   │   ├── near.yml        # NEAR protocol (open invitation join)
+│   │   └── README.md       # Open invitation testing guide
+│   ├── xcall-example/      # Cross-context XCall workflows
+│   │   ├── near.yml        # NEAR protocol (ping-pong between contexts)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -95,10 +98,13 @@ cargo build -p merod -p meroctl
 # Run Open Invitation tests
 ./e2e-tests-merobox/run-local.sh --protocol near-open-invitation --build --build-apps
 
-# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Team Metrics + Concurrent Mutations + Open Invitation + Proposals)
+# Run XCall example tests
+./e2e-tests-merobox/run-local.sh --protocol near-xcall --build --build-apps
+
+# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Team Metrics + Concurrent Mutations + Open Invitation + XCall + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 14 test suites:
+# Note: This runs 15 test suites:
 # - KV Store: near, near-init, icp (if dfx running), ethereum (if anvil running)
 # - Handlers: near-handlers
 # - Blob API: near-blobs
@@ -107,6 +113,7 @@ cargo build -p merod -p meroctl
 # - Team Metrics: near-metrics
 # - Concurrent Mutations: near-concurrent
 # - Open Invitation: near-open-invitation
+# - XCall Example: near-xcall
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 
 # Run KV Store with Handlers test (NEAR only)
