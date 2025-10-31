@@ -9,14 +9,19 @@ use wasmparser::{Parser, Payload};
 ///
 /// Reads the WASM file and extracts the ABI schema from the "calimero_abi_v1" custom section
 pub fn extract_abi_from_wasm(wasm_path: &Path) -> Result<Manifest> {
-    // Read the WASM file
     let wasm_bytes = fs::read(wasm_path)?;
+    extract_abi_from_wasm_bytes(&wasm_bytes)
+}
 
+/// Extract ABI from WASM bytes
+///
+/// Extracts the ABI schema from the "calimero_abi_v1" custom section in the provided WASM bytes
+pub fn extract_abi_from_wasm_bytes(wasm_bytes: &[u8]) -> Result<Manifest> {
     // Parse the WASM file
     let parser = Parser::new(0);
     let mut abi_section: Option<Vec<u8>> = None;
 
-    for payload in parser.parse_all(&wasm_bytes) {
+    for payload in parser.parse_all(wasm_bytes) {
         if let Payload::CustomSection(section) = payload? {
             if section.name() == "calimero_abi_v1" {
                 abi_section = Some(section.data().to_vec());

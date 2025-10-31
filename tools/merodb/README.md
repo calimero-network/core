@@ -7,14 +7,25 @@ A CLI tool for debugging RocksDB databases used by Calimero.
 - **Schema Generation**: Generate a JSON schema describing the structure of all column families.
 - **Data Export**: Export database contents to pretty-printed JSON with ABI-aware decoding of contract state.
 - **Data Validation**: Validate database integrity and detect corruption.
+- **Interactive GUI**: Web-based interface for browsing exported data and running JQ queries (optional feature).
 
 ## Installation
+
+Build the CLI tool:
 
 ```bash
 cargo build --package merodb --release
 ```
 
 The binary will be available at `target/release/merodb`.
+
+### Building with GUI Support
+
+To enable the interactive web GUI feature:
+
+```bash
+cargo build --package merodb --release --features gui
+```
 
 ## Usage
 
@@ -55,6 +66,51 @@ Validate the database integrity:
 ```bash
 merodb --db-path /path/to/rocksdb --validate --output validation.json
 ```
+
+### Interactive GUI (requires `gui` feature)
+
+Launch the web-based GUI to interactively explore your database:
+
+```bash
+merodb --gui
+```
+
+The GUI will start a local web server (default port 8080). You can then:
+
+1. Enter your RocksDB database folder path
+2. Upload your instrumented WASM contract file
+3. Click "Load Database" to process and view the data
+4. Browse the database structure with an interactive tree view
+5. Run JQ queries to filter and analyze the data
+6. Explore query results in real-time
+
+Specify a custom port:
+
+```bash
+merodb --gui --port 3000
+```
+
+**Workflow with GUI:**
+
+```bash
+# 1. Launch the GUI
+merodb --gui
+
+# 2. Open http://127.0.0.1:8080 in your browser
+# 3. Enter database path: ~/.calimero/data
+# 4. Upload WASM file: contract.wasm
+# 5. Click "Load Database" and start exploring with JQ queries
+```
+
+The GUI automatically exports and processes the database server-side, eliminating the need for manual JSON export.
+
+**Example JQ Queries in GUI:**
+
+- `.data` - View all column families
+- `.data | keys` - List all column family names
+- `.data.Meta.entries[0]` - View first Meta entry
+- `.data.State.entries | map(.key)` - Extract all state keys
+- `.data | to_entries | map({column: .key, count: .value.count})` - Get entry counts per column
 
 ## Column Families
 

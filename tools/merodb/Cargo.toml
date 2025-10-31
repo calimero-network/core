@@ -8,6 +8,10 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+gui = ["axum", "tokio", "serde"]
+
 [dependencies]
 rocksdb = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -18,6 +22,11 @@ hex = { workspace = true }
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-wasm-abi = { workspace = true }
 wasmparser = "0.118"
+
+# GUI dependencies (optional)
+axum = { version = "0.7", optional = true, features = ["multipart"] }
+tokio = { version = "1", features = ["full"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 [lints]
 workspace = true
