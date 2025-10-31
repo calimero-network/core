@@ -5,15 +5,15 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::{Counter, UnorderedMap};
+use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
-    items: UnorderedMap<String, String>,
-    handlers_called: UnorderedMap<String, String>, // Track handlers called with CRDT counter
+    items: UnorderedMap<String, LwwRegister<String>>,
+    handlers_called: UnorderedMap<String, LwwRegister<String>>, // Track handlers called with CRDT counter
     handler_counter: Counter, // CRDT-compatible counter (stored separately like a collection)
 }
 
@@ -64,7 +64,7 @@ impl KvStore {
             ));
         }
 
-        self.items.insert(key, value)?;
+        self.items.insert(key, value.into())?;
 
         Ok(())
     }
@@ -72,7 +72,11 @@ impl KvStore {
     pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
         app::log!("Getting all entries");
 
-        Ok(self.items.entries()?.collect())
+        Ok(self
+            .items
+            .entries()?
+            .map(|(k, v)| (k, v.get().clone()))
+            .collect())
     }
 
     pub fn len(&self) -> app::Result<usize> {
@@ -84,14 +88,14 @@ impl KvStore {
     pub fn get<'a>(&self, key: &'a str) -> app::Result<Option<String>> {
         app::log!("Getting key: {:?}", key);
 
-        self.items.get(key).map_err(Into::into)
+        Ok(self.items.get(key)?.map(|v| v.get().clone()))
     }
 
     pub fn get_unchecked(&self, key: &str) -> app::Result<String> {
         app::log!("Getting key without checking: {:?}", key);
 
         // this panics, which we do not recommend
-        Ok(self.items.get(key)?.expect("key not found"))
+        Ok(self.items.get(key)?.expect("key not found").get().clone())
     }
 
     pub fn get_result<'a>(&self, key: &'a str) -> app::Result<String> {
@@ -109,7 +113,7 @@ impl KvStore {
 
         app::emit!((Event::Removed { key }, "remove_handler"));
 
-        self.items.remove(key).map_err(Into::into)
+        Ok(self.items.remove(key)?.map(|v| v.get().clone()))
     }
 
     pub fn clear(&mut self) -> app::Result<()> {
@@ -180,7 +184,7 @@ impl KvStore {
         let mut handlers = Vec::new();
         for (key, value) in self.handlers_called.entries()? {
             if key.starts_with("handler_") {
-                handlers.push(value);
+                handlers.push(value.get().clone());
             }
         }
         handlers.sort();
@@ -193,7 +197,7 @@ impl KvStore {
         let mut unique_handlers = std::collections::HashSet::new();
         for (key, value) in self.handlers_called.entries()? {
             if key.starts_with("handler_") {
-                unique_handlers.insert(value);
+                unique_handlers.insert(value.get().clone());
             }
         }
         let mut result: Vec<String> = unique_handlers.into_iter().collect();
@@ -204,7 +208,7 @@ impl KvStore {
     /// Check if a specific handler was called (for testing)
     pub fn was_handler_called(&self, handler_name: &str) -> app::Result<bool> {
         for (key, value) in self.handlers_called.entries()? {
-            if key.starts_with("handler_") && value.contains(handler_name) {
+            if key.starts_with("handler_") && value.get().contains(handler_name) {
                 return Ok(true);
             }
         }
