@@ -25,11 +25,13 @@ pub struct MyApp {
 // Custom struct with nested CRDTs - just add #[derive(Mergeable)]!
 #[derive(Mergeable, BorshSerialize, BorshDeserialize)]
 pub struct UserProfile {
-    name: LwwRegister<String>,        // Last-Write-Wins with timestamps
+    name: LwwRegister<String>,        // Last-Write-Wins with timestamps (required!)
+    bio: LwwRegister<String>,         // All fields must be CRDTs
     tags: UnorderedSet<String>,        // Add-wins set
     scores: UnorderedMap<String, Counter>,  // Nested CRDTs!
 }
 // Zero boilerplate - macro generates merge code! ✨
+// Note: Primitives (String, u64) don't work - use LwwRegister<T> instead!
 
 // That's it! No manual merge code, no conflict resolution - it just works! ✨
 ```
@@ -75,15 +77,21 @@ pub struct Analytics {
 ### Pattern 2: User Profiles with LWW
 
 ```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,     // Must use LwwRegister, not String!
+    email: LwwRegister<String>,
+}
+
 #[app::state]
 pub struct UserManager {
-    users: UnorderedMap<String, LwwRegister<UserProfile>>,
+    users: UnorderedMap<String, UserProfile>,
 }
 
 // Latest update wins (by timestamp)
-// Node A: users["alice"] = Profile { name: "Alice A" } @ T1
-// Node B: users["alice"] = Profile { name: "Alice B" } @ T2
-// After sync: users["alice"] = Profile @ T2 ✅
+// Node A @ T1: users["alice"].name = "Alice A"
+// Node B @ T2: users["alice"].name = "Alice B" (T2 > T1)
+// After sync: users["alice"].name = "Alice B" @ T2 ✅
 ```
 
 ### Pattern 3: Nested Maps
@@ -92,12 +100,13 @@ pub struct UserManager {
 #[app::state]
 pub struct DocumentEditor {
     // Map of document IDs to their metadata
-    metadata: UnorderedMap<String, UnorderedMap<String, String>>,
+    // Note: Inner values must be Mergeable - use LwwRegister<String>
+    metadata: UnorderedMap<String, UnorderedMap<String, LwwRegister<String>>>,
 }
 
 // Concurrent updates to different fields preserve both!
-// Node A: metadata["doc-1"]["title"] = "My Doc"
-// Node B: metadata["doc-1"]["author"] = "Alice" (concurrent)
+// Node A: metadata["doc-1"]["title"] = "My Doc".into()
+// Node B: metadata["doc-1"]["author"] = "Alice".into() (concurrent)
 // After sync: BOTH fields present! ✅
 ```
 
@@ -268,87 +277,66 @@ Need unique membership?
 | **Primitives**         | Use simple LWW without timestamps                      | Use LwwRegister for proper timestamps   |
 | **All Collections**    | Root-level non-CRDTs use LWW                           | Use LwwRegister for explicit timestamps |
 
-### ⚠️ CRITICAL: Primitives Can Cause State Divergence!
+### ✅ Primitives Not Allowed - Compile-Time Safety!
 
-**Basic types like `String`, `u64`, `bool` ARE mergeable but with a serious flaw:**
+**Primitive types (String, u64, bool, etc.) do NOT implement `Mergeable` by design.**
+
+This prevents state divergence at compile time:
 
 ```rust
+// ❌ This will NOT compile:
 #[derive(Mergeable)]
 pub struct UserProfile {
-    name: String,  // ⚠️ DANGER: Can cause state divergence!
-    age: u64,      // ⚠️ DANGER: Nodes may not converge!
+    name: String,  // ERROR: String doesn't implement Mergeable
+    age: u64,      // ERROR: u64 doesn't implement Mergeable
 }
-
-// What happens with concurrent updates:
-// Node A: name = "Alice"
-// Node B: name = "Bob" (concurrent)
-
-// After sync:
-// Node A receives "Bob": "Alice".merge(&"Bob") → "Bob"
-// Node B receives "Alice": "Bob".merge(&"Alice") → "Alice"
-
-// RESULT: State divergence! ❌
-// Node A has name="Bob", Node B has name="Alice"
-// Nodes never converge to same state!
+// Compiler error: "the trait bound `String: Mergeable` is not satisfied"
 ```
 
-**Why this is broken:**
-- ❌ No timestamp comparison (can't tell which is "latest")
-- ❌ Merge is NOT commutative: merge(A,B) ≠ merge(B,A)
-- ❌ **Violates CRDT property**: nodes don't converge!
-- ❌ State divergence leads to inconsistent application behavior
+**Why primitives were removed:**
 
-**Better approach with LwwRegister:**
+Primitives would cause **permanent state divergence**:
+- Simple LWW (`*self = other`) is NOT commutative
+- `merge(A,B) ≠ merge(B,A)` → nodes end up in different states
+- Violates fundamental CRDT convergence property
+- Production applications would have inconsistent state across nodes
+
+**The solution - Use LwwRegister:**
 
 ```rust
+// ✅ This compiles and works correctly:
 #[derive(Mergeable)]
 pub struct UserProfile {
-    name: LwwRegister<String>,  // ✅ Has timestamps!
-    age: LwwRegister<u64>,      // ✅ Proper LWW semantics
+    name: LwwRegister<String>,  // ✅ Proper timestamps + convergence
+    age: LwwRegister<u64>,      // ✅ Deterministic conflict resolution
 }
 
-// What happens:
-// Node A @ T1: name = "Alice"
-// Node B @ T2: name = "Alicia" (T2 > T1)
-// Merge: name = "Alicia" ✅ (T2 wins deterministically!)
+// Usage is natural thanks to Deref/AsRef/From traits:
+let s: &str = &*profile.name;       // Deref
+process(profile.name.as_ref());      // AsRef  
+profile.name = "Alice".to_owned().into();  // From (auto-casting!)
 ```
 
-**When primitives are SAFE to use:**
-- ✅ **Single-writer fields**: Only one node ever updates this field
-- ✅ **Immutable fields**: Set once, never changed (IDs, creation timestamps)
-- ✅ **Different fields per node**: Each node updates its own set of fields
+**When can you use primitives:**
 
-**When you MUST use LwwRegister:**
-- ⚠️ **Multiple writers**: Any field that multiple nodes might update
-- ⚠️ **Concurrent updates possible**: Even if rare, divergence is catastrophic
-- ⚠️ **Production applications**: State divergence breaks distributed apps
-- ✅ **Any field with >1 potential writer**: Use LwwRegister to be safe
-
-**Real-world impact:**
+Only in **private data** (node-local, not synchronized):
 ```rust
-// ❌ UNSAFE in production:
-#[derive(Mergeable)]
-pub struct Document {
-    title: String,     // Two users edit → divergence
-    content: String,   // Concurrent edits → different states per node
+#[app::private]  // Not synchronized across nodes!
+pub struct LocalCache {
+    data: UnorderedMap<String, String>,  // ✅ OK - not replicated
 }
 
-// ✅ SAFE - single writer or immutable:
-#[derive(Mergeable)]
-pub struct SystemConfig {
-    node_id: String,        // Immutable, set once
-    region: String,         // Only this node updates its region
-    created_at: u64,        // Immutable timestamp
-}
-
-// ✅ PRODUCTION-SAFE with LwwRegister:
-#[derive(Mergeable)]
-pub struct Document {
-    title: LwwRegister<String>,      // Deterministic convergence
-    content: ReplicatedGrowableArray, // Proper CRDT for text
-    author: LwwRegister<String>,     // Latest update wins
+#[app::state]  // Synchronized across nodes!
+pub struct App {
+    data: UnorderedMap<String, String>,  // ❌ ERROR: Won't compile
 }
 ```
+
+**Benefits of compile-time enforcement:**
+- ✅ **No state divergence possible** - Prevented at compile time
+- ✅ **Clear error messages** - Compiler suggests using LwwRegister
+- ✅ **Production-safe by default** - Can't accidentally break distributed guarantees
+- ✅ **Ergonomic** - LwwRegister has Deref/AsRef/From traits for natural usage
 
 ---
 
@@ -477,10 +465,10 @@ A: Use `find(predicate)` to get the first match, or `filter(predicate)` to get a
 A: Yes! `LwwRegister` implements `Deref`, `AsRef`, `Borrow`, and `From` for seamless type conversions. Use `&*reg`, `reg.as_ref()`, or pass to functions expecting `&T` directly.
 
 **Q: Can I use regular types like String, u64, bool in my structs?**  
-A: **DANGER!** Primitives can cause **permanent state divergence** where nodes never converge. The merge is not commutative, violating CRDT properties. Only safe for truly immutable fields or guaranteed single-writer scenarios. **For production apps, always use `LwwRegister<T>`** for any field that might have concurrent updates. The risk of state divergence is not worth the slight syntax convenience.
+A: **No!** Primitives do NOT implement `Mergeable` (by design). This prevents state divergence at compile time. You must use `LwwRegister<T>` for synchronized state. Exception: primitives work in `#[app::private]` data (node-local, not synchronized). Thanks to Deref/AsRef/From traits, `LwwRegister<T>` usage is nearly identical to primitives: `value.into()`, `&*reg`, `reg.as_ref()`.
 
 **Q: What's the difference between `String` and `LwwRegister<String>`?**  
-A: **CRITICAL:** `String` can cause **state divergence** (nodes end up with different values permanently) because merge is not commutative. `LwwRegister<String>` uses timestamps for deterministic convergence. **Never use primitives if concurrent updates are possible!** Always use `LwwRegister<T>` in production unless the field is truly immutable or single-writer.
+A: `String` doesn't implement `Mergeable` and won't compile in synchronized state. `LwwRegister<String>` provides proper timestamp-based conflict resolution with guaranteed convergence. Use `value.into()` for auto-casting, and Deref for natural access: `&*register`. This compile-time enforcement prevents catastrophic state divergence bugs in production.
 
 ---
 
@@ -491,16 +479,17 @@ A: **CRITICAL:** `String` can cause **state divergence** (nodes end up with diff
 let mut counter = Counter::new();
 counter.increment()?;  // All increments sum
 
-// LwwRegister - timestamp wins with ergonomic conversions
+// LwwRegister - timestamp wins with ergonomic auto-casting
 let mut register = LwwRegister::new("initial");
 register.set("updated");  // Latest timestamp wins
 let s: &str = &*register;  // Deref to inner value
 let len = process(register.as_ref());  // AsRef for function calls
-let reg: LwwRegister<u64> = 42.into();  // From/Into for creation
+let reg: LwwRegister<u64> = 42.into();  // From/Into for auto-casting!
 
-// Map - entry-wise merge
-let mut map = UnorderedMap::new();
-map.insert("key", value)?;  // Concurrent inserts to different keys preserved
+// Map - entry-wise merge (values must be Mergeable!)
+let mut map = UnorderedMap::<String, LwwRegister<String>>::new();
+map.insert("key".to_owned(), "value".to_owned().into())?;  // .into() auto-casts!
+let val: String = map.get(&"key")?.unwrap().get().clone();  // Access value
 
 // Vector - element-wise merge with search
 let mut vec = Vector::new();
@@ -515,6 +504,11 @@ set.insert("value")?;  // All adds preserved (union)
 // Option<T> - recursive merge
 let mut opt: Option<LwwRegister<String>> = Some(LwwRegister::new("value"));
 opt.merge(&other)?;  // Merges inner values when both Some
+
+// ❌ Primitives in synchronized state DON'T COMPILE:
+// let map = UnorderedMap::<String, String>::new();  // ERROR!
+// ✅ Use LwwRegister:
+let map = UnorderedMap::<String, LwwRegister<String>>::new();  // ✅
 ```
 
 ---

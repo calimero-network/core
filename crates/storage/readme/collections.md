@@ -4,52 +4,297 @@ Complete guide to all CRDT collections in Calimero Storage.
 
 ---
 
-## Using Custom Structs: #[derive(Mergeable)]
+## Using Custom Structs: Implementing Mergeable
 
-**When you create custom structs with CRDT fields:**
+### Understanding the Mergeable Trait
+
+```rust
+pub trait Mergeable {
+    /// Merge another instance into self
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
+}
+```
+
+**When is this called?**
+- Only during **root-level concurrent updates** (rare ~1% of operations)
+- NOT on local operations (those are O(1))
+- NOT on different-key updates (DAG handles those)
+
+**What it does:**
+- Merges field-by-field when the same root entity is updated concurrently
+- Enables proper CRDT semantics for nested structures
+- Prevents state divergence
+
+---
+
+### Option 1: Derive Macro (Recommended) ✨
+
+**Use when:** All fields are CRDT types, standard merge behavior
 
 ```rust
 use calimero_storage_macros::Mergeable;
 
-// Option 1: Derive macro (recommended)
 #[derive(Mergeable, BorshSerialize, BorshDeserialize)]
 pub struct TeamStats {
     wins: Counter,
     losses: Counter,
     draws: Counter,
 }
-// Macro auto-generates merge() - zero boilerplate! ✨
+// That's it! Zero boilerplate ✨
+```
 
-// Option 2: Manual implementation (when you need custom logic)
+**What the macro generates:**
+```rust
 impl Mergeable for TeamStats {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.wins.merge(&other.wins)?;
         self.losses.merge(&other.losses)?;
         self.draws.merge(&other.draws)?;
+        Ok(())
+    }
+}
+```
+
+**Requirements:**
+- ✅ All fields must implement `Mergeable`
+- ✅ Struct must have named fields (not tuple struct)
+- ✅ Must be a struct (not enum or union)
+
+**Common errors:**
+```rust
+#[derive(Mergeable)]
+pub struct MyStruct {
+    name: String,  // ❌ ERROR: String doesn't implement Mergeable
+}
+// Fix: Use LwwRegister<String> instead
+```
+
+---
+
+### Option 2: Manual Implementation (Custom Logic)
+
+**Use when:** You need custom validation, logging, or business rules
+
+```rust
+use calimero_storage::collections::{Counter, Mergeable, MergeError};
+
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct TeamStats {
+    wins: Counter,
+    losses: Counter,
+    draws: Counter,
+}
+
+impl Mergeable for TeamStats {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // 1. Merge CRDT fields
+        self.wins.merge(&other.wins)?;
+        self.losses.merge(&other.losses)?;
+        self.draws.merge(&other.draws)?;
         
-        // Add custom logic here:
-        // - Validation
-        // - Logging
-        // - Business rules
+        // 2. Add custom validation
+        let total = self.wins.value()? + self.losses.value()? + self.draws.value()?;
+        if total > 1000 {
+            return Err(MergeError::StorageError("Too many games!".to_string()));
+        }
+        
+        // 3. Add logging
+        eprintln!("Merged team stats: {} total games", total);
         
         Ok(())
     }
 }
 ```
 
-**When to use derive:**
-- ✅ All fields are CRDTs
-- ✅ Standard merge behavior
-- ✅ Recommended for most cases
+**When to use manual implementation:**
+- ✅ Custom validation rules
+- ✅ Logging/metrics/debugging
+- ✅ Business logic constraints
+- ✅ Conditional merging
+- ✅ Complex merge strategies
 
-**When to use manual:**
-- Need custom validation
-- Want logging/metrics
-- Apply business rules
+---
 
-**Examples:**
-- `apps/team-metrics-macro` - derive approach
-- `apps/team-metrics-custom` - manual approach
+### Option 3: Implementing for Non-CRDT Types
+
+**Use case:** Types that are atomically replaced (whole-value LWW)
+
+```rust
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
+pub struct FileMetadata {
+    filename: String,
+    size: u64,
+    uploaded_at: u64,  // Timestamp for ordering
+}
+
+impl Mergeable for FileMetadata {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // LWW based on uploaded_at timestamp
+        // This is safe because FileMetadata is written atomically
+        if other.uploaded_at > self.uploaded_at {
+            *self = other.clone();  // Replace entire struct
+        }
+        Ok(())
+    }
+}
+```
+
+**When this is safe:**
+- ✅ Struct has an intrinsic timestamp field for ordering
+- ✅ Entire struct is written atomically (not field-by-field)
+- ✅ LWW semantics make sense for the domain
+
+**When to avoid:**
+- ❌ Fields updated independently
+- ❌ No timestamp for ordering
+- ❌ Need field-level merge (use CRDT fields instead)
+
+---
+
+### Comparison: Derive vs Manual
+
+| Aspect              | Derive Macro           | Manual Implementation    |
+| ------------------- | ---------------------- | ------------------------ |
+| **Boilerplate**     | Zero                   | ~5-10 lines              |
+| **Flexibility**     | Standard merge only    | Full control             |
+| **Custom logic**    | Not possible           | Validation, logging, etc |
+| **When to use**     | Most cases ✅           | Special requirements     |
+| **Maintainability** | Auto-updates           | Manual updates needed    |
+| **Type safety**     | Compile-time checks    | Compile-time checks      |
+
+---
+
+### Complete Examples
+
+#### Example 1: Derive Macro (Simple)
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap};
+use calimero_storage_macros::Mergeable;
+
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,
+    bio: LwwRegister<String>,
+    post_count: Counter,
+}
+
+#[app::state]
+pub struct SocialApp {
+    users: UnorderedMap<String, UserProfile>,
+}
+```
+
+#### Example 2: Manual Implementation (With Logging)
+
+```rust
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct Metrics {
+    views: Counter,
+    clicks: Counter,
+}
+
+impl Mergeable for Metrics {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // Log before merge
+        let before = self.views.value()?;
+        
+        // Merge
+        self.views.merge(&other.views)?;
+        self.clicks.merge(&other.clicks)?;
+        
+        // Log after merge
+        let after = self.views.value()?;
+        app::log!("Views merged: {} → {}", before, after);
+        
+        Ok(())
+    }
+}
+```
+
+#### Example 3: Conditional Merge
+
+```rust
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct Config {
+    version: LwwRegister<u64>,
+    settings: UnorderedMap<String, LwwRegister<String>>,
+}
+
+impl Mergeable for Config {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // Only merge if versions compatible
+        let our_ver = *self.version;
+        let their_ver = *other.version;
+        
+        if (our_ver.max(their_ver) - our_ver.min(their_ver)) > 10 {
+            return Err(MergeError::StorageError(
+                "Version mismatch too large".to_string()
+            ));
+        }
+        
+        // Standard merge
+        self.version.merge(&other.version)?;
+        self.settings.merge(&other.settings)?;
+        
+        Ok(())
+    }
+}
+```
+
+---
+
+### Best Practices
+
+**DO:**
+- ✅ Use `#[derive(Mergeable)]` for simple structs
+- ✅ Make all fields CRDT types (Counter, LwwRegister, Map, etc.)
+- ✅ Use `LwwRegister<T>` for primitive-like fields
+- ✅ Call `.merge()` on every field (derive does this automatically)
+- ✅ Add custom logic only when needed
+
+**DON'T:**
+- ❌ Use primitive types (String, u64) - use LwwRegister<T>
+- ❌ Skip merging fields (will lose updates)
+- ❌ Implement complex logic (keep it simple)
+- ❌ Forget error handling (use `?`)
+
+---
+
+### Migration from Old Code
+
+**Before (primitives - causes divergence):**
+```rust
+#[derive(Mergeable)]  // Won't compile anymore!
+pub struct User {
+    name: String,      // ❌ ERROR
+    age: u64,          // ❌ ERROR
+}
+```
+
+**After (CRDTs - compile-time safe):**
+```rust
+#[derive(Mergeable)]
+pub struct User {
+    name: LwwRegister<String>,  // ✅ Works
+    age: LwwRegister<u64>,      // ✅ Works
+}
+
+// Usage with auto-casting:
+user.name = "Alice".to_owned().into();  // .into() converts to LwwRegister
+let s: &str = &*user.name;              // Deref for access
+```
+
+---
+
+### Real-World Examples
+
+**See these apps for complete examples:**
+- `apps/team-metrics-macro` - Using `#[derive(Mergeable)]`
+- `apps/team-metrics-custom` - Manual implementation with logging
+- `apps/collaborative-editor` - Complex nested CRDTs
+- `apps/nested-crdt-test` - All nesting patterns
 
 ---
 
@@ -653,75 +898,90 @@ pub struct UserProfile {
 
 ### Merge Behavior
 
-**🚨 CRITICAL WARNING: Primitives Can Cause State Divergence!**
+**✅ COMPILE-TIME SAFETY: Primitives Do NOT Implement Mergeable**
+
+Primitives (String, u64, bool, etc.) were **intentionally removed** from implementing `Mergeable`:
 
 ```rust
-impl Mergeable for String {
+// This code is intentionally NOT included:
+// impl Mergeable for String { ... }  // ❌ Removed!
+
+// Users MUST use LwwRegister instead:
+#[derive(Mergeable)]
+pub struct App {
+    name: LwwRegister<String>,  // ✅ Required!
+}
+```
+
+**Why primitives were removed:**
+
+Primitives would cause **permanent state divergence**:
+```
+Node A: name = "Alice", receives "Bob" → "Bob"
+Node B: name = "Bob", receives "Alice" → "Alice"
+Result: Nodes NEVER converge! ❌
+```
+
+Because simple LWW (`*self = other`) is NOT commutative:
+- ❌ `merge(A, B) ≠ merge(B, A)`
+- ❌ Violates CRDT convergence property
+- ❌ Production applications would have inconsistent state
+
+**Now prevented at compile time!**
+```rust
+#[derive(Mergeable)]
+pub struct App {
+    name: String,  // ❌ Compiler error!
+}
+// error[E0277]: the trait bound `String: Mergeable` is not satisfied
+```
+
+### When Can You Use Primitives?
+
+**Only in non-synchronized contexts:**
+
+1. **Private data** (node-local, not replicated):
+```rust
+#[app::private]  // NOT synchronized!
+pub struct LocalCache {
+    cache: UnorderedMap<String, String>,  // ✅ OK - primitives work here
+    temp_data: String,                     // ✅ OK - not replicated
+}
+```
+
+2. **Synchronized state** requires CRDTs:
+```rust
+#[app::state]  // Synchronized across nodes!
+pub struct App {
+    data: UnorderedMap<String, String>,  // ❌ ERROR: Won't compile!
+}
+// error[E0277]: the trait bound `String: Mergeable` is not satisfied
+
+// Fix:
+#[app::state]
+pub struct App {
+    data: UnorderedMap<String, LwwRegister<String>>,  // ✅ Works!
+}
+```
+
+3. **Inside atomically-replaced structs:**
+```rust
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
+pub struct FileMetadata {
+    filename: String,     // OK - struct has LWW impl
+    size: u64,
+    uploaded_at: u64,
+}
+
+// Custom Mergeable that replaces whole struct
+impl Mergeable for FileMetadata {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        *self = other.clone();  // Always takes "other" - NOT COMMUTATIVE!
+        if other.uploaded_at > self.uploaded_at {
+            *self = other.clone();  // Atomic replacement
+        }
+        Ok(())
     }
 }
-```
-
-**The fatal flaw:**
-```
-Initial state: Both nodes synced
-
-Node A: name = "Alice"
-Node B: name = "Bob" (concurrent update to same field)
-
-After sync:
-Node A receives "Bob" from B: "Alice".merge(&"Bob") → "Bob"
-Node B receives "Alice" from A: "Bob".merge(&"Alice") → "Alice"
-
-RESULT: PERMANENT STATE DIVERGENCE! 🚨
-- Node A: name = "Bob"
-- Node B: name = "Alice"
-- Nodes NEVER converge to same state
-```
-
-**Why this violates CRDT properties:**
-- ❌ **Not commutative**: merge(A, B) ≠ merge(B, A)
-- ❌ **No convergence**: Nodes end up in different states
-- ❌ **No timestamps**: Can't determine ordering
-- ❌ **Breaks distributed guarantees**: Application state becomes inconsistent
-
-**This is a critical bug pattern that will break production systems!**
-
-### When to Use Primitives
-
-**✅ ONLY Safe use cases (very limited!):**
-
-1. **Immutable fields** - Set once, never modified:
-```rust
-#[derive(Mergeable)]
-pub struct Document {
-    id: String,           // Set once at creation, never changes
-    created_at: u64,      // Immutable timestamp
-    author_id: String,    // Set once, immutable
-}
-// Safe because no concurrent modifications possible
-```
-
-2. **Single-writer fields** - Only one specific node modifies:
-```rust
-#[derive(Mergeable)]
-pub struct NodeStatus {
-    node_id: String,      // Each node only updates its own
-    last_heartbeat: u64,  // Only this node updates this
-}
-// Safe because no concurrent writes to same field
-```
-
-3. **Different fields per node** - Partitioned by node:
-```rust
-#[derive(Mergeable)]
-pub struct UserSettings {
-    theme: String,           // User A updates
-    language: String,        // User B updates  
-    timezone: String,        // User C updates
-}
-// Each user updates their own fields → No conflicts!
 ```
 
 
@@ -867,20 +1127,24 @@ pub struct SmartDocument {
 
 ### Summary
 
-**🚨 Primitives are DANGEROUS - can cause state divergence:**
-- ❌ **NOT a proper CRDT**: Violates convergence property
-- ❌ **State divergence**: Nodes end up in different states permanently
-- ❌ **No timestamps**: Can't determine ordering
-- ❌ **Not commutative**: merge(A,B) ≠ merge(B,A)
-- ⚠️ **ONLY safe for**: Immutable fields or single-writer scenarios
-- ❌ **DO NOT use in production** if any concurrent updates possible
+**✅ Primitives NOT allowed in synchronized state - Compile-time safety!**
+- ✅ **Prevented at compile time**: `String: Mergeable` not satisfied
+- ✅ **No state divergence possible**: Can't compile broken code
+- ✅ **Clear error messages**: Compiler tells you to use LwwRegister
+- ✅ **Production-safe by default**: No way to accidentally break CRDTs
 
-**For ANY field that might have concurrent updates:**
-- ✅ **MUST use** `LwwRegister<T>` for proper timestamps and convergence
-- ✅ Use specialized CRDTs (`Counter`, `RGA`) for specific use cases
-- ✅ Never use bare primitives in multi-writer scenarios
+**For synchronized state fields:**
+- ✅ **MUST use** `LwwRegister<T>` for string/numeric fields
+- ✅ Use specialized CRDTs (`Counter` for incrementing, `RGA` for text)
+- ✅ Use collections (`UnorderedMap`, `Vector`, `UnorderedSet`)
+- ✅ Auto-casting with `.into()`: `"value".to_owned().into()` → `LwwRegister<String>`
 
-**The golden rule:** When in doubt, use `LwwRegister<T>` instead of primitives!
+**Primitives ONLY work in:**
+- ✅ `#[app::private]` data (node-local, not synchronized)
+- ✅ Inside custom `Mergeable` impls with proper timestamps
+- ❌ NOT in `#[app::state]` or synchronized collections
+
+**The golden rule:** All synchronized fields must be CRDT types!
 
 ---
 

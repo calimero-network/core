@@ -13,50 +13,48 @@ use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, Unorder
 use crate::store::StorageAdaptor;
 
 // ============================================================================
-// Primitive Types - Implement Mergeable with LWW semantics
+// Primitive Types - NOT Mergeable (By Design)
 // ============================================================================
 
-// For primitive types, we can't do true CRDT merging because they don't have
-// timestamps or other metadata. We implement Mergeable with simple LWW semantics
-// to allow them to be used in nested CRDT structures like Map<K, String>.
+// Primitive types (String, u64, bool, etc.) do NOT implement Mergeable because:
 //
-// **Important:** This is a fallback! For proper conflict resolution with timestamps,
-// use LwwRegister<T> instead of bare primitives.
+// 1. **State Divergence:** Simple LWW (*self = other) is NOT commutative
+//    - merge(A, B) ≠ merge(B, A)
+//    - Nodes end up in different states permanently
+//    - Violates fundamental CRDT convergence property
 //
-// Performance: O(1) - just overwrites the value
-// Correctness: LWW (may lose concurrent updates to same field)
-// When called: Only during root-level merge (rare)
+// 2. **No Timestamps:** Primitives lack metadata to determine ordering
+//    - Can't tell which update is "latest"
+//    - Arbitrary conflict resolution
+//
+// 3. **Production Risk:** Silent state divergence breaks distributed apps
+//
+// **SOLUTION: Use LwwRegister<T> instead!**
+//
+// ✅ Correct:
+//   #[app::state]
+//   pub struct App {
+//       name: LwwRegister<String>,  // Proper timestamps + convergence
+//       age: LwwRegister<u64>,      // Deterministic conflict resolution
+//   }
+//
+// ❌ Wrong (won't compile):
+//   pub struct App {
+//       name: String,  // ERROR: String doesn't implement Mergeable
+//       age: u64,      // ERROR: u64 doesn't implement Mergeable
+//   }
+//
+// **Ergonomics:** LwwRegister has Deref, AsRef, From, Borrow traits
+// so usage is nearly identical to primitives:
+//
+//   let s: &str = &*app.name;           // Deref
+//   process(app.name.as_ref());          // AsRef
+//   app.name = "value".to_owned().into(); // From
+//
+// See: crates/storage/README.md for full documentation on state divergence issue.
 
-macro_rules! impl_mergeable_lww {
-    ($($t:ty),*) => {
-        $(
-            impl Mergeable for $t {
-                fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-                    // LWW: just take the other value
-                    // ⚠️  Warning: This loses information! Use LwwRegister<T> for proper timestamps
-                    *self = other.clone();
-                    Ok(())
-                }
-            }
-        )*
-    };
-}
-
-// Implement for common primitive types
-impl_mergeable_lww!(String, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, bool, char);
-
-// Note: Vec and Option Mergeable implementations commented out for now
-// They require Clone which creates issues with collections
-// Most apps don't have Vec/Option at root level anyway
-// Can be re-enabled if needed with proper Clone implementations
-
-// impl<T: Clone> Mergeable for Vec<T> {
-//     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-//         // LWW for vectors: take the other value
-//         *self = other.clone();
-//         Ok(())
-//     }
-// }
+// Note: Vec is also not Mergeable for same reason
+// Use Vector<T> CRDT collection instead
 
 impl<T: Mergeable + Clone> Mergeable for Option<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {

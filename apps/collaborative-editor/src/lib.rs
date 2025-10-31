@@ -11,7 +11,7 @@
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
-use calimero_storage::collections::{Counter, ReplicatedGrowableArray, UnorderedMap};
+use calimero_storage::collections::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap};
 
 // === DATA STRUCTURES ===
 
@@ -31,7 +31,7 @@ pub struct EditorState {
 
     /// Metadata (title, owner) stored as CRDT UnorderedMap to prevent divergence
     /// Keys: "title", "owner"
-    pub metadata: UnorderedMap<String, String>,
+    pub metadata: UnorderedMap<String, LwwRegister<String>>,
 }
 
 /// Events emitted by the collaborative editor
@@ -99,8 +99,8 @@ impl EditorState {
         app::log!("Initializing collaborative editor: {} by {}", title, owner);
 
         let mut metadata = UnorderedMap::new();
-        let _ = metadata.insert("title".to_string(), title.clone());
-        let _ = metadata.insert("owner".to_string(), owner.clone());
+        let _ = metadata.insert("title".to_string(), title.clone().into());
+        let _ = metadata.insert("owner".to_string(), owner.clone().into());
 
         let state = EditorState {
             document: ReplicatedGrowableArray::new(),
@@ -230,7 +230,7 @@ impl EditorState {
         let old_title = self.get_title();
 
         self.metadata
-            .insert("title".to_string(), new_title.clone())
+            .insert("title".to_string(), new_title.clone().into())
             .map_err(|e| format!("Failed to update title: {:?}", e))?;
 
         app::log!(
@@ -258,6 +258,7 @@ impl EditorState {
             .get("title")
             .ok()
             .flatten()
+            .map(|v| v.get().clone())
             .unwrap_or_else(|| "Untitled Document".to_string())
     }
 
@@ -288,6 +289,7 @@ impl EditorState {
             .get("owner")
             .ok()
             .flatten()
+            .map(|v| v.get().clone())
             .unwrap_or_else(|| "Unknown".to_string());
 
         Ok(format!(
