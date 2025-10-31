@@ -6448,6 +6448,7 @@ dependencies = [
 name = "merodb"
 version = "0.1.0"
 dependencies = [
+ "axum 0.7.9",
  "borsh",
  "calimero-store",
  "calimero-wasm-abi",
@@ -6455,7 +6456,9 @@ dependencies = [
  "eyre",
  "hex",
  "rocksdb",
+ "serde",
  "serde_json",
+ "tokio",
  "wasmparser 0.118.2",
 ]
 
