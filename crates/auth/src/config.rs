@@ -182,10 +182,6 @@ impl Default for CorsConfig {
 /// Security configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
-    /// Rate limiting settings
-    #[serde(default)]
-    pub rate_limit: RateLimitConfig,
-
     /// Maximum request body size in bytes
     #[serde(default = "default_max_body_size")]
     pub max_body_size: usize,
@@ -193,14 +189,6 @@ pub struct SecurityConfig {
     /// Security headers configuration
     #[serde(default)]
     pub headers: SecurityHeadersConfig,
-}
-
-/// Rate limit configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RateLimitConfig {
-    /// Requests per minute
-    #[serde(default = "default_rate_limit_rpm")]
-    pub rate_limit_rpm: u32,
 }
 
 /// Security headers configuration
@@ -258,17 +246,8 @@ pub struct ContentSecurityPolicyConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            rate_limit: RateLimitConfig::default(),
             max_body_size: default_max_body_size(),
             headers: SecurityHeadersConfig::default(),
-        }
-    }
-}
-
-impl Default for RateLimitConfig {
-    fn default() -> Self {
-        Self {
-            rate_limit_rpm: default_rate_limit_rpm(),
         }
     }
 }
@@ -300,10 +279,6 @@ impl Default for ContentSecurityPolicyConfig {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_rate_limit_rpm() -> u32 {
-    1000 // 1000 requests per minute
 }
 
 fn default_max_body_size() -> usize {

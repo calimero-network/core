@@ -54,7 +54,7 @@ impl AtomicUnit for Page {}
 impl Data for Page {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         btree_map! {
-            "Paragraphs".to_owned(): MainInterface::child_info_for(self.id(), &self.paragraphs).unwrap_or_default(),
+            "Paragraphs".to_owned(): MainInterface::child_info_for(self.id()).unwrap_or_default(),
         }
     }
 
@@ -115,10 +115,6 @@ impl Paragraphs {
 
 impl Collection for Paragraphs {
     type Child = Paragraph;
-
-    fn name(&self) -> &'static str {
-        "Paragraphs"
-    }
 }
 
 /// A simple person example struct. No children.

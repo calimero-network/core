@@ -141,7 +141,7 @@ pub(crate) mod mocked {
     type Scope = usize;
 
     thread_local! {
-        static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
+        pub(crate) static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     }
 
     /// The mocked storage system.

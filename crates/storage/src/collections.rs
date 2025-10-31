@@ -41,7 +41,7 @@ pub use error::StoreError;
 
 // fixme! macro expects `calimero_storage` to be in deps
 use crate as calimero_storage;
-use crate::address::{Id, Path};
+use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element};
 use crate::interface::{Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
@@ -54,45 +54,6 @@ fn compute_id(parent: Id, key: &[u8]) -> Id {
     hasher.update(key);
     Id::new(hasher.finalize().into())
 }
-
-mod compat {
-    use std::collections::BTreeMap;
-
-    use borsh::{BorshDeserialize, BorshSerialize};
-
-    use crate::entities::{ChildInfo, Collection, Data, Element};
-
-    /// Thing.
-    #[derive(Copy, Clone, Debug)]
-    pub(super) struct RootHandle;
-
-    #[derive(BorshSerialize, BorshDeserialize)]
-    pub(super) struct RootChildDud;
-
-    impl Data for RootChildDud {
-        fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
-            unimplemented!()
-        }
-
-        fn element(&self) -> &Element {
-            unimplemented!()
-        }
-
-        fn element_mut(&mut self) -> &mut Element {
-            unimplemented!()
-        }
-    }
-
-    impl Collection for RootHandle {
-        type Child = RootChildDud;
-
-        fn name(&self) -> &str {
-            "no collection, remove this nonsense"
-        }
-    }
-}
-
-use compat::RootHandle;
 
 #[derive(BorshSerialize, BorshDeserialize)]
 struct Collection<T, S: StorageAdaptor = MainStorage> {
@@ -150,15 +111,14 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
         let mut this = Self {
             children_ids: RefCell::new(None),
-            storage: Element::new(&Path::new("::unused").expect("valid path"), Some(id)),
+            storage: Element::new(Some(id)),
             _priv: PhantomData,
         };
 
         if id.is_root() {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
         } else {
-            let _ =
-                <Interface<S>>::add_child_to(*ROOT_ID, &RootHandle, &mut this).expect("add child");
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
         }
 
         this
@@ -166,13 +126,11 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     /// Inserts an item into the collection.
     fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
-        let path = self.path();
-
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
             item,
-            storage: Element::new(&path, id),
+            storage: Element::new(id),
         };
 
         collection.insert(&mut entry)?;
@@ -246,7 +204,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             // Try to load children from index
             // After CRDT sync, newly created collections might not have index entries yet
             // In that case, start with an empty set
-            let children = match <Interface<S>>::child_info_for(self.id(), &RootHandle) {
+            let children = match <Interface<S>>::child_info_for(self.id()) {
                 Ok(info) => info.into_iter().map(|c| c.id()).collect(),
                 Err(StorageError::IndexNotFound(_)) => {
                     // Collection was just created/synced, no children yet
@@ -286,8 +244,7 @@ where
                 self.entry.id(),
             )))?;
 
-        let _ =
-            <Interface<S>>::remove_child_from(self.collection.id(), &RootHandle, self.entry.id())?;
+        let _ = <Interface<S>>::remove_child_from(self.collection.id(), self.entry.id())?;
 
         let _ = self
             .collection
@@ -345,7 +302,7 @@ where
     }
 
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
-        let _ = <Interface<S>>::add_child_to(self.collection.id(), &RootHandle, item)?;
+        let _ = <Interface<S>>::add_child_to(self.collection.id(), item)?;
 
         let _ignored = self.collection.children_cache()?.insert(item.id());
 
@@ -356,7 +313,7 @@ where
         let children = self.collection.children_cache()?;
 
         for child in children.drain(..) {
-            let _ = <Interface<S>>::remove_child_from(self.collection.id(), &RootHandle, child)?;
+            let _ = <Interface<S>>::remove_child_from(self.collection.id(), child)?;
         }
 
         Ok(())
@@ -453,14 +410,12 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Extend<(Option<Id>
 {
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn extend<I: IntoIterator<Item = (Option<Id>, T)>>(&mut self, iter: I) {
-        let path = self.path();
-
         let mut collection = CollectionMut::new(self);
 
         for (id, item) in iter {
             let mut entry = Entry {
                 item,
-                storage: Element::new(&path, id),
+                storage: Element::new(id),
             };
 
             collection
