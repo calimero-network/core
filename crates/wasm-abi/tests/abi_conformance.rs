@@ -3,7 +3,10 @@ use calimero_wasm_abi::schema::TypeRef;
 use syn::parse_file;
 
 #[test]
-#[ignore = "Emitter functionality not fully implemented in simplified version"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Test includes inline source code for comprehensive ABI validation"
+)]
 fn test_abi_conformance_emitter() {
     // Parse the abi_conformance lib.rs file
     let source_code = r#"

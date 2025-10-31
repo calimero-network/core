@@ -9,6 +9,8 @@ pub struct Manifest {
     pub types: BTreeMap<String, TypeDef>,
     pub methods: Vec<Method>,
     pub events: Vec<Event>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_root: Option<String>,
 }
 
 impl Default for Manifest {
@@ -18,6 +20,7 @@ impl Default for Manifest {
             types: BTreeMap::new(),
             methods: Vec::new(),
             events: Vec::new(),
+            state_root: None,
         }
     }
 }
@@ -225,6 +228,7 @@ impl Manifest {
             types: BTreeMap::new(),
             methods: Vec::new(),
             events: Vec::new(),
+            state_root: None,
         }
     }
 }
@@ -338,9 +342,9 @@ mod tests {
 
         // Add a simple method
         manifest.methods.push(Method {
-            name: "test_method".to_string(),
+            name: "test_method".to_owned(),
             params: vec![Parameter {
-                name: "param1".to_string(),
+                name: "param1".to_owned(),
                 type_: TypeRef::string(),
                 nullable: None,
             }],
@@ -354,6 +358,7 @@ mod tests {
         let deserialized: Manifest = serde_json::from_str(&json).unwrap();
 
         assert_eq!(manifest.schema_version, deserialized.schema_version);
+        assert_eq!(manifest.state_root, deserialized.state_root);
         assert_eq!(manifest.methods.len(), deserialized.methods.len());
         assert_eq!(manifest.methods[0].name, deserialized.methods[0].name);
     }
@@ -378,5 +383,6 @@ mod tests {
         assert_eq!(manifest.schema_version, "wasm-abi/1");
         assert_eq!(manifest.methods.len(), 1);
         assert_eq!(manifest.methods[0].name, "test_method");
+        assert!(manifest.state_root.is_none());
     }
 }

@@ -28,10 +28,6 @@ vary_header = true  # Match addvaryheader from docker-compose
 # Request size limits (in bytes)
 max_body_size = 1048576          # 1MB default request body size limit
 
-# Rate limiting settings
-[security.rate_limit]
-rate_limit_rpm = 2000            # Requests per minute (increased from 1000)
-
 # Security headers configuration
 [security.headers]
 enabled = true
