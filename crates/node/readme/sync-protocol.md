@@ -436,28 +436,28 @@ if our_hash != their_hash {
 
 ### Latency
 
-| Scenario | Latency | Notes |
-|----------|---------|-------|
-| **Gossipsub (good network)** | 100-200ms | Primary path |
-| **Gossipsub (packet loss)** | 10-30s | Falls back to periodic sync |
-| **Periodic sync** | 10-30s | Configurable |
-| **Full state sync** | 1-5s | Future: for large state |
+| Scenario                      | Latency   | Notes                        |
+|-------------------------------|-----------|------------------------------|
+| **Gossipsub (good network)**  | 100-200ms | Primary path                 |
+| **Gossipsub (packet loss)**   | 10-30s    | Falls back to periodic sync  |
+| **Periodic sync**             | 10-30s    | Configurable                 |
+| **Full state sync**           | 1-5s      | Future: for large state      |
 
 ### Throughput
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **Deltas/sec** | 100-1000 | Per context |
-| **Contexts/node** | 100-1000 | Depends on resources |
-| **Peers/context** | 20-50 | Gossipsub works best |
+| Metric             | Value    | Notes                |
+|--------------------|----------|----------------------|
+| **Deltas/sec**     | 100-1000 | Per context          |
+| **Contexts/node**  | 100-1000 | Depends on resources |
+| **Peers/context**  | 20-50    | Gossipsub works best |
 
 ### Memory
 
-| Component | Size | Notes |
-|-----------|------|-------|
-| **DAG per context** | 5-10MB | ~1000 deltas @ 5KB each |
-| **Pending deltas** | 0-500KB | Temporary buffer |
-| **Total per node** | 500MB-1GB | For 100 contexts |
+| Component            | Size      | Notes                   |
+|----------------------|-----------|-------------------------|
+| **DAG per context**  | 5-10MB    | ~1000 deltas @ 5KB each |
+| **Pending deltas**   | 0-500KB   | Temporary buffer        |
+| **Total per node**   | 500MB-1GB | For 100 contexts        |
 
 ---
 

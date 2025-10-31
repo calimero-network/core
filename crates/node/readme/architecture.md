@@ -72,11 +72,11 @@ stateDiagram-v2
 
 **Periodic Timers**:
 
-| Timer | Interval | Purpose |
-|-------|----------|---------|
-| **Blob Eviction** | 5 min | LRU cache cleanup |
-| **Delta Cleanup** | 60 sec | Evict stale pending deltas |
-| **Hash Heartbeat** | 30 sec | Broadcast root hash for divergence detection |
+| Timer               | Interval | Purpose                                    |
+|---------------------|----------|--------------------------------------------|
+| **Blob Eviction**   | 5 min    | LRU cache cleanup                          |
+| **Delta Cleanup**   | 60 sec   | Evict stale pending deltas                 |
+| **Hash Heartbeat**  | 30 sec   | Broadcast root hash for divergence detection |
 
 **Implementation**:
 
@@ -528,13 +528,13 @@ pub async fn run_gc(
 
 ### Handler Types
 
-| Handler | File | Purpose |
-|---------|------|---------|
-| **network_event** | `network_event.rs` | Gossipsub message handling |
-| **state_delta** | `state_delta.rs` | Delta application + event execution |
-| **stream_opened** | `stream_opened.rs` | P2P stream handling |
-| **blob_protocol** | `blob_protocol.rs` | Blob sync over P2P |
-| **get_blob_bytes** | `get_blob_bytes.rs` | Blob retrieval |
+| Handler            | File                   | Purpose                              |
+|--------------------|------------------------|--------------------------------------|
+| **network_event**  | `network_event.rs`     | Gossipsub message handling           |
+| **state_delta**    | `state_delta.rs`       | Delta application + event execution  |
+| **stream_opened**  | `stream_opened.rs`     | P2P stream handling                  |
+| **blob_protocol**  | `blob_protocol.rs`     | Blob sync over P2P                   |
+| **get_blob_bytes** | `get_blob_bytes.rs`    | Blob retrieval                       |
 
 ### network_event Handler
 

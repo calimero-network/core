@@ -104,16 +104,16 @@ crates/node/
 
 ## Quick Links
 
-| I want to...                | Go to... |
-|----------------------------|----------|
-| Understand node basics     | [Main README](../README.md) |
-| Learn how sync works       | [Sync Protocol](sync-protocol.md) |
-| Handle events              | [Event Handling Guide](event-handling.md) |
-| Configure sync parameters  | [Sync Configuration](sync-configuration.md) |
-| Debug sync issues          | [Troubleshooting](troubleshooting.md) |
-| Optimize performance       | [Performance Guide](performance.md) |
-| Integrate with my app      | [Integration Guide](integration-guide.md) |
-| Understand design          | [Design Decisions](design-decisions.md) |
+| I want to...               | Go to...                                       |
+|----------------------------|------------------------------------------------|
+| Understand node basics     | [Main README](../README.md)                    |
+| Learn how sync works       | [Sync Protocol](sync-protocol.md)              |
+| Handle events              | [Event Handling Guide](event-handling.md)      |
+| Configure sync parameters  | [Sync Configuration](sync-configuration.md)    |
+| Debug sync issues          | [Troubleshooting](troubleshooting.md)          |
+| Optimize performance       | [Performance Guide](performance.md)            |
+| Integrate with my app      | [Integration Guide](integration-guide.md)      |
+| Understand design          | [Design Decisions](design-decisions.md)        |
 
 ---
 

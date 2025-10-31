@@ -60,11 +60,11 @@ pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;
 
 **Tuning**:
 
-| Environment | Recommended | Rationale |
-|-------------|-------------|-----------|
-| **Local** | 10s | Low latency, fast networks |
-| **Cloud** | 30s | Moderate latency |
-| **Satellite** | 60s | High latency (500ms+ RTT) |
+| Environment    | Recommended | Rationale                  |
+|----------------|-------------|----------------------------|
+| **Local**      | 10s         | Low latency, fast networks |
+| **Cloud**      | 30s         | Moderate latency           |
+| **Satellite**  | 60s         | High latency (500ms+ RTT)  |
 
 **Example**:
 ```rust
@@ -101,11 +101,11 @@ Context A last synced at T=0
 
 **Tuning**:
 
-| Network Size | Recommended | Rationale |
-|--------------|-------------|-----------|
-| **Small (< 10 nodes)** | 2s | Fast convergence, low overhead |
-| **Medium (10-50 nodes)** | 5s | Balanced (default) |
-| **Large (> 50 nodes)** | 10s | Reduce network load |
+| Network Size              | Recommended | Rationale                      |
+|---------------------------|-------------|--------------------------------|
+| **Small (< 10 nodes)**    | 2s          | Fast convergence, low overhead |
+| **Medium (10-50 nodes)**  | 5s          | Balanced (default)             |
+| **Large (> 50 nodes)**    | 10s         | Reduce network load            |
 
 **Example**:
 ```rust
@@ -158,12 +158,12 @@ sequenceDiagram
 
 **Tuning**:
 
-| Use Case | Recommended | Rationale |
-|----------|-------------|-----------|
-| **Dev/Testing** | 5s | Fast iteration |
-| **Production** | 10s | Balanced (default) |
-| **Low Activity** | 30s | Reduce overhead |
-| **High Activity** | 5s | Fast recovery |
+| Use Case          | Recommended | Rationale          |
+|-------------------|-------------|--------------------|
+| **Dev/Testing**   | 5s          | Fast iteration     |
+| **Production**    | 10s         | Balanced (default) |
+| **Low Activity**  | 30s         | Reduce overhead    |
+| **High Activity** | 5s          | Fast recovery      |
 
 **Example**:
 ```rust
@@ -205,11 +205,11 @@ Max memory = max_concurrent × avg_sync_size
 
 **Tuning**:
 
-| Node Resources | Recommended | Rationale |
-|----------------|-------------|-----------|
-| **Low (2GB RAM)** | 10 | Conserve memory |
-| **Medium (8GB RAM)** | 30 | Balanced (default) |
-| **High (16GB+ RAM)** | 50 | Max parallelism |
+| Node Resources        | Recommended | Rationale          |
+|-----------------------|-------------|--------------------|
+| **Low (2GB RAM)**     | 10          | Conserve memory    |
+| **Medium (8GB RAM)**  | 30          | Balanced (default) |
+| **High (16GB+ RAM)**  | 50          | Max parallelism    |
 
 **Example**:
 ```rust
@@ -244,11 +244,11 @@ pub const DEFAULT_SNAPSHOT_CHUNK_SIZE: usize = 64 * 1024;
 
 **Tuning**:
 
-| Network | Recommended | Rationale |
-|---------|-------------|-----------|
-| **Slow (mobile)** | 32 KB | Smaller packets |
-| **Normal** | 64 KB | Balanced (default) |
-| **Fast (LAN)** | 128 KB | Fewer round-trips |
+| Network           | Recommended | Rationale          |
+|-------------------|-------------|--------------------|
+| **Slow** .        | 32 KB       | Smaller packets    |
+| **Normal**        | 64 KB       | Balanced (default) |
+| **Fast (LAN)**    | 128 KB      | Fewer round-trips  |
 
 **Example**:
 ```rust
@@ -291,11 +291,11 @@ else:
 
 **Tuning**:
 
-| State Size | Recommended | Rationale |
-|------------|-------------|-----------|
-| **Small (< 1 MB)** | 256 | Delta sync cheap |
-| **Medium (1-10 MB)** | 128 | Balanced (default) |
-| **Large (> 10 MB)** | 64 | Snapshot cheaper |
+| State Size            | Recommended | Rationale          |
+|-----------------------|-------------|--------------------|
+| **Small (< 1 MB)**    | 256         | Delta sync cheap   |
+| **Medium (1-10 MB)**  | 128         | Balanced (default) |
+| **Large (> 10 MB)**   | 64          | Snapshot cheaper   |
 
 **Example**:
 ```rust
@@ -527,11 +527,11 @@ metrics::counter!("sync.type.snapshot", 1);
 
 ### Alert Thresholds
 
-| Metric | Warning | Critical |
-|--------|---------|----------|
-| `sync.operations.failure` rate | > 10% | > 25% |
-| `sync.duration` p99 | > timeout × 0.8 | > timeout |
-| `sync.concurrent` | > max_concurrent × 0.8 | > max_concurrent |
+| Metric                          | Warning                | Critical         |
+|---------------------------------|------------------------|------------------|
+| `sync.operations.failure` rate  | > 10%                  | > 25%            |
+| `sync.duration` p99             | > timeout × 0.8        | > timeout        |
+| `sync.concurrent`               | > max_concurrent × 0.8 | > max_concurrent |
 
 ---
 

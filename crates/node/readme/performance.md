@@ -23,14 +23,14 @@ Total: 15-150ms typical (100-200ms p99)
 
 **Components**:
 
-| Phase | Time | What Happens |
-|-------|------|--------------|
-| **Transaction** | 5-50ms | WASM execution + CRDT operations |
-| **Broadcast** | ~100ms | Gossipsub propagation |
-| **Reception** | <1ms | Deserialize + DAG lookup |
-| **Application** | 5-50ms | WASM `__calimero_sync_next` |
-| **Event Handlers** | 5-50ms | WASM event handler execution |
-| **WebSocket** | <1ms | Emit to connected clients |
+| Phase              | Time   | What Happens                     |
+|--------------------|--------|----------------------------------|
+| **Transaction**    | 5-50ms | WASM execution + CRDT operations |
+| **Broadcast**      | ~100ms | Gossipsub propagation            |
+| **Reception**      | <1ms   | Deserialize + DAG lookup         |
+| **Application**    | 5-50ms | WASM `__calimero_sync_next`      |
+| **Event Handlers** | 5-50ms | WASM event handler execution     |
+| **WebSocket**      | <1ms   | Emit to connected clients        |
 
 ---
 
@@ -38,21 +38,21 @@ Total: 15-150ms typical (100-200ms p99)
 
 ### Deltas per Second (per context)
 
-| Network Size | Throughput | Bottleneck |
-|--------------|------------|------------|
-| **Single node** | 1000/sec | WASM execution |
-| **10 nodes** | 100/sec | Network + WASM |
-| **50 nodes** | 50/sec | Gossipsub fanout |
-| **100+ nodes** | 20/sec | Network saturation |
+| Network Size    | Throughput | Bottleneck          |
+|-----------------|------------|---------------------|
+| **Single node** | 1000/sec   | WASM execution      |
+| **10 nodes**    | 100/sec    | Network + WASM      |
+| **50 nodes**    | 50/sec     | Gossipsub fanout    |
+| **100+ nodes**  | 20/sec     | Network saturation  |
 
 ### Contexts per Node
 
-| Contexts | Memory | CPU | Notes |
-|----------|--------|-----|-------|
-| **10** | 100 MB | 5% | Light load |
-| **100** | 1 GB | 20% | Typical production |
-| **500** | 5 GB | 50% | High load |
-| **1000+** | 10GB+ | 80%+ | Requires tuning |
+| Contexts  | Memory | CPU  | Notes              |
+|-----------|--------|------|--------------------|
+| **10**    | 100 MB | 5%   | Light load         |
+| **100**   | 1 GB   | 20%  | Typical production |
+| **500**   | 5 GB   | 50%  | High load          |
+| **1000+** | 10GB+  | 80%+ | Requires tuning    |
 
 ---
 
@@ -87,13 +87,13 @@ Total: ~1.7 GB for 100 contexts
 
 ### Breakdown
 
-| Component | % of CPU | Notes |
-|-----------|----------|-------|
-| **WASM Execution** | 60% | Dominant cost |
-| **Serialization** | 15% | Borsh encode/decode |
-| **DAG Operations** | 10% | Hash lookups, cascade |
-| **Network** | 10% | Gossipsub + P2P |
-| **Other** | 5% | Timers, logging |
+| Component           | % of CPU | Notes                  |
+|---------------------|----------|------------------------|
+| **WASM Execution**  | 60%      | Dominant cost          |
+| **Serialization**   | 15%      | Borsh encode/decode    |
+| **DAG Operations**  | 10%      | Hash lookups, cascade  |
+| **Network**         | 10%      | Gossipsub + P2P        |
+| **Other**           | 5%       | Timers, logging        |
 
 ### Optimization
 
@@ -139,11 +139,11 @@ Frequency: Every 10-30s per context
 
 ### Hit Rate
 
-| Scenario | Hit Rate | Notes |
-|----------|----------|-------|
-| **Static content** | 90%+ | Images, assets |
-| **Dynamic content** | 50-70% | Frequently changing |
-| **One-time access** | 0% | Downloads |
+| Scenario             | Hit Rate | Notes               |
+|----------------------|----------|---------------------|
+| **Static content**   | 90%+     | Images, assets      |
+| **Dynamic content**  | 50-70%   | Frequently changing |
+| **One-time access**  | 0%       | Downloads           |
 
 ### Eviction Strategy
 
@@ -164,11 +164,11 @@ Total eviction time: ~2 ms for 100 blobs
 
 ## Periodic Timer Overhead
 
-| Timer | Frequency | CPU | Memory |
-|-------|-----------|-----|--------|
-| **Blob eviction** | 5 min | <1% | Frees 100-500 MB |
-| **Delta cleanup** | 60 sec | <1% | Frees 0-5 MB |
-| **Hash heartbeat** | 30 sec | <1% | ~1 KB/broadcast |
+| Timer              | Frequency | CPU | Memory           |
+|--------------------|-----------|-----|------------------|
+| **Blob eviction**  | 5 min     | <1% | Frees 100-500 MB |
+| **Delta cleanup**  | 60 sec    | <1% | Frees 0-5 MB     |
+| **Hash heartbeat** | 30 sec    | <1% | ~1 KB/broadcast  |
 
 **Total overhead**: <3% CPU, minimal impact
 

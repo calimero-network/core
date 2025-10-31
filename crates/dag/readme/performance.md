@@ -8,16 +8,16 @@ Performance characteristics, complexity analysis, and optimization guide.
 
 ### Core Operations
 
-| Operation | Best Case | Average Case | Worst Case | Notes |
-|-----------|-----------|--------------|------------|-------|
-| `add_delta` (ready) | O(1) | O(1) | O(P) | P = pending count (cascade) |
-| `add_delta` (pending) | O(1) | O(1) | O(1) | Just buffer |
-| `can_apply` | O(1) | O(k) | O(k) | k = parent count (~1-3) |
-| `get_heads` | O(H) | O(H) | O(H) | H = head count (~1-10) |
-| `get_missing_parents` | O(P × k) | O(P × k) | O(P × k) | Scan all pending |
-| `cleanup_stale` | O(P) | O(P) | O(P) | Filter pending map |
-| `get_deltas_since` | O(D) | O(D) | O(D) | D = deltas since ancestor |
-| `pending_stats` | O(P × k) | O(P × k) | O(P × k) | Sum missing parents |
+| Operation              | Best Case | Average Case | Worst Case | Notes                       |
+|------------------------|-----------|--------------|------------|-----------------------------|
+| `add_delta` (ready)    | O(1)      | O(1)         | O(P)       | P = pending count (cascade) |
+| `add_delta` (pending)  | O(1)      | O(1)         | O(1)       | Just buffer                 |
+| `can_apply`            | O(1)      | O(k)         | O(k)       | k = parent count (~1-3)     |
+| `get_heads`            | O(H)      | O(H)         | O(H)       | H = head count (~1-10)      |
+| `get_missing_parents`  | O(P × k)  | O(P × k)     | O(P × k)   | Scan all pending            |
+| `cleanup_stale`        | O(P)      | O(P)         | O(P)       | Filter pending map          |
+| `get_deltas_since`     | O(D)      | O(D)         | O(D)       | D = deltas since ancestor   |
+| `pending_stats`        | O(P × k)  | O(P × k)     | O(P × k)   | Sum missing parents         |
 
 **Legend**:
 - P = pending delta count
@@ -146,13 +146,13 @@ pub struct DagStore<T> {
 
 **For 1000 applied deltas** (typical per context):
 
-| Component | Count | Size per Item | Total Size |
-|-----------|-------|---------------|------------|
-| `deltas` map | 1000 | 5.1 KB | 5.1 MB |
-| `applied` set | 1000 | 32 bytes | 32 KB |
-| `pending` map | 0-100 | 5.1 KB + 16 bytes | 0-510 KB |
-| `heads` set | 1-10 | 32 bytes | 32-320 bytes |
-| **Total** | | | **~5-6 MB** |
+| Component      | Count  | Size per Item      | Total Size   |
+|----------------|--------|--------------------|--------------|
+| `deltas` map   | 1000   | 5.1 KB             | 5.1 MB       |
+| `applied` set  | 1000   | 32 bytes           | 32 KB        |
+| `pending` map  | 0-100  | 5.1 KB + 16 bytes  | 0-510 KB     |
+| `heads` set    | 1-10   | 32 bytes           | 32-320 bytes |
+| **Total**      |        |                    | **~5-6 MB**  |
 
 **Memory growth**:
 - **Linear** with delta count
@@ -274,16 +274,16 @@ let evicted = dag.cleanup_stale(Duration::from_millis(500));
 
 **Context**: CRDT-based collaborative app with 20 nodes
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **Deltas per context** | ~1000 | After 1 hour of activity |
-| **Pending count** | 0-5 | Rarely > 1 |
-| **Head count** | 1-2 | Occasional forks |
-| **Memory per context** | 5-8 MB | Depends on payload size |
-| **Delta apply latency** | < 1 ms | Excludes WASM execution |
-| **Cascade frequency** | ~5% | Most deltas don't cascade |
-| **Cleanup interval** | 60 sec | Every minute |
-| **Stale deltas evicted** | 0-2 | Rarely > 0 |
+| Metric                   | Value  | Notes                     |
+|--------------------------|--------|---------------------------|
+| **Deltas per context**   | ~1000  | After 1 hour of activity  |
+| **Pending count**        | 0-5    | Rarely > 1                |
+| **Head count**           | 1-2    | Occasional forks          |
+| **Memory per context**   | 5-8 MB | Depends on payload size   |
+| **Delta apply latency**  | < 1 ms | Excludes WASM execution   |
+| **Cascade frequency**    | ~5%    | Most deltas don't cascade |
+| **Cleanup interval**     | 60 sec | Every minute              |
+| **Stale deltas evicted** | 0-2    | Rarely > 0                |
 
 ### Bottlenecks Observed
 
@@ -508,12 +508,12 @@ async fn apply_pending(&mut self, applier: &impl DeltaApplier<T>) -> Result<()> 
 
 **Performance Differences**:
 
-| Operation | Git | Calimero DAG | Winner |
-|-----------|-----|--------------|--------|
-| Add commit | O(1) | O(1) to O(P) | Tie |
-| Find merge base | O(N log N) | N/A | - |
-| Check history | O(N) | O(D) | DAG |
-| Garbage collect | O(N) | O(P) | DAG |
+| Operation        | Git        | Calimero DAG | Winner |
+|------------------|------------|--------------|--------|
+| Add commit       | O(1)       | O(1) to O(P) | Tie    |
+| Find merge base  | O(N log N) | N/A          | -      |
+| Check history    | O(N)       | O(D)         | DAG    |
+| Garbage collect  | O(N)       | O(P)         | DAG    |
 
 **Why DAG is faster**:
 - In-memory (Git is disk-based)
@@ -534,12 +534,12 @@ async fn apply_pending(&mut self, applier: &impl DeltaApplier<T>) -> Result<()> 
 
 **Performance Differences**:
 
-| Operation | Native CRDT | DAG + CRDT | Winner |
-|-----------|-------------|------------|--------|
-| Apply op | O(1) to O(N) | O(1) to O(P) | Tie |
-| Merge | O(N) | O(1) | **DAG** |
-| Sync | O(N log N) | O(D) | **DAG** |
-| Memory | O(N) | O(N + D) | CRDT |
+| Operation | Native CRDT  | DAG + CRDT   | Winner  |
+|-----------|--------------|--------------|---------|
+| Apply op  | O(1) to O(N) | O(1) to O(P) | Tie     |
+| Merge     | O(N)         | O(1)         | **DAG** |
+| Sync      | O(N log N)   | O(D)         | **DAG** |
+| Memory    | O(N)         | O(N + D)     | CRDT    |
 
 **DAG advantages**:
 - Explicit causal relationships
@@ -617,13 +617,13 @@ metrics::gauge!("dag.missing_parents", pending.total_missing_parents as f64);
 
 ### Alert Thresholds
 
-| Metric | Warning | Critical | Action |
-|--------|---------|----------|--------|
-| `pending_count` | > 50 | > 100 | Trigger state sync |
-| `oldest_pending_secs` | > 300 | > 600 | Check network |
-| `head_count` | > 5 | > 10 | Create merge delta |
-| `missing_parents` | > 10 | > 50 | Request from peers |
-| `memory_mb` | > 100 | > 500 | Enable pruning |
+| Metric                 | Warning | Critical | Action             |
+|------------------------|---------|----------|--------------------|
+| `pending_count`        | > 50    | > 100    | Trigger state sync |
+| `oldest_pending_secs`  | > 300   | > 600    | Check network      |
+| `head_count`           | > 5     | > 10     | Create merge delta |
+| `missing_parents`      | > 10    | > 50     | Request from peers |
+| `memory_mb`            | > 100   | > 500    | Enable pruning     |
 
 ---
 

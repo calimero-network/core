@@ -8,16 +8,16 @@ Comprehensive guide to testing DAG behavior and integration.
 
 The DAG has **31 tests** covering all critical scenarios:
 
-| Category | Tests | Coverage |
-|----------|-------|----------|
-| **Basic Functionality** | 4 | Creation, linear sequences, duplicates |
-| **Out-of-Order** | 4 | Buffering, cascade, deep chains |
-| **Concurrent Updates** | 5 | Forks, merges, complex topology |
-| **Error Handling** | 2 | Apply failures, recovery |
-| **Pending Management** | 4 | Stats, cleanup, missing parents |
-| **Query & Inspection** | 4 | has_delta, get_delta, get_deltas_since |
-| **Stress Tests** | 3 | 100+ deltas, branches, chains |
-| **Extreme Stress** | 5 | 500-1000 deltas, random order |
+| Category                | Tests | Coverage                                |
+|-------------------------|-------|-----------------------------------------|
+| **Basic Functionality** | 4     | Creation, linear sequences, duplicates  |
+| **Out-of-Order**        | 4     | Buffering, cascade, deep chains         |
+| **Concurrent Updates**  | 5     | Forks, merges, complex topology         |
+| **Error Handling**      | 2     | Apply failures, recovery                |
+| **Pending Management**  | 4     | Stats, cleanup, missing parents         |
+| **Query & Inspection**  | 4     | has_delta, get_delta, get_deltas_since  |
+| **Stress Tests**        | 3     | 100+ deltas, branches, chains           |
+| **Extreme Stress**      | 5     | 500-1000 deltas, random order           |
 
 ---
 

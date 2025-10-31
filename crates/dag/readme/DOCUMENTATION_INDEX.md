@@ -92,16 +92,16 @@ crates/dag/
 
 ## Quick Links
 
-| I want to...                | Go to... |
-|----------------------------|----------|
-| Understand DAG basics      | [Main README](../README.md) |
-| Add a delta                | [API Reference](api-reference.md#adding-deltas) |
-| Handle out-of-order        | [Architecture - Pending Buffer](architecture.md#pending-buffer) |
-| Test my integration        | [Testing Guide](testing-guide.md) |
-| Debug stuck deltas         | [Troubleshooting](troubleshooting.md#deltas-stuck-in-pending) |
-| Optimize performance       | [Performance Guide](performance.md) |
-| Understand design          | [Design Decisions](design-decisions.md) |
-| Integrate with node        | [Integration Guide](integration.md) |
+| I want to...           | Go to...                                                          |
+|------------------------|-------------------------------------------------------------------|
+| Understand DAG basics  | [Main README](../README.md)                                       |
+| Add a delta            | [API Reference](api-reference.md#adding-deltas)                   |
+| Handle out-of-order    | [Architecture - Pending Buffer](architecture.md#pending-buffer)   |
+| Test my integration    | [Testing Guide](testing-guide.md)                                 |
+| Debug stuck deltas     | [Troubleshooting](troubleshooting.md#deltas-stuck-in-pending)     |
+| Optimize performance   | [Performance Guide](performance.md)                               |
+| Understand design      | [Design Decisions](design-decisions.md)                           |
+| Integrate with node    | [Integration Guide](integration.md)                               |
 
 ---
 
