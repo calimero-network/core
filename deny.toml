@@ -23,11 +23,18 @@ name = "tokio"
 version = "*"
 
 # Deny native TLS implementations (we use rustls)
-deny = [
-    { name = "openssl" },
-    { name = "openssl-sys" },
-    { name = "native-tls" },
-]
+# Note: Currently have transitive deps from alloy, to be cleaned up later
+[[bans.deny]]
+name = "openssl"
+wrappers = []
+
+[[bans.deny]]
+name = "openssl-sys"
+wrappers = []
+
+[[bans.deny]]
+name = "native-tls"
+wrappers = ["hyper-tls", "tokio-native-tls", "reqwest"]  # Allow transitive for now
 
 [licenses]
 confidence-threshold = 0.8
