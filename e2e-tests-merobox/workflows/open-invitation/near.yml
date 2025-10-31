@@ -8,7 +8,7 @@ force_pull_image: false
 nodes:
   chain_id: calimero-testnet
   count: 3
-  image: ghcr.io/calimero-network/merod:edge
+  image: ghcr.io/calimero-network/merod:pr-1604
   prefix: open-inv-near
 
 steps:
