@@ -154,6 +154,27 @@ impl<T> std::ops::Deref for LwwRegister<T> {
     }
 }
 
+// AsRef for automatic conversion to reference
+impl<T> AsRef<T> for LwwRegister<T> {
+    fn as_ref(&self) -> &T {
+        &self.value
+    }
+}
+
+// Borrow for compatibility with HashMap, BTreeMap, etc.
+impl<T> std::borrow::Borrow<T> for LwwRegister<T> {
+    fn borrow(&self) -> &T {
+        &self.value
+    }
+}
+
+// From inner value to create LwwRegister
+impl<T> From<T> for LwwRegister<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
 // Display for easy debugging
 impl<T: std::fmt::Display> std::fmt::Display for LwwRegister<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
