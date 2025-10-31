@@ -27,7 +27,7 @@ pub struct NestedCrdtTest {
     pub registers: UnorderedMap<String, LwwRegister<String>>,
 
     /// Nested maps - field-level merge
-    pub metadata: UnorderedMap<String, UnorderedMap<String, String>>,
+    pub metadata: UnorderedMap<String, UnorderedMap<String, LwwRegister<String>>>,
 
     /// Vector of counters - element-wise merge
     pub metrics: Vector<Counter>,
@@ -152,7 +152,7 @@ impl NestedCrdtTest {
 
         drop(
             inner_map
-                .insert(inner_key.clone(), value.clone())
+                .insert(inner_key.clone(), value.clone().into())
                 .map_err(|e| format!("Inner insert failed: {:?}", e))?,
         );
 
@@ -179,6 +179,7 @@ impl NestedCrdtTest {
             .get(&inner_key)
             .map_err(|e| format!("Inner get failed: {:?}", e))?
             .ok_or_else(|| "Inner key not found".to_owned())
+            .map(|v| v.get().clone())
     }
 
     // ===== Vector Operations =====

@@ -5,14 +5,14 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::UnorderedMap;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStoreInit {
-    items: UnorderedMap<String, String>,
+    items: UnorderedMap<String, LwwRegister<String>>,
 }
 
 #[app::event]
@@ -44,15 +44,15 @@ impl KvStoreInit {
         // Add some initial data during initialization
         store
             .items
-            .insert("init_key_1".to_owned(), "Initial value 1".to_owned())
+            .insert("init_key_1".to_owned(), "Initial value 1".to_owned().into())
             .expect("Failed to insert init_key_1");
         store
             .items
-            .insert("init_key_2".to_owned(), "Initial value 2".to_owned())
+            .insert("init_key_2".to_owned(), "Initial value 2".to_owned().into())
             .expect("Failed to insert init_key_2");
         store
             .items
-            .insert("welcome".to_owned(), "Welcome to KvStoreInit!".to_owned())
+            .insert("welcome".to_owned(), "Welcome to KvStoreInit!".to_owned().into())
             .expect("Failed to insert welcome");
 
         app::log!("KvStoreInit initialized with 3 default items");
@@ -75,7 +75,7 @@ impl KvStoreInit {
             });
         }
 
-        self.items.insert(key, value)?;
+        self.items.insert(key, value.into())?;
 
         Ok(())
     }
@@ -83,7 +83,7 @@ impl KvStoreInit {
     pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
         app::log!("Getting all entries");
 
-        Ok(self.items.entries()?.collect())
+        Ok(self.items.entries()?.map(|(k, v)| (k, v.get().clone())).collect())
     }
 
     pub fn len(&self) -> app::Result<usize> {
@@ -95,14 +95,14 @@ impl KvStoreInit {
     pub fn get(&self, key: &str) -> app::Result<Option<String>> {
         app::log!("Getting key: {:?}", key);
 
-        self.items.get(key).map_err(Into::into)
+        Ok(self.items.get(key)?.map(|v| v.get().clone()))
     }
 
     pub fn get_unchecked(&self, key: &str) -> app::Result<String> {
         app::log!("Getting key without checking: {:?}", key);
 
         // this panics, which we do not recommend
-        Ok(self.items.get(key)?.expect("key not found"))
+        Ok(self.items.get(key)?.expect("key not found").get().clone())
     }
 
     pub fn get_result(&self, key: &str) -> app::Result<String> {
@@ -120,7 +120,7 @@ impl KvStoreInit {
 
         app::emit!(Event::Removed { key });
 
-        self.items.remove(key).map_err(Into::into)
+        Ok(self.items.remove(key)?.map(|v| v.get().clone()))
     }
 
     pub fn clear(&mut self) -> app::Result<()> {

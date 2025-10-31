@@ -273,6 +273,35 @@ fn normalize_generic_type(
                 ));
             }
         }
+        // CRDT types - unwrap to inner type for ABI
+        "LwwRegister" | "Counter" | "ReplicatedGrowableArray" | "Vector" | "UnorderedSet" => {
+            // These CRDT wrappers unwrap to their inner type for ABI purposes
+            // LwwRegister<T> -> T, Counter -> u64, etc.
+            
+            if ident_str == "Counter" || ident_str == "ReplicatedGrowableArray" {
+                // Counter and RGA don't have generic args (or are opaque)
+                // Counter -> u64, RGA -> string
+                if ident_str == "Counter" {
+                    return Ok(TypeRef::Scalar(ScalarType::U64));
+                } else {
+                    return Ok(TypeRef::Scalar(ScalarType::String));
+                }
+            }
+            
+            // LwwRegister<T>, Vector<T>, UnorderedSet<T> -> unwrap T
+            if args.args.is_empty() {
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {ident_str} type - expected 1 type argument"
+                )));
+            }
+            let arg = &args.args[0];
+            let GenericArgument::Type(ty) = arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid CRDT argument".to_owned(),
+                ));
+            };
+            normalize_type(ty, wasm32, resolver)
+        }
         _ => Err(NormalizeError::TypePathError(format!(
             "unknown generic type: {ident}"
         ))),

@@ -6,7 +6,7 @@ use bs58;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::UnorderedMap;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -15,7 +15,7 @@ use thiserror::Error;
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct SecretGame {
     /// Mapping of game_id -> sha256(secret) hex
-    games: UnorderedMap<String, String>,
+    games: UnorderedMap<String, LwwRegister<String>>,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -23,6 +23,7 @@ pub struct SecretGame {
 #[app::private]
 pub struct Secrets {
     /// Private mapping of game_id -> secret
+    /// Note: Private data is node-local and NOT synchronized, so we can use String directly
     secrets: UnorderedMap<String, String>,
 }
 
@@ -77,7 +78,7 @@ impl SecretGame {
         // Save public hash for guess verification in games map
         let hash = Sha256::digest(secret.as_bytes());
         let hash_hex = hex::encode(hash);
-        self.games.insert(game_id.clone(), hash_hex)?;
+        self.games.insert(game_id.clone(), hash_hex.into())?;
         app::emit!(Event::SecretSet { game_id: &game_id });
         Ok(())
     }
@@ -85,7 +86,7 @@ impl SecretGame {
     /// Allow a user to guess the secret; returns true if the guess matches the stored hash.
     /// `who` is derived from the executor identity rather than passed as an argument.
     pub fn add_guess(&self, game_id: &str, guess: String) -> app::Result<bool> {
-        let Some(public_hash_hex) = self.games.get(game_id)? else {
+        let Some(public_hash_hex) = self.games.get(game_id)?.map(|v| v.get().clone()) else {
             app::bail!(Error::NoHash);
         };
         let guess_hash = Sha256::digest(guess.as_bytes());
@@ -110,6 +111,6 @@ impl SecretGame {
 
     /// Get all public games and their secret hashes.
     pub fn games(&self) -> app::Result<BTreeMap<String, String>> {
-        Ok(self.games.entries()?.collect())
+        Ok(self.games.entries()?.map(|(k, v)| (k, v.get().clone())).collect())
     }
 }
