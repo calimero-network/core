@@ -52,6 +52,7 @@ pub struct UserProfile {
 | **UnorderedMap&lt;K,V&gt;**       | Key-value storage   | **Recursive per-entry**   | ✅ Can nest      |
 | **Vector&lt;T&gt;**               | Ordered lists       | **Element-wise**          | ✅ Can nest      |
 | **UnorderedSet&lt;T&gt;**         | Unique values       | **Union**                 | Simple values   |
+| **Option&lt;T&gt;**               | Optional CRDTs      | **Recursive if Some**     | ✅ Wrapper       |
 
 ---
 
@@ -111,6 +112,46 @@ pub struct ActivityTracker {
 
 // Vector: append-heavy workloads
 // Set: unique membership testing
+```
+
+### Pattern 5: Optional CRDT Fields
+
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,
+    bio: Option<LwwRegister<String>>,  // Optional field that merges when present
+    settings: LwwRegister<Option<Settings>>,  // LWW with optional value
+}
+
+// Option<T> is now Mergeable!
+// - Option<LwwRegister<T>>: Optional field with LWW semantics when present
+// - LwwRegister<Option<T>>: LWW decides which Option (Some/None) wins
+// - Both Some: recursively merges inner values
+// - One None, one Some: takes the Some value
+```
+
+### Pattern 6: Vector Search
+
+```rust
+#[app::state]
+pub struct TaskList {
+    tasks: Vector<Task>,
+}
+
+// Find first completed task
+let completed = tasks.find(|t| t.is_complete)?
+    .next();
+
+// Get all high priority tasks
+let high_priority: Vec<Task> = tasks
+    .filter(|t| t.priority == Priority::High)?
+    .collect();
+
+// Count pending tasks
+let pending_count = tasks
+    .filter(|t| !t.is_complete)?
+    .count();
 ```
 
 ---
@@ -343,6 +384,15 @@ A: See [Migration Guide](readme/migration.md). TL;DR: Both patterns work, choose
 **Q: What if I need custom conflict resolution?**  
 A: Implement `Mergeable` manually. See [Architecture Guide](readme/architecture.md).
 
+**Q: Can I use Option with CRDTs?**  
+A: Yes! `Option<T>` is now `Mergeable` where `T` is `Mergeable`. Use `Option<LwwRegister<T>>` for optional fields that merge when both are `Some`, or `LwwRegister<Option<T>>` for LWW semantics on optional values.
+
+**Q: How do I search a Vector?**  
+A: Use `find(predicate)` to get the first match, or `filter(predicate)` to get all matches. Both return iterators for efficient lazy evaluation.
+
+**Q: Can I use LwwRegister values directly without calling `.get()`?**  
+A: Yes! `LwwRegister` implements `Deref`, `AsRef`, `Borrow`, and `From` for seamless type conversions. Use `&*reg`, `reg.as_ref()`, or pass to functions expecting `&T` directly.
+
 ---
 
 ## Quick Reference
@@ -352,21 +402,30 @@ A: Implement `Mergeable` manually. See [Architecture Guide](readme/architecture.
 let mut counter = Counter::new();
 counter.increment()?;  // All increments sum
 
-// LwwRegister - timestamp wins
+// LwwRegister - timestamp wins with ergonomic conversions
 let mut register = LwwRegister::new("initial");
 register.set("updated");  // Latest timestamp wins
+let s: &str = &*register;  // Deref to inner value
+let len = process(register.as_ref());  // AsRef for function calls
+let reg: LwwRegister<u64> = 42.into();  // From/Into for creation
 
 // Map - entry-wise merge
 let mut map = UnorderedMap::new();
 map.insert("key", value)?;  // Concurrent inserts to different keys preserved
 
-// Vector - element-wise merge
+// Vector - element-wise merge with search
 let mut vec = Vector::new();
 vec.push(value)?;  // Concurrent appends preserved
+let first = vec.find(|v| v.id == "target")?;  // Find first match
+let matches: Vec<_> = vec.filter(|v| v.score > 100)?.collect();  // Filter all
 
 // Set - union merge
 let mut set = UnorderedSet::new();
 set.insert("value")?;  // All adds preserved (union)
+
+// Option<T> - recursive merge
+let mut opt: Option<LwwRegister<String>> = Some(LwwRegister::new("value"));
+opt.merge(&other)?;  // Merges inner values when both Some
 ```
 
 ---

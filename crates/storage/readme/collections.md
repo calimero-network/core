@@ -127,6 +127,12 @@ let mut register = LwwRegister::new("initial value");
 register.set("updated value");
 let value = register.get();  // &T
 let owned = register.into_inner();  // T
+
+// Ergonomic conversions (new!)
+let s: &str = &*register;           // Deref to &T
+let s: &String = register.as_ref(); // AsRef<T>
+let borrowed: &String = register.borrow();  // Borrow<T>
+let reg: LwwRegister<u64> = 42.into();  // From<T>
 ```
 
 ### Merge Behavior
@@ -159,6 +165,45 @@ Merge: register = "Bob" ✅ (higher node_id wins)
 - ✅ **In Maps:** `Map<K, LwwRegister<T>>` - timestamps per key
 - ✅ **In Vectors:** `Vector<LwwRegister<T>>` - timestamps per index
 - ✅ **Nested types:** `LwwRegister<CustomStruct>` works!
+- ✅ **With Option:** `Option<LwwRegister<T>>` and `LwwRegister<Option<T>>` both work!
+
+### Ergonomic Traits
+
+`LwwRegister<T>` implements several traits for seamless usage:
+
+**Deref** - Use like the inner type:
+```rust
+let reg = LwwRegister::new("Hello".to_owned());
+let s: &str = &*reg;  // Deref to &String, then to &str
+println!("Length: {}", reg.len());  // Call String methods directly
+```
+
+**AsRef<T>** - Pass to functions expecting `&T`:
+```rust
+fn process_string(s: &str) -> usize { s.len() }
+
+let reg = LwwRegister::new("test".to_owned());
+let len = process_string(reg.as_ref());  // Works!
+```
+
+**Borrow<T>** - Works with HashMap, BTreeMap:
+```rust
+use std::borrow::Borrow;
+let reg = LwwRegister::new("key".to_owned());
+let key: &String = reg.borrow();  // Compatible with std collections
+```
+
+**From<T>** - Create from values directly:
+```rust
+let reg: LwwRegister<String> = "hello".to_owned().into();
+let num_reg: LwwRegister<u64> = 42.into();
+```
+
+**Display** - Format like the inner type:
+```rust
+let reg = LwwRegister::new("Hello");
+println!("{}", reg);  // Prints: Hello
+```
 
 ### Example
 
@@ -331,6 +376,10 @@ let item = vec.pop()?;              // Remove from end
 let old = vec.update(index, item)?; // Replace at index
 let len = vec.len()?;               // Get length
 vec.clear()?;                       // Remove all
+
+// Search methods (new!)
+let first = vec.find(|item| predicate(item))?;   // Iterator with first match
+let all = vec.filter(|item| predicate(item))?;   // Iterator with all matches
 ```
 
 ### Merge Behavior
@@ -383,6 +432,51 @@ Merge: [Counter(5), Counter(5)] ✅ (merge + append)
 - ✅ **In Vectors:** `Vector<Vector<T>>` - 2D arrays
 - ✅ **Values:** `Vector<Counter>`, `Vector<LwwRegister<T>>`, etc.
 
+### Search Methods
+
+`Vector<T>` provides efficient search capabilities:
+
+**find(predicate)** - Get first matching element:
+```rust
+let tasks = Vector::<Task>::new();
+// ... populate tasks ...
+
+// Find first completed task
+let completed = tasks.find(|t| t.is_complete)?
+    .next();  // Returns Option<Task>
+
+// Find by ID
+let task = tasks.find(|t| t.id == "task-123")?
+    .next()
+    .ok_or("Not found")?;
+```
+
+**filter(predicate)** - Get all matching elements:
+```rust
+// Get all high priority tasks
+let high_priority: Vec<Task> = tasks
+    .filter(|t| t.priority == Priority::High)?
+    .collect();
+
+// Count pending tasks
+let pending_count = tasks
+    .filter(|t| !t.is_complete)?
+    .count();
+
+// Chain with other iterator methods
+let urgent_ids: Vec<String> = tasks
+    .filter(|t| t.is_urgent)?
+    .map(|t| t.id.clone())
+    .collect();
+```
+
+**Performance:**
+- Both methods return iterators (lazy evaluation)
+- `find()` stops at first match (O(k) where k is position)
+- `filter()` checks all elements (O(n))
+- Use `find()` when you need just one result
+- Use `filter()` when you need all matches
+
 ### Best Practices
 
 ```rust
@@ -391,6 +485,10 @@ metrics.push(Counter::new())?;  // Logs, time-series
 
 // ✅ Good: Index-based updates
 metrics.update(0, new_counter)?;  // Element-wise merge works!
+
+// ✅ Good: Search with predicates
+let item = vec.find(|x| x.id == "target")?.next();
+let matches: Vec<_> = vec.filter(|x| x.value > 100)?.collect();
 
 // ⚠️ Caution: Arbitrary inserts
 vec.insert_at(5, item)?;  // Position conflicts may occur
@@ -532,6 +630,170 @@ impl UserManager {
 
 ---
 
+## Option<T>
+
+**Use case:** Optional CRDT fields, nullable values with merge semantics
+
+### API
+
+`Option<T>` is now `Mergeable` when `T` is `Mergeable`:
+
+```rust
+use calimero_storage::collections::LwwRegister;
+
+// Option wrapping a CRDT
+let mut opt1: Option<LwwRegister<String>> = Some(LwwRegister::new("Alice"));
+let opt2: Option<LwwRegister<String>> = Some(LwwRegister::new("Bob"));
+opt1.merge(&opt2)?;  // Inner LwwRegisters merge
+
+// LwwRegister wrapping Option
+let mut reg1 = LwwRegister::new(Some("value".to_owned()));
+let reg2 = LwwRegister::new(None);
+reg1.merge(&reg2);  // LWW semantics on the Option itself
+```
+
+### Merge Behavior
+
+**Recursive merge when both are Some:**
+```
+opt1 = Some(LwwRegister("Alice" @ T1))
+opt2 = Some(LwwRegister("Bob" @ T2))
+Merge: Some(LwwRegister("Bob" @ T2)) ✅ (inner values merged using LWW)
+```
+
+**Take Some when one is None:**
+```
+opt1 = None
+opt2 = Some(value)
+Merge: Some(value) ✅ (takes the Some value)
+```
+
+**Keep Some when other is None:**
+```
+opt1 = Some(value)
+opt2 = None
+Merge: Some(value) ✅ (keeps existing Some)
+```
+
+**Both None - no change:**
+```
+opt1 = None
+opt2 = None
+Merge: None ✅
+```
+
+### Use Cases
+
+**1. Optional fields that merge:**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,
+    bio: Option<LwwRegister<String>>,  // Optional bio with LWW semantics
+    avatar_url: Option<LwwRegister<String>>,  // Optional URL
+}
+
+// When both nodes set bio → LWW wins
+// When one node sets bio → That value wins
+```
+
+**2. LWW semantics on optional values:**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct Config {
+    theme: LwwRegister<Option<String>>,  // Latest timestamp decides Some/None
+}
+
+// Node A @ T1: theme = Some("dark")
+// Node B @ T2: theme = None  (user cleared it)
+// Merge: theme = None ✅ (T2 > T1, so None wins)
+```
+
+**3. Optional nested structures:**
+```rust
+pub struct Document {
+    metadata: Option<UnorderedMap<String, LwwRegister<String>>>,
+}
+
+// metadata can be Some (mergeable map) or None
+// When both Some → maps merge recursively
+```
+
+### Pattern Comparison
+
+**Option<LwwRegister<T>>** - Optional field with LWW when present:
+```rust
+bio: Option<LwwRegister<String>>
+
+// Both None → stays None
+// One Some → takes that value
+// Both Some → inner LwwRegisters merge (timestamp wins)
+```
+
+**LwwRegister<Option<T>>** - LWW decides the Option:
+```rust
+theme: LwwRegister<Option<String>>
+
+// Timestamp always decides which Option wins
+// Doesn't recursively merge - whole Option replaced by latest timestamp
+```
+
+### Performance
+
+| Operation   | Complexity   | Notes                          |
+| ----------- | ------------ | ------------------------------ |
+| merge()     | O(M)         | M = cost of merging inner type |
+| Some/None   | O(1)         | Checking variant               |
+
+### Nesting
+
+- ✅ **Anywhere:** `Option<T>` works wherever `T` would work
+- ✅ **In Maps:** `Map<K, Option<LwwRegister<V>>>`
+- ✅ **In Vectors:** `Vector<Option<Counter>>`
+- ✅ **Wrapping collections:** `Option<UnorderedMap<K, V>>`
+
+### Example
+
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,
+    bio: Option<LwwRegister<String>>,
+    settings: LwwRegister<Option<Settings>>,
+}
+
+pub struct Settings {
+    theme: String,
+    notifications: bool,
+}
+
+impl UserProfile {
+    pub fn set_bio(&mut self, bio: String) {
+        self.bio = Some(LwwRegister::new(bio));
+    }
+    
+    pub fn clear_bio(&mut self) {
+        self.bio = None;
+    }
+    
+    pub fn update_settings(&mut self, settings: Settings) {
+        self.settings.set(Some(settings));
+    }
+}
+
+// Concurrent bio updates:
+// Node A: set_bio("Alice's bio")
+// Node B: set_bio("Alice bio v2") (later timestamp)
+// Merge: bio = Some("Alice bio v2") ✅
+
+// Mixed operations:
+// Node A: update_settings(...) @ T1
+// Node B: clear by setting settings to None @ T2
+// Merge: settings = None ✅ (T2 wins)
+```
+
+---
+
 ## Comparison Table
 
 | Collection      | Best For        | Merge        | Nesting     | Performance   |
@@ -542,6 +804,7 @@ impl UserManager {
 | **Map**         | Key-value       | Recursive    | ✅ Full      | O(1) get/set  |
 | **Vector**      | Ordered lists   | Element-wise | ✅ Full      | O(N) get      |
 | **Set**         | Membership      | Union        | Values only | O(1) ops      |
+| **Option<T>**   | Optional fields | Recursive    | ✅ Wrapper   | O(M) merge    |
 
 ---
 
@@ -553,7 +816,10 @@ Single value with conflicts? → LwwRegister<T>
 Text editing? → ReplicatedGrowableArray
 Key-value pairs? → UnorderedMap<K, V>
 Ordered list? → Vector<T>
+  - Need to search? → Use find()/filter()
 Unique membership? → UnorderedSet<T>
+Optional CRDT field? → Option<T> where T: Mergeable
+Optional value with LWW? → LwwRegister<Option<T>>
 ```
 
 ---
