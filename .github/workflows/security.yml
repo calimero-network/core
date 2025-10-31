@@ -32,10 +32,12 @@ jobs:
           prefix-key: "v1"
           shared-key: security
       
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      
       - name: Run cargo audit
-        uses: EmbarkStudios/cargo-audit-action@v1
-        with:
-          deny-warnings: false  # Start soft, tighten later
+        run: cargo audit
+        continue-on-error: true  # Start soft, tighten later
 
   deny:
     name: Cargo Deny
@@ -48,11 +50,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      
       - name: Run cargo deny
-        uses: EmbarkStudios/cargo-deny-action@v1
-        with:
-          log-level: warn
-          command: check advisories bans licenses sources
+        run: cargo deny check advisories bans licenses sources
+        continue-on-error: false  # Enforce security policy
 
   openssl-check:
     name: Verify No OpenSSL
