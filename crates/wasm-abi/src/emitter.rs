@@ -431,34 +431,65 @@ impl<'ast> Visit<'ast> for AbiEmitter {
     }
 }
 
-/// Emit ABI manifest from Rust source code
-pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
-    let file = syn::parse_file(source)?;
+/// Emit ABI manifest from multiple source files (lib.rs + modules)
+pub fn emit_manifest_from_crate(sources: &[(String, String)]) -> Result<Manifest, Box<dyn error::Error>> {
+    // Parse all files
+    let mut files = Vec::new();
+    for (name, content) in sources {
+        let file = syn::parse_file(content)
+            .map_err(|e| format!("Failed to parse {}: {}", name, e))?;
+        files.push(file);
+    }
+    
     let mut emitter = AbiEmitter::new();
-
+    
+    // Pre-scan: Register all struct and enum names as local types from all files
+    // This ensures type resolution works even for types defined in other modules
+    for file in &files {
+        for item in &file.items {
+            match item {
+                Item::Struct(item_struct) => {
+                    let struct_name = item_struct.ident.to_string();
+                    emitter.add_local_type(struct_name, ResolvedLocal::Record);
+                }
+                Item::Enum(item_enum) => {
+                    let enum_name = item_enum.ident.to_string();
+                    emitter.add_local_type(enum_name, ResolvedLocal::Variant);
+                }
+                _ => {}
+            }
+        }
+    }
+    
     // First pass: collect all referenced types from public methods and state definitions
     let mut referenced_types = std::collections::HashSet::new();
-    for item in &file.items {
-        if let Item::Struct(item_struct) = item {
-            if has_app_state_attribute(&item_struct.attrs) {
-                let struct_name = item_struct.ident.to_string();
-                let _ = referenced_types.insert(struct_name.clone());
-                emitter.record_state_type(&struct_name);
+    for file in &files {
+        for item in &file.items {
+            if let Item::Struct(item_struct) = item {
+                if has_app_state_attribute(&item_struct.attrs) {
+                    let struct_name = item_struct.ident.to_string();
+                    let _ = referenced_types.insert(struct_name.clone());
+                    emitter.record_state_type(&struct_name);
+                }
             }
         }
     }
 
-    for item in &file.items {
-        if let Item::Impl(item_impl) = item {
-            emitter.collect_referenced_types(item_impl, &mut referenced_types);
+    for file in &files {
+        for item in &file.items {
+            if let Item::Impl(item_impl) = item {
+                emitter.collect_referenced_types(item_impl, &mut referenced_types);
+            }
         }
     }
 
     // Also collect types from event payloads
-    for item in &file.items {
-        if let Item::Enum(item_enum) = item {
-            if item_enum.ident == "Event" {
-                emitter.collect_types_from_enum_variants(item_enum, &mut referenced_types);
+    for file in &files {
+        for item in &file.items {
+            if let Item::Enum(item_enum) = item {
+                if item_enum.ident == "Event" {
+                    emitter.collect_types_from_enum_variants(item_enum, &mut referenced_types);
+                }
             }
         }
     }
@@ -469,26 +500,28 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
         changed = false;
         let initial_size = referenced_types.len();
 
-        for item in &file.items {
-            match item {
-                Item::Enum(item_enum) => {
-                    let enum_name = item_enum.ident.to_string();
-                    if referenced_types.contains(&enum_name) {
-                        emitter.collect_types_from_enum_variants(item_enum, &mut referenced_types);
-                    }
-                }
-                Item::Struct(item_struct) => {
-                    if !is_newtype_pattern(item_struct) {
-                        let struct_name = item_struct.ident.to_string();
-                        if referenced_types.contains(&struct_name) {
-                            emitter.collect_types_from_struct_fields(
-                                item_struct,
-                                &mut referenced_types,
-                            );
+        for file in &files {
+            for item in &file.items {
+                match item {
+                    Item::Enum(item_enum) => {
+                        let enum_name = item_enum.ident.to_string();
+                        if referenced_types.contains(&enum_name) {
+                            emitter.collect_types_from_enum_variants(item_enum, &mut referenced_types);
                         }
                     }
+                    Item::Struct(item_struct) => {
+                        if !is_newtype_pattern(item_struct) {
+                            let struct_name = item_struct.ident.to_string();
+                            if referenced_types.contains(&struct_name) {
+                                emitter.collect_types_from_struct_fields(
+                                    item_struct,
+                                    &mut referenced_types,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -498,44 +531,48 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     }
 
     // Third pass: process types (newtypes first, then referenced types)
-    for item in &file.items {
-        if let Item::Struct(item_struct) = item {
-            if is_newtype_pattern(item_struct) {
-                // Always process newtypes first
-                emitter.visit_item_struct(item_struct);
+    // Process newtypes first from all files
+    for file in &files {
+        for item in &file.items {
+            if let Item::Struct(item_struct) = item {
+                if is_newtype_pattern(item_struct) {
+                    emitter.visit_item_struct(item_struct);
+                }
             }
         }
     }
 
-    for item in &file.items {
-        match item {
-            Item::Struct(item_struct) => {
-                if !is_newtype_pattern(item_struct) {
-                    // Only process referenced structs
-                    let struct_name = item_struct.ident.to_string();
-                    if referenced_types.contains(&struct_name) {
-                        emitter.visit_item_struct(item_struct);
+    // Then process referenced types from all files
+    for file in &files {
+        for item in &file.items {
+            match item {
+                Item::Struct(item_struct) => {
+                    if !is_newtype_pattern(item_struct) {
+                        let struct_name = item_struct.ident.to_string();
+                        if referenced_types.contains(&struct_name) {
+                            emitter.visit_item_struct(item_struct);
+                        }
                     }
                 }
-            }
-            Item::Enum(item_enum) => {
-                let enum_name = item_enum.ident.to_string();
-                if enum_name == "Event" {
-                    // Process events
-                    emitter.process_events(item_enum);
-                } else if referenced_types.contains(&enum_name) {
-                    // Process referenced enums
-                    emitter.visit_item_enum(item_enum);
+                Item::Enum(item_enum) => {
+                    let enum_name = item_enum.ident.to_string();
+                    if enum_name == "Event" {
+                        emitter.process_events(item_enum);
+                    } else if referenced_types.contains(&enum_name) {
+                        emitter.visit_item_enum(item_enum);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
-    // Fourth pass: process methods (after all types are defined)
-    for item in &file.items {
-        if let Item::Impl(item_impl) = item {
-            emitter.visit_item_impl(item_impl);
+    // Fourth pass: process methods (after all types are defined) - only from lib.rs
+    if let Some(lib_file) = files.first() {
+        for item in &lib_file.items {
+            if let Item::Impl(item_impl) = item {
+                emitter.visit_item_impl(item_impl);
+            }
         }
     }
 
@@ -554,3 +591,9 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
 
     Ok(manifest)
 }
+
+/// Emit ABI manifest from Rust source code (single file - for backward compatibility)
+pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
+    emit_manifest_from_crate(&[("lib.rs".to_string(), source.to_string())])
+}
+

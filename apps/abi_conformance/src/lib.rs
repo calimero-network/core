@@ -5,6 +5,10 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+// Test multi-file ABI generation
+pub mod custom_types;
+pub use custom_types::{CustomRecord, NestedRecord, Status};
+
 // Include the generated ABI code
 include!(env!("GENERATED_ABI_PATH"));
 
@@ -297,6 +301,35 @@ impl AbiState {
             original: value,
             calculated: internal_data.calculate(),
         }
+    }
+
+    // Test methods using types from custom_types module
+    // This verifies multi-file ABI generation works
+
+    /// Create a custom record from module
+    pub fn create_custom_record(&self, name: String, value: u64) -> app::Result<CustomRecord> {
+        Ok(CustomRecord {
+            name,
+            value,
+            active: true,
+        })
+    }
+
+    /// Get a nested record from module
+    pub fn get_nested_record(&self, name: String) -> app::Result<NestedRecord> {
+        Ok(NestedRecord {
+            record: CustomRecord {
+                name: name.clone(),
+                value: 42,
+                active: true,
+            },
+            tags: vec!["test".to_string(), "multi-file".to_string()],
+        })
+    }
+
+    /// Get status from module
+    pub fn get_status(&self, timestamp: u64) -> app::Result<Status> {
+        Ok(Status::Active { timestamp })
     }
 
     // Private method - should NOT appear in ABI

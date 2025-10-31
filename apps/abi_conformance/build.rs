@@ -2,18 +2,24 @@ use std::path::Path;
 use std::{env, fs};
 
 use calimero_wasm_abi::embed::generate_embed_code;
-use calimero_wasm_abi::emitter::emit_manifest;
+use calimero_wasm_abi::emitter::emit_manifest_from_crate;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/lib.rs");
-    println!("cargo:rerun-if-changed=src/types/id.rs");
+    println!("cargo:rerun-if-changed=src/custom_types.rs");
 
-    // Parse the source code
-    let src_path = Path::new("src/lib.rs");
-    let src_content = fs::read_to_string(src_path).expect("Failed to read src/lib.rs");
+    // Parse all source files
+    let lib_content = fs::read_to_string("src/lib.rs").expect("Failed to read src/lib.rs");
+    let custom_types_content = fs::read_to_string("src/custom_types.rs")
+        .expect("Failed to read src/custom_types.rs");
 
-    // Generate ABI manifest using the emitter
-    let manifest = emit_manifest(&src_content).expect("Failed to emit ABI manifest");
+    let sources = vec![
+        ("lib.rs".to_string(), lib_content),
+        ("custom_types.rs".to_string(), custom_types_content),
+    ];
+
+    // Generate ABI manifest from all source files
+    let manifest = emit_manifest_from_crate(&sources).expect("Failed to emit ABI manifest");
 
     // Write ABI to JSON file for testing
     let abi_json = serde_json::to_string_pretty(&manifest).expect("Failed to serialize manifest");
