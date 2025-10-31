@@ -548,6 +548,18 @@ cargo build --release
 - ✅ G-Counter CRDT consistency
 - ✅ Network resilience (packet loss scenarios)
 
+## Documentation
+
+For complete documentation, see the **[Documentation Index](readme/DOCUMENTATION_INDEX.md)**.
+
+**Key Guides:**
+- **[Architecture](readme/architecture.md)** - Internal design and components
+- **[Sync Protocol](readme/sync-protocol.md)** - How synchronization works
+- **[Sync Configuration](readme/sync-configuration.md)** - Tuning parameters
+- **[Event Handling](readme/event-handling.md)** - Event flow and handlers
+- **[Performance Guide](readme/performance.md)** - Latency, throughput, optimization
+- **[Troubleshooting](readme/troubleshooting.md)** - Common issues and solutions
+
 ## See Also
 
 - [calimero-storage](../storage/README.md) - CRDT actions that flow through DAG

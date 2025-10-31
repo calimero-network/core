@@ -571,11 +571,21 @@ flowchart LR
 | **Merging** | CRDT payload | External logic |
 | **Partial state** | ✅ Supported | ❌ Need full history |
 
+## Documentation
+
+For complete documentation, see the **[Documentation Index](readme/DOCUMENTATION_INDEX.md)**.
+
+**Key Guides:**
+- **[Architecture](readme/architecture.md)** - Internal design and data structures
+- **[API Reference](readme/api-reference.md)** - Complete API documentation
+- **[Performance Guide](readme/performance.md)** - Complexity analysis and benchmarks
+- **[Testing Guide](readme/testing-guide.md)** - Test coverage and examples
+- **[Troubleshooting](readme/troubleshooting.md)** - Common issues and solutions
+
 ## See Also
 
 - [calimero-node](../node/README.md) - How DAG integrates with node runtime
 - [calimero-storage](../storage/README.md) - CRDT actions that flow through DAG
-- [DAG_SYNC_EXPLAINED.md](../node/DAG_SYNC_EXPLAINED.md) - Deep dive
 
 ## License
 
