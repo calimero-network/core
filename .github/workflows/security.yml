@@ -30,35 +30,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: "v1"
-          shared-key: security
+          shared-key: ${{ runner.os }}-audit
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit --version 0.20.1 --locked
       
       - name: Run cargo audit
-        run: cargo audit
-        continue-on-error: true  # Start soft, tighten later
+        run: |
+          cargo audit || echo "⚠️ cargo-audit found advisories (informational for PR-1)"
+        continue-on-error: true  # Informational only
 
   deny:
     name: Cargo Deny
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
-      
-      - name: Run cargo deny
-        run: cargo deny check advisories bans licenses sources
-        continue-on-error: false  # Enforce security policy
-
-  openssl-check:
-    name: Verify No OpenSSL
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,18 +56,38 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: "v1"
-          shared-key: openssl-check
+          shared-key: ${{ runner.os }}-deny
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       
-      - name: Check for OpenSSL/native-tls
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      
+      - name: Run cargo deny
+        run: cargo deny check advisories bans licenses sources
+        # This is the gate - must pass
+
+  openssl-check:
+    name: Verify No OpenSSL (Direct Deps)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Check for native TLS in direct dependencies
         run: |
-          echo "Checking dependency tree for native TLS implementations..."
-          if cargo tree -p calimero-node --all-features | grep -Ei 'openssl|native-tls|security-framework|schannel'; then
-            echo "⚠️  WARNING: Found native TLS backend in dependency tree"
-            echo "This is from transitive dependencies (alloy → reqwest)"
-            echo "Our direct usage uses rustls. This will be cleaned up in future PR."
-            echo "For PR-1: Documented and acceptable for foundation work."
-            # Don't fail - this is expected and documented
+          set -e
+          echo "Checking DIRECT dependencies for native TLS backends..."
+          # Only check normal (direct) dependencies, not build/dev
+          if cargo tree -e normal -p calimero-node | \
+             grep -Ei '(^| )(openssl|native-tls|security-framework|schannel)'; then
+            echo "❌ Native TLS backend in direct dependencies!"
+            exit 1
           else
-            echo "✅ OK: Pure rustls stack confirmed"
+            echo "✅ Pure rustls in direct deps"
+            echo "Note: Transitive deps may include native-tls (acceptable for PR-1)"
           fi
 
