@@ -34,14 +34,12 @@ confidence-threshold = 0.8
 allow = [
     "MIT",
     "Apache-2.0",
-    "MIT OR Apache-2.0",
     "BSD-3-Clause",
     "BSD-2-Clause",
     "ISC",
     "Zlib",
     "Unicode-DFS-2016",
     "Unicode-3.0",
-    # OpenSSL license removed - we don't use OpenSSL
     "CC0-1.0",
     "BSL-1.0",
     "MPL-2.0",
@@ -50,11 +48,15 @@ allow = [
     "LGPL-3.0",
     "0BSD",
     "Unlicense",
-    "Apache-2.0 WITH LLVM-exception",
     "CDLA-Permissive-2.0",
 ]
 
-# Add exceptions for packages with complex licensing
+# Allow dual-licensed crates
+[[licenses.clarify]]
+name = "*"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
 [[licenses.clarify]]
 name = "ring"
 version = "*"
@@ -62,6 +64,11 @@ expression = "ISC OR MIT"
 license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
+
+[[licenses.clarify]]
+name = "webpki-roots"
+expression = "MPL-2.0"
+license-files = []
 
 [sources]
 unknown-registry = "deny"
