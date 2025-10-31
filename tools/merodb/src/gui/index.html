@@ -297,13 +297,14 @@
         }
 
         .json-node {
-            margin: 2px 0;
+            margin: 0;
         }
 
         .json-key-container {
             cursor: pointer;
             user-select: none;
-            padding: 2px 0;
+            padding: 1px 0;
+            line-height: 1.4;
         }
 
         .json-key-container:hover {
@@ -329,11 +330,12 @@
         }
 
         .json-children {
-            margin-left: 20px;
+            margin-left: 0;
         }
 
         .json-entry {
-            padding: 2px 0;
+            padding: 1px 0;
+            line-height: 1.4;
         }
 
         .json-key {
@@ -770,10 +772,12 @@
             viewer.appendChild(createJsonNode(data, '$', 0));
         }
 
-        function createJsonNode(value, path, level) {
-            const container = document.createElement('div');
+        function createJsonNode(value, path, level, inline = false) {
+            const container = document.createElement(inline ? 'span' : 'div');
             container.className = 'json-node';
-            container.style.marginLeft = (level * 20) + 'px';
+            if (!inline) {
+                container.style.marginLeft = (level * 8) + 'px';
+            }
 
             if (value === null) {
                 container.innerHTML = '<span class="json-null">null</span>';
@@ -784,15 +788,15 @@
             } else if (typeof value === 'string') {
                 container.innerHTML = `<span class="json-string">"${escapeHtml(value)}"</span>`;
             } else if (Array.isArray(value)) {
-                renderArray(container, value, path, level);
+                renderArray(container, value, path, level, inline);
             } else if (typeof value === 'object') {
-                renderObject(container, value, path, level);
+                renderObject(container, value, path, level, inline);
             }
 
             return container;
         }
 
-        function renderObject(container, obj, path, level) {
+        function renderObject(container, obj, path, level, inline = false) {
             const entries = Object.entries(obj);
             const isEmpty = entries.length === 0;
             const expanded = level < 2;
@@ -825,6 +829,7 @@
             entries.forEach(([key, val]) => {
                 const entry = document.createElement('div');
                 entry.className = 'json-entry';
+                entry.style.marginLeft = (level * 8 + 8) + 'px';
 
                 const keySpan = document.createElement('span');
                 keySpan.className = 'json-key';
@@ -836,7 +841,10 @@
 
                 entry.appendChild(keySpan);
                 entry.appendChild(colon);
-                entry.appendChild(createJsonNode(val, `${path}.${key}`, level + 1));
+
+                // Render primitive values inline, complex values on new lines
+                const isPrimitive = val === null || typeof val !== 'object';
+                entry.appendChild(createJsonNode(val, `${path}.${key}`, level + 1, isPrimitive));
 
                 childrenContainer.appendChild(entry);
             });
@@ -851,12 +859,12 @@
             container.appendChild(childrenContainer);
 
             const closeBrace = document.createElement('div');
-            closeBrace.style.marginLeft = (level * 20) + 'px';
+            closeBrace.style.marginLeft = (level * 8) + 'px';
             closeBrace.innerHTML = '<span class="json-brace">}</span>';
             container.appendChild(closeBrace);
         }
 
-        function renderArray(container, arr, path, level) {
+        function renderArray(container, arr, path, level, inline = false) {
             const isEmpty = arr.length === 0;
             const expanded = level < 2;
 
@@ -888,6 +896,7 @@
             arr.forEach((val, idx) => {
                 const entry = document.createElement('div');
                 entry.className = 'json-entry';
+                entry.style.marginLeft = (level * 8 + 8) + 'px';
 
                 const indexSpan = document.createElement('span');
                 indexSpan.className = 'json-index';
@@ -899,7 +908,10 @@
 
                 entry.appendChild(indexSpan);
                 entry.appendChild(colon);
-                entry.appendChild(createJsonNode(val, `${path}[${idx}]`, level + 1));
+
+                // Render primitive values inline, complex values on new lines
+                const isPrimitive = val === null || typeof val !== 'object';
+                entry.appendChild(createJsonNode(val, `${path}[${idx}]`, level + 1, isPrimitive));
 
                 childrenContainer.appendChild(entry);
             });
@@ -914,7 +926,7 @@
             container.appendChild(childrenContainer);
 
             const closeBrace = document.createElement('div');
-            closeBrace.style.marginLeft = (level * 20) + 'px';
+            closeBrace.style.marginLeft = (level * 8) + 'px';
             closeBrace.innerHTML = '<span class="json-brace">]</span>';
             container.appendChild(closeBrace);
         }
