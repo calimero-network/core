@@ -10,12 +10,12 @@ fn main() {
 
     // Parse all source files
     let lib_content = fs::read_to_string("src/lib.rs").expect("Failed to read src/lib.rs");
-    let custom_types_content = fs::read_to_string("src/custom_types.rs")
-        .expect("Failed to read src/custom_types.rs");
+    let custom_types_content =
+        fs::read_to_string("src/custom_types.rs").expect("Failed to read src/custom_types.rs");
 
     let sources = vec![
-        ("lib.rs".to_string(), lib_content),
-        ("custom_types.rs".to_string(), custom_types_content),
+        ("lib.rs".to_owned(), lib_content),
+        ("custom_types.rs".to_owned(), custom_types_content),
     ];
 
     // Generate ABI manifest from all source files

@@ -432,17 +432,19 @@ impl<'ast> Visit<'ast> for AbiEmitter {
 }
 
 /// Emit ABI manifest from multiple source files (lib.rs + modules)
-pub fn emit_manifest_from_crate(sources: &[(String, String)]) -> Result<Manifest, Box<dyn error::Error>> {
+pub fn emit_manifest_from_crate(
+    sources: &[(String, String)],
+) -> Result<Manifest, Box<dyn error::Error>> {
     // Parse all files
     let mut files = Vec::new();
     for (name, content) in sources {
-        let file = syn::parse_file(content)
-            .map_err(|e| format!("Failed to parse {}: {}", name, e))?;
+        let file =
+            syn::parse_file(content).map_err(|e| format!("Failed to parse {}: {}", name, e))?;
         files.push(file);
     }
-    
+
     let mut emitter = AbiEmitter::new();
-    
+
     // Pre-scan: Register all struct and enum names as local types from all files
     // This ensures type resolution works even for types defined in other modules
     for file in &files {
@@ -460,7 +462,7 @@ pub fn emit_manifest_from_crate(sources: &[(String, String)]) -> Result<Manifest
             }
         }
     }
-    
+
     // First pass: collect all referenced types from public methods and state definitions
     let mut referenced_types = std::collections::HashSet::new();
     for file in &files {
@@ -506,7 +508,8 @@ pub fn emit_manifest_from_crate(sources: &[(String, String)]) -> Result<Manifest
                     Item::Enum(item_enum) => {
                         let enum_name = item_enum.ident.to_string();
                         if referenced_types.contains(&enum_name) {
-                            emitter.collect_types_from_enum_variants(item_enum, &mut referenced_types);
+                            emitter
+                                .collect_types_from_enum_variants(item_enum, &mut referenced_types);
                         }
                     }
                     Item::Struct(item_struct) => {
@@ -594,6 +597,5 @@ pub fn emit_manifest_from_crate(sources: &[(String, String)]) -> Result<Manifest
 
 /// Emit ABI manifest from Rust source code (single file - for backward compatibility)
 pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
-    emit_manifest_from_crate(&[("lib.rs".to_string(), source.to_string())])
+    emit_manifest_from_crate(&[("lib.rs".to_owned(), source.to_owned())])
 }
-

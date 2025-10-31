@@ -48,10 +48,12 @@ pub struct MergeableRecord {
 }
 
 impl calimero_storage::collections::Mergeable for MergeableRecord {
-    fn merge(&mut self, other: &Self) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
+    fn merge(
+        &mut self,
+        other: &Self,
+    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
         self.counter.merge(&other.counter)?;
         self.name.merge(&other.name);
         Ok(())
     }
 }
-
