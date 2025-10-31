@@ -323,7 +323,7 @@ impl AbiState {
                 value: 42,
                 active: true,
             },
-            tags: vec!["test".to_string(), "multi-file".to_string()],
+            tags: vec!["test".to_owned(), "multi-file".to_owned()],
         })
     }
 
