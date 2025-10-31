@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MeroDB Inspector</title>
-    <script src="https://cdn.jsdelivr.net/npm/jq-web@0.5.1/jq.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jq-web@0.6.2/jq.js" crossorigin="anonymous"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -659,6 +659,12 @@
     <script>
         let jsonData = null;
         let queryHistory = [];
+        let jqReady = null;
+
+        // Initialize jq-web library
+        if (typeof jq !== 'undefined') {
+            jqReady = jq;
+        }
 
         // Form handling
         const loadForm = document.getElementById('load-form');
@@ -927,15 +933,19 @@
             }
         });
 
-        function runQuery() {
+        async function runQuery() {
             const query = jqInput.value.trim();
             if (!query || !jsonData) return;
 
             hideResults();
 
             try {
-                // Use jq-web library
-                const result = jq.json(jsonData, query);
+                // Use jq-web library (Promise-based API)
+                if (!jqReady) {
+                    throw new Error('JQ library not initialized');
+                }
+                const jqLib = await jqReady;
+                const result = await jqLib.json(jsonData, query);
                 showSuccess(result);
                 addToHistory(query);
             } catch (err) {
