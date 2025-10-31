@@ -228,7 +228,9 @@ Need unique membership?
 
 ---
 
-## Learn More
+## Documentation
+
+For complete documentation, see the **[Documentation Index](readme/DOCUMENTATION_INDEX.md)** (if available).
 
 ### For Developers (Practical Guides)
 

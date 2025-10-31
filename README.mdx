@@ -4,309 +4,113 @@
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](#license)
 [![Issues - calimero](https://img.shields.io/github/issues/calimero-network/core)](https://github.com/calimero-network/core/issues)
 
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg">
-    <img alt="Calimero logo" style="" src="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg" width="40%">
-  </picture>
-</div>
-
 ## Build Self-Sovereign Applications with CRDT-Powered P2P Sync
 
 Calimero Network is a framework for building distributed, peer-to-peer applications with **automatic conflict-free data synchronization**, data ownership, and verifiable off-chain computing.
 
-### Key Features
+**Key Features:**
+- ✅ DAG-based CRDT Sync - Automatic conflict resolution, works offline
+- ✅ Event-driven Architecture - Real-time notifications across nodes
+- ✅ Encrypted P2P - Secure data sharing with end-to-end encryption
+- ✅ WASM Runtime - Write apps in Rust, compile to WebAssembly
+- ✅ Multi-chain Integration - NEAR, ICP, Ethereum, Stellar, ZKSync
+- ✅ Local-first - Your data, your node, your control
 
-- ✅ **DAG-based CRDT Sync** - Automatic conflict resolution, works offline
-- ✅ **Event-driven Architecture** - Real-time notifications across nodes
-- ✅ **Encrypted P2P** - Secure data sharing with end-to-end encryption
-- ✅ **WASM Runtime** - Write apps in Rust, compile to WebAssembly
-- ✅ **Multi-chain Integration** - NEAR, ICP, Ethereum, Stellar, ZKSync
-- ✅ **Local-first** - Your data, your node, your control
+**Quick Navigation:**
+- [Documentation](#documentation) | [Architecture](#architecture) | [Quick Start](#quick-start)
+- [Use Cases](#use-cases) | [Performance](#performance) | [Contributing](#community--contributing)
+
+## Documentation
+
+**📚 Component Documentation:**
+- **[DAG Documentation](crates/dag/README.md)** - Causal ordering, algorithms, performance
+- **[Node Documentation](crates/node/README.md)** - Runtime, sync protocols, event handling
+- **[Storage Documentation](crates/storage/README.md)** - CRDT types, merge semantics
+- **[SDK Documentation](crates/sdk/README.md)** - API reference, examples
+- **[Network Documentation](crates/network/README.md)** - P2P protocols, configuration
+
+**🔧 Guides:**
+- **[Integration Guide](crates/node/readme/integration-guide.md)** - Building applications
+- **[Sync Configuration](crates/node/readme/sync-configuration.md)** - Tuning parameters
+- **[Testing Guide](crates/dag/readme/testing-guide.md)** - Testing strategies
+- **[Troubleshooting](crates/node/readme/troubleshooting.md)** - Common issues
 
 ## Why Calimero?
 
-### Data Ownership and Privacy
+**Data Ownership & Privacy** - Self-sovereign apps on user-controlled nodes with encrypted storage and selective sharing.
 
-Calimero puts **users in control** of their data:
+**Automatic Synchronization** - CRDT technology provides conflict-free merges, offline support, and causal ordering with eventual consistency.
 
-- **Self-Sovereign Apps (SSApps)** run on user-controlled nodes
-- **Encrypted storage** keeps data secret from unauthorized parties
-- **Selective sharing** - only invite trusted peers to contexts
-- **No central servers** - data never leaves your control
-
-### Automatic Synchronization
-
-Built on cutting-edge **CRDT technology**:
-
-- **Conflict-free merges** - concurrent edits automatically reconcile
-- **Works offline** - sync when reconnected
-- **DAG-based causality** - preserves operation order
-- **Eventually consistent** - all nodes converge to same state
-
-### Verifiable Off-Chain Computing
-
-Efficient and cost-effective:
-
-- **Local consensus** - only context participants validate
-- **Selective state updates** - not the entire network
-- **Cross-chain proofs** - verify computation on L1s
-- **Horizontal scalability** - more contexts = more throughput
+**Verifiable Off-Chain Computing** - Efficient local consensus with cross-chain proof verification and horizontal scalability.
 
 ## Architecture
 
-### System Overview
+Calimero's architecture consists of four main layers:
 
-```mermaid
-flowchart TB
-    subgraph "Application Layer"
-        WASM[WASM Applications]
-        SDK[Calimero SDK]
-    end
-    
-    subgraph "Node Layer"
-        NodeMgr[Node Manager]
-        DeltaStore[Delta Store<br/>DAG Management]
-        SyncMgr[Sync Manager<br/>P2P Protocols]
-        Handlers[Event Handlers]
-    end
-    
-    subgraph "Storage Layer"
-        Storage[CRDT Storage]
-        Index[Entity Index<br/>Merkle Trees]
-        RocksDB[(RocksDB)]
-    end
-    
-    subgraph "Network Layer"
-        Gossipsub[Gossipsub<br/>Broadcasts]
-        Streams[libp2p Streams<br/>P2P Sync]
-    end
-    
-    WASM --> SDK
-    SDK --> Storage
-    Storage --> NodeMgr
-    NodeMgr --> DeltaStore
-    NodeMgr --> SyncMgr
-    NodeMgr --> Handlers
-    DeltaStore --> Gossipsub
-    SyncMgr --> Streams
-    Storage --> Index
-    Index --> RocksDB
-    
-    style WASM fill:#e1f5ff
-    style Storage fill:#ffe1e1
-    style NodeMgr fill:#c3e6cb
-    style Gossipsub fill:#fff3cd
-```
+1. **Application Layer** - WASM apps using the Calimero SDK
+2. **Node Layer** - DAG-based delta synchronization and event handling
+3. **Storage Layer** - CRDT storage with Merkle trees for efficient state comparison
+4. **Network Layer** - P2P communication via libp2p (Gossipsub + Streams)
 
-### Data Flow (End-to-End)
+### How It Works
 
-```mermaid
-sequenceDiagram
-    participant Client as JSON-RPC Client
-    participant Server as JSON-RPC Server
-    participant WASM as WASM Runtime
-    participant Storage as CRDT Storage
-    participant DAG as DAG Store
-    participant Gossip as Gossipsub
-    participant PeerNode as Peer Node
-    participant PeerDAG as Peer DAG
-    participant PeerWASM as Peer WASM
-    participant PeerWS as Peer WebSocket
-    
-    rect rgb(240, 248, 255)
-        Note over Client,Storage: Transaction Initiation
-        Client->>Server: POST /call<br/>{method: "add_item", args}
-        Server->>WASM: execute(method, args)
-        WASM->>Storage: map.insert(key, value)
-    end
-    
-    rect rgb(255, 250, 240)
-        Note over Storage,DAG: CRDT Action Generation
-        Storage->>Storage: Generate Action::Update
-        Storage->>Storage: Calculate own_hash
-        Storage->>Storage: Update Merkle tree
-        Storage->>Storage: push_action(Action::Update)
-        Storage-->>WASM: Modified successfully
-        WASM-->>Server: ExecutionOutcome {<br/>  root_hash,<br/>  events: [ItemAdded]<br/>}
-    end
-    
-    rect rgb(240, 255, 240)
-        Note over Server,Gossip: Delta Broadcasting
-        Server->>DAG: commit_causal_delta
-        DAG->>DAG: Create CausalDelta {<br/>  parents: [D4],<br/>  payload: actions<br/>}
-        DAG->>Gossip: Broadcast StateDelta
-        Gossip->>PeerNode: Propagate (~100ms)
-    end
-    
-    rect rgb(255, 245, 240)
-        Note over PeerNode,PeerWASM: Peer Application
-        PeerNode->>PeerDAG: add_delta(D5)
-        PeerDAG->>PeerDAG: Check parents ✅
-        PeerDAG->>PeerWASM: apply(__calimero_sync_next)
-        PeerWASM->>PeerWASM: Execute actions
-        PeerWASM-->>PeerDAG: Applied
-        PeerDAG->>PeerDAG: Update heads: [D5]
-    end
-    
-    rect rgb(250, 240, 255)
-        Note over PeerNode,PeerWS: Event Handling
-        PeerNode->>PeerNode: Check: not author ✅
-        PeerNode->>PeerWASM: execute(handler, event_data)
-        PeerWASM->>PeerWASM: counter.increment()
-        PeerWASM-->>PeerNode: Handler complete
-        PeerNode->>PeerWS: Emit StateMutation
-        PeerWS->>PeerWS: Update UI
-    end
-    
-    Server-->>Client: {result: "success"}
-    
-    Note over Client,PeerWS: Total latency: ~100-200ms
-```
+**Transaction Flow:**
+1. Client calls WASM method → generates CRDT actions
+2. Actions committed as DAG delta → broadcast via Gossipsub
+3. Peers receive delta → apply to local state
+4. Event handlers execute → UI updates in real-time
 
-### DAG-Based CRDT Synchronization
+**Sync Flow:**
+- Primary: Gossipsub broadcasts (100-200ms latency)
+- Fallback: Periodic P2P sync (every 10-30s)
+- Recovery: DAG buffering handles out-of-order delivery
 
-```mermaid
-graph TB
-    subgraph "Concurrent Updates (The Challenge)"
-        C0[Initial State<br/>todos = empty<br/>DAG head: D0]
-        
-        C1A[Node A<br/>Add 'Buy milk'<br/>Create D1A<br/>parents: D0]
-        C1B[Node B<br/>Add 'Read book'<br/>Create D1B<br/>parents: D0]
-        C1C[Node C<br/>Add 'Call mom'<br/>Create D1C<br/>parents: D0]
-        
-        C0 --> C1A
-        C0 --> C1B
-        C0 --> C1C
-    end
-    
-    subgraph "DAG Fork Detection"
-        F["After broadcast<br/>All nodes have:<br/>D1A, D1B, D1C<br/>----------<br/>DAG heads: D1A, D1B, D1C<br/>FORK DETECTED!"]
-    end
-    
-    C1A --> F
-    C1B --> F
-    C1C --> F
-    
-    subgraph "CRDT Merge"
-        M1["CRDT storage:<br/>UnorderedSet union<br/>----------<br/>todos = {<br/>Buy milk,<br/>Read book,<br/>Call mom<br/>}"]
-    end
-    
-    F --> M1
-    
-    subgraph "Next Operation Creates Merge Delta"
-        M2["Any node next op<br/>Create D2<br/>parents: D1A, D1B, D1C<br/>----------<br/>DAG head: D2<br/>FORK RESOLVED"]
-    end
-    
-    M1 --> M2
-    
-    subgraph "Final Convergence"
-        FIN["All nodes converged<br/>----------<br/>todos = {<br/>Buy milk,<br/>Read book,<br/>Call mom<br/>}<br/>DAG head: D2<br/>CONSISTENT"]
-    end
-    
-    M2 --> FIN
-    
-    style C0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style C1A fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style C1B fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style C1C fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style F fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style M1 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style M2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style FIN fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-```
+For detailed architecture diagrams and flows, see:
+- [Node Architecture](crates/node/readme/architecture.md) - Complete system design
+- [Sync Protocol](crates/node/readme/sync-protocol.md) - Delta propagation details
+- [DAG Architecture](crates/dag/readme/architecture.md) - Causal ordering system
 
-**Key Insight**: DAG tracks causality, CRDTs resolve conflicts automatically.
+### Core Components
 
-### Key Components
+#### 1. CRDT Storage
 
-#### 1. CRDT Storage (`crates/storage`)
+Conflict-free data types with automatic merging: `UnorderedMap`, `Vector`, `Counter`, and Merkle trees for state comparison.
 
-Conflict-free Replicated Data Types with automatic merging:
+**[→ Storage Documentation](crates/storage/README.md)** - Data types, merge semantics, and usage
 
-- **UnorderedMap** - Key-value storage with LWW
-- **Vector** - Ordered list with LWW
-- **Counter** - Distributed G-Counter (no lost increments!)
-- **Merkle trees** - Efficient state comparison
+#### 2. DAG-based Synchronization
 
-[→ Storage Documentation](crates/storage/README.md)
+Causal delta tracking with out-of-order handling, fork detection, and automatic cascade application.
 
-#### 2. DAG-based Synchronization (`crates/dag`, `crates/node`)
+**[→ DAG Documentation](crates/dag/README.md)** - DAG structure, algorithms, and performance  
+**[→ Node Documentation](crates/node/README.md)** - Runtime integration and sync protocols  
+**[→ Sync Configuration](crates/node/readme/sync-configuration.md)** - Tuning parameters
 
-Directed Acyclic Graph for causal delta tracking:
+#### 3. Event-Driven Architecture
 
-- **Out-of-order delivery** - Buffers deltas until dependencies arrive
-- **Fork detection** - Handles concurrent updates
-- **Automatic cascade** - Applying one delta unlocks pending children
+Real-time event emission, propagation, and handler execution across the network.
 
-[→ DAG Documentation](crates/dag/README.md)  
-[→ Node Documentation](crates/node/README.md)
+**[→ SDK Documentation](crates/sdk/README.md)** - API reference and examples  
+**[→ Event Handling Guide](crates/node/readme/event-handling.md)** - Event flow and handlers
 
-#### 3. Event-Driven Architecture (`crates/sdk`)
+#### 4. P2P Networking
 
-Real-time notifications with handler execution:
+libp2p-based communication with Gossipsub broadcasts, reliable streams, DHT peer discovery, and Noise encryption.
 
-- **Emit events** from transactions
-- **Automatic propagation** to peer nodes
-- **Handler execution** on receiving nodes
-- **WebSocket streaming** to clients
+**[→ Network Documentation](crates/network/README.md)** - Protocols and configuration
 
-[→ SDK Documentation](crates/sdk/README.md)
+#### 5. Multi-Chain Integration
 
-#### 4. P2P Networking (`crates/network`)
+Cross-chain proof verification for NEAR Protocol, ICP, Ethereum, Stellar, and zkSync.
 
-libp2p-based communication:
-
-- **Gossipsub** - Fast broadcast for real-time deltas
-- **Streams** - Reliable P2P for sync and recovery
-- **DHT** - Peer discovery (Kademlia)
-- **Encryption** - Noise protocol for secure channels
-
-#### 5. Multi-Chain Integration (`contracts/`)
-
-Cross-chain proof verification:
-
-- **NEAR Protocol** - Native integration
-- **ICP (Internet Computer)** - Canister contracts
-- **Ethereum** - Solidity contracts
+**[→ Contracts Directory](contracts/)** - Smart contracts for each chain
 
 ## Core Principles
 
-### 1. Data Ownership
-
-**You own your data. Period.**
-
-- SSApps run on **your devices**
-- Data stored in **your local storage**
-- Only **you control** who has access
-- No backdoors, no exceptions
-
-### 2. Privacy by Default
-
-**Encrypted end-to-end, always.**
-
-- All P2P communication encrypted (Noise protocol)
-- Storage encrypted at rest
-- Zero-knowledge proofs for verification
-- Metadata minimization
-
-### 3. Distributed by Design
-
-**No single point of failure.**
-
-- Peer-to-peer architecture
-- No central servers or coordinators
-- Nodes can operate offline
-- Resilient to network partitions
-
-### 4. Developer-Friendly
-
-**Simple API, powerful primitives.**
-
-- Rust SDK with macros
-- Automatic CRDT handling
-- Familiar async/await patterns
-- Comprehensive documentation
+1. **Data Ownership** - Your data on your devices, you control access
+2. **Privacy by Default** - End-to-end encryption
+3. **Distributed by Design** - P2P architecture, no single point of failure
+4. **Developer-Friendly** - Simple API with powerful CRDT primitives
 
 ## Project Structure
 
@@ -335,171 +139,100 @@ calimero/core/
 └── e2e-tests/                 # End-to-end test suite
 ```
 
-## Development
+## Quick Start
 
-### Building
+### Installation
 
 ```bash
-# Build all crates
+# Clone the repository
+git clone https://github.com/calimero-network/core.git
+cd core
+
+# Build the project
 cargo build --release
 
-# Build specific crate
-cargo build -p calimero-node --release
-
-# Build example apps
-cd apps/kv-store && ./build.sh
-```
-
-### Testing
-
-```bash
-# Unit tests
+# Run tests
 cargo test
-
-# Integration tests
-cargo test --test '*'
-
-# E2E tests (requires release build)
-cargo build --release
-./target/release/e2e-tests \
-  --merod-binary ./target/release/merod \
-  --meroctl-binary ./target/release/meroctl \
-  --protocols near
 ```
 
 ### Running a Node
 
 ```bash
-# Coordinator node (first node)
+# Start coordinator node
 merod --node-type coordinator
 
-# Peer node (connects to coordinator)
+# Connect peer node
 merod --node-type peer --swarm-addrs /ip4/127.0.0.1/tcp/2428
-
-# Custom config
-merod --home ~/.calimero-node --config custom-config.toml
 ```
+
+### Building an Application
+
+```bash
+# Create new app from template
+cd apps/
+cp -r kv-store my-app
+
+# Build the WASM
+cd my-app && ./build.sh
+```
+
+For detailed guides, see:
+- **[Integration Guide](crates/node/readme/integration-guide.md)** - Building applications
+- **[SDK Documentation](crates/sdk/README.md)** - API reference and examples
+- **[Testing Guide](crates/dag/readme/testing-guide.md)** - Testing strategies
 
 ## Use Cases
 
-### Collaborative Editing
+Calimero enables a wide range of decentralized applications:
 
-Real-time document collaboration without central servers:
+- **Collaborative Editing** - Real-time document collaboration without servers
+- **Decentralized Social** - User-controlled social networks
+- **P2P Gaming** - Multiplayer games with automatic state sync
+- **IoT Networks** - Decentralized device coordination
+- **Supply Chain** - Transparent, multi-party tracking
+- **Healthcare** - Private, patient-controlled medical records
 
-```rust
-#[app::state]
-pub struct Document {
-    content: Vector<String>,  // Lines of text
-    edits: Counter,            // Edit counter
-}
-```
+See [example applications](apps/) for working implementations.
 
-### Decentralized Social
+## Performance
 
-User-controlled social networks:
+Calimero is designed for efficiency:
 
-```rust
-#[app::state]
-pub struct SocialNetwork {
-    posts: Vector<Post>,
-    likes: Counter,
-    followers: UnorderedSet<String>,
-}
-```
+- **Latency**: 100-200ms delta propagation (Gossipsub)
+- **Throughput**: 100-1000 deltas/sec per context
+- **Memory**: ~10MB per context (1000 deltas)
+- **Scalability**: Horizontal (more contexts = more throughput)
 
-### Gaming
+For detailed performance analysis and tuning:
+- **[Node Performance Guide](crates/node/readme/performance.md)** - Latency, throughput, optimization
+- **[DAG Performance Guide](crates/dag/readme/performance.md)** - Complexity analysis, benchmarks
+- **[Sync Configuration](crates/node/readme/sync-configuration.md)** - Parameter tuning
 
-P2P multiplayer games with automatic state sync:
+## Troubleshooting
 
-```rust
-#[app::state]
-pub struct GameState {
-    players: UnorderedMap<String, Player>,
-    score: Counter,
-    events: Vector<GameEvent>,
-}
-```
+Common issues and solutions:
 
-### IoT Networks
+- **[Node Troubleshooting](crates/node/readme/troubleshooting.md)** - Sync issues, events, memory
+- **[DAG Troubleshooting](crates/dag/readme/troubleshooting.md)** - Pending deltas, forks, performance
 
-Decentralized device coordination:
+## Community & Contributing
 
-```rust
-#[app::state]
-pub struct IoTNetwork {
-    devices: UnorderedMap<String, Device>,
-    readings: Vector<SensorData>,
-    alerts: Counter,
-}
-```
+**Get Involved:**
+- 💬 **[Discord](https://discord.gg/wZRC73DVpU)** - Join the community
+- 🐛 **[GitHub Issues](https://github.com/calimero-network/core/issues)** - Report bugs or request features
+- 🐦 **[Twitter](https://twitter.com/CalimeroNetwork)** - Follow updates
 
-## Backstory
+**Contributing:**
 
-Calimero Network was born out of the need to solve fundamental issues in existing technology and blockchain systems: **privacy**, **data control**, and **scalability**.
+We welcome contributions! See [Contributing Guide](CONTRIBUTING.md) for details.
 
-Inspired by the core principles of decentralization, the Calimero team set out to redesign how decentralized applications work. Our focus:
+All contributors must read the [Developer Certificate of Origin](https://developercertificate.org/) and sign all commits.
 
-1. **User privacy** - Data encrypted and owned by users
-2. **Data control** - Users decide who accesses their data
-3. **Scalability** - Efficient off-chain computing with on-chain verification
+## Releases
 
-Driven by innovation, we developed:
+Calimero uses centralized version management. Current version: **0.1.1**
 
-- **CRDT-based storage** for automatic conflict resolution
-- **DAG synchronization** for causal ordering
-- **Event-driven architecture** for real-time updates
-- **Multi-chain integration** for universal verification
-
-Our journey is about creating a **private, efficient, and open decentralized web** where users truly own their digital lives.
-
-## Ethos
-
-Calimero aims to make a significant impact in both Web2 and Web3:
-
-- **Catalyst for change** - Disrupting centralized data control
-- **Privacy-first** - End-to-end encryption by default
-- **User-centric** - Data ownership above all
-- **Innovation-driven** - Pushing boundaries of what's possible
-- **Open and transparent** - Open source, open community
-
-We stand as a testament to the pursuit of an **equitable, decentralized internet**.
-
-## Community
-
-### Get Involved
-
-- **Discord**: [Join our community](https://discord.gg/wZRC73DVpU)
-- **GitHub**: [Open an issue](https://github.com/calimero-network/core/issues)
-- **Documentation**: [Read the docs](crates/)
-- **Twitter**: [@CalimeroNetwork](https://twitter.com/CalimeroNetwork)
-
-### Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md).
-
-All contributions must:
-
-1. Read the [Developer Certificate of Origin Version 1.1](https://developercertificate.org/)
-2. Sign all commits
-
-This ensures all software is contributed under the terms of our license.
-
-## Version Management
-
-Calimero Core uses centralized version management where all crates share a single version number.
-
-```bash
-# Install cargo-workspaces
-cargo install --git https://github.com/miraclx/cargo-workspaces --tag v0.3.0 cargo-workspaces
-
-# Update all versions
-cargo ws version custom 0.2.0 --yes
-
-# Publish to crates.io
-cargo ws publish --yes --allow-dirty --force '*'
-```
-
-**Current version**: 0.1.1
+For publishing instructions, see [Contributing Guide](CONTRIBUTING.md).
 
 ## License
 

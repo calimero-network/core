@@ -58,14 +58,14 @@ graph TB
         C2C --> C3
     end
     
-    style L0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style L3 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style F0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style F1A fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style F1B fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style F2 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style C0 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style C3 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style L0 fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style L3 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style F0 fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style F1A fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style F1B fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style F2 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style C0 fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style C3 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 ## Core Types
@@ -431,12 +431,12 @@ graph TB
         AP2 --> FA
     end
     
-    style P1 fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style S1 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style AP1 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style AP2 fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style FS fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style FA fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style P1 fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style S1 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style AP1 fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
+    style AP2 fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
+    style FS fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style FA fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **What it validates**: 
@@ -488,12 +488,12 @@ graph TB
         AM --> FH
     end
     
-    style I fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style D1A fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style D1B fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style FK fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style M fill:#80d4a6,stroke:#333,stroke-width:2px,color:#000
-    style FH fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style I fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style D1A fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style D1B fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style FK fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style M fill:#4ECDC4,stroke:#333,stroke-width:3px,color:#000
+    style FH fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **What it validates**:
@@ -534,9 +534,9 @@ flowchart LR
         R1 --> R2 --> R3 --> R4
     end
     
-    style S4 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style C4 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style R4 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style S4 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style C4 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style R4 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **What it validates**:
@@ -571,11 +571,21 @@ flowchart LR
 | **Merging** | CRDT payload | External logic |
 | **Partial state** | ✅ Supported | ❌ Need full history |
 
+## Documentation
+
+For complete documentation, see the **[Documentation Index](readme/DOCUMENTATION_INDEX.md)**.
+
+**Key Guides:**
+- **[Architecture](readme/architecture.md)** - Internal design and data structures
+- **[API Reference](readme/api-reference.md)** - Complete API documentation
+- **[Performance Guide](readme/performance.md)** - Complexity analysis and benchmarks
+- **[Testing Guide](readme/testing-guide.md)** - Test coverage and examples
+- **[Troubleshooting](readme/troubleshooting.md)** - Common issues and solutions
+
 ## See Also
 
 - [calimero-node](../node/README.md) - How DAG integrates with node runtime
 - [calimero-storage](../storage/README.md) - CRDT actions that flow through DAG
-- [DAG_SYNC_EXPLAINED.md](../node/DAG_SYNC_EXPLAINED.md) - Deep dive
 
 ## License
 

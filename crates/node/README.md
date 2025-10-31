@@ -80,11 +80,11 @@ flowchart TB
     
     G6B -.->|Eventually| P6
     
-    style G1 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style G6A fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style G6B fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style P1 fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style P8 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style G1 fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style G6A fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style G6B fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style P1 fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style P8 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **Why both paths?**
@@ -102,7 +102,7 @@ sequenceDiagram
     participant DAG as DAG Store
     participant Handler as Event Handler
     
-    rect rgb(240, 248, 255)
+    rect rgb(220, 237, 255)
         Note over App,NodeA: Transaction Execution
         App->>NodeA: execute("add_item", args)
         NodeA->>NodeA: WASM execution
@@ -110,13 +110,13 @@ sequenceDiagram
         NodeA->>NodeA: Create CausalDelta {<br/>  id: D5,<br/>  parents: [D4],<br/>  payload: actions,<br/>  events: [ItemAdded]<br/>}
     end
     
-    rect rgb(255, 250, 240)
+    rect rgb(255, 237, 220)
         Note over NodeA,Gossip: Broadcast (Path 1)
         NodeA->>Gossip: Broadcast StateDelta
         Gossip->>NodeB: Propagate to peers (~100ms)
     end
     
-    rect rgb(240, 255, 240)
+    rect rgb(220, 255, 237)
         Note over NodeB,DAG: Delta Application
         NodeB->>DAG: add_delta(D5)
         DAG->>DAG: Check parents: [D4]
@@ -126,7 +126,7 @@ sequenceDiagram
         DAG-->>NodeB: Applied successfully
     end
     
-    rect rgb(255, 245, 240)
+    rect rgb(237, 220, 255)
         Note over NodeB,Handler: Event Handling
         NodeB->>NodeB: Check: not author ✅
         NodeB->>Handler: execute("on_item_added", data)
@@ -195,13 +195,13 @@ flowchart TD
     NewDelta --> EmitWS
     EmitWS --> Done([Complete])
     
-    style Start fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style Applied fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style AuthorCheck fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Skip fill:#ffb3b3,stroke:#333,stroke-width:2px,color:#000
-    style ExecuteHandler fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style Buffer fill:#ffe680,stroke:#333,stroke-width:2px,color:#000
-    style Done fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style Start fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style Applied fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style AuthorCheck fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Skip fill:#FF6B6B,stroke:#333,stroke-width:3px,color:#000
+    style ExecuteHandler fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style Buffer fill:#FFB84D,stroke:#333,stroke-width:3px,color:#000
+    style Done fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **Critical Rules**:
@@ -500,10 +500,10 @@ graph TB
         T1 --> Q1 --> C2 --> S1 --> S2 --> S3
     end
     
-    style N1 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style N2 fill:#b3d9ff,stroke:#333,stroke-width:2px,color:#000
-    style V1 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
-    style S3 fill:#99e6b3,stroke:#333,stroke-width:2px,color:#000
+    style N1 fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style N2 fill:#4DABF7,stroke:#333,stroke-width:3px,color:#000
+    style V1 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
+    style S3 fill:#51CF66,stroke:#333,stroke-width:3px,color:#000
 ```
 
 **What it validates**:
@@ -547,6 +547,18 @@ cargo build --release
 - ✅ Event handler execution
 - ✅ G-Counter CRDT consistency
 - ✅ Network resilience (packet loss scenarios)
+
+## Documentation
+
+For complete documentation, see the **[Documentation Index](readme/DOCUMENTATION_INDEX.md)**.
+
+**Key Guides:**
+- **[Architecture](readme/architecture.md)** - Internal design and components
+- **[Sync Protocol](readme/sync-protocol.md)** - How synchronization works
+- **[Sync Configuration](readme/sync-configuration.md)** - Tuning parameters
+- **[Event Handling](readme/event-handling.md)** - Event flow and handlers
+- **[Performance Guide](readme/performance.md)** - Latency, throughput, optimization
+- **[Troubleshooting](readme/troubleshooting.md)** - Common issues and solutions
 
 ## See Also
 
