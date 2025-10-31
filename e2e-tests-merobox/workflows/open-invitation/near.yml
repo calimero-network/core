@@ -1,0 +1,298 @@
+name: "Open Invitation - NEAR"
+description: "Open invitation workflow test on NEAR protocol - tests context joining via open invitations"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: open-inv-near
+
+steps:
+  # ============================================================================
+  # Phase 1: Application Installation
+  # ============================================================================
+  - name: Install Application on Node 1
+    type: install_application
+    node: open-inv-near-1
+    path: "apps/kv-store/res/kv_store.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # ============================================================================
+  # Phase 2: Context Creation
+  # ============================================================================
+  - name: Create Context on Node 1
+    type: create_context
+    node: open-inv-near-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Wait for Context Initialization
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 3: Set Initial Value and Verify
+  # ============================================================================
+  - name: Set Initial Value from Node 1
+    type: call
+    node: open-inv-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: foo
+      value: bar
+    outputs:
+      set_result_initial: result
+
+  - name: Get Initial Value - Inviter
+    type: call
+    node: open-inv-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: foo
+    outputs:
+      get_result_initial: result
+
+  - name: Assert Initial Value is 'bar'
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_initial}}, {"output": "bar"})'
+
+  # ============================================================================
+  # Phase 4: Create Identities for Nodes 2 and 3
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: open-inv-near-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: open-inv-near-3
+    outputs:
+      public_key_3: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  # ============================================================================
+  # Phase 5: Create Open Invitation
+  # ============================================================================
+  - name: Create Open Invitation
+    type: invite_open
+    node: open-inv-near-1
+    context_id: "{{context_id}}"
+    granter_id: "{{member_public_key}}"
+    valid_for_blocks: 1000
+    outputs:
+      open_invitation: invitation
+
+  - name: Assert Open Invitation Created
+    type: assert
+    statements:
+      - "is_set({{open_invitation}})"
+
+  # ============================================================================
+  # Phase 6: Join Context via Open Invitation
+  # ============================================================================
+  - name: Join via Open Invitation - Node 2
+    type: join_open
+    node: open-inv-near-2
+    invitee_id: "{{public_key_2}}"
+    invitation: "{{open_invitation}}"
+    outputs:
+      joined_context_id_2: contextId
+      joined_member_key_2: memberPublicKey
+
+  - name: Join via Open Invitation - Node 3
+    type: join_open
+    node: open-inv-near-3
+    invitee_id: "{{public_key_3}}"
+    invitation: "{{open_invitation}}"
+    outputs:
+      joined_context_id_3: contextId
+      joined_member_key_3: memberPublicKey
+
+  - name: Assert Nodes Joined Successfully
+    type: assert
+    statements:
+      - "is_set({{joined_context_id_2}})"
+      - "is_set({{joined_member_key_2}})"
+      - "is_set({{joined_context_id_3}})"
+      - "is_set({{joined_member_key_3}})"
+
+  - name: Wait for Consensus After Join
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 7: Verify All Members Can Read Initial State
+  # ============================================================================
+  - name: Get State - Node 1 (Inviter)
+    type: call
+    node: open-inv-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: foo
+    outputs:
+      get_result_node1: result
+
+  - name: Get State - Node 2
+    type: call
+    node: open-inv-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: foo
+    outputs:
+      get_result_node2: result
+
+  - name: Get State - Node 3
+    type: call
+    node: open-inv-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: foo
+    outputs:
+      get_result_node3: result
+
+  - name: Assert All Members See Initial Value 'bar'
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_node1}}, {"output": "bar"})'
+      - 'json_equal({{get_result_node2}}, {"output": "bar"})'
+      - 'json_equal({{get_result_node3}}, {"output": "bar"})'
+
+  # ============================================================================
+  # Phase 8: Update Value and Verify Broadcast
+  # ============================================================================
+  - name: Update Value from Node 1
+    type: call
+    node: open-inv-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: foo
+      value: baz
+    outputs:
+      update_result: result
+
+  - name: Wait for Broadcast Propagation
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 9: Verify All Members See Updated Value
+  # ============================================================================
+  - name: Get Update - Node 1 (Inviter)
+    type: call
+    node: open-inv-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: foo
+    outputs:
+      get_update_node1: result
+
+  - name: Get Update - Node 2
+    type: call
+    node: open-inv-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: foo
+    outputs:
+      get_update_node2: result
+
+  - name: Get Update - Node 3
+    type: call
+    node: open-inv-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: foo
+    outputs:
+      get_update_node3: result
+
+  - name: Assert All Members See Updated Value 'baz'
+    type: json_assert
+    statements:
+      - 'json_equal({{get_update_node1}}, {"output": "baz"})'
+      - 'json_equal({{get_update_node2}}, {"output": "baz"})'
+      - 'json_equal({{get_update_node3}}, {"output": "baz"})'
+
+  # ============================================================================
+  # Phase 10: Additional State Changes to Verify Continuous Consensus
+  # ============================================================================
+  - name: Set Additional Keys from Different Nodes
+    type: call
+    node: open-inv-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: set
+    args:
+      key: test_key
+      value: test_value
+    outputs:
+      additional_set_result: result
+
+  - name: Wait for Additional Update
+    type: wait
+    seconds: 3
+
+  - name: Verify Additional Key on All Nodes - Node 1
+    type: call
+    node: open-inv-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: test_key
+    outputs:
+      additional_get_node1: result
+
+  - name: Verify Additional Key on All Nodes - Node 3
+    type: call
+    node: open-inv-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: test_key
+    outputs:
+      additional_get_node3: result
+
+  - name: Assert Additional Key Synced
+    type: json_assert
+    statements:
+      - 'json_equal({{additional_get_node1}}, {"output": "test_value"})'
+      - 'json_equal({{additional_get_node3}}, {"output": "test_value"})'
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 60
+nuke_on_end: true

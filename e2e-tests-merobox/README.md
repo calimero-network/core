@@ -24,6 +24,8 @@ e2e-tests-merobox/
 │   │   └── near.yml        # NEAR protocol (#[derive(Mergeable)] testing)
 │   ├── concurrent-mutations/ # Concurrent Mutations workflows
 │   │   └── near.yml        # NEAR protocol (DAG convergence testing)
+│   ├── open-invitation/    # Open Invitation workflows
+│   │   ├── near.yml        # NEAR protocol (open invitation join)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -90,10 +92,13 @@ cargo build -p merod -p meroctl
 # Run Ethereum tests (with devnet check)
 ./e2e-tests-merobox/run-local.sh --protocol ethereum --build --check-devnets
 
-# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Team Metrics + Concurrent Mutations + Proposals)
+# Run Open Invitation tests
+./e2e-tests-merobox/run-local.sh --protocol near-open-invitation --build --build-apps
+
+# Run all protocols (KV Store + Init + Handlers + Blobs + Collaborative Editor + Nested CRDT + Team Metrics + Concurrent Mutations + Open Invitation + Proposals)
 ./e2e-tests-merobox/run-local.sh --protocol all --build --build-apps
 
-# Note: This runs 13 test suites:
+# Note: This runs 14 test suites:
 # - KV Store: near, near-init, icp (if dfx running), ethereum (if anvil running)
 # - Handlers: near-handlers
 # - Blob API: near-blobs
@@ -101,6 +106,7 @@ cargo build -p merod -p meroctl
 # - Nested CRDT: near-nested
 # - Team Metrics: near-metrics
 # - Concurrent Mutations: near-concurrent
+# - Open Invitation: near-open-invitation
 # - Proposals: near-proposals, icp-proposals (if dfx), ethereum-proposals (if anvil)
 
 # Run KV Store with Handlers test (NEAR only)
