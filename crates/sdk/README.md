@@ -75,9 +75,9 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Emitted: app::emit!(event)
+    [*] --> Emitted: emit event
     
-    Emitted --> Collected: Add to outcome.events
+    Emitted --> Collected: Add to outcome
     
     state "Author Node Check" as AuthorCheck
     Collected --> AuthorCheck
@@ -85,7 +85,7 @@ stateDiagram-v2
     AuthorCheck --> SkipHandler: If author node
     AuthorCheck --> IncludeInDelta: If not author
     
-    SkipHandler --> IncludeInDelta: Include in broadcast anyway
+    SkipHandler --> IncludeInDelta: Include in broadcast
     
     IncludeInDelta --> Broadcast: StateDelta message
     
@@ -99,7 +99,7 @@ stateDiagram-v2
     
     Buffer --> ExecuteHandler: When parents arrive
     
-    ExecuteHandler --> WASMExec: context.execute(handler, data)
+    ExecuteHandler --> WASMExec: execute handler
     
     state "Handler Result" as HandlerResult
     WASMExec --> HandlerResult
@@ -107,17 +107,15 @@ stateDiagram-v2
     HandlerResult --> NewEvents: If emits events
     HandlerResult --> WebSocket: Emit to clients
     
-    NewEvents --> Emitted: Recursive (new delta)
+    NewEvents --> Emitted: Recursive
     WebSocket --> [*]
     
     note right of SkipHandler
-        Prevents infinite loops:
-        handler → event → handler
+        Prevents infinite loops
     end note
     
     note right of Buffer
-        Events lost if delta
-        never applied!
+        Events lost if delta never applied
     end note
 ```
 
