@@ -57,7 +57,7 @@ jobs:
           chmod +x apps/collaborative-editor/build.sh
           chmod +x apps/nested-crdt-test/build.sh
           chmod +x apps/team-metrics-macro/build.sh
-          chmod +x apps/private-data/build.sh
+          chmod +x apps/private_data/build.sh
           ./apps/kv-store/build.sh
           ./apps/kv-store-init/build.sh
           ./apps/kv-store-with-handlers/build.sh
@@ -65,7 +65,7 @@ jobs:
           ./apps/collaborative-editor/build.sh
           ./apps/nested-crdt-test/build.sh
           ./apps/team-metrics-macro/build.sh
-          ./apps/private-data/build.sh
+          ./apps/private_data/build.sh
           cargo build -p meroctl -p merod
 
       - name: Upload Build Artifacts
