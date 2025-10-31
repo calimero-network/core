@@ -52,6 +52,7 @@ pub struct UserProfile {
 | **UnorderedMap&lt;K,V&gt;**       | Key-value storage   | **Recursive per-entry**   | ✅ Can nest      |
 | **Vector&lt;T&gt;**               | Ordered lists       | **Element-wise**          | ✅ Can nest      |
 | **UnorderedSet&lt;T&gt;**         | Unique values       | **Union**                 | Simple values   |
+| **Option&lt;T&gt;**               | Optional CRDTs      | **Recursive if Some**     | ✅ Wrapper       |
 
 ---
 
@@ -111,6 +112,46 @@ pub struct ActivityTracker {
 
 // Vector: append-heavy workloads
 // Set: unique membership testing
+```
+
+### Pattern 5: Optional CRDT Fields
+
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,
+    bio: Option<LwwRegister<String>>,  // Optional field that merges when present
+    settings: LwwRegister<Option<Settings>>,  // LWW with optional value
+}
+
+// Option<T> is now Mergeable!
+// - Option<LwwRegister<T>>: Optional field with LWW semantics when present
+// - LwwRegister<Option<T>>: LWW decides which Option (Some/None) wins
+// - Both Some: recursively merges inner values
+// - One None, one Some: takes the Some value
+```
+
+### Pattern 6: Vector Search
+
+```rust
+#[app::state]
+pub struct TaskList {
+    tasks: Vector<Task>,
+}
+
+// Find first completed task
+let completed = tasks.find(|t| t.is_complete)?
+    .next();
+
+// Get all high priority tasks
+let high_priority: Vec<Task> = tasks
+    .filter(|t| t.priority == Priority::High)?
+    .collect();
+
+// Count pending tasks
+let pending_count = tasks
+    .filter(|t| !t.is_complete)?
+    .count();
 ```
 
 ---
@@ -224,7 +265,90 @@ Need unique membership?
 | **Vector**             | Concurrent inserts at arbitrary positions may conflict | Use for append-heavy workloads          |
 | **UnorderedSet**       | Can't contain CRDTs (no update semantics)              | Use UnorderedMap instead                |
 | **LwwRegister**        | Concurrent updates lose one (LWW)                      | Expected behavior for single values     |
+| **Primitives**         | Use simple LWW without timestamps                      | Use LwwRegister for proper timestamps   |
 | **All Collections**    | Root-level non-CRDTs use LWW                           | Use LwwRegister for explicit timestamps |
+
+### ⚠️ CRITICAL: Primitives Can Cause State Divergence!
+
+**Basic types like `String`, `u64`, `bool` ARE mergeable but with a serious flaw:**
+
+```rust
+#[derive(Mergeable)]
+pub struct UserProfile {
+    name: String,  // ⚠️ DANGER: Can cause state divergence!
+    age: u64,      // ⚠️ DANGER: Nodes may not converge!
+}
+
+// What happens with concurrent updates:
+// Node A: name = "Alice"
+// Node B: name = "Bob" (concurrent)
+
+// After sync:
+// Node A receives "Bob": "Alice".merge(&"Bob") → "Bob"
+// Node B receives "Alice": "Bob".merge(&"Alice") → "Alice"
+
+// RESULT: State divergence! ❌
+// Node A has name="Bob", Node B has name="Alice"
+// Nodes never converge to same state!
+```
+
+**Why this is broken:**
+- ❌ No timestamp comparison (can't tell which is "latest")
+- ❌ Merge is NOT commutative: merge(A,B) ≠ merge(B,A)
+- ❌ **Violates CRDT property**: nodes don't converge!
+- ❌ State divergence leads to inconsistent application behavior
+
+**Better approach with LwwRegister:**
+
+```rust
+#[derive(Mergeable)]
+pub struct UserProfile {
+    name: LwwRegister<String>,  // ✅ Has timestamps!
+    age: LwwRegister<u64>,      // ✅ Proper LWW semantics
+}
+
+// What happens:
+// Node A @ T1: name = "Alice"
+// Node B @ T2: name = "Alicia" (T2 > T1)
+// Merge: name = "Alicia" ✅ (T2 wins deterministically!)
+```
+
+**When primitives are SAFE to use:**
+- ✅ **Single-writer fields**: Only one node ever updates this field
+- ✅ **Immutable fields**: Set once, never changed (IDs, creation timestamps)
+- ✅ **Different fields per node**: Each node updates its own set of fields
+
+**When you MUST use LwwRegister:**
+- ⚠️ **Multiple writers**: Any field that multiple nodes might update
+- ⚠️ **Concurrent updates possible**: Even if rare, divergence is catastrophic
+- ⚠️ **Production applications**: State divergence breaks distributed apps
+- ✅ **Any field with >1 potential writer**: Use LwwRegister to be safe
+
+**Real-world impact:**
+```rust
+// ❌ UNSAFE in production:
+#[derive(Mergeable)]
+pub struct Document {
+    title: String,     // Two users edit → divergence
+    content: String,   // Concurrent edits → different states per node
+}
+
+// ✅ SAFE - single writer or immutable:
+#[derive(Mergeable)]
+pub struct SystemConfig {
+    node_id: String,        // Immutable, set once
+    region: String,         // Only this node updates its region
+    created_at: u64,        // Immutable timestamp
+}
+
+// ✅ PRODUCTION-SAFE with LwwRegister:
+#[derive(Mergeable)]
+pub struct Document {
+    title: LwwRegister<String>,      // Deterministic convergence
+    content: ReplicatedGrowableArray, // Proper CRDT for text
+    author: LwwRegister<String>,     // Latest update wins
+}
+```
 
 ---
 
@@ -343,6 +467,21 @@ A: See [Migration Guide](readme/migration.md). TL;DR: Both patterns work, choose
 **Q: What if I need custom conflict resolution?**  
 A: Implement `Mergeable` manually. See [Architecture Guide](readme/architecture.md).
 
+**Q: Can I use Option with CRDTs?**  
+A: Yes! `Option<T>` is now `Mergeable` where `T` is `Mergeable`. Use `Option<LwwRegister<T>>` for optional fields that merge when both are `Some`, or `LwwRegister<Option<T>>` for LWW semantics on optional values.
+
+**Q: How do I search a Vector?**  
+A: Use `find(predicate)` to get the first match, or `filter(predicate)` to get all matches. Both return iterators for efficient lazy evaluation.
+
+**Q: Can I use LwwRegister values directly without calling `.get()`?**  
+A: Yes! `LwwRegister` implements `Deref`, `AsRef`, `Borrow`, and `From` for seamless type conversions. Use `&*reg`, `reg.as_ref()`, or pass to functions expecting `&T` directly.
+
+**Q: Can I use regular types like String, u64, bool in my structs?**  
+A: **DANGER!** Primitives can cause **permanent state divergence** where nodes never converge. The merge is not commutative, violating CRDT properties. Only safe for truly immutable fields or guaranteed single-writer scenarios. **For production apps, always use `LwwRegister<T>`** for any field that might have concurrent updates. The risk of state divergence is not worth the slight syntax convenience.
+
+**Q: What's the difference between `String` and `LwwRegister<String>`?**  
+A: **CRITICAL:** `String` can cause **state divergence** (nodes end up with different values permanently) because merge is not commutative. `LwwRegister<String>` uses timestamps for deterministic convergence. **Never use primitives if concurrent updates are possible!** Always use `LwwRegister<T>` in production unless the field is truly immutable or single-writer.
+
 ---
 
 ## Quick Reference
@@ -352,21 +491,30 @@ A: Implement `Mergeable` manually. See [Architecture Guide](readme/architecture.
 let mut counter = Counter::new();
 counter.increment()?;  // All increments sum
 
-// LwwRegister - timestamp wins
+// LwwRegister - timestamp wins with ergonomic conversions
 let mut register = LwwRegister::new("initial");
 register.set("updated");  // Latest timestamp wins
+let s: &str = &*register;  // Deref to inner value
+let len = process(register.as_ref());  // AsRef for function calls
+let reg: LwwRegister<u64> = 42.into();  // From/Into for creation
 
 // Map - entry-wise merge
 let mut map = UnorderedMap::new();
 map.insert("key", value)?;  // Concurrent inserts to different keys preserved
 
-// Vector - element-wise merge
+// Vector - element-wise merge with search
 let mut vec = Vector::new();
 vec.push(value)?;  // Concurrent appends preserved
+let first = vec.find(|v| v.id == "target")?;  // Find first match
+let matches: Vec<_> = vec.filter(|v| v.score > 100)?.collect();  // Filter all
 
 // Set - union merge
 let mut set = UnorderedSet::new();
 set.insert("value")?;  // All adds preserved (union)
+
+// Option<T> - recursive merge
+let mut opt: Option<LwwRegister<String>> = Some(LwwRegister::new("value"));
+opt.merge(&other)?;  // Merges inner values when both Some
 ```
 
 ---

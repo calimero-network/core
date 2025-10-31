@@ -127,6 +127,12 @@ let mut register = LwwRegister::new("initial value");
 register.set("updated value");
 let value = register.get();  // &T
 let owned = register.into_inner();  // T
+
+// Ergonomic conversions (new!)
+let s: &str = &*register;           // Deref to &T
+let s: &String = register.as_ref(); // AsRef<T>
+let borrowed: &String = register.borrow();  // Borrow<T>
+let reg: LwwRegister<u64> = 42.into();  // From<T>
 ```
 
 ### Merge Behavior
@@ -159,6 +165,45 @@ Merge: register = "Bob" ✅ (higher node_id wins)
 - ✅ **In Maps:** `Map<K, LwwRegister<T>>` - timestamps per key
 - ✅ **In Vectors:** `Vector<LwwRegister<T>>` - timestamps per index
 - ✅ **Nested types:** `LwwRegister<CustomStruct>` works!
+- ✅ **With Option:** `Option<LwwRegister<T>>` and `LwwRegister<Option<T>>` both work!
+
+### Ergonomic Traits
+
+`LwwRegister<T>` implements several traits for seamless usage:
+
+**Deref** - Use like the inner type:
+```rust
+let reg = LwwRegister::new("Hello".to_owned());
+let s: &str = &*reg;  // Deref to &String, then to &str
+println!("Length: {}", reg.len());  // Call String methods directly
+```
+
+**AsRef<T>** - Pass to functions expecting `&T`:
+```rust
+fn process_string(s: &str) -> usize { s.len() }
+
+let reg = LwwRegister::new("test".to_owned());
+let len = process_string(reg.as_ref());  // Works!
+```
+
+**Borrow<T>** - Works with HashMap, BTreeMap:
+```rust
+use std::borrow::Borrow;
+let reg = LwwRegister::new("key".to_owned());
+let key: &String = reg.borrow();  // Compatible with std collections
+```
+
+**From<T>** - Create from values directly:
+```rust
+let reg: LwwRegister<String> = "hello".to_owned().into();
+let num_reg: LwwRegister<u64> = 42.into();
+```
+
+**Display** - Format like the inner type:
+```rust
+let reg = LwwRegister::new("Hello");
+println!("{}", reg);  // Prints: Hello
+```
 
 ### Example
 
@@ -331,6 +376,10 @@ let item = vec.pop()?;              // Remove from end
 let old = vec.update(index, item)?; // Replace at index
 let len = vec.len()?;               // Get length
 vec.clear()?;                       // Remove all
+
+// Search methods (new!)
+let first = vec.find(|item| predicate(item))?;   // Iterator with first match
+let all = vec.filter(|item| predicate(item))?;   // Iterator with all matches
 ```
 
 ### Merge Behavior
@@ -383,6 +432,51 @@ Merge: [Counter(5), Counter(5)] ✅ (merge + append)
 - ✅ **In Vectors:** `Vector<Vector<T>>` - 2D arrays
 - ✅ **Values:** `Vector<Counter>`, `Vector<LwwRegister<T>>`, etc.
 
+### Search Methods
+
+`Vector<T>` provides efficient search capabilities:
+
+**find(predicate)** - Get first matching element:
+```rust
+let tasks = Vector::<Task>::new();
+// ... populate tasks ...
+
+// Find first completed task
+let completed = tasks.find(|t| t.is_complete)?
+    .next();  // Returns Option<Task>
+
+// Find by ID
+let task = tasks.find(|t| t.id == "task-123")?
+    .next()
+    .ok_or("Not found")?;
+```
+
+**filter(predicate)** - Get all matching elements:
+```rust
+// Get all high priority tasks
+let high_priority: Vec<Task> = tasks
+    .filter(|t| t.priority == Priority::High)?
+    .collect();
+
+// Count pending tasks
+let pending_count = tasks
+    .filter(|t| !t.is_complete)?
+    .count();
+
+// Chain with other iterator methods
+let urgent_ids: Vec<String> = tasks
+    .filter(|t| t.is_urgent)?
+    .map(|t| t.id.clone())
+    .collect();
+```
+
+**Performance:**
+- Both methods return iterators (lazy evaluation)
+- `find()` stops at first match (O(k) where k is position)
+- `filter()` checks all elements (O(n))
+- Use `find()` when you need just one result
+- Use `filter()` when you need all matches
+
 ### Best Practices
 
 ```rust
@@ -391,6 +485,10 @@ metrics.push(Counter::new())?;  // Logs, time-series
 
 // ✅ Good: Index-based updates
 metrics.update(0, new_counter)?;  // Element-wise merge works!
+
+// ✅ Good: Search with predicates
+let item = vec.find(|x| x.id == "target")?.next();
+let matches: Vec<_> = vec.filter(|x| x.value > 100)?.collect();
 
 // ⚠️ Caution: Arbitrary inserts
 vec.insert_at(5, item)?;  // Position conflicts may occur
@@ -532,16 +630,436 @@ impl UserManager {
 
 ---
 
+## Primitive Types (String, u64, bool, etc.)
+
+**Use case:** Simple values in structs, when timestamp-based resolution isn't critical
+
+### What Are Primitives?
+
+Primitive types include: `String`, `u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i64`, `i128`, `bool`, `char`
+
+### API
+
+Primitives work directly in your structs:
+
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: String,        // Primitive - simple LWW
+    age: u64,            // Primitive - simple LWW
+    is_verified: bool,   // Primitive - simple LWW
+}
+```
+
+### Merge Behavior
+
+**🚨 CRITICAL WARNING: Primitives Can Cause State Divergence!**
+
+```rust
+impl Mergeable for String {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        *self = other.clone();  // Always takes "other" - NOT COMMUTATIVE!
+    }
+}
+```
+
+**The fatal flaw:**
+```
+Initial state: Both nodes synced
+
+Node A: name = "Alice"
+Node B: name = "Bob" (concurrent update to same field)
+
+After sync:
+Node A receives "Bob" from B: "Alice".merge(&"Bob") → "Bob"
+Node B receives "Alice" from A: "Bob".merge(&"Alice") → "Alice"
+
+RESULT: PERMANENT STATE DIVERGENCE! 🚨
+- Node A: name = "Bob"
+- Node B: name = "Alice"
+- Nodes NEVER converge to same state
+```
+
+**Why this violates CRDT properties:**
+- ❌ **Not commutative**: merge(A, B) ≠ merge(B, A)
+- ❌ **No convergence**: Nodes end up in different states
+- ❌ **No timestamps**: Can't determine ordering
+- ❌ **Breaks distributed guarantees**: Application state becomes inconsistent
+
+**This is a critical bug pattern that will break production systems!**
+
+### When to Use Primitives
+
+**✅ ONLY Safe use cases (very limited!):**
+
+1. **Immutable fields** - Set once, never modified:
+```rust
+#[derive(Mergeable)]
+pub struct Document {
+    id: String,           // Set once at creation, never changes
+    created_at: u64,      // Immutable timestamp
+    author_id: String,    // Set once, immutable
+}
+// Safe because no concurrent modifications possible
+```
+
+2. **Single-writer fields** - Only one specific node modifies:
+```rust
+#[derive(Mergeable)]
+pub struct NodeStatus {
+    node_id: String,      // Each node only updates its own
+    last_heartbeat: u64,  // Only this node updates this
+}
+// Safe because no concurrent writes to same field
+```
+
+3. **Different fields per node** - Partitioned by node:
+```rust
+#[derive(Mergeable)]
+pub struct UserSettings {
+    theme: String,           // User A updates
+    language: String,        // User B updates  
+    timezone: String,        // User C updates
+}
+// Each user updates their own fields → No conflicts!
+```
+
+
+**❌ NEVER use primitives when:**
+
+1. **ANY possibility of concurrent updates** - Even rarely:
+```rust
+// ❌ Bad: Multiple nodes update same fields
+pub struct SharedCounter {
+    count: u64,  // Both nodes increment → one increment lost!
+}
+
+// ✅ Better: Use Counter
+pub struct SharedCounter {
+    count: Counter,  // Increments sum correctly!
+}
+```
+
+2. **Need deterministic resolution** - Must know which update wins:
+```rust
+// ❌ Bad: Can't tell which is "latest"
+pub struct Document {
+    title: String,  // No timestamp - arbitrary winner
+}
+
+// ✅ Better: Use LwwRegister
+pub struct Document {
+    title: LwwRegister<String>,  // Timestamp tells us which is latest
+}
+```
+
+3. **Production apps** - Multiple concurrent writers:
+```rust
+// ❌ Bad for production
+pub struct UserProfile {
+    name: String,       // Concurrent edits → arbitrary winner
+    email: String,      // May lose updates!
+}
+
+// ✅ Better for production
+pub struct UserProfile {
+    name: LwwRegister<String>,   // Deterministic resolution
+    email: LwwRegister<String>,  // Proper timestamps
+}
+```
+
+### Primitives vs LwwRegister
+
+| Aspect               | Primitive (String)      | LwwRegister<String>       |
+| -------------------- | ----------------------- | ------------------------- |
+| **Syntax**           | `name: String`          | `name: LwwRegister<String>` |
+| **Timestamps**       | ❌ None                  | ✅ Hybrid Logical Clock    |
+| **Merge logic**      | Take "other" value      | Compare timestamps        |
+| **Deterministic**    | ❌ Arbitrary             | ✅ Latest wins             |
+| **Concurrent safety**| ⚠️ May lose updates      | ✅ Correct resolution      |
+| **When to use**      | Low contention          | Concurrent updates        |
+| **Verbosity**        | Low                     | Slightly higher           |
+| **Ergonomics**       | Natural                 | Deref, AsRef (seamless)   |
+
+### Example: Migration from Primitives
+
+**Before (prototyping):**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct Document {
+    title: String,
+    author: String,
+    created_at: u64,
+}
+
+// Problem: Concurrent edits to title lose updates
+```
+
+**After (production-ready):**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct Document {
+    title: LwwRegister<String>,    // Deterministic conflict resolution
+    author: LwwRegister<String>,   // Latest update wins
+    created_at: LwwRegister<u64>,  // Immutable in practice, but consistent
+}
+
+// Benefit: Concurrent edits resolve correctly with timestamps
+```
+
+### Implementation Details
+
+Primitives implement `Mergeable` with a simple macro:
+
+```rust
+impl Mergeable for String {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // ⚠️ Warning: This loses information!
+        // No timestamp comparison - just overwrites
+        *self = other.clone();
+        Ok(())
+    }
+}
+```
+
+**Supported primitives:**
+- Integers: `u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i64`, `i128`
+- Text: `String`, `char`
+- Boolean: `bool`
+
+### Performance
+
+| Operation   | Complexity   | Notes                     |
+| ----------- | ------------ | ------------------------- |
+| merge()     | O(1)         | Simple clone operation    |
+| No overhead | -            | No timestamp storage      |
+
+**Trade-off:** Lower overhead vs less correctness
+
+### Best Practices
+
+```rust
+// ✅ Good: Low-contention struct
+#[derive(Mergeable)]
+pub struct Config {
+    server_url: String,      // Rarely changes, okay
+    api_key: String,         // Set once, okay
+    version: String,         // Read-only in practice, okay
+}
+
+// ⚠️ Risky: High-contention fields
+#[derive(Mergeable)]
+pub struct EditableDocument {
+    title: String,           // Multiple users edit → use LwwRegister!
+    content: String,         // High contention → use RGA!
+}
+
+// ✅ Best: Mix based on contention
+#[derive(Mergeable)]
+pub struct SmartDocument {
+    id: String,                        // Immutable, primitive okay
+    title: LwwRegister<String>,        // Editable, use LwwRegister
+    content: ReplicatedGrowableArray,  // Text editing, use RGA
+    created_at: u64,                   // Immutable, primitive okay
+    view_count: Counter,               // Increments, use Counter
+}
+```
+
+### Summary
+
+**🚨 Primitives are DANGEROUS - can cause state divergence:**
+- ❌ **NOT a proper CRDT**: Violates convergence property
+- ❌ **State divergence**: Nodes end up in different states permanently
+- ❌ **No timestamps**: Can't determine ordering
+- ❌ **Not commutative**: merge(A,B) ≠ merge(B,A)
+- ⚠️ **ONLY safe for**: Immutable fields or single-writer scenarios
+- ❌ **DO NOT use in production** if any concurrent updates possible
+
+**For ANY field that might have concurrent updates:**
+- ✅ **MUST use** `LwwRegister<T>` for proper timestamps and convergence
+- ✅ Use specialized CRDTs (`Counter`, `RGA`) for specific use cases
+- ✅ Never use bare primitives in multi-writer scenarios
+
+**The golden rule:** When in doubt, use `LwwRegister<T>` instead of primitives!
+
+---
+
+## Option<T>
+
+**Use case:** Optional CRDT fields, nullable values with merge semantics
+
+### API
+
+`Option<T>` is now `Mergeable` when `T` is `Mergeable`:
+
+```rust
+use calimero_storage::collections::LwwRegister;
+
+// Option wrapping a CRDT
+let mut opt1: Option<LwwRegister<String>> = Some(LwwRegister::new("Alice"));
+let opt2: Option<LwwRegister<String>> = Some(LwwRegister::new("Bob"));
+opt1.merge(&opt2)?;  // Inner LwwRegisters merge
+
+// LwwRegister wrapping Option
+let mut reg1 = LwwRegister::new(Some("value".to_owned()));
+let reg2 = LwwRegister::new(None);
+reg1.merge(&reg2);  // LWW semantics on the Option itself
+```
+
+### Merge Behavior
+
+**Recursive merge when both are Some:**
+```
+opt1 = Some(LwwRegister("Alice" @ T1))
+opt2 = Some(LwwRegister("Bob" @ T2))
+Merge: Some(LwwRegister("Bob" @ T2)) ✅ (inner values merged using LWW)
+```
+
+**Take Some when one is None:**
+```
+opt1 = None
+opt2 = Some(value)
+Merge: Some(value) ✅ (takes the Some value)
+```
+
+**Keep Some when other is None:**
+```
+opt1 = Some(value)
+opt2 = None
+Merge: Some(value) ✅ (keeps existing Some)
+```
+
+**Both None - no change:**
+```
+opt1 = None
+opt2 = None
+Merge: None ✅
+```
+
+### Use Cases
+
+**1. Optional fields that merge:**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,
+    bio: Option<LwwRegister<String>>,  // Optional bio with LWW semantics
+    avatar_url: Option<LwwRegister<String>>,  // Optional URL
+}
+
+// When both nodes set bio → LWW wins
+// When one node sets bio → That value wins
+```
+
+**2. LWW semantics on optional values:**
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct Config {
+    theme: LwwRegister<Option<String>>,  // Latest timestamp decides Some/None
+}
+
+// Node A @ T1: theme = Some("dark")
+// Node B @ T2: theme = None  (user cleared it)
+// Merge: theme = None ✅ (T2 > T1, so None wins)
+```
+
+**3. Optional nested structures:**
+```rust
+pub struct Document {
+    metadata: Option<UnorderedMap<String, LwwRegister<String>>>,
+}
+
+// metadata can be Some (mergeable map) or None
+// When both Some → maps merge recursively
+```
+
+### Pattern Comparison
+
+**Option<LwwRegister<T>>** - Optional field with LWW when present:
+```rust
+bio: Option<LwwRegister<String>>
+
+// Both None → stays None
+// One Some → takes that value
+// Both Some → inner LwwRegisters merge (timestamp wins)
+```
+
+**LwwRegister<Option<T>>** - LWW decides the Option:
+```rust
+theme: LwwRegister<Option<String>>
+
+// Timestamp always decides which Option wins
+// Doesn't recursively merge - whole Option replaced by latest timestamp
+```
+
+### Performance
+
+| Operation   | Complexity   | Notes                          |
+| ----------- | ------------ | ------------------------------ |
+| merge()     | O(M)         | M = cost of merging inner type |
+| Some/None   | O(1)         | Checking variant               |
+
+### Nesting
+
+- ✅ **Anywhere:** `Option<T>` works wherever `T` would work
+- ✅ **In Maps:** `Map<K, Option<LwwRegister<V>>>`
+- ✅ **In Vectors:** `Vector<Option<Counter>>`
+- ✅ **Wrapping collections:** `Option<UnorderedMap<K, V>>`
+
+### Example
+
+```rust
+#[derive(Mergeable, BorshSerialize, BorshDeserialize)]
+pub struct UserProfile {
+    name: LwwRegister<String>,
+    bio: Option<LwwRegister<String>>,
+    settings: LwwRegister<Option<Settings>>,
+}
+
+pub struct Settings {
+    theme: String,
+    notifications: bool,
+}
+
+impl UserProfile {
+    pub fn set_bio(&mut self, bio: String) {
+        self.bio = Some(LwwRegister::new(bio));
+    }
+    
+    pub fn clear_bio(&mut self) {
+        self.bio = None;
+    }
+    
+    pub fn update_settings(&mut self, settings: Settings) {
+        self.settings.set(Some(settings));
+    }
+}
+
+// Concurrent bio updates:
+// Node A: set_bio("Alice's bio")
+// Node B: set_bio("Alice bio v2") (later timestamp)
+// Merge: bio = Some("Alice bio v2") ✅
+
+// Mixed operations:
+// Node A: update_settings(...) @ T1
+// Node B: clear by setting settings to None @ T2
+// Merge: settings = None ✅ (T2 wins)
+```
+
+---
+
 ## Comparison Table
 
 | Collection      | Best For        | Merge        | Nesting     | Performance   |
 | --------------- | --------------- | ------------ | ----------- | ------------- |
 | **Counter**     | Metrics, counts | Sum          | Leaf        | O(1) all ops  |
-| **LwwRegister** | Single values   | LWW          | Leaf        | O(1) all ops  |
+| **LwwRegister** | Single values   | LWW + time   | Leaf        | O(1) all ops  |
 | **RGA**         | Text editing    | Char-level   | Leaf        | O(N) get      |
 | **Map**         | Key-value       | Recursive    | ✅ Full      | O(1) get/set  |
 | **Vector**      | Ordered lists   | Element-wise | ✅ Full      | O(N) get      |
 | **Set**         | Membership      | Union        | Values only | O(1) ops      |
+| **Option<T>**   | Optional fields | Recursive    | ✅ Wrapper   | O(M) merge    |
+| **Primitives**  | Simple fields   | LWW no time  | Leaf        | O(1) all ops  |
 
 ---
 
@@ -550,10 +1068,17 @@ impl UserManager {
 ```
 Counting things? → Counter
 Single value with conflicts? → LwwRegister<T>
+  - Low contention, prototyping? → String/u64/bool (primitives)
+  - Production, concurrent writes? → LwwRegister<T> (timestamps!)
 Text editing? → ReplicatedGrowableArray
 Key-value pairs? → UnorderedMap<K, V>
 Ordered list? → Vector<T>
+  - Need to search? → Use find()/filter()
 Unique membership? → UnorderedSet<T>
+Optional CRDT field? → Option<T> where T: Mergeable
+Optional value with LWW? → LwwRegister<Option<T>>
+Simple struct fields? → Primitives okay for prototyping
+  - ⚠️ Warning: No timestamps, arbitrary conflict resolution
 ```
 
 ---
