@@ -24,7 +24,7 @@ use super::handlers::proposals::{
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
     get_proxy_contract_handler,
 };
-use super::handlers::{alias, blob};
+use super::handlers::{alias, blob, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
@@ -218,6 +218,8 @@ pub(crate) fn setup(
         )
         // Alias management
         .nest("/alias", alias::service())
+        // TEE attestation
+        .nest("/tee", tee::service())
         .route("/health", get(health_check_handler))
         // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))
