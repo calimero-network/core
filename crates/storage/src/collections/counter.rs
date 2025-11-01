@@ -139,10 +139,24 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
             // 2. Upgrading from GCounter to PNCounter (no negative field - safe upgrade)
             match UnorderedMap::<String, u64, S>::deserialize_reader(reader) {
                 Ok(neg_map) => neg_map,
-                Err(_) => {
-                    // No negative field present - this is a GCounter being upgraded to PNCounter
-                    // This is a safe operation since GCounter has no negative counts
-                    UnorderedMap::new_internal()
+                Err(e) => {
+                    // Only treat "no more data" errors as "no negative field" (safe GCounter upgrade)
+                    // Propagate all other errors (corruption, I/O errors, etc.)
+                    match e.kind() {
+                        ErrorKind::UnexpectedEof => {
+                            // Stream ended - no negative field present
+                            UnorderedMap::new_internal()
+                        }
+                        ErrorKind::InvalidData if e.to_string().contains("Unexpected length") => {
+                            // from_slice detected insufficient bytes - no negative field present
+                            // This is a GCounter being upgraded to PNCounter (safe operation)
+                            UnorderedMap::new_internal()
+                        }
+                        _ => {
+                            // Data corruption or other error - propagate it
+                            return Err(e);
+                        }
+                    }
                 }
             }
         } else {
@@ -651,7 +665,7 @@ mod tests {
             result.is_err(),
             "Deserializing PNCounter as GCounter should fail"
         );
-        
+
         // The error indicates leftover data
         let err = result.unwrap_err();
         let err_str = err.to_string();
