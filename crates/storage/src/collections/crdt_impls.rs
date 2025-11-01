@@ -471,6 +471,7 @@ where
 mod tests {
     use super::*;
     use crate::env;
+    use crate::store::MainStorage;
 
     #[test]
     fn test_lww_register_is_crdt() {
@@ -481,16 +482,16 @@ mod tests {
 
     #[test]
     fn test_gcounter_is_crdt() {
-        assert!(GCounter::is_crdt());
-        assert_eq!(GCounter::crdt_type(), CrdtType::Counter);
-        assert!(!GCounter::can_contain_crdts());
+        assert!(GCounter::<MainStorage>::is_crdt());
+        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert!(!GCounter::<MainStorage>::can_contain_crdts());
     }
 
     #[test]
     fn test_pncounter_is_crdt() {
-        assert!(PNCounter::is_crdt());
-        assert_eq!(PNCounter::crdt_type(), CrdtType::Counter);
-        assert!(!PNCounter::can_contain_crdts());
+        assert!(PNCounter::<MainStorage>::is_crdt());
+        assert_eq!(PNCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert!(!PNCounter::<MainStorage>::can_contain_crdts());
     }
 
     #[test]

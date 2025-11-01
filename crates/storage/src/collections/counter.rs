@@ -10,6 +10,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::{StorageAdaptor, UnorderedMap};
 use crate::collections::error::StoreError;
+use crate::interface::StorageError;
 use crate::store::MainStorage;
 
 /// A CRDT-compatible counter with configurable increment/decrement support.
@@ -146,11 +147,14 @@ impl<S: StorageAdaptor> Counter<false, S> {
     /// Returns `u64` since G-Counter cannot go negative.
     ///
     /// # Errors
-    /// Returns error if storage operation fails
+    /// Returns error if storage operation fails or if counter sum overflows u64::MAX
     pub fn value(&self) -> Result<u64, StoreError> {
         let mut total = 0u64;
         for (_, count) in self.positive.entries()? {
-            total += count;
+            // Safe addition: check for overflow
+            total = total.checked_add(count).ok_or_else(|| {
+                StorageError::InvalidData("Counter sum overflow: exceeded u64::MAX".to_string())
+            })?;
         }
         Ok(total)
     }
@@ -201,19 +205,50 @@ impl<S: StorageAdaptor> Counter<true, S> {
     /// Value = sum(positive) - sum(negative)
     ///
     /// # Errors
-    /// Returns error if storage operation fails
+    /// Returns error if storage operation fails or if counter values overflow i64 bounds
     pub fn value_signed(&self) -> Result<i64, StoreError> {
         let mut pos_total = 0i64;
         for (_, count) in self.positive.entries()? {
-            pos_total += count as i64;
+            // Safe conversion: check if u64 fits in i64
+            let count_i64 = i64::try_from(count).map_err(|_| {
+                StorageError::InvalidData(format!(
+                    "Counter value {} exceeds i64::MAX, cannot represent in signed counter",
+                    count
+                ))
+            })?;
+
+            // Safe addition: check for overflow
+            pos_total = pos_total.checked_add(count_i64).ok_or_else(|| {
+                StorageError::InvalidData(
+                    "Counter positive sum overflow: exceeded i64::MAX".to_string(),
+                )
+            })?;
         }
 
         let mut neg_total = 0i64;
         for (_, count) in self.negative.entries()? {
-            neg_total += count as i64;
+            // Safe conversion: check if u64 fits in i64
+            let count_i64 = i64::try_from(count).map_err(|_| {
+                StorageError::InvalidData(format!(
+                    "Counter value {} exceeds i64::MAX, cannot represent in signed counter",
+                    count
+                ))
+            })?;
+
+            // Safe addition: check for overflow
+            neg_total = neg_total.checked_add(count_i64).ok_or_else(|| {
+                StorageError::InvalidData(
+                    "Counter negative sum overflow: exceeded i64::MAX".to_string(),
+                )
+            })?;
         }
 
-        Ok(pos_total - neg_total)
+        // Safe subtraction: check for overflow
+        Ok(pos_total.checked_sub(neg_total).ok_or_else(|| {
+            StorageError::InvalidData(
+                "Counter final value overflow: result exceeds i64 bounds".to_string(),
+            )
+        })?)
     }
 
     /// Alias for `value_signed()` for API consistency
@@ -381,5 +416,138 @@ mod tests {
         crate::env::reset_for_testing();
         let counter = Root::new(|| PNCounter::new());
         assert_eq!(counter.value().unwrap(), 0);
+    }
+
+    // ========== Overflow Tests ==========
+
+    #[test]
+    fn test_gcounter_overflow_detection() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| GCounter::new());
+        let executor_id = [99u8; 32];
+
+        // Manually insert a value near u64::MAX to trigger overflow
+        let key = hex::encode(executor_id);
+        counter.positive.insert(key.clone(), u64::MAX - 10).unwrap();
+
+        // This should still work
+        assert!(counter.value().is_ok());
+
+        // Add another executor with a large value that will cause overflow
+        let executor_id2 = [100u8; 32];
+        let key2 = hex::encode(executor_id2);
+        counter.positive.insert(key2, 100).unwrap();
+
+        // Now value() should detect overflow and return error
+        let result = counter.value();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("overflow") || err_msg.contains("u64::MAX"));
+    }
+
+    #[test]
+    fn test_pncounter_cast_overflow_detection() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| PNCounter::new());
+        let executor_id = [101u8; 32];
+
+        // Manually insert a value that exceeds i64::MAX
+        let key = hex::encode(executor_id);
+        let invalid_value = (i64::MAX as u64) + 1;
+        counter.positive.insert(key, invalid_value).unwrap();
+
+        // value_signed() should detect the overflow during u64 -> i64 conversion
+        let result = counter.value_signed();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("i64::MAX") || err_msg.contains("overflow"));
+    }
+
+    #[test]
+    fn test_pncounter_addition_overflow_detection() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| PNCounter::new());
+
+        // Insert two values that individually fit in i64 but sum > i64::MAX
+        let executor_a = [102u8; 32];
+        let executor_b = [103u8; 32];
+
+        let key_a = hex::encode(executor_a);
+        let key_b = hex::encode(executor_b);
+
+        let large_value = i64::MAX / 2 + 1;
+        counter.positive.insert(key_a, large_value as u64).unwrap();
+        counter.positive.insert(key_b, large_value as u64).unwrap();
+
+        // value_signed() should detect overflow during addition
+        let result = counter.value_signed();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("overflow") || err_msg.contains("i64::MAX"));
+    }
+
+    #[test]
+    fn test_pncounter_subtraction_overflow_detection() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| PNCounter::new());
+
+        // Create a scenario where pos - neg would underflow i64::MIN
+        let executor_id = [104u8; 32];
+        let key = hex::encode(executor_id);
+
+        // Set positive to 0 and negative to i64::MAX
+        // This should result in trying to compute 0 - i64::MAX = i64::MIN - 1 (underflow)
+        counter.positive.insert(key.clone(), 0).unwrap();
+        counter.negative.insert(key, i64::MAX as u64).unwrap();
+
+        // This particular case actually works (0 - i64::MAX = i64::MIN + 1)
+        // Let's try a worse case: small positive, very large negative
+        let executor_id2 = [105u8; 32];
+        let key2 = hex::encode(executor_id2);
+        counter.negative.insert(key2, i64::MAX as u64 + 1).unwrap();
+
+        // This should fail at the cast stage (negative value > i64::MAX)
+        let result = counter.value_signed();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gcounter_no_false_positives() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| GCounter::new());
+
+        // Add some large but valid values
+        for i in 0..10 {
+            let executor_id = [106u8 + i; 32];
+            let key = hex::encode(executor_id);
+            counter.positive.insert(key, 1_000_000_000).unwrap();
+        }
+
+        // Should not overflow with reasonable values
+        assert!(counter.value().is_ok());
+        assert_eq!(counter.value().unwrap(), 10_000_000_000);
+    }
+
+    #[test]
+    fn test_pncounter_no_false_positives() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| PNCounter::new());
+
+        // Add some large but valid values
+        let executor_a = [116u8; 32];
+        let executor_b = [117u8; 32];
+        let key_a = hex::encode(executor_a);
+        let key_b = hex::encode(executor_b);
+
+        // Values that should work fine
+        counter
+            .positive
+            .insert(key_a.clone(), 1_000_000_000_000)
+            .unwrap();
+        counter.negative.insert(key_b, 500_000_000_000).unwrap();
+
+        // Should not overflow
+        assert!(counter.value_signed().is_ok());
+        assert_eq!(counter.value_signed().unwrap(), 500_000_000_000);
     }
 }
