@@ -147,7 +147,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
                 Ok(neg_map) => {
                     // Successfully deserialized negative counts - this is a PNCounter!
                     // Check if it has any entries (non-zero negative counts)
-                    if neg_map.len().unwrap_or(0) > 0 {
+                    if neg_map.len().map_err(|e| Error::new(ErrorKind::Other, e))? > 0 {
                         return Err(Error::new(
                             ErrorKind::InvalidData,
                             "Cannot deserialize PNCounter with negative counts as GCounter. \
