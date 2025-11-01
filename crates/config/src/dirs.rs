@@ -94,3 +94,23 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "use-home-dir"))]
+mod legacy_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_app_dirs_legacy_home() {
+        let dirs = resolve_app_dirs("CalimeroTest").expect("legacy dirs resolve");
+
+        // In legacy mode we expect ~/.calimero (same path for config/data)
+        assert_eq!(
+            dirs.config, dirs.data,
+            "legacy config & data should be same base"
+        );
+        assert!(
+            dirs.config.ends_with(".calimero"),
+            "legacy path should end with .calimero"
+        );
+    }
+}

@@ -186,12 +186,19 @@ pub async fn start(
 // Desktop mode: No HTTP server
 #[cfg(not(feature = "http-server"))]
 pub async fn start(
-    _config: ServerConfig,
+    config: ServerConfig,
     _ctx_client: ContextClient,
     _node_client: NodeClient,
     _datastore: Store,
     _prom_registry: Registry,
 ) -> EyreResult<()> {
+    // Defensive guard: ensure no HTTP listeners in desktop builds
+    assert!(
+        config.listen.is_empty(),
+        "Desktop build must not bind HTTP listeners. Found: {:?}",
+        config.listen
+    );
+
     // In desktop mode, calimero-server doesn't run an HTTP server
     // The Tauri app uses ContextClient/NodeClient directly via IPC
     std::future::pending().await
