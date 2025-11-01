@@ -1,5 +1,7 @@
 use core::time::Duration;
 
+pub mod dirs;
+
 use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_server::admin::service::AdminConfig;

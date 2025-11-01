@@ -9,7 +9,14 @@ description.workspace = true
 publish = true
 
 [dependencies]
-axum = { workspace = true, features = ["multipart", "ws", "tokio"] }
+# HTTP server dependencies - optional, enabled by default via http-server feature
+axum = { workspace = true, optional = true, features = ["multipart", "ws", "tokio"] }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true, features = ["cors", "fs", "trace"] }
+tower-sessions = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
+
+# Core dependencies - always required
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
@@ -22,11 +29,7 @@ rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-p
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
 tokio-util.workspace = true
-tower.workspace = true
-tower-http = { workspace = true, features = ["cors", "fs", "trace"] }
-tower-sessions = { workspace = true }
 tracing.workspace = true
 
 calimero-context-config.workspace = true
@@ -52,7 +55,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [features]
-# No feature flags; all functionality is always enabled
+# Server mode is default (includes HTTP server with Axum)
+# Desktop mode: use --no-default-features (excludes HTTP server)
+default = ["http-server"]
+http-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:tower-sessions", "dep:tokio-stream"]
 
 [lints]
 workspace = true
