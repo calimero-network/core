@@ -115,17 +115,13 @@ pub(crate) struct RgaChar {
     content: u32,
     /// ID of the character to the left (for RGA ordering)
     left: CharId,
-    /// Position where this character was originally inserted
-    /// This makes delete operations position-invariant and commutative
-    insert_position: usize,
 }
 
 impl RgaChar {
-    fn new(content: char, left: CharId, insert_position: usize) -> Self {
+    fn new(content: char, left: CharId) -> Self {
         Self {
             content: content as u32,
             left,
-            insert_position,
         }
     }
 
@@ -192,7 +188,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         };
 
         let char_id = CharId::new(timestamp, 0);
-        let new_char = RgaChar::new(content, left, pos);
+        let new_char = RgaChar::new(content, left);
 
         let _ = self.chars.insert(CharKey::new(char_id), new_char)?;
 
@@ -269,11 +265,10 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             ));
         };
 
-        // Insert each character, recording their insert position
+        // Insert each character
         for (seq, content) in s.chars().enumerate() {
             let char_id = CharId::new(timestamp, seq as u32);
-            let insert_pos = pos + seq;
-            let new_char = RgaChar::new(content, left, insert_pos);
+            let new_char = RgaChar::new(content, left);
 
             let _ = self.chars.insert(CharKey::new(char_id), new_char)?;
 
@@ -284,12 +279,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         Ok(())
     }
 
-    /// Delete a range of characters by their original insert positions
-    ///
-    /// This makes delete operations position-invariant: they work based on where
-    /// characters were originally inserted, not their current visible position.
-    /// This ensures delete operations are commutative and work correctly even
-    /// when applied out of order.
+    /// Delete a range of characters
     ///
     /// # Errors
     ///
@@ -301,20 +291,17 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             ));
         }
 
-        // Get all characters and filter by insert_position
-        // This works regardless of current visible ordering
-        let chars_to_delete: Vec<CharId> = self
-            .chars
-            .entries()?
-            .filter(|(_, char_data)| {
-                char_data.insert_position >= start && char_data.insert_position < end
-            })
-            .map(|(key, _)| key.id())
-            .collect();
+        let ordered = self.get_ordered_chars()?;
 
-        // Delete each character by its CharId
-        for char_id in chars_to_delete {
-            let _ = self.chars.remove(&CharKey::new(char_id))?;
+        if end > ordered.len() {
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::InvalidData("end position out of bounds".into()),
+            ));
+        }
+
+        // Delete each character in range
+        for (char_id, _) in &ordered[start..end] {
+            let _ = self.chars.remove(&CharKey::new(*char_id))?;
         }
 
         Ok(())
