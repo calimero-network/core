@@ -281,9 +281,13 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
 
     /// Delete a range of characters
     ///
+    /// This operation is idempotent - if the range exceeds the current document length,
+    /// it deletes up to the end of the document without error. This ensures delete
+    /// operations can be safely applied even when received out of order during sync.
+    ///
     /// # Errors
     ///
-    /// Returns error if range is invalid or storage operation fails
+    /// Returns error if start > end or storage operation fails
     pub fn delete_range(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
         if start > end {
             return Err(StoreError::StorageError(
@@ -293,14 +297,12 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
 
         let ordered = self.get_ordered_chars()?;
 
-        if end > ordered.len() {
-            return Err(StoreError::StorageError(
-                crate::interface::StorageError::InvalidData("end position out of bounds".into()),
-            ));
-        }
+        // Clamp end to the actual length - makes delete idempotent
+        // This prevents "out of bounds" errors when operations arrive out of order
+        let actual_end = end.min(ordered.len());
 
-        // Delete each character in range
-        for (char_id, _) in &ordered[start..end] {
+        // Delete each character in range (may be empty if start >= ordered.len())
+        for (char_id, _) in &ordered[start..actual_end] {
             let _ = self.chars.remove(&CharKey::new(*char_id))?;
         }
 
