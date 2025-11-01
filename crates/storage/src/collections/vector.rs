@@ -186,6 +186,39 @@ where
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.inner.clear()
     }
+
+    /// Find the first element that matches the predicate and return an iterator to it.
+    ///
+    /// Returns an iterator that yields at most one element (the first match).
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    ///
+    pub fn find<F>(&self, mut predicate: F) -> Result<impl Iterator<Item = V>, StoreError>
+    where
+        F: FnMut(&V) -> bool,
+    {
+        let found = self.iter()?.find(|item| predicate(item));
+        Ok(found.into_iter())
+    }
+
+    /// Filter elements that match the predicate and return an iterator over all matches.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    ///
+    pub fn filter<'a, F>(&'a self, predicate: F) -> Result<impl Iterator<Item = V> + 'a, StoreError>
+    where
+        F: FnMut(&V) -> bool + 'a,
+    {
+        Ok(self.iter()?.filter(predicate))
+    }
 }
 
 impl<V> Eq for Vector<V> where V: Eq + BorshSerialize + BorshDeserialize {}
@@ -390,5 +423,95 @@ mod tests {
         let _ = vector.push(value.clone()).unwrap();
         vector.clear().unwrap();
         assert_eq!(vector.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_vector_find() {
+        let mut vector = Root::new(|| Vector::new());
+
+        let _ = vector.push("apple".to_owned()).unwrap();
+        let _ = vector.push("banana".to_owned()).unwrap();
+        let _ = vector.push("cherry".to_owned()).unwrap();
+        let _ = vector.push("banana".to_owned()).unwrap();
+
+        // Find first element that starts with 'b'
+        let result: Vec<String> = vector.find(|s| s.starts_with('b')).unwrap().collect();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "banana");
+
+        // Find element that doesn't exist
+        let result: Vec<String> = vector.find(|s| s.starts_with('z')).unwrap().collect();
+        assert_eq!(result.len(), 0);
+
+        // Find first element (any)
+        let result: Vec<String> = vector.find(|_| true).unwrap().collect();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "apple");
+    }
+
+    #[test]
+    fn test_vector_filter() {
+        let mut vector = Root::new(|| Vector::new());
+
+        let _ = vector.push("apple".to_owned()).unwrap();
+        let _ = vector.push("banana".to_owned()).unwrap();
+        let _ = vector.push("cherry".to_owned()).unwrap();
+        let _ = vector.push("banana".to_owned()).unwrap();
+        let _ = vector.push("apricot".to_owned()).unwrap();
+
+        // Filter all elements that start with 'a'
+        let result: Vec<String> = vector.filter(|s| s.starts_with('a')).unwrap().collect();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "apple");
+        assert_eq!(result[1], "apricot");
+
+        // Filter all 'banana' elements
+        let result: Vec<String> = vector.filter(|s| s == "banana").unwrap().collect();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|s| s == "banana"));
+
+        // Filter elements that don't exist
+        let result: Vec<String> = vector.filter(|s| s.starts_with('z')).unwrap().collect();
+        assert_eq!(result.len(), 0);
+
+        // Filter all elements
+        let result: Vec<String> = vector.filter(|_| true).unwrap().collect();
+        assert_eq!(result.len(), 5);
+    }
+
+    #[test]
+    fn test_vector_find_with_numbers() {
+        let mut vector = Root::new(|| Vector::new());
+
+        let _ = vector.push(1u32).unwrap();
+        let _ = vector.push(5u32).unwrap();
+        let _ = vector.push(10u32).unwrap();
+        let _ = vector.push(15u32).unwrap();
+
+        // Find first number > 7
+        let result: Vec<u32> = vector.find(|&n| n > 7).unwrap().collect();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 10);
+    }
+
+    #[test]
+    fn test_vector_filter_with_numbers() {
+        let mut vector = Root::new(|| Vector::new());
+
+        let _ = vector.push(1u32).unwrap();
+        let _ = vector.push(5u32).unwrap();
+        let _ = vector.push(10u32).unwrap();
+        let _ = vector.push(15u32).unwrap();
+        let _ = vector.push(20u32).unwrap();
+
+        // Filter all numbers > 7
+        let result: Vec<u32> = vector.filter(|&n| n > 7).unwrap().collect();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result, vec![10, 15, 20]);
+
+        // Filter even numbers
+        let result: Vec<u32> = vector.filter(|&n| n % 2 == 0).unwrap().collect();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result, vec![10, 20]);
     }
 }

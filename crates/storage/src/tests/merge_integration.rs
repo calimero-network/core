@@ -16,7 +16,7 @@ use serial_test::serial;
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 struct TestApp {
     counter: Counter,
-    metadata: UnorderedMap<String, String>,
+    metadata: UnorderedMap<String, LwwRegister<String>>,
 }
 
 impl Mergeable for TestApp {
@@ -47,7 +47,10 @@ fn test_merge_via_registry() {
     state1.counter.increment().unwrap(); // value = 2 for executor [100; 32]
     state1
         .metadata
-        .insert("key1".to_string(), "from_node1".to_string())
+        .insert(
+            "key1".to_string(),
+            LwwRegister::new("from_node1".to_string()),
+        )
         .unwrap();
 
     // Serialize state1
@@ -63,7 +66,10 @@ fn test_merge_via_registry() {
     state2.counter.increment().unwrap(); // value = 1 for executor [200; 32]
     state2
         .metadata
-        .insert("key2".to_string(), "from_node2".to_string())
+        .insert(
+            "key2".to_string(),
+            LwwRegister::new("from_node2".to_string()),
+        )
         .unwrap();
 
     // Serialize state2
@@ -94,11 +100,19 @@ fn test_merge_via_registry() {
 
     // Verify: Both metadata keys present
     assert_eq!(
-        merged.metadata.get(&"key1".to_string()).unwrap(),
+        merged
+            .metadata
+            .get(&"key1".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("from_node1".to_string())
     );
     assert_eq!(
-        merged.metadata.get(&"key2".to_string()).unwrap(),
+        merged
+            .metadata
+            .get(&"key2".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("from_node2".to_string())
     );
 }
@@ -110,7 +124,7 @@ fn test_merge_with_nested_map() {
 
     #[derive(BorshSerialize, BorshDeserialize, Debug)]
     struct AppWithNestedMap {
-        documents: UnorderedMap<String, UnorderedMap<String, String>>,
+        documents: UnorderedMap<String, UnorderedMap<String, LwwRegister<String>>>,
     }
 
     impl Mergeable for AppWithNestedMap {
@@ -129,7 +143,7 @@ fn test_merge_with_nested_map() {
 
     let mut doc_meta = UnorderedMap::new();
     doc_meta
-        .insert("initial".to_string(), "value".to_string())
+        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
         .unwrap();
     state1
         .documents
@@ -142,8 +156,11 @@ fn test_merge_with_nested_map() {
     // Simulate node 2 - add title field
     let mut state2: AppWithNestedMap = borsh::from_slice(&bytes1).unwrap();
     let mut doc = state2.documents.get(&"doc-1".to_string()).unwrap().unwrap();
-    doc.insert("title".to_string(), "My Title".to_string())
-        .unwrap();
+    doc.insert(
+        "title".to_string(),
+        LwwRegister::new("My Title".to_string()),
+    )
+    .unwrap();
     state2.documents.insert("doc-1".to_string(), doc).unwrap();
 
     let bytes2 = borsh::to_vec(&state2).unwrap();
@@ -155,7 +172,7 @@ fn test_merge_with_nested_map() {
         .get(&"doc-1".to_string())
         .unwrap()
         .unwrap();
-    doc.insert("owner".to_string(), "Alice".to_string())
+    doc.insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
         .unwrap();
     state1_modified
         .documents
@@ -174,19 +191,28 @@ fn test_merge_with_nested_map() {
 
     // All three fields should be present!
     assert_eq!(
-        final_doc.get(&"initial".to_string()).unwrap(),
+        final_doc
+            .get(&"initial".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("value".to_string()),
         "Initial field preserved"
     );
 
     assert_eq!(
-        final_doc.get(&"title".to_string()).unwrap(),
+        final_doc
+            .get(&"title".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("My Title".to_string()),
         "Title from node 2 preserved"
     );
 
     assert_eq!(
-        final_doc.get(&"owner".to_string()).unwrap(),
+        final_doc
+            .get(&"owner".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("Alice".to_string()),
         "Owner from node 1 preserved"
     );
@@ -510,7 +536,7 @@ fn test_merge_nested_document_with_rga() {
     struct Document {
         content: ReplicatedGrowableArray,
         edit_count: Counter,
-        metadata: UnorderedMap<String, String>,
+        metadata: UnorderedMap<String, LwwRegister<String>>,
     }
 
     impl Mergeable for Document {
@@ -550,7 +576,7 @@ fn test_merge_nested_document_with_rga() {
     doc1.content.insert_str(0, "Hello").unwrap();
     doc1.edit_count.increment().unwrap(); // Counter: {[111;32]: 1}
     doc1.metadata
-        .insert("title".to_owned(), "My Doc".to_owned())
+        .insert("title".to_owned(), LwwRegister::new("My Doc".to_owned()))
         .unwrap();
 
     editor1.documents.insert("doc-1".to_owned(), doc1).unwrap();
@@ -574,7 +600,7 @@ fn test_merge_nested_document_with_rga() {
     doc2.edit_count.increment().unwrap();
     doc2.edit_count.increment().unwrap(); // 2 edits, Counter: {[222;32]: 2}
     doc2.metadata
-        .insert("title".to_owned(), "My Doc".to_owned())
+        .insert("title".to_owned(), LwwRegister::new("My Doc".to_owned()))
         .unwrap();
 
     editor2.documents.insert("doc-1".to_owned(), doc2).unwrap();
@@ -613,7 +639,11 @@ fn test_merge_nested_document_with_rga() {
 
     // Metadata should be present
     assert_eq!(
-        merged_doc.metadata.get(&"title".to_owned()).unwrap(),
+        merged_doc
+            .metadata
+            .get(&"title".to_owned())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("My Doc".to_owned())
     );
 

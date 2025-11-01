@@ -13,60 +13,67 @@ use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, Unorder
 use crate::store::StorageAdaptor;
 
 // ============================================================================
-// Primitive Types - Implement Mergeable with LWW semantics
+// Primitive Types - NOT Mergeable (By Design)
 // ============================================================================
 
-// For primitive types, we can't do true CRDT merging because they don't have
-// timestamps or other metadata. We implement Mergeable with simple LWW semantics
-// to allow them to be used in nested CRDT structures like Map<K, String>.
+// Primitive types (String, u64, bool, etc.) do NOT implement Mergeable because:
 //
-// **Important:** This is a fallback! For proper conflict resolution with timestamps,
-// use LwwRegister<T> instead of bare primitives.
+// 1. **State Divergence:** Simple LWW (*self = other) is NOT commutative
+//    - merge(A, B) ≠ merge(B, A)
+//    - Nodes end up in different states permanently
+//    - Violates fundamental CRDT convergence property
 //
-// Performance: O(1) - just overwrites the value
-// Correctness: LWW (may lose concurrent updates to same field)
-// When called: Only during root-level merge (rare)
+// 2. **No Timestamps:** Primitives lack metadata to determine ordering
+//    - Can't tell which update is "latest"
+//    - Arbitrary conflict resolution
+//
+// 3. **Production Risk:** Silent state divergence breaks distributed apps
+//
+// **SOLUTION: Use LwwRegister<T> instead!**
+//
+// ✅ Correct:
+//   #[app::state]
+//   pub struct App {
+//       name: LwwRegister<String>,  // Proper timestamps + convergence
+//       age: LwwRegister<u64>,      // Deterministic conflict resolution
+//   }
+//
+// ❌ Wrong (won't compile):
+//   pub struct App {
+//       name: String,  // ERROR: String doesn't implement Mergeable
+//       age: u64,      // ERROR: u64 doesn't implement Mergeable
+//   }
+//
+// **Ergonomics:** LwwRegister has Deref, AsRef, From, Borrow traits
+// so usage is nearly identical to primitives:
+//
+//   let s: &str = &*app.name;           // Deref
+//   process(app.name.as_ref());          // AsRef
+//   app.name = "value".to_owned().into(); // From
+//
+// See: crates/storage/README.md for full documentation on state divergence issue.
 
-macro_rules! impl_mergeable_lww {
-    ($($t:ty),*) => {
-        $(
-            impl Mergeable for $t {
-                fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-                    // LWW: just take the other value
-                    // ⚠️  Warning: This loses information! Use LwwRegister<T> for proper timestamps
-                    *self = other.clone();
-                    Ok(())
-                }
+// Note: Vec is also not Mergeable for same reason
+// Use Vector<T> CRDT collection instead
+
+impl<T: Mergeable + Clone> Mergeable for Option<T> {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        match (self.as_mut(), other) {
+            // Both are Some: recursively merge the inner values
+            (Some(self_val), Some(other_val)) => {
+                self_val.merge(other_val)?;
             }
-        )*
-    };
+            // Self is None, other is Some: take other's value
+            (None, Some(_)) => {
+                *self = other.clone();
+            }
+            // Self is Some, other is None: keep self (no change needed)
+            // Both are None: no change needed
+            _ => {}
+        }
+        Ok(())
+    }
 }
-
-// Implement for common primitive types
-impl_mergeable_lww!(String, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, bool, char);
-
-// Note: Vec and Option Mergeable implementations commented out for now
-// They require Clone which creates issues with collections
-// Most apps don't have Vec/Option at root level anyway
-// Can be re-enabled if needed with proper Clone implementations
-
-// impl<T: Clone> Mergeable for Vec<T> {
-//     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-//         // LWW for vectors: take the other value
-//         *self = other.clone();
-//         Ok(())
-//     }
-// }
-
-// impl<T: Clone> Mergeable for Option<T> {
-//     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-//         // LWW for options: take the other value if it's Some
-//         if other.is_some() {
-//             *self = other.clone();
-//         }
-//         Ok(())
-//     }
-// }
 
 // ============================================================================
 // LwwRegister
@@ -740,5 +747,123 @@ mod tests {
 
         // Verify: set1 unchanged
         assert!(set1.contains(&"alice".to_owned()).unwrap());
+    }
+
+    #[test]
+    fn test_lww_register_with_option() {
+        env::reset_for_testing();
+
+        // Test LwwRegister<Option<String>> works correctly
+        let mut reg1 = LwwRegister::new(Some("Alice".to_owned()));
+        assert_eq!(reg1.get(), &Some("Alice".to_owned()));
+
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // Later timestamp with None
+        let reg2 = LwwRegister::new(None);
+
+        // Merge - later timestamp wins
+        reg1.merge(&reg2);
+        assert_eq!(reg1.get(), &None);
+
+        // Test Default implementation
+        let reg3 = LwwRegister::<Option<String>>::default();
+        assert_eq!(reg3.get(), &None);
+    }
+
+    #[test]
+    fn test_option_mergeable_with_lww_register() {
+        env::reset_for_testing();
+
+        // Test Option<LwwRegister<T>> merge behavior
+        let mut opt1 = Some(LwwRegister::new("Alice".to_owned()));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        let opt2 = Some(LwwRegister::new("Bob".to_owned()));
+
+        // Merge: Both are Some, so inner LwwRegisters should merge
+        Mergeable::merge(&mut opt1, &opt2).unwrap();
+
+        // Later timestamp wins
+        assert_eq!(opt1.as_ref().unwrap().get(), "Bob");
+
+        // Test None -> Some merge
+        let mut opt3: Option<LwwRegister<String>> = None;
+        let opt4 = Some(LwwRegister::new("Charlie".to_owned()));
+
+        Mergeable::merge(&mut opt3, &opt4).unwrap();
+        assert_eq!(opt3.as_ref().unwrap().get(), "Charlie");
+
+        // Test Some -> None merge (should keep Some)
+        let mut opt5 = Some(LwwRegister::new("Dave".to_owned()));
+        let opt6: Option<LwwRegister<String>> = None;
+
+        Mergeable::merge(&mut opt5, &opt6).unwrap();
+        assert_eq!(opt5.as_ref().unwrap().get(), "Dave");
+    }
+
+    #[test]
+    fn test_lww_register_automatic_casts() {
+        env::reset_for_testing();
+
+        // Test Deref
+        let reg = LwwRegister::new("Hello".to_owned());
+        let s: &str = &*reg; // Deref to &String, then &str
+        assert_eq!(s, "Hello");
+
+        // Test AsRef
+        fn takes_str_ref(s: &str) -> usize {
+            s.len()
+        }
+        let len = takes_str_ref(reg.as_ref());
+        assert_eq!(len, 5);
+
+        // Test From/Into
+        let reg2: LwwRegister<u64> = 42u64.into();
+        assert_eq!(*reg2, 42);
+
+        let reg3 = LwwRegister::from(100u32);
+        assert_eq!(*reg3, 100);
+
+        // Test Borrow
+        use std::borrow::Borrow;
+        let reg4 = LwwRegister::new("test".to_owned());
+        let borrowed: &String = reg4.borrow();
+        assert_eq!(borrowed, "test");
+
+        // Test with numbers
+        let num_reg = LwwRegister::new(42u64);
+        assert_eq!(*num_reg, 42);
+
+        fn add_ten(n: &u64) -> u64 {
+            n + 10
+        }
+        assert_eq!(add_ten(num_reg.as_ref()), 52);
+
+        // Test Display
+        let display_reg = LwwRegister::new("Display Test".to_owned());
+        assert_eq!(format!("{}", display_reg), "Display Test");
+
+        let num_display = LwwRegister::new(123);
+        assert_eq!(format!("{}", num_display), "123");
+    }
+
+    #[test]
+    fn test_lww_register_with_bool() {
+        env::reset_for_testing();
+
+        let mut reg1 = LwwRegister::new(true);
+        assert!(*reg1);
+
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        let reg2 = LwwRegister::new(false);
+        reg1.merge(&reg2);
+
+        assert!(!*reg1); // Later timestamp wins
+
+        // Test AsRef with bool
+        let reg3 = LwwRegister::new(true);
+        assert_eq!(reg3.as_ref(), &true);
     }
 }
