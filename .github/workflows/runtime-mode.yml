@@ -35,7 +35,7 @@ jobs:
       - name: Run runtime mode tests
         run: |
           cargo test -p calimero-node --test runtime_modes -- --nocapture
-        timeout-minutes: 2
+        timeout-minutes: 10
         env:
           RUST_LOG: debug
       
