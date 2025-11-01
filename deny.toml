@@ -1,8 +1,27 @@
-[graph]
-targets = []
+# cargo-deny configuration for Calimero
+# See: https://embarkstudios.github.io/cargo-deny/
+# Compatible with cargo-deny 0.16.3+
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Pre-existing advisories from transitive dependencies (not introduced by PR-1)
+# TODO: Address these in dedicated dependency update PRs
+# Review: 2025-Q2 (remove ignores after fixes)
+ignore = [
+    "RUSTSEC-2025-0012",  # backoff unmaintained (via ic-agent) - TODO: update ic-agent or replace
+    "RUSTSEC-2024-0388",  # derivative unmaintained (via wasmer) - TODO: wasmer to use derive_more
+    "RUSTSEC-2025-0057",  # fxhash unmaintained (via wasmer) - TODO: wasmer to use rustc-hash
+    "RUSTSEC-2024-0421",  # idna vulnerability (via web3) - TODO: update web3 or replace
+    "RUSTSEC-2024-0384",  # instant unmaintained (via ic-agent) - TODO: ic-agent to use web-time
+    "RUSTSEC-2024-0436",  # paste unmaintained (via alloy) - TODO: alloy update pending
+    "RUSTSEC-2024-0370",  # proc-macro-error (via wasmer) - TODO: wasmer dependency cleanup
+    "RUSTSEC-2021-0127",  # serde_cbor unmaintained (via ic-agent) - TODO: ic-agent to use ciborium
+]
 
 [bans]
-multiple-versions = "warn" # Warn about duplicate dependency versions
+multiple-versions = "warn"
 
 # Skip specific crates that might need multiple versions
 [[bans.skip]]
@@ -13,18 +32,28 @@ version = "*"
 name = "tokio"
 version = "*"
 
+# Note: OpenSSL/native-tls bans disabled for PR-1
+# Currently have transitive deps from alloy that we'll clean up in future PR
+# Uncomment these after fixing transitive dependencies:
+# [[bans.deny]]
+# name = "openssl"
+# [[bans.deny]]
+# name = "openssl-sys"
+# [[bans.deny]]
+# name = "native-tls"
+
 [licenses]
 confidence-threshold = 0.8
 allow = [
     "MIT",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
     "BSD-2-Clause",
     "ISC",
     "Zlib",
     "Unicode-DFS-2016",
     "Unicode-3.0",
-    "OpenSSL",
     "CC0-1.0",
     "BSL-1.0",
     "MPL-2.0",
@@ -33,22 +62,30 @@ allow = [
     "LGPL-3.0",
     "0BSD",
     "Unlicense",
-    "Apache-2.0 WITH LLVM-exception",
     "CDLA-Permissive-2.0",
 ]
 
-# Add exceptions for packages with complex licensing
+# Allow dual-licensed crates
+[[licenses.clarify]]
+name = "*"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
 [[licenses.clarify]]
 name = "ring"
 version = "*"
-expression = "ISC OR OpenSSL OR MIT"
+expression = "ISC OR MIT"
 license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
+
+[[licenses.clarify]]
+name = "webpki-roots"
+expression = "MPL-2.0"
+license-files = []
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = ["https://github.com/xJonathanLEI/starknet-rs"]
-
