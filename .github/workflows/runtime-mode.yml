@@ -10,14 +10,13 @@ env:
   CARGO_TERM_COLOR: always
   RUST_LOG: info
 
-permissions:
-  contents: read
-
 jobs:
   test-runtime-modes:
     name: Test Runtime Modes
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     
     steps:
       - uses: actions/checkout@v4
