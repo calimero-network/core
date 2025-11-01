@@ -207,12 +207,10 @@ fn test_rga_delete_range_out_of_bounds() {
     let mut rga = ReplicatedGrowableArray::new();
     rga.insert_str(0, "Hello").unwrap();
 
-    // With insert_position based deletion, deleting beyond current length is valid
-    // It deletes all chars whose insert_position is in the range
-    // This makes delete operations commutative and order-independent
+    // end > length - now idempotent, clamps to actual length
     let result = rga.delete_range(0, 10);
-    assert!(result.is_ok()); // Should succeed
-    assert_eq!(rga.get_text().unwrap(), ""); // All chars deleted
+    assert!(result.is_ok());
+    assert_eq!(rga.get_text().unwrap(), ""); // Deletes all available chars
 }
 
 #[test]

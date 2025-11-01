@@ -291,9 +291,13 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// This ensures delete operations are commutative and work correctly even
     /// when applied out of order.
     ///
+    /// This operation is idempotent - if the range exceeds the current document length,
+    /// it deletes up to the end of the document without error. This ensures delete
+    /// operations can be safely applied even when received out of order during sync.
+    ///
     /// # Errors
     ///
-    /// Returns error if range is invalid or storage operation fails
+    /// Returns error if start > end or storage operation fails
     pub fn delete_range(&mut self, start: usize, end: usize) -> Result<(), StoreError> {
         if start > end {
             return Err(StoreError::StorageError(
@@ -301,20 +305,15 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             ));
         }
 
-        // Get all characters and filter by insert_position
-        // This works regardless of current visible ordering
-        let chars_to_delete: Vec<CharId> = self
-            .chars
-            .entries()?
-            .filter(|(_, char_data)| {
-                char_data.insert_position >= start && char_data.insert_position < end
-            })
-            .map(|(key, _)| key.id())
-            .collect();
+        let ordered = self.get_ordered_chars()?;
 
-        // Delete each character by its CharId
-        for char_id in chars_to_delete {
-            let _ = self.chars.remove(&CharKey::new(char_id))?;
+        // Clamp end to the actual length - makes delete idempotent
+        // This prevents "out of bounds" errors when operations arrive out of order
+        let actual_end = end.min(ordered.len());
+
+        // Delete each character in range (may be empty if start >= ordered.len())
+        for (char_id, _) in &ordered[start..actual_end] {
+            let _ = self.chars.remove(&CharKey::new(*char_id))?;
         }
 
         Ok(())
