@@ -2,7 +2,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
-use calimero_node::{start, NodeConfig};
+use calimero_node::{start, NodeConfig, RuntimeMode};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use clap::Parser;
@@ -51,7 +51,8 @@ impl RunCommand {
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
             server: server_config,
-            gc_interval_secs: None, // Use default (12 hours)
+            gc_interval_secs: None,            // Use default (12 hours)
+            runtime_mode: RuntimeMode::Server, // Server mode is default for merod
         })
         .await
     }
