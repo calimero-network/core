@@ -1,0 +1,272 @@
+name: "KV Store with Handlers - NEAR"
+description: "Test KV Store with handlers functionality on NEAR protocol, including insert, update, remove, and clear handlers"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: near-kvh
+
+steps:
+  # ============================================================================
+  # Phase 1: Install KV Store with Handlers App
+  # ============================================================================
+  - name: Install KV Store with Handlers App on Node 1
+    type: install_application
+    node: near-kvh-1
+    path: "apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+      app_id_node1:
+        field: applicationId
+        target: app_id_{node_name}
+
+  # ============================================================================
+  # Phase 2: Context Creation
+  # ============================================================================
+  - name: Create Context on Node 1
+    type: create_context
+    node: near-kvh-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      inviter_key: memberPublicKey
+      ctx_id_node1:
+        field: contextId
+        target: context_id_{node_name}
+
+  # ============================================================================
+  # Phase 3: Generate Identities for Other Nodes
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: near-kvh-2
+    outputs:
+      invitee2_key: publicKey
+      key_node2:
+        field: publicKey
+        target: public_key_{node_name}
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: near-kvh-3
+    outputs:
+      invitee3_key: publicKey
+      key_node3:
+        field: publicKey
+        target: public_key_{node_name}
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  # ============================================================================
+  # Phase 4: Invite and Join
+  # ============================================================================
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{invitee2_key}}"
+    granter_id: "{{inviter_key}}"
+    capability: member
+    outputs:
+      invitation2: invitation
+
+  - name: Join Context from Node 2
+    type: join_context
+    node: near-kvh-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{invitee2_key}}"
+    invitation: "{{invitation2}}"
+
+  - name: Invite Node 3 from Node 1
+    type: invite_identity
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{invitee3_key}}"
+    granter_id: "{{inviter_key}}"
+    capability: member
+    outputs:
+      invitation3: invitation
+
+  - name: Join Context from Node 3
+    type: join_context
+    node: near-kvh-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{invitee3_key}}"
+    invitation: "{{invitation3}}"
+
+  - name: Wait for Consensus After Join
+    type: wait
+    seconds: 5
+    description: "Wait for nodes to join and reach consensus"
+
+  # ============================================================================
+  # Phase 5: Test Insert Handler
+  # ============================================================================
+  - name: Set Initial Key-Value Pair
+    type: call
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "test_value"
+    outputs:
+      set_result_1: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait
+    seconds: 5
+    description: "Wait for network sync and handler execution on receiving nodes"
+
+  - name: Verify Insert Handler Called on Inviter
+    type: call
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: get_handler_execution_count
+    args: {}
+    outputs:
+      handlers_1: result
+
+  # ============================================================================
+  # Phase 6: Test Update Handler
+  # ============================================================================
+  - name: Update Key with New Value
+    type: call
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "updated_value"
+    outputs:
+      set_result_2: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait
+    seconds: 5
+    description: "Wait for network sync and handler execution on receiving nodes"
+
+  - name: Verify Update Handler Called on Invitees
+    type: call
+    node: near-kvh-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee2_key}}"
+    method: get_handler_execution_count
+    args: {}
+    outputs:
+      handlers_2: result
+
+  # ============================================================================
+  # Phase 7: Test Remove Handler
+  # ============================================================================
+  - name: Remove Key
+    type: call
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: remove
+    args:
+      key: "test_key"
+    outputs:
+      remove_result: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait
+    seconds: 5
+    description: "Wait for network sync and handler execution on receiving nodes"
+
+  - name: Verify Remove Handler Called on Invitees
+    type: call
+    node: near-kvh-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee3_key}}"
+    method: get_handler_execution_count
+    args: {}
+    outputs:
+      handlers_3: result
+
+  # ============================================================================
+  # Phase 8: Test Clear Handler
+  # ============================================================================
+  - name: Set Another Key-Value Pair
+    type: call
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: set
+    args:
+      key: "another_key"
+      value: "another_value"
+    outputs:
+      set_result_3: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait
+    seconds: 5
+    description: "Wait for network sync and handler execution on receiving nodes"
+
+  - name: Clear All Key-Value Pairs
+    type: call
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: clear
+    args: {}
+    outputs:
+      clear_result: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait
+    seconds: 5
+    description: "Wait for network sync and handler execution on receiving nodes"
+
+  - name: Verify Clear Handler Called on Invitees
+    type: call
+    node: near-kvh-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee2_key}}"
+    method: get_handler_execution_count
+    args: {}
+    outputs:
+      handlers_final: result
+
+  # ============================================================================
+  # Phase 9: Final Verification Across All Nodes
+  # ============================================================================
+  - name: Verify Final State on Node 1
+    type: call
+    node: near-kvh-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: get_handler_execution_count
+    args: {}
+    outputs:
+      final_handlers_node1: result
+
+  - name: Verify Final State on Node 3
+    type: call
+    node: near-kvh-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee3_key}}"
+    method: get_handler_execution_count
+    args: {}
+    outputs:
+      final_handlers_node3: result
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 60
+nuke_on_end: true
