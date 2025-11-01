@@ -12,7 +12,7 @@ pub fn default_node_dir() -> Utf8PathBuf {
         use calimero_config::dirs::resolve_app_dirs;
 
         match resolve_app_dirs("Calimero") {
-            Ok(dirs) => match Utf8PathBuf::from_path_buf(dirs.config) {
+            Ok(dirs) => match Utf8PathBuf::from_path_buf(dirs.data) {
                 Ok(path) => path,
                 Err(_) => Utf8PathBuf::from(DEFAULT_CALIMERO_HOME),
             },
