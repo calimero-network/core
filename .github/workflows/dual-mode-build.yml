@@ -1,0 +1,77 @@
+name: Dual-Mode Build Check
+
+on:
+  pull_request:
+    branches: [master, develop]
+  push:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  dual-mode-build:
+    name: Verify Both Build Modes (${{ matrix.mode.name }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - name: "Server (default)"
+            flags: ""
+            should_have_axum: true
+          - name: "Desktop (no HTTP)"
+            flags: "--no-default-features"
+            should_have_axum: false
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1"
+          shared-key: dual-mode-${{ matrix.mode.name }}
+      
+      - name: Build server crate (${{ matrix.mode.name }})
+        run: |
+          echo "Building calimero-server with mode: ${{ matrix.mode.name }}"
+          echo "Flags: ${{ matrix.mode.flags }}"
+          cargo build -p calimero-server ${{ matrix.mode.flags }}
+      
+      - name: Verify feature flags
+        run: |
+          echo "Verifying ${{ matrix.mode.name }} mode..."
+          
+          # Check if axum is in dependency tree (runtime deps only)
+          if cargo tree -e normal -p calimero-server ${{ matrix.mode.flags }} 2>/dev/null | grep -q "axum"; then
+            AXUM_PRESENT=true
+          else
+            AXUM_PRESENT=false
+          fi
+          
+          echo "Axum present: $AXUM_PRESENT"
+          echo "Expected: ${{ matrix.mode.should_have_axum }}"
+          
+          # Validate expectations
+          if [ "${{ matrix.mode.should_have_axum }}" == "true" ]; then
+            if [ "$AXUM_PRESENT" != "true" ]; then
+              echo "❌ FAIL: Server mode should include axum but it's missing!"
+              exit 1
+            fi
+            echo "✅ PASS: Server mode correctly includes HTTP server (axum)"
+          else
+            if [ "$AXUM_PRESENT" == "true" ]; then
+              echo "❌ FAIL: Desktop mode should exclude axum but it's present!"
+              exit 1
+            fi
+            echo "✅ PASS: Desktop mode correctly excludes HTTP server (no axum)"
+          fi
