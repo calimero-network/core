@@ -207,11 +207,16 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     /// Increment the counter for a specific executor
     ///
     /// # Errors
-    /// Returns error if storage operation fails
+    /// Returns error if storage operation fails or if increment would overflow u64::MAX
     pub fn increment_for(&mut self, executor_id: &[u8; 32]) -> Result<(), StoreError> {
         let key = hex::encode(executor_id);
         let current = self.positive.get(&key)?.unwrap_or(0);
-        let _previous = self.positive.insert(key, current + 1)?;
+        let new_value = current.checked_add(1).ok_or_else(|| {
+            StorageError::InvalidData(
+                "Counter increment overflow: value already at u64::MAX".to_owned(),
+            )
+        })?;
+        let _previous = self.positive.insert(key, new_value)?;
         Ok(())
     }
 
@@ -238,7 +243,7 @@ impl<S: StorageAdaptor> Counter<false, S> {
         for (_, count) in self.positive.entries()? {
             // Safe addition: check for overflow
             total = total.checked_add(count).ok_or_else(|| {
-                StorageError::InvalidData("Counter sum overflow: exceeded u64::MAX".to_string())
+                StorageError::InvalidData("Counter sum overflow: exceeded u64::MAX".to_owned())
             })?;
         }
         Ok(total)
@@ -267,11 +272,16 @@ impl<S: StorageAdaptor> Counter<true, S> {
     /// Decrement the counter for a specific executor (PN-Counter only)
     ///
     /// # Errors
-    /// Returns error if storage operation fails
+    /// Returns error if storage operation fails or if decrement would overflow u64::MAX
     pub fn decrement_for(&mut self, executor_id: &[u8; 32]) -> Result<(), StoreError> {
         let key = hex::encode(executor_id);
         let current = self.negative.get(&key)?.unwrap_or(0);
-        let _previous = self.negative.insert(key, current + 1)?;
+        let new_value = current.checked_add(1).ok_or_else(|| {
+            StorageError::InvalidData(
+                "Counter decrement overflow: value already at u64::MAX".to_owned(),
+            )
+        })?;
+        let _previous = self.negative.insert(key, new_value)?;
         Ok(())
     }
 
@@ -305,7 +315,7 @@ impl<S: StorageAdaptor> Counter<true, S> {
             // Safe addition: check for overflow
             pos_total = pos_total.checked_add(count_i64).ok_or_else(|| {
                 StorageError::InvalidData(
-                    "Counter positive sum overflow: exceeded i64::MAX".to_string(),
+                    "Counter positive sum overflow: exceeded i64::MAX".to_owned(),
                 )
             })?;
         }
@@ -323,7 +333,7 @@ impl<S: StorageAdaptor> Counter<true, S> {
             // Safe addition: check for overflow
             neg_total = neg_total.checked_add(count_i64).ok_or_else(|| {
                 StorageError::InvalidData(
-                    "Counter negative sum overflow: exceeded i64::MAX".to_string(),
+                    "Counter negative sum overflow: exceeded i64::MAX".to_owned(),
                 )
             })?;
         }
@@ -331,7 +341,7 @@ impl<S: StorageAdaptor> Counter<true, S> {
         // Safe subtraction: check for overflow
         Ok(pos_total.checked_sub(neg_total).ok_or_else(|| {
             StorageError::InvalidData(
-                "Counter final value overflow: result exceeds i64 bounds".to_string(),
+                "Counter final value overflow: result exceeds i64 bounds".to_owned(),
             )
         })?)
     }
