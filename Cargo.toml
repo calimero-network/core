@@ -169,7 +169,7 @@ starknet-crypto = "0.8.1"
 starknet-types-core = "0.2.0"
 strum = "0.26.2"
 syn = { version = "2.0", features = ["full"] }
-tempdir = "0.3.7"
+tempfile = "3.23.0"
 thiserror = "1.0.56"
 thunderdome = "0.6.1"
 tokio = "1.47.1"
