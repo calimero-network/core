@@ -6,6 +6,7 @@
 //!
 //! The mode is selected at compile-time using const generics for zero runtime overhead.
 
+use borsh::io::{Error, ErrorKind, Read, Result as BorshResult, Write};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::{StorageAdaptor, UnorderedMap};
@@ -73,17 +74,99 @@ use crate::store::MainStorage;
 ///     }
 /// }
 /// ```
-#[derive(BorshSerialize, BorshDeserialize, Debug)]
-#[borsh(crate = "borsh")]
+#[derive(Debug)]
 pub struct Counter<const ALLOW_DECREMENT: bool = false, S: StorageAdaptor = MainStorage> {
     /// Maps executor_id (hex string) -> positive increments
-    #[borsh(bound(serialize = "", deserialize = ""))]
     pub(crate) positive: UnorderedMap<String, u64, S>,
 
     /// Maps executor_id (hex string) -> negative decrements
     /// Only used when ALLOW_DECREMENT = true
-    #[borsh(bound(serialize = "", deserialize = ""))]
     pub(crate) negative: UnorderedMap<String, u64, S>,
+}
+
+// Custom serialization: conditionally serialize fields based on ALLOW_DECREMENT
+//
+// Serialization format:
+// - GCounter (ALLOW_DECREMENT = false): [positive_map]
+// - PNCounter (ALLOW_DECREMENT = true): [positive_map][negative_map]
+//
+// This ensures:
+// 1. GCounter uses less storage (no negative field serialized)
+// 2. Type safety: Cannot deserialize PNCounter with negative counts as GCounter
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshSerialize
+    for Counter<ALLOW_DECREMENT, S>
+{
+    fn serialize<W: Write>(&self, writer: &mut W) -> BorshResult<()> {
+        // Always serialize positive counts
+        self.positive.serialize(writer)?;
+
+        if ALLOW_DECREMENT {
+            // Only serialize negative counts for PNCounter
+            self.negative.serialize(writer)?;
+        }
+
+        Ok(())
+    }
+}
+
+// Custom deserialization: validate counter type safety
+//
+// Deserialization behavior:
+//
+// 1. GCounter ← GCounter: ✅ Works perfectly
+// 2. GCounter ← PNCounter (empty negative): ✅ Works (no data loss)
+// 3. GCounter ← PNCounter (has negative): ❌ ERROR - prevents silent data loss
+// 4. PNCounter ← GCounter: ✅ Safe upgrade (initializes empty negative map)
+// 5. PNCounter ← PNCounter: ✅ Works perfectly
+//
+// This ensures type safety while allowing safe upgrades from GCounter to PNCounter.
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
+    for Counter<ALLOW_DECREMENT, S>
+{
+    fn deserialize_reader<R: Read>(reader: &mut R) -> BorshResult<Self> {
+        // Always deserialize positive counts
+        let positive = UnorderedMap::deserialize_reader(reader)?;
+
+        let negative = if ALLOW_DECREMENT {
+            // PNCounter: Try to deserialize negative counts
+            // This handles both:
+            // 1. Deserializing a PNCounter (has negative field)
+            // 2. Upgrading from GCounter to PNCounter (no negative field - safe upgrade)
+            match UnorderedMap::<String, u64, S>::deserialize_reader(reader) {
+                Ok(neg_map) => neg_map,
+                Err(_) => {
+                    // No negative field present - this is a GCounter being upgraded to PNCounter
+                    // This is a safe operation since GCounter has no negative counts
+                    UnorderedMap::new_internal()
+                }
+            }
+        } else {
+            // GCounter: Check if there's more data (which would indicate a PNCounter being deserialized as GCounter)
+            // We peek ahead by trying to deserialize a negative map
+            match UnorderedMap::<String, u64, S>::deserialize_reader(reader) {
+                Ok(neg_map) => {
+                    // Successfully deserialized negative counts - this is a PNCounter!
+                    // Check if it has any entries (non-zero negative counts)
+                    if neg_map.len().unwrap_or(0) > 0 {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Cannot deserialize PNCounter with negative counts as GCounter. \
+                             This would silently drop decrement data and produce incorrect values. \
+                             Use PNCounter instead or ensure the source counter has no decrements.",
+                        ));
+                    }
+                    // Empty negative map is OK - might be deserializing a PNCounter with no decrements yet
+                    neg_map
+                }
+                Err(_) => {
+                    // No more data - this is truly a GCounter serialized data
+                    UnorderedMap::new_internal()
+                }
+            }
+        };
+
+        Ok(Counter { positive, negative })
+    }
 }
 
 // Type aliases for convenience
@@ -549,5 +632,100 @@ mod tests {
         // Should not overflow
         assert!(counter.value_signed().is_ok());
         assert_eq!(counter.value_signed().unwrap(), 500_000_000_000);
+    }
+
+    #[test]
+    fn test_type_safety_pncounter_to_gcounter() {
+        crate::env::reset_for_testing();
+
+        // Create a PNCounter with 10 increments and 3 decrements (value = 7)
+        let mut pn_counter = PNCounter::new();
+        let executor_id = [120u8; 32];
+
+        for _ in 0..10 {
+            pn_counter.increment_for(&executor_id).unwrap();
+        }
+        for _ in 0..3 {
+            pn_counter.decrement_for(&executor_id).unwrap();
+        }
+
+        assert_eq!(pn_counter.value().unwrap(), 7);
+
+        // Serialize the PNCounter
+        let serialized = borsh::to_vec(&pn_counter).unwrap();
+
+        // Try to deserialize as GCounter - this should fail with the fix
+        let result: Result<GCounter, _> = borsh::from_slice(&serialized);
+
+        // With the fix, this should fail because we can't deserialize
+        // a PNCounter (which has negative counts) as a GCounter
+        assert!(
+            result.is_err(),
+            "Deserializing a PNCounter with negative counts as GCounter should fail"
+        );
+    }
+
+    #[test]
+    fn test_type_safety_gcounter_to_pncounter() {
+        crate::env::reset_for_testing();
+
+        // Create a GCounter with 10 increments
+        let mut g_counter = GCounter::new();
+        let executor_id = [121u8; 32];
+
+        for _ in 0..10 {
+            g_counter.increment_for(&executor_id).unwrap();
+        }
+
+        assert_eq!(g_counter.value().unwrap(), 10);
+
+        // Serialize the GCounter
+        let serialized = borsh::to_vec(&g_counter).unwrap();
+
+        // Deserialize as PNCounter - this should work (upgrading is safe)
+        let pn_counter: PNCounter = borsh::from_slice(&serialized).unwrap();
+
+        // Should have the same value
+        assert_eq!(pn_counter.value().unwrap(), 10);
+    }
+
+    #[test]
+    fn test_exact_scenario_from_issue() {
+        crate::env::reset_for_testing();
+
+        // The exact scenario from the issue description:
+        // PNCounter with 10 increments and 3 decrements (value=7)
+        let mut pn_counter = PNCounter::new();
+        let executor_id = [122u8; 32];
+
+        // 10 increments
+        for _ in 0..10 {
+            pn_counter.increment_for(&executor_id).unwrap();
+        }
+
+        // 3 decrements
+        for _ in 0..3 {
+            pn_counter.decrement_for(&executor_id).unwrap();
+        }
+
+        // Value should be 7
+        assert_eq!(pn_counter.value().unwrap(), 7);
+
+        // Serialize the PNCounter
+        let serialized = borsh::to_vec(&pn_counter).unwrap();
+
+        // Try to deserialize as GCounter
+        let result: Result<GCounter, _> = borsh::from_slice(&serialized);
+
+        // This MUST fail (prevents the issue where value would incorrectly be 10)
+        assert!(
+            result.is_err(),
+            "Should prevent deserializing PNCounter(7) as GCounter(10)"
+        );
+
+        // Verify the error message is informative
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Cannot deserialize PNCounter"));
+        assert!(err.to_string().contains("silently drop"));
     }
 }
