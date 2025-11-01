@@ -214,12 +214,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             }
         }
         RuntimeMode::Desktop => {
-            // Desktop mode: Create single arbiter system for all actors
+            // Desktop mode: Use current arbiter from System thread (single-threaded)
             let (tx, rx) = oneshot::channel();
 
             let mut system_handle = tokio::task::spawn_blocking(move || {
                 let system = System::new();
-                let arbiter = Arbiter::new().handle();
+
+                // Use the current arbiter (System's own thread) instead of creating a new one
+                let arbiter = Arbiter::current();
 
                 let _ignored = tx.send(arbiter);
 
