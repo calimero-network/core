@@ -27,16 +27,22 @@ pub struct ServerConfig {
 
     pub identity: Keypair,
 
+    #[cfg(feature = "http-server")]
     pub admin: Option<AdminConfig>,
 
+    #[cfg(feature = "http-server")]
     pub jsonrpc: Option<JsonRpcConfig>,
 
+    #[cfg(feature = "http-server")]
     pub websocket: Option<WsConfig>,
 
+    #[cfg(feature = "http-server")]
     pub sse: Option<SseConfig>,
 }
 
 impl ServerConfig {
+    // Server mode: Full constructor with HTTP config
+    #[cfg(feature = "http-server")]
     #[must_use]
     pub const fn new(
         listen: Vec<Multiaddr>,
@@ -55,8 +61,22 @@ impl ServerConfig {
             sse,
         }
     }
+
+    // Desktop mode: Minimal constructor
+    #[cfg(not(feature = "http-server"))]
+    #[must_use]
+    pub const fn new(
+        listen: Vec<Multiaddr>,
+        identity: Keypair,
+    ) -> Self {
+        Self {
+            listen,
+            identity,
+        }
+    }
 }
 
+#[cfg(feature = "http-server")]
 #[must_use]
 pub fn default_addrs() -> Vec<Multiaddr> {
     DEFAULT_ADDRS
