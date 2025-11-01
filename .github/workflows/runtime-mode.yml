@@ -17,14 +17,15 @@ jobs:
   test-runtime-modes:
     name: Test Runtime Modes
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 10
     
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Rust
+      - name: Install Rust (with clippy)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -35,7 +36,6 @@ jobs:
       - name: Run runtime mode tests
         run: |
           cargo test -p calimero-node --test runtime_modes -- --nocapture
-        timeout-minutes: 10
         env:
           RUST_LOG: debug
       

@@ -35,12 +35,24 @@ use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
 /// Runtime mode for actor system
+///
+/// Controls how actors are spawned and managed:
+/// - **Server (default):** Multi-threaded arbiter pool for production deployments
+/// - **Desktop:** Single-threaded arbiter for desktop apps (Tauri)
+///
+/// Server mode is the default for backwards compatibility with existing deployments.
+/// Desktop mode is used when embedding the node in a Tauri desktop application.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RuntimeMode {
     /// Server mode: use arbiter pool for actor distribution across threads
+    ///
+    /// This is the DEFAULT mode for production server deployments.
     #[default]
     Server,
     /// Desktop mode: single-threaded Actix system (runs in dedicated thread)
+    ///
+    /// Used when embedding the node in desktop applications (e.g., Tauri).
+    /// All actors run on a single arbiter in one dedicated thread.
     Desktop,
 }
 
