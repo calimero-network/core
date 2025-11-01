@@ -531,6 +531,17 @@ mod tests {
     }
 
     #[test]
+    fn test_counter_custom_storage_is_crdt() {
+        use crate::store::mocked::MockedStorage;
+
+        type CustomCounter = Counter<false, MockedStorage<0>>;
+
+        assert!(CustomCounter::is_crdt());
+        assert_eq!(CustomCounter::crdt_type(), CrdtType::Counter);
+        assert!(!CustomCounter::can_contain_crdts());
+    }
+
+    #[test]
     fn test_lww_register_merge() {
         env::reset_for_testing();
 
