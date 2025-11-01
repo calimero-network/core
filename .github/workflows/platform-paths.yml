@@ -1,0 +1,53 @@
+name: Platform Paths Test
+
+on:
+  pull_request:
+    paths:
+      - 'crates/config/**'
+      - 'crates/merod/src/defaults.rs'
+      - 'crates/meroctl/src/defaults.rs'
+      - '.github/workflows/platform-paths.yml'
+
+jobs:
+  test-paths:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1"
+          shared-key: platform-${{ matrix.os }}
+      
+      - name: Test path resolution (desktop mode)
+        run: |
+          echo "Testing desktop mode (platform dirs)..."
+          cargo test -p calimero-config dirs:: -- --nocapture --test-threads=1
+        env:
+          RUST_LOG: debug
+      
+      - name: Build desktop mode
+        run: |
+          cargo build -p calimero-config --no-default-features
+      
+      - name: Test path resolution (server mode)
+        run: |
+          echo "Testing server mode (legacy ~/.calimero)..."
+          cargo test -p calimero-config dirs:: --features use-home-dir -- --nocapture
+        env:
+          RUST_LOG: debug
+      
+      - name: Build server mode
+        run: |
+          cargo build -p calimero-config --features use-home-dir
+

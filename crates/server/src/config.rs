@@ -1,11 +1,17 @@
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use libp2p::identity::Keypair;
-use multiaddr::{Multiaddr, Protocol};
+use multiaddr::Multiaddr;
+#[cfg(feature = "http-server")]
+use multiaddr::Protocol;
 
+#[cfg(feature = "http-server")]
 use crate::admin::service::AdminConfig;
+#[cfg(feature = "http-server")]
 use crate::jsonrpc::JsonRpcConfig;
+#[cfg(feature = "http-server")]
 use crate::sse::SseConfig;
+#[cfg(feature = "http-server")]
 use crate::ws::WsConfig;
 
 pub const DEFAULT_PORT: u16 = 2528; // (CHAT in T9) + 100

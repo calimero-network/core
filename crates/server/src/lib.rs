@@ -1,29 +1,46 @@
+#[cfg(feature = "http-server")]
 use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+#[cfg(feature = "http-server")]
 use tower as _;
 
+#[cfg(feature = "http-server")]
 use axum::http::Method;
+#[cfg(feature = "http-server")]
 use axum::Router;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
-use eyre::{bail, Result as EyreResult};
+#[cfg(feature = "http-server")]
+use eyre::bail;
+use eyre::Result as EyreResult;
+#[cfg(feature = "http-server")]
 use multiaddr::Protocol;
 use prometheus_client::registry::Registry;
+#[cfg(feature = "http-server")]
 use tokio::net::TcpListener;
+#[cfg(feature = "http-server")]
 use tokio::task::JoinSet;
+#[cfg(feature = "http-server")]
 use tower_http::cors::{Any, CorsLayer};
+#[cfg(feature = "http-server")]
 use tracing::warn;
 
+#[cfg(feature = "http-server")]
 use crate::admin::service::{setup, site};
 
+#[cfg(feature = "http-server")]
 pub mod admin;
 pub mod config;
+#[cfg(feature = "http-server")]
 pub mod jsonrpc;
+#[cfg(feature = "http-server")]
 mod metrics;
+#[cfg(feature = "http-server")]
 pub mod sse;
+#[cfg(feature = "http-server")]
 pub mod ws;
 
 #[derive(Debug)]
@@ -45,7 +62,8 @@ impl AdminState {
     }
 }
 
-// TODO: Consider splitting this long function into multiple parts.
+// Server mode: Full HTTP server with Axum
+#[cfg(feature = "http-server")]
 #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
 #[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
@@ -163,6 +181,20 @@ pub async fn start(
     }
 
     Ok(())
+}
+
+// Desktop mode: No HTTP server
+#[cfg(not(feature = "http-server"))]
+pub async fn start(
+    _config: ServerConfig,
+    _ctx_client: ContextClient,
+    _node_client: NodeClient,
+    _datastore: Store,
+    _prom_registry: Registry,
+) -> EyreResult<()> {
+    // In desktop mode, calimero-server doesn't run an HTTP server
+    // The Tauri app uses ContextClient/NodeClient directly via IPC
+    std::future::pending().await
 }
 
 #[cfg(test)]
