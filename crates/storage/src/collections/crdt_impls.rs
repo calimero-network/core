@@ -108,7 +108,7 @@ impl<T: Clone> Mergeable for LwwRegister<T> {
 // Counter (both G-Counter and PN-Counter modes)
 // ============================================================================
 
-impl<const ALLOW_DECREMENT: bool> CrdtMeta for Counter<ALLOW_DECREMENT> {
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> CrdtMeta for Counter<ALLOW_DECREMENT, S> {
     fn crdt_type() -> CrdtType {
         CrdtType::Counter
     }
@@ -122,7 +122,7 @@ impl<const ALLOW_DECREMENT: bool> CrdtMeta for Counter<ALLOW_DECREMENT> {
     }
 }
 
-impl<const ALLOW_DECREMENT: bool> Mergeable for Counter<ALLOW_DECREMENT> {
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW_DECREMENT, S> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Merge positive counts (both G-Counter and PN-Counter)
         // For each executor in other, take the max of their counts
