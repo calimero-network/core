@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        args: ['--all', '--', '--check']
+      - id: cargo-check
+        args: ['--workspace', '--all-features']
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.21.0
+    hooks:
+      - id: typos
+        args: ['--format', 'brief']
+
