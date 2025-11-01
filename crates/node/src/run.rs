@@ -23,6 +23,8 @@ use calimero_store::Store;
 use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
+use futures_util::future::FusedFuture;
+use futures_util::FutureExt;
 use libp2p::gossipsub::IdentTopic;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
@@ -328,14 +330,17 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             let _ignored = Actor::start_in_arbiter(&arbiter_handle, move |_ctx| gc);
 
             let mut sync = pin!(sync_manager.start());
-            let mut server = tokio::spawn(server);
+            let mut server = tokio::spawn(server).fuse();
 
             info!("Node started successfully");
 
             loop {
                 tokio::select! {
                     _ = &mut sync => {},
-                    res = &mut server => res??,
+                    res = &mut server, if !server.is_terminated() => {
+                        res??;
+                        // Server completed, won't be polled again
+                    },
                     res = &mut system_handle => break res?,
                 }
             }
