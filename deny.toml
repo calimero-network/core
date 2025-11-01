@@ -6,9 +6,19 @@
 version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Advisories are checked by cargo-audit (informational)
-# cargo-deny enforces bans, licenses, and sources
-ignore = []
+# Pre-existing advisories from transitive dependencies (not introduced by PR-1)
+# These are from wasmer, ic-agent, web3, alloy - dependencies we don't control
+# Should be addressed in separate PRs focused on dependency updates
+ignore = [
+    "RUSTSEC-2025-0012",  # backoff (ic-agent)
+    "RUSTSEC-2024-0388",  # derivative (wasmer)
+    "RUSTSEC-2025-0057",  # fxhash (wasmer/cranelift)
+    "RUSTSEC-2024-0421",  # idna (web3)
+    "RUSTSEC-2024-0384",  # instant (ic-agent)
+    "RUSTSEC-2024-0436",  # paste (alloy)
+    "RUSTSEC-2024-0370",  # proc-macro-error (wasmer)
+    "RUSTSEC-2021-0127",  # serde_cbor (ic-agent)
+]
 
 [bans]
 multiple-versions = "warn"
