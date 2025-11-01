@@ -37,7 +37,7 @@ mod run;
 pub mod sync;
 mod utils;
 
-pub use run::{start, NodeConfig};
+pub use run::{start, NodeConfig, RuntimeMode};
 pub use sync::SyncManager;
 
 /// Cached blob with access tracking for eviction

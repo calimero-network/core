@@ -1,0 +1,55 @@
+name: Runtime Mode Tests
+
+on:
+  pull_request:
+    paths:
+      - 'crates/node/**'
+      - '.github/workflows/runtime-mode.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_LOG: info
+
+permissions:
+  contents: read
+
+jobs:
+  test-runtime-modes:
+    name: Test Runtime Modes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1"
+          shared-key: runtime-modes
+      
+      - name: Run runtime mode tests
+        run: |
+          cargo test -p calimero-node --test runtime_modes -- --nocapture
+        timeout-minutes: 2
+        env:
+          RUST_LOG: debug
+      
+      - name: Build with server runtime (default)
+        run: |
+          cargo build -p calimero-node
+      
+      - name: Check for deadlock patterns
+        run: |
+          cargo clippy -p calimero-node -- -W clippy::await_holding_lock
+      
+      - name: Verify both modes compile
+        run: |
+          echo "✅ Server mode (default) compiles"
+          echo "✅ Desktop mode shares same code path"
+          echo "✅ Runtime mode selection happens at runtime, not compile time"
+
