@@ -109,17 +109,22 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshSerialize
     }
 }
 
-// Custom deserialization: validate counter type safety
+// Custom deserialization: handle counter type compatibility
 //
 // Deserialization behavior:
 //
 // 1. GCounter ← GCounter: ✅ Works perfectly
-// 2. GCounter ← PNCounter (empty negative): ✅ Works (no data loss)
-// 3. GCounter ← PNCounter (has negative): ❌ ERROR - prevents silent data loss
-// 4. PNCounter ← GCounter: ✅ Safe upgrade (initializes empty negative map)
-// 5. PNCounter ← PNCounter: ✅ Works perfectly
+// 2. GCounter ← PNCounter: ❌ ERROR - Borsh detects leftover bytes, prevents data loss
+// 3. PNCounter ← GCounter: ✅ Safe upgrade (initializes empty negative map)
+// 4. PNCounter ← PNCounter: ✅ Works perfectly
 //
-// This ensures type safety while allowing safe upgrades from GCounter to PNCounter.
+// Type safety mechanism:
+// When a PNCounter is serialized, it writes [positive_map][negative_map].
+// When deserializing as GCounter, only [positive_map] is read.
+// Borsh's strict parsing detects the leftover [negative_map] bytes and fails with
+// "Not all bytes read" or "Unexpected length of input", preventing silent data loss.
+//
+// This provides runtime type safety without explicit validation code.
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
     for Counter<ALLOW_DECREMENT, S>
 {
@@ -141,28 +146,11 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
                 }
             }
         } else {
-            // GCounter: Check if there's more data (which would indicate a PNCounter being deserialized as GCounter)
-            // We peek ahead by trying to deserialize a negative map
-            match UnorderedMap::<String, u64, S>::deserialize_reader(reader) {
-                Ok(neg_map) => {
-                    // Successfully deserialized negative counts - this is a PNCounter!
-                    // Check if it has any entries (non-zero negative counts)
-                    if neg_map.len().map_err(|e| Error::new(ErrorKind::Other, e))? > 0 {
-                        return Err(Error::new(
-                            ErrorKind::InvalidData,
-                            "Cannot deserialize PNCounter with negative counts as GCounter. \
-                             This would silently drop decrement data and produce incorrect values. \
-                             Use PNCounter instead or ensure the source counter has no decrements.",
-                        ));
-                    }
-                    // Empty negative map is OK - might be deserializing a PNCounter with no decrements yet
-                    neg_map
-                }
-                Err(_) => {
-                    // No more data - this is truly a GCounter serialized data
-                    UnorderedMap::new_internal()
-                }
-            }
+            // GCounter: Don't try to deserialize negative map
+            // If PNCounter data is deserialized as GCounter, Borsh will fail with
+            // "Not all bytes read" or "Unexpected length of input", preventing silent data loss.
+            // This is the desired behavior - users must use the correct type.
+            UnorderedMap::new_internal()
         };
 
         Ok(Counter { positive, negative })
@@ -654,14 +642,23 @@ mod tests {
         // Serialize the PNCounter
         let serialized = borsh::to_vec(&pn_counter).unwrap();
 
-        // Try to deserialize as GCounter - this should fail with the fix
+        // Try to deserialize as GCounter - this will fail
         let result: Result<GCounter, _> = borsh::from_slice(&serialized);
 
-        // With the fix, this should fail because we can't deserialize
-        // a PNCounter (which has negative counts) as a GCounter
+        // Borsh detects extra bytes in stream (the negative map) and fails
+        // This prevents silent data loss when using the wrong type
         assert!(
             result.is_err(),
-            "Deserializing a PNCounter with negative counts as GCounter should fail"
+            "Deserializing PNCounter as GCounter should fail"
+        );
+        
+        // The error indicates leftover data
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("Not all bytes read") || err_str.contains("Unexpected length"),
+            "Error should indicate leftover data, got: {}",
+            err_str
         );
     }
 
@@ -717,15 +714,20 @@ mod tests {
         // Try to deserialize as GCounter
         let result: Result<GCounter, _> = borsh::from_slice(&serialized);
 
-        // This MUST fail (prevents the issue where value would incorrectly be 10)
+        // This SHOULD fail - prevents the issue where value would incorrectly be 10
+        // Borsh detects leftover bytes (the negative map) and rejects the deserialization
         assert!(
             result.is_err(),
             "Should prevent deserializing PNCounter(7) as GCounter(10)"
         );
 
-        // Verify the error message is informative
+        // Verify the error indicates extra data in the stream
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Cannot deserialize PNCounter"));
-        assert!(err.to_string().contains("silently drop"));
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("Not all bytes read") || err_str.contains("Unexpected length"),
+            "Error should indicate leftover data, got: {}",
+            err_str
+        );
     }
 }
