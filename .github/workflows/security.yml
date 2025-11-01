@@ -60,7 +60,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.16.3 --locked
       
       - name: Run cargo deny
         run: cargo deny check advisories bans licenses sources

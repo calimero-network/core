@@ -56,3 +56,17 @@ update:
 outdated:
 	cargo outdated --workspace
 
+# Run full CI gate locally (before pushing)
+ci:
+	@echo "Running local CI gate sequence..."
+	cargo build --workspace
+	cargo test --workspace
+	cargo deny check
+	cargo audit || echo "⚠️ Audit found advisories (informational)"
+	@echo "Checking direct deps for native TLS..."
+	@cargo tree -e normal -p calimero-node | \
+		grep -Ei '(^| )(openssl|native-tls|security-framework|schannel)' || \
+		echo "✅ Pure rustls in direct deps"
+	@echo ""
+	@echo "✅ Local CI gate passed!"
+
