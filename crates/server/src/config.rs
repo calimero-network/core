@@ -65,14 +65,8 @@ impl ServerConfig {
     // Desktop mode: Minimal constructor
     #[cfg(not(feature = "http-server"))]
     #[must_use]
-    pub const fn new(
-        listen: Vec<Multiaddr>,
-        identity: Keypair,
-    ) -> Self {
-        Self {
-            listen,
-            identity,
-        }
+    pub const fn new(listen: Vec<Multiaddr>, identity: Keypair) -> Self {
+        Self { listen, identity }
     }
 }
 
