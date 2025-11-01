@@ -9,7 +9,10 @@
 //! - Vector
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
-use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector};
+use super::{
+    Counter, GCounter, LwwRegister, PNCounter, ReplicatedGrowableArray, UnorderedMap, UnorderedSet,
+    Vector,
+};
 use crate::store::StorageAdaptor;
 
 // ============================================================================
@@ -102,16 +105,16 @@ impl<T: Clone> Mergeable for LwwRegister<T> {
 }
 
 // ============================================================================
-// Counter
+// Counter (both G-Counter and PN-Counter modes)
 // ============================================================================
 
-impl CrdtMeta for Counter {
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> CrdtMeta for Counter<ALLOW_DECREMENT, S> {
     fn crdt_type() -> CrdtType {
         CrdtType::Counter
     }
 
     fn storage_strategy() -> StorageStrategy {
-        StorageStrategy::Blob // Counter stores as single u64
+        StorageStrategy::Blob // Counter stores as blob
     }
 
     fn can_contain_crdts() -> bool {
@@ -119,29 +122,65 @@ impl CrdtMeta for Counter {
     }
 }
 
-impl Mergeable for Counter {
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW_DECREMENT, S> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        // Counter is a G-Counter: Map<executor_id, count>
+        // Merge positive counts (both G-Counter and PN-Counter)
         // For each executor in other, take the max of their counts
-        for (executor_id, other_count) in other.inner.entries().map_err(|e| {
-            MergeError::StorageError(format!("Failed to get counter entries: {:?}", e))
+        for (executor_id, other_count) in other.positive.entries().map_err(|e| {
+            MergeError::StorageError(format!("Failed to get positive counter entries: {:?}", e))
         })? {
             let self_count = self
-                .inner
+                .positive
                 .get(&executor_id)
                 .map_err(|e| {
-                    MergeError::StorageError(format!("Failed to get counter value: {:?}", e))
+                    MergeError::StorageError(format!(
+                        "Failed to get positive counter value: {:?}",
+                        e
+                    ))
                 })?
                 .unwrap_or(0);
 
-            // Take max for this executor (G-Counter property: monotonic)
+            // Take max for this executor (monotonic property)
             let new_count = self_count.max(other_count);
             if new_count > self_count {
-                drop(self.inner.insert(executor_id, new_count).map_err(|e| {
-                    MergeError::StorageError(format!("Failed to insert counter value: {:?}", e))
+                drop(self.positive.insert(executor_id, new_count).map_err(|e| {
+                    MergeError::StorageError(format!(
+                        "Failed to insert positive counter value: {:?}",
+                        e
+                    ))
                 })?);
             }
         }
+
+        // If PN-Counter mode, also merge negative counts
+        if ALLOW_DECREMENT {
+            for (executor_id, other_count) in other.negative.entries().map_err(|e| {
+                MergeError::StorageError(format!("Failed to get negative counter entries: {:?}", e))
+            })? {
+                let self_count = self
+                    .negative
+                    .get(&executor_id)
+                    .map_err(|e| {
+                        MergeError::StorageError(format!(
+                            "Failed to get negative counter value: {:?}",
+                            e
+                        ))
+                    })?
+                    .unwrap_or(0);
+
+                // Take max for this executor (monotonic property)
+                let new_count = self_count.max(other_count);
+                if new_count > self_count {
+                    drop(self.negative.insert(executor_id, new_count).map_err(|e| {
+                        MergeError::StorageError(format!(
+                            "Failed to insert negative counter value: {:?}",
+                            e
+                        ))
+                    })?);
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -432,6 +471,7 @@ where
 mod tests {
     use super::*;
     use crate::env;
+    use crate::store::MainStorage;
 
     #[test]
     fn test_lww_register_is_crdt() {
@@ -441,10 +481,17 @@ mod tests {
     }
 
     #[test]
-    fn test_counter_is_crdt() {
-        assert!(Counter::is_crdt());
-        assert_eq!(Counter::crdt_type(), CrdtType::Counter);
-        assert!(!Counter::can_contain_crdts());
+    fn test_gcounter_is_crdt() {
+        assert!(GCounter::<MainStorage>::is_crdt());
+        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert!(!GCounter::<MainStorage>::can_contain_crdts());
+    }
+
+    #[test]
+    fn test_pncounter_is_crdt() {
+        assert!(PNCounter::<MainStorage>::is_crdt());
+        assert_eq!(PNCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert!(!PNCounter::<MainStorage>::can_contain_crdts());
     }
 
     #[test]
@@ -468,13 +515,13 @@ mod tests {
 
         // Node 1 increments twice
         env::set_executor_id([11; 32]);
-        let mut c1 = Counter::new();
+        let mut c1 = GCounter::new();
         c1.increment().unwrap();
         c1.increment().unwrap();
 
         // Node 2 increments once
         env::set_executor_id([22; 32]);
-        let mut c2 = Counter::new();
+        let mut c2 = GCounter::new();
         c2.increment().unwrap();
 
         // Merge: should have both executors' counts
@@ -482,6 +529,17 @@ mod tests {
 
         // Should sum: {[1;32]: 2} + {[2;32]: 1} = 3
         assert_eq!(c1.value().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_counter_custom_storage_is_crdt() {
+        use crate::store::mocked::MockedStorage;
+
+        type CustomCounter = Counter<false, MockedStorage<0>>;
+
+        assert!(CustomCounter::is_crdt());
+        assert_eq!(CustomCounter::crdt_type(), CrdtType::Counter);
+        assert!(!CustomCounter::can_contain_crdts());
     }
 
     #[test]
@@ -507,23 +565,23 @@ mod tests {
         // vec1 = [Counter(2), Counter(1)] - Node 1 creates these
         env::set_executor_id([33; 32]);
         let mut vec1 = Vector::new();
-        let mut c1 = Counter::new();
+        let mut c1 = GCounter::new();
         c1.increment().unwrap();
         c1.increment().unwrap(); // value = 2
         vec1.push(c1).unwrap();
 
-        let mut c2 = Counter::new();
+        let mut c2 = GCounter::new();
         c2.increment().unwrap(); // value = 1
         vec1.push(c2).unwrap();
 
         // vec2 = [Counter(1), Counter(3)] - Node 2 creates these
         env::set_executor_id([44; 32]);
         let mut vec2 = Vector::new();
-        let mut c3 = Counter::new();
+        let mut c3 = GCounter::new();
         c3.increment().unwrap(); // value = 1
         vec2.push(c3).unwrap();
 
-        let mut c4 = Counter::new();
+        let mut c4 = GCounter::new();
         c4.increment().unwrap();
         c4.increment().unwrap();
         c4.increment().unwrap(); // value = 3
@@ -545,7 +603,7 @@ mod tests {
         // vec1 = [Counter(2)] - Node 1
         env::set_executor_id([55; 32]);
         let mut vec1 = Vector::new();
-        let mut c1 = Counter::new();
+        let mut c1 = GCounter::new();
         c1.increment().unwrap();
         c1.increment().unwrap();
         vec1.push(c1).unwrap();
@@ -553,19 +611,19 @@ mod tests {
         // vec2 = [Counter(3), Counter(5), Counter(7)] - Node 2
         env::set_executor_id([66; 32]);
         let mut vec2 = Vector::new();
-        let mut c2 = Counter::new();
+        let mut c2 = GCounter::new();
         c2.increment().unwrap();
         c2.increment().unwrap();
         c2.increment().unwrap();
         vec2.push(c2).unwrap();
 
-        let mut c3 = Counter::new();
+        let mut c3 = GCounter::new();
         for _ in 0..5 {
             c3.increment().unwrap();
         }
         vec2.push(c3).unwrap();
 
-        let mut c4 = Counter::new();
+        let mut c4 = GCounter::new();
         for _ in 0..7 {
             c4.increment().unwrap();
         }
