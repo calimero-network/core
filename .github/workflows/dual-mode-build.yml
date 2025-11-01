@@ -51,8 +51,8 @@ jobs:
         run: |
           echo "Verifying ${{ matrix.mode.name }} mode..."
           
-          # Check if axum is in dependency tree
-          if cargo tree -p calimero-server ${{ matrix.mode.flags }} 2>/dev/null | grep -q "axum"; then
+          # Check if axum is in dependency tree (runtime deps only)
+          if cargo tree -e normal -p calimero-server ${{ matrix.mode.flags }} 2>/dev/null | grep -q "axum"; then
             AXUM_PRESENT=true
           else
             AXUM_PRESENT=false

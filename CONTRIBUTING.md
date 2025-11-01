@@ -30,6 +30,10 @@ There are several ways you can contribute:
 Contributions are managed via Issues and Pull Requests (PRs). Here are some
 general guidelines:
 
+## Platform Scope
+
+Currently, CI runs on Linux and macOS only. Windows support is deferred until after Tauri MVP stabilization.
+
 - Read our [Rust style guide][STYLE] to ensure compatibility with the rest of
   our codebase!
 
