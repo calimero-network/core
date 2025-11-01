@@ -8,10 +8,15 @@ on:
       - 'crates/meroctl/src/defaults.rs'
       - '.github/workflows/platform-paths.yml'
 
+permissions:
+  contents: read
+
 jobs:
   test-paths:
     name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
