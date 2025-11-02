@@ -10,9 +10,9 @@ use serde::ser::SerializeMap;
 use serde::Serialize;
 
 use super::{compute_id, Collection, EntryMut, StorageAdaptor};
-use crate::error::StorageError;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
+use crate::error::StorageError;
 use crate::store::MainStorage;
 
 /// A map collection that stores key-value pairs.
