@@ -2,13 +2,14 @@
 
 use core::borrow::Borrow;
 use core::fmt;
+use core::ops::{Deref, DerefMut};
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, StorageAdaptor};
+use super::{compute_id, Collection, EntryMut, StorageAdaptor};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::MainStorage;
@@ -109,6 +110,32 @@ where
         let id = compute_id(self.inner.id(), key.as_ref());
 
         Ok(self.inner.get(id)?.map(|(_, v)| v))
+    }
+
+    /// Returns a mutable reference to the value corresponding to the key.
+    ///
+    /// This returns a `ValueMut` guard. Any modifications to the value
+    /// will be written back to storage when the guard is dropped.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    ///
+    pub fn get_mut<'a, Q>(&'a mut self, key: &Q) -> Result<Option<ValueMut<'a, K, V, S>>, StoreError>
+    where
+        K: Borrow<Q>,
+        Q: PartialEq + AsRef<[u8]> + ?Sized,
+    {
+        let id = compute_id(self.inner.id(), key.as_ref());
+
+        // Get the internal EntryMut<'a, (K, V), S>
+        let entry_option = self.inner.get_mut(id)?;
+
+        // Wrap it in ValueMut guard.
+        // This guard only allows access to V.
+        Ok(entry_option.map(|entry_mut| ValueMut { entry_mut }))
     }
 
     /// Check if the map contains a key.
@@ -298,6 +325,46 @@ where
         map.extend(iter);
 
         map
+    }
+}
+
+/// A mutable guard for a value in an `UnorderedMap`.
+///
+/// Changes are written back to storage when this guard is dropped.
+#[derive(Debug)]
+pub struct ValueMut<'a, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// This holds the mutable entry for the *entire* tuple.
+    entry_mut: EntryMut<'a, (K, V), S>,
+}
+
+impl<K, V, S> Deref for ValueMut<'_, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        // self.entry_mut.deref() returns &(K, V), so with .1 it accesses the V
+        &self.entry_mut.deref().1
+    }
+}
+
+impl<K, V, S> DerefMut for ValueMut<'_, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // self.entry_mut.deref() returns &(K, V), so with .1 it accesses the V
+        &mut self.entry_mut.deref_mut().1
     }
 }
 
