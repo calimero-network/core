@@ -12,7 +12,7 @@ use indexmap::IndexSet;
 use sha2::{Digest, Sha256};
 
 pub mod counter;
-pub use counter::Counter;
+pub use counter::{Counter, GCounter, PNCounter};
 pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
 pub mod unordered_set;
