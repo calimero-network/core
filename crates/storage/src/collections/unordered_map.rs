@@ -10,6 +10,7 @@ use serde::ser::SerializeMap;
 use serde::Serialize;
 
 use super::{compute_id, Collection, EntryMut, StorageAdaptor};
+use crate::error::StorageError;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::MainStorage;
@@ -157,20 +158,17 @@ where
         let id = compute_id(self.inner.id(), key.as_ref());
 
         // 1. First, check for existence using `contains`
-        // This creates a short-lived `&self` borrow, not a long-lived `&'a mut self` borrow.
         if self.inner.contains(id)? {
             // 2. If it exists, we can now safely get the mutable guard.
             // We `expect` because we literally just confirmed it exists.
             let entry_mut = self
                 .inner
                 .get_mut(id)?
-                .expect("Entry must exist after contains check");
+                .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
 
-            // This branch borrows `self.inner` for 'a
             Ok(Entry::Occupied(OccupiedEntry { entry_mut }))
         } else {
             // 3. If it doesn't exist, no `EntryMut` was created.
-            // We can now safely borrow `self` for 'a to create the `VacantEntry`.
             Ok(Entry::Vacant(VacantEntry { map: self, key }))
         }
     }
@@ -550,7 +548,7 @@ where
             .map
             .inner
             .get_mut(id)?
-            .expect("Entry must exist after insert");
+            .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
 
         Ok(ValueMut { entry_mut })
     }
