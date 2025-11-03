@@ -129,12 +129,11 @@ impl DeltaStore {
 
     /// Load all persisted deltas from the database into the in-memory DAG
     ///
-    /// CRITICAL: This should be called after creating a DeltaStore to restore
-    /// the DAG state from persistent storage. Without this, nodes will "forget"
-    /// their DAG history after restart and create disconnected chains.
+    /// This restores the DAG state from persistent storage. Should be called after
+    /// creating a DeltaStore to prevent nodes from losing DAG history after restart.
     ///
-    /// IMPORTANT: Deltas must be loaded in topological order (parents before children)
-    /// to properly reconstruct the DAG topology.
+    /// Deltas are loaded in topological order (parents before children) to properly
+    /// reconstruct the DAG topology.
     pub async fn load_persisted_deltas(&self) -> Result<usize> {
         use std::collections::HashMap;
 
@@ -142,8 +141,7 @@ impl DeltaStore {
 
         // Step 1: Collect ALL deltas for this context from DB
         let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
-        let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> =
-            HashMap::new();
+        let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
 
         for entry in iter.entries() {
             let (key_result, value_result) = entry;
@@ -156,19 +154,18 @@ impl DeltaStore {
             }
 
             // Deserialize actions
-            let actions: Vec<Action> =
-                match borsh::from_slice(&stored_delta.actions) {
-                    Ok(actions) => actions,
-                    Err(e) => {
-                        warn!(
-                            ?e,
-                            context_id = %self.applier.context_id,
-                            delta_id = ?stored_delta.delta_id,
-                            "Failed to deserialize persisted delta actions, skipping"
-                        );
-                        continue;
-                    }
-                };
+            let actions: Vec<Action> = match borsh::from_slice(&stored_delta.actions) {
+                Ok(actions) => actions,
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        delta_id = ?stored_delta.delta_id,
+                        "Failed to deserialize persisted delta actions, skipping"
+                    );
+                    continue;
+                }
+            };
 
             // Reconstruct the delta
             let dag_delta = CausalDelta {
@@ -212,8 +209,7 @@ impl DeltaStore {
             for (delta_id, dag_delta) in &remaining {
                 let mut dag = self.dag.write().await;
 
-                // CRITICAL FIX: Check if all parents are APPLIED, not just if they exist
-                // A parent might be in the DAG but still pending (not applied yet)
+                // Check if all parents have been applied before restoring
                 let can_restore = dag_delta
                     .parents
                     .iter()
@@ -287,8 +283,7 @@ impl DeltaStore {
 
         let result = dag.add_delta(delta, &*self.applier).await?;
 
-        // CRITICAL: Update context's dag_heads to ALL current DAG heads
-        // This must happen AFTER the DAG has updated its heads (which happens in add_delta)
+        // Update context's dag_heads after the DAG has been updated
         let heads = dag.get_heads();
 
         // Get list of deltas that were pending but are now applied (cascade effect)
@@ -302,9 +297,7 @@ impl DeltaStore {
 
         drop(dag); // Release lock before calling context_client
 
-        // CRITICAL FIX: Persist APPLIED deltas to RocksDB
-        // This includes both the newly added delta (if it applied) AND any deltas
-        // that were applied from the pending queue due to the cascade effect
+        // Persist newly applied delta to RocksDB
         if result {
             let mut handle = self.applier.context_client.datastore_handle();
             let serialized_actions = borsh::to_vec(&actions_for_db)
@@ -331,9 +324,7 @@ impl DeltaStore {
             );
         }
 
-        // CRITICAL FIX: Persist cascaded deltas that were applied from pending queue
-        // When we add a delta that fills a gap, other pending deltas may become ready
-        // and get applied by apply_pending(). We need to persist those too!
+        // Persist cascaded deltas that were applied from pending queue
         if !cascaded_deltas.is_empty() {
             info!(
                 context_id = %self.applier.context_id,
@@ -457,20 +448,19 @@ impl DeltaStore {
                     );
 
                     // Reconstruct the delta and add to DAG
-                    let actions: Vec<Action> =
-                        match borsh::from_slice(&stored_delta.actions) {
-                            Ok(actions) => actions,
-                            Err(e) => {
-                                tracing::warn!(
-                                    ?e,
-                                    context_id = %self.applier.context_id,
-                                    parent_id = ?parent_id,
-                                    "Failed to deserialize parent delta actions"
-                                );
-                                actually_missing.push(*parent_id);
-                                continue;
-                            }
-                        };
+                    let actions: Vec<Action> = match borsh::from_slice(&stored_delta.actions) {
+                        Ok(actions) => actions,
+                        Err(e) => {
+                            tracing::warn!(
+                                ?e,
+                                context_id = %self.applier.context_id,
+                                parent_id = ?parent_id,
+                                "Failed to deserialize parent delta actions"
+                            );
+                            actually_missing.push(*parent_id);
+                            continue;
+                        }
+                    };
 
                     let dag_delta = CausalDelta {
                         id: stored_delta.delta_id,
@@ -480,8 +470,7 @@ impl DeltaStore {
                         expected_root_hash: stored_delta.expected_root_hash,
                     };
 
-                    // Add to DAG (this might trigger pending deltas to be applied via cascade!)
-                    // CRITICAL FIX: Track cascaded deltas here too, not just in main add_delta()
+                    // Add to DAG and track any cascaded deltas
                     let mut dag = self.dag.write().await;
 
                     let pending_before: std::collections::HashSet<[u8; 32]> =

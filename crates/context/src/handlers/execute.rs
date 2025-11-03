@@ -682,15 +682,12 @@ async fn internal_execute(
                 }
             };
 
-            // Use current DAG heads as parents for this new delta
-            // CRITICAL: Verify all parent deltas actually exist in RocksDB before using them!
-            // DAG heads might include cascaded deltas that were applied in-memory but not yet persisted.
+            // Use current DAG heads as parents, verifying they exist in RocksDB
             let parents = if context.dag_heads.is_empty() {
                 // Genesis case: parent is the zero hash
                 vec![[0u8; 32]]
             } else {
-                // CRITICAL FIX: Filter out parents that aren't in RocksDB yet
-                // This prevents creating deltas with phantom parent references
+                // Filter out parents that aren't persisted yet (cascaded deltas)
                 let mut verified_parents = Vec::new();
                 for head in &context.dag_heads {
                     if *head == [0u8; 32] {
@@ -753,8 +750,7 @@ async fn internal_execute(
             }
         }
 
-        // CRITICAL: Always persist context metadata when root_hash changes
-        // This ensures receiving nodes update their state after applying deltas
+        // Persist context metadata when root_hash changes
         let mut handle = store.handle();
 
         debug!(

@@ -130,8 +130,7 @@ pub async fn handle_state_delta(
         (delta_store_ref, is_new)
     };
 
-    // CRITICAL: Load persisted deltas from database on first access
-    // This restores the DAG topology after node restarts
+    // Load persisted deltas on first access to restore DAG topology
     if is_new_store {
         if let Err(e) = delta_store_ref.load_persisted_deltas().await {
             warn!(
@@ -141,8 +140,7 @@ pub async fn handle_state_delta(
             );
         }
 
-        // CRITICAL: After loading, check if there are still missing parents
-        // and request them from the network (they might be on other nodes)
+        // After loading, check for missing parents and request from network
         let missing_after_load = delta_store_ref.get_missing_parents().await;
         if !missing_after_load.is_empty() {
             warn!(
@@ -206,14 +204,10 @@ pub async fn handle_state_delta(
         None
     };
 
-    // Execute event handlers ONLY if the delta was actually applied
-    // NOTE: Handlers are NEVER executed on the author node that produced the events.
-    // They are only executed on receiving nodes to avoid infinite loops and ensure
-    // proper distributed execution (as per crates/context/src/handlers/execute.rs:279-281)
-    //
-    // CRITICAL: We must check if the delta was applied. If it's pending, handlers
-    // will be lost because when the delta is applied later (via __calimero_sync_next),
-    // the events data won't be available!
+    // Execute event handlers only if the delta was applied
+    // Note: Handlers are only executed on receiving nodes, not on the author node,
+    // to avoid infinite loops and ensure proper distributed execution.
+    // If the delta is pending, event data won't be available when it's applied later.
     if applied {
         if let Some(ref payload) = events_payload {
             if author_id != our_identity {
@@ -392,8 +386,7 @@ async fn request_missing_deltas(
     // Open stream to peer
     let mut stream = network_client.open_stream(source).await?;
 
-    // CRITICAL FIX: Fetch ALL missing ancestors first, THEN add them in topological order
-    // This ensures parents are applied before children, allowing the DAG's cascade to work.
+    // Fetch all missing ancestors, then add them in topological order (oldest first)
     let mut to_fetch = missing_ids;
     let mut fetched_deltas: Vec<(calimero_dag::CausalDelta<Vec<Action>>, [u8; 32])> = Vec::new();
     let mut fetch_count = 0;

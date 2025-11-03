@@ -231,13 +231,10 @@ impl<T: Clone> DagStore<T> {
         }
     }
 
-    /// Check if a delta can be applied (all parents applied)
+    /// Check if a delta can be applied
     ///
-    /// CRITICAL: This validates TWO things for EVERY parent:
-    /// 1. Parent ID is in the applied set (parent has been successfully applied)
-    /// 2. Parent delta exists in the DAG (integrity check - prevents phantom references)
-    ///
-    /// This is especially critical for merge deltas with multiple parents - ALL must be ready!
+    /// Returns true if all parent deltas have been applied and exist in the DAG.
+    /// This ensures topological ordering and prevents phantom references.
     fn can_apply(&self, delta: &CausalDelta<T>) -> bool {
         delta.parents.iter().all(|p| {
             // Genesis (zero hash) is always considered applied
@@ -245,9 +242,7 @@ impl<T: Clone> DagStore<T> {
                 return true;
             }
 
-            // CRITICAL: Parent must be BOTH applied AND exist in deltas
-            // - applied.contains: parent was successfully applied to state
-            // - deltas.contains_key: parent delta is in our DAG (not a phantom reference)
+            // Parent must be both applied and exist in the DAG
             self.applied.contains(p) && self.deltas.contains_key(p)
         })
     }
@@ -305,7 +300,7 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Get missing parent IDs (parents that are not in the DAG at all)
-    /// 
+    ///
     /// Returns parents that are not yet in the DAG. If a parent is in the DAG
     /// but not yet applied, it's not considered "missing" - it will cascade
     /// when its own parents arrive.
@@ -318,7 +313,7 @@ impl<T: Clone> DagStore<T> {
                 if *parent == [0; 32] {
                     continue;
                 }
-                
+
                 // Only return parents that aren't in the DAG at all
                 // Parents that are in the DAG but pending will cascade when ready
                 if !self.deltas.contains_key(parent) {

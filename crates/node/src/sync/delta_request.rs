@@ -16,11 +16,9 @@ use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
 impl SyncManager {
-    /// Request multiple missing deltas from a peer and add them to the DAG
+    /// Request missing deltas from a peer and add them to the DAG
     ///
-    /// CRITICAL: This recursively fetches ALL missing ancestors.
-    /// When we fetch parent P1, if P1 has parent P0 that's also missing,
-    /// we continue fetching P0, and so on, until we reach deltas we already have.
+    /// Recursively fetches all missing ancestors until reaching deltas we already have.
     pub async fn request_missing_deltas(
         &self,
         context_id: ContextId,
@@ -39,8 +37,7 @@ impl SyncManager {
         // Open stream to peer
         let mut stream = self.network_client.open_stream(source).await?;
 
-        // CRITICAL FIX: Fetch ALL missing ancestors first, THEN add them in topological order
-        // This ensures parents are applied before children, allowing the DAG's cascade to work.
+        // Fetch all missing ancestors, then add them in topological order (oldest first)
         let mut to_fetch = missing_ids;
         let mut fetched_deltas: Vec<(
             calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>>,
