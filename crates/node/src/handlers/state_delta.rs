@@ -155,10 +155,10 @@ pub async fn handle_state_delta(
     }
 
     // Add delta (applies immediately if parents available, pends otherwise)
-    let applied = delta_store_ref.add_delta(delta).await?;
+    let mut applied = delta_store_ref.add_delta(delta).await?;
 
     if !applied {
-        // Delta is pending - request missing parents
+        // Delta is pending - check for missing parents
         let missing = delta_store_ref.get_missing_parents().await;
 
         if !missing.is_empty() {
@@ -184,6 +184,27 @@ pub async fn handle_state_delta(
             {
                 warn!(?e, %context_id, ?source, "Failed to request missing deltas");
             }
+        } else {
+            // No missing parents - the parent deltas exist but may not be applied yet
+            // This can happen when deltas arrive out of order via gossipsub
+            // The delta will cascade and apply when its parents finish applying
+            warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                has_events = events.is_some(),
+                "Delta pending - parents exist but not yet applied (will cascade when ready)"
+            );
+        }
+
+        // Always re-check if delta was applied via cascade (can happen during request_missing_deltas OR gossipsub)
+        let was_cascaded = delta_store_ref.dag_has_delta_applied(&delta_id).await;
+        if was_cascaded {
+            info!(
+                %context_id,
+                delta_id = ?delta_id,
+                "Delta was applied via cascade - will execute handlers"
+            );
+            applied = true;
         }
     }
 

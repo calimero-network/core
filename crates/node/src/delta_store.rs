@@ -565,6 +565,12 @@ impl DeltaStore {
         actually_missing
     }
 
+    /// Check if a delta has been applied to the DAG
+    pub async fn dag_has_delta_applied(&self, delta_id: &[u8; 32]) -> bool {
+        let dag = self.dag.read().await;
+        dag.is_applied(delta_id)
+    }
+
     /// Get current DAG heads
     pub async fn get_heads(&self) -> Vec<[u8; 32]> {
         let dag = self.dag.read().await;
