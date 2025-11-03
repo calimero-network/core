@@ -304,27 +304,24 @@ impl<T: Clone> DagStore<T> {
         Ok(())
     }
 
-    /// Get missing parent IDs (parents that are not yet applied)
-    ///
-    /// CRITICAL: Returns parents that are either:
-    /// 1. Not in the DAG at all (!deltas.contains_key)
-    /// 2. In the DAG but not applied yet (!applied.contains)
-    ///
-    /// This is essential for merge deltas whose parents might be pending!
+    /// Get missing parent IDs (parents that are not in the DAG at all)
+    /// 
+    /// Returns parents that are not yet in the DAG. If a parent is in the DAG
+    /// but not yet applied, it's not considered "missing" - it will cascade
+    /// when its own parents arrive.
     pub fn get_missing_parents(&self) -> Vec<[u8; 32]> {
         let mut missing = HashSet::new();
 
-        for (pending_id, pending) in &self.pending {
+        for (_pending_id, pending) in &self.pending {
             for parent in &pending.delta.parents {
                 // Skip genesis
                 if *parent == [0; 32] {
                     continue;
                 }
-
-                // CRITICAL FIX: Check if parent is APPLIED, not just if it exists
-                // A parent delta might be in self.deltas but still pending (not applied yet)
-                // For merge deltas, ALL parents must be applied before the merge can apply
-                if !self.applied.contains(parent) {
+                
+                // Only return parents that aren't in the DAG at all
+                // Parents that are in the DAG but pending will cascade when ready
+                if !self.deltas.contains_key(parent) {
                     missing.insert(*parent);
                 }
             }

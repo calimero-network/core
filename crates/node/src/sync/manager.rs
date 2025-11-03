@@ -293,7 +293,7 @@ impl SyncManager {
                     attempt,
                     "No peers found yet, mesh may still be forming, retrying..."
                 );
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
 

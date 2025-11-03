@@ -138,11 +138,11 @@ impl DeltaStore {
     pub async fn load_persisted_deltas(&self) -> Result<usize> {
         use std::collections::HashMap;
 
-        let mut handle = self.applier.context_client.datastore_handle();
+        let handle = self.applier.context_client.datastore_handle();
 
         // Step 1: Collect ALL deltas for this context from DB
         let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
-        let mut all_deltas: HashMap<[u8; 32], calimero_dag::CausalDelta<Vec<Action>>> =
+        let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> =
             HashMap::new();
 
         for entry in iter.entries() {
@@ -156,7 +156,7 @@ impl DeltaStore {
             }
 
             // Deserialize actions
-            let actions: Vec<calimero_storage::interface::Action> =
+            let actions: Vec<Action> =
                 match borsh::from_slice(&stored_delta.actions) {
                     Ok(actions) => actions,
                     Err(e) => {
@@ -171,7 +171,7 @@ impl DeltaStore {
                 };
 
             // Reconstruct the delta
-            let dag_delta = calimero_dag::CausalDelta {
+            let dag_delta = CausalDelta {
                 id: stored_delta.delta_id,
                 parents: stored_delta.parents,
                 payload: actions,
@@ -182,10 +182,10 @@ impl DeltaStore {
             // Store root hash mapping
             {
                 let mut head_hashes = self.head_root_hashes.write().await;
-                head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+                let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
             }
 
-            all_deltas.insert(stored_delta.delta_id, dag_delta);
+            let _ = all_deltas.insert(stored_delta.delta_id, dag_delta);
         }
 
         if all_deltas.is_empty() {
@@ -230,7 +230,7 @@ impl DeltaStore {
             }
 
             for delta_id in to_remove {
-                remaining.remove(&delta_id);
+                let _ = remaining.remove(&delta_id);
             }
         }
 
@@ -457,7 +457,7 @@ impl DeltaStore {
                     );
 
                     // Reconstruct the delta and add to DAG
-                    let actions: Vec<calimero_storage::interface::Action> =
+                    let actions: Vec<Action> =
                         match borsh::from_slice(&stored_delta.actions) {
                             Ok(actions) => actions,
                             Err(e) => {
@@ -472,7 +472,7 @@ impl DeltaStore {
                             }
                         };
 
-                    let dag_delta = calimero_dag::CausalDelta {
+                    let dag_delta = CausalDelta {
                         id: stored_delta.delta_id,
                         parents: stored_delta.parents,
                         payload: actions,
