@@ -646,7 +646,7 @@ async fn request_missing_deltas(
                 warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
             }
         }
-        
+
         // Log warning for very large syncs (informational, not a hard limit)
         if fetch_count > 1000 {
             warn!(

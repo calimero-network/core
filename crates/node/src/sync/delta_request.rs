@@ -130,7 +130,7 @@ impl SyncManager {
                 total_fetched = fetch_count,
                 "Completed fetching missing delta ancestors"
             );
-            
+
             // Log warning for very large syncs (informational, not a hard limit)
             if fetch_count > 1000 {
                 warn!(

@@ -299,11 +299,15 @@ impl<T: Clone> DagStore<T> {
         Ok(())
     }
 
-    /// Get missing parent IDs (parents that are not in the DAG at all)
+    /// Get missing parent IDs (parents that are not applied yet)
     ///
-    /// Returns parents that are not yet in the DAG. If a parent is in the DAG
-    /// but not yet applied, it's not considered "missing" - it will cascade
-    /// when its own parents arrive.
+    /// Returns parents that haven't been successfully applied to storage yet.
+    /// This includes both:
+    /// 1. Parents not in the DAG at all (need to be fetched)
+    /// 2. Parents in the DAG but still pending (need their ancestors fetched)
+    ///
+    /// This ensures we re-fetch parent chains that got stuck pending in previous
+    /// sync attempts due to depth limits or network issues.
     pub fn get_missing_parents(&self) -> Vec<[u8; 32]> {
         let mut missing = HashSet::new();
 
@@ -314,9 +318,10 @@ impl<T: Clone> DagStore<T> {
                     continue;
                 }
 
-                // Only return parents that aren't in the DAG at all
-                // Parents that are in the DAG but pending will cascade when ready
-                if !self.deltas.contains_key(parent) {
+                // Return parents that aren't APPLIED yet
+                // This includes parents that are in deltas but still pending
+                // (stuck waiting for their own parents from previous incomplete syncs)
+                if !self.applied.contains(parent) {
                     missing.insert(*parent);
                 }
             }
@@ -331,12 +336,28 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Cleanup stale pending deltas (timeout eviction)
+    ///
+    /// Removes pending deltas older than max_age from both pending map AND deltas map.
+    /// This allows them to be re-fetched in future syncs instead of being stuck as
+    /// zombie deltas (in deltas but not in pending or applied).
     pub fn cleanup_stale(&mut self, max_age: Duration) -> usize {
         let initial_count = self.pending.len();
 
-        self.pending.retain(|_id, pending| pending.age() <= max_age);
+        // Collect IDs to evict
+        let to_evict: Vec<[u8; 32]> = self
+            .pending
+            .iter()
+            .filter(|(_id, pending)| pending.age() > max_age)
+            .map(|(id, _)| *id)
+            .collect();
 
-        initial_count - self.pending.len()
+        // Remove from both pending AND deltas maps
+        for id in &to_evict {
+            self.pending.remove(id);
+            self.deltas.remove(id);
+        }
+
+        to_evict.len()
     }
 
     /// Get statistics for pending deltas
