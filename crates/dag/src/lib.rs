@@ -170,6 +170,35 @@ impl<T: Clone> DagStore<T> {
         }
     }
 
+    /// Restore an already-applied delta from persistent storage
+    ///
+    /// This adds the delta to the DAG topology WITHOUT applying it again.
+    /// Use this when loading deltas from the database that were previously applied.
+    ///
+    /// Returns true if the delta was restored, false if it was already in the DAG.
+    pub fn restore_applied_delta(&mut self, delta: CausalDelta<T>) -> bool {
+        let delta_id = delta.id;
+
+        // Skip if already seen
+        if self.deltas.contains_key(&delta_id) {
+            return false;
+        }
+
+        // Store delta in memory
+        self.deltas.insert(delta_id, delta.clone());
+
+        // Mark as applied (it was already applied when it was persisted)
+        self.applied.insert(delta_id);
+
+        // Update heads: remove parents (if they're heads), add this delta
+        for parent in &delta.parents {
+            self.heads.remove(parent);
+        }
+        self.heads.insert(delta_id);
+
+        true
+    }
+
     /// Add a delta to the DAG
     ///
     /// Returns:
@@ -203,8 +232,24 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Check if a delta can be applied (all parents applied)
+    ///
+    /// CRITICAL: This validates TWO things for EVERY parent:
+    /// 1. Parent ID is in the applied set (parent has been successfully applied)
+    /// 2. Parent delta exists in the DAG (integrity check - prevents phantom references)
+    ///
+    /// This is especially critical for merge deltas with multiple parents - ALL must be ready!
     fn can_apply(&self, delta: &CausalDelta<T>) -> bool {
-        delta.parents.iter().all(|p| self.applied.contains(p))
+        delta.parents.iter().all(|p| {
+            // Genesis (zero hash) is always considered applied
+            if *p == [0; 32] {
+                return true;
+            }
+
+            // CRITICAL: Parent must be BOTH applied AND exist in deltas
+            // - applied.contains: parent was successfully applied to state
+            // - deltas.contains_key: parent delta is in our DAG (not a phantom reference)
+            self.applied.contains(p) && self.deltas.contains_key(p)
+        })
     }
 
     /// Apply a delta using the provided applier
@@ -259,19 +304,38 @@ impl<T: Clone> DagStore<T> {
         Ok(())
     }
 
-    /// Get missing parent IDs
+    /// Get missing parent IDs (parents that are not yet applied)
+    ///
+    /// CRITICAL: Returns parents that are either:
+    /// 1. Not in the DAG at all (!deltas.contains_key)
+    /// 2. In the DAG but not applied yet (!applied.contains)
+    ///
+    /// This is essential for merge deltas whose parents might be pending!
     pub fn get_missing_parents(&self) -> Vec<[u8; 32]> {
         let mut missing = HashSet::new();
 
-        for pending in self.pending.values() {
+        for (pending_id, pending) in &self.pending {
             for parent in &pending.delta.parents {
-                if !self.deltas.contains_key(parent) {
+                // Skip genesis
+                if *parent == [0; 32] {
+                    continue;
+                }
+
+                // CRITICAL FIX: Check if parent is APPLIED, not just if it exists
+                // A parent delta might be in self.deltas but still pending (not applied yet)
+                // For merge deltas, ALL parents must be applied before the merge can apply
+                if !self.applied.contains(parent) {
                     missing.insert(*parent);
                 }
             }
         }
 
         missing.into_iter().collect()
+    }
+
+    /// Get IDs of deltas that are currently pending (not yet applied)
+    pub fn get_pending_delta_ids(&self) -> Vec<[u8; 32]> {
+        self.pending.keys().copied().collect()
     }
 
     /// Cleanup stale pending deltas (timeout eviction)
@@ -348,6 +412,11 @@ impl<T: Clone> DagStore<T> {
     /// Check if we have a specific delta
     pub fn has_delta(&self, id: &[u8; 32]) -> bool {
         self.deltas.contains_key(id)
+    }
+
+    /// Check if a specific delta has been applied (not just exists)
+    pub fn is_applied(&self, id: &[u8; 32]) -> bool {
+        self.applied.contains(id)
     }
 
     /// Get a delta by ID

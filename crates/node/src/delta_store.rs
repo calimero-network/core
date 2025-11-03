@@ -15,7 +15,7 @@ use calimero_storage::action::Action;
 use calimero_storage::delta::StorageDelta;
 use eyre::Result;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Applier that applies actions to WASM storage via ContextClient
 #[derive(Debug)]
@@ -127,12 +127,150 @@ impl DeltaStore {
         }
     }
 
+    /// Load all persisted deltas from the database into the in-memory DAG
+    ///
+    /// CRITICAL: This should be called after creating a DeltaStore to restore
+    /// the DAG state from persistent storage. Without this, nodes will "forget"
+    /// their DAG history after restart and create disconnected chains.
+    ///
+    /// IMPORTANT: Deltas must be loaded in topological order (parents before children)
+    /// to properly reconstruct the DAG topology.
+    pub async fn load_persisted_deltas(&self) -> Result<usize> {
+        use std::collections::HashMap;
+
+        let mut handle = self.applier.context_client.datastore_handle();
+
+        // Step 1: Collect ALL deltas for this context from DB
+        let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
+        let mut all_deltas: HashMap<[u8; 32], calimero_dag::CausalDelta<Vec<Action>>> =
+            HashMap::new();
+
+        for entry in iter.entries() {
+            let (key_result, value_result) = entry;
+            let key = key_result?;
+            let stored_delta = value_result?;
+
+            // Filter by context_id
+            if key.context_id() != self.applier.context_id {
+                continue;
+            }
+
+            // Deserialize actions
+            let actions: Vec<calimero_storage::interface::Action> =
+                match borsh::from_slice(&stored_delta.actions) {
+                    Ok(actions) => actions,
+                    Err(e) => {
+                        warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            delta_id = ?stored_delta.delta_id,
+                            "Failed to deserialize persisted delta actions, skipping"
+                        );
+                        continue;
+                    }
+                };
+
+            // Reconstruct the delta
+            let dag_delta = calimero_dag::CausalDelta {
+                id: stored_delta.delta_id,
+                parents: stored_delta.parents,
+                payload: actions,
+                hlc: stored_delta.hlc,
+                expected_root_hash: stored_delta.expected_root_hash,
+            };
+
+            // Store root hash mapping
+            {
+                let mut head_hashes = self.head_root_hashes.write().await;
+                head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+            }
+
+            all_deltas.insert(stored_delta.delta_id, dag_delta);
+        }
+
+        if all_deltas.is_empty() {
+            return Ok(0);
+        }
+
+        debug!(
+            context_id = %self.applier.context_id,
+            total_deltas = all_deltas.len(),
+            "Collected persisted deltas, starting topological restore"
+        );
+
+        // Step 2: Restore deltas in topological order (parents before children)
+        // We keep trying to restore deltas whose parents are already in the DAG
+        // NOTE: All persisted deltas are already applied, so we just restore topology
+        let mut loaded_count = 0;
+        let mut remaining = all_deltas;
+        let mut progress_made = true;
+
+        while progress_made && !remaining.is_empty() {
+            progress_made = false;
+            let mut to_remove = Vec::new();
+
+            for (delta_id, dag_delta) in &remaining {
+                let mut dag = self.dag.write().await;
+
+                // CRITICAL FIX: Check if all parents are APPLIED, not just if they exist
+                // A parent might be in the DAG but still pending (not applied yet)
+                let can_restore = dag_delta
+                    .parents
+                    .iter()
+                    .all(|p| *p == [0u8; 32] || dag.is_applied(p));
+
+                if can_restore {
+                    // Restore topology WITHOUT re-applying (delta was already applied)
+                    if dag.restore_applied_delta(dag_delta.clone()) {
+                        loaded_count += 1;
+                        to_remove.push(*delta_id);
+                        progress_made = true;
+                    }
+                }
+            }
+
+            for delta_id in to_remove {
+                remaining.remove(&delta_id);
+            }
+        }
+
+        // Log any deltas that couldn't be loaded
+        if !remaining.is_empty() {
+            // Collect the IDs of deltas that are still unloadable
+            let unloadable_ids: Vec<[u8; 32]> = remaining.keys().copied().collect();
+
+            warn!(
+                context_id = %self.applier.context_id,
+                remaining_count = remaining.len(),
+                loaded_count,
+                unloadable_deltas = ?unloadable_ids,
+                "Some deltas could not be loaded - they will remain pending until parents arrive"
+            );
+
+            // These deltas are still persisted and will be in the pending queue
+            // They'll be applied when their parents arrive via network sync
+        }
+
+        if loaded_count > 0 {
+            debug!(
+                context_id = %self.applier.context_id,
+                loaded_count,
+                "Loaded persisted deltas into DAG from database"
+            );
+        }
+
+        Ok(loaded_count)
+    }
+
     /// Add a delta to the store
     ///
     /// Returns Ok(true) if applied immediately, Ok(false) if pending
     pub async fn add_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<bool> {
         let delta_id = delta.id;
         let expected_root_hash = delta.expected_root_hash;
+        let parents = delta.parents.clone();
+        let actions_for_db = delta.payload.clone();
+        let hlc = delta.hlc;
 
         // Store the mapping before applying
         {
@@ -141,12 +279,117 @@ impl DeltaStore {
         }
 
         let mut dag = self.dag.write().await;
+
+        // Track which deltas are currently pending BEFORE we add the new delta
+        // This lets us detect which pending deltas got applied during the cascade
+        let pending_before: std::collections::HashSet<[u8; 32]> =
+            dag.get_pending_delta_ids().into_iter().collect();
+
         let result = dag.add_delta(delta, &*self.applier).await?;
 
         // CRITICAL: Update context's dag_heads to ALL current DAG heads
         // This must happen AFTER the DAG has updated its heads (which happens in add_delta)
         let heads = dag.get_heads();
+
+        // Get list of deltas that were pending but are now applied (cascade effect)
+        let cascaded_deltas: Vec<[u8; 32]> = if !pending_before.is_empty() {
+            let pending_after: std::collections::HashSet<[u8; 32]> =
+                dag.get_pending_delta_ids().into_iter().collect();
+            pending_before.difference(&pending_after).copied().collect()
+        } else {
+            Vec::new()
+        };
+
         drop(dag); // Release lock before calling context_client
+
+        // CRITICAL FIX: Persist APPLIED deltas to RocksDB
+        // This includes both the newly added delta (if it applied) AND any deltas
+        // that were applied from the pending queue due to the cascade effect
+        if result {
+            let mut handle = self.applier.context_client.datastore_handle();
+            let serialized_actions = borsh::to_vec(&actions_for_db)
+                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+
+            handle
+                .put(
+                    &calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
+                    &calimero_store::types::ContextDagDelta {
+                        delta_id,
+                        parents,
+                        actions: serialized_actions,
+                        hlc,
+                        applied: true,
+                        expected_root_hash,
+                    },
+                )
+                .map_err(|e| eyre::eyre!("Failed to persist delta to database: {}", e))?;
+
+            debug!(
+                context_id = %self.applier.context_id,
+                delta_id = ?delta_id,
+                "Persisted applied delta to database"
+            );
+        }
+
+        // CRITICAL FIX: Persist cascaded deltas that were applied from pending queue
+        // When we add a delta that fills a gap, other pending deltas may become ready
+        // and get applied by apply_pending(). We need to persist those too!
+        if !cascaded_deltas.is_empty() {
+            info!(
+                context_id = %self.applier.context_id,
+                cascaded_count = cascaded_deltas.len(),
+                "Persisting cascaded deltas that were applied from pending queue"
+            );
+
+            let dag = self.dag.read().await;
+            let mut handle = self.applier.context_client.datastore_handle();
+
+            for cascaded_id in &cascaded_deltas {
+                if let Some(cascaded_delta) = dag.get_delta(cascaded_id) {
+                    let serialized_actions = match borsh::to_vec(&cascaded_delta.payload) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!(
+                                ?e,
+                                context_id = %self.applier.context_id,
+                                delta_id = ?cascaded_id,
+                                "Failed to serialize cascaded delta actions, skipping persistence"
+                            );
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = handle.put(
+                        &calimero_store::key::ContextDagDelta::new(
+                            self.applier.context_id,
+                            *cascaded_id,
+                        ),
+                        &calimero_store::types::ContextDagDelta {
+                            delta_id: *cascaded_id,
+                            parents: cascaded_delta.parents.clone(),
+                            actions: serialized_actions,
+                            hlc: cascaded_delta.hlc,
+                            applied: true,
+                            expected_root_hash: cascaded_delta.expected_root_hash,
+                        },
+                    ) {
+                        warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            delta_id = ?cascaded_id,
+                            "Failed to persist cascaded delta to database"
+                        );
+                    } else {
+                        debug!(
+                            context_id = %self.applier.context_id,
+                            delta_id = ?cascaded_id,
+                            "Persisted cascaded delta to database"
+                        );
+                    }
+                }
+            }
+            drop(dag);
+        }
 
         self.applier
             .context_client
@@ -188,9 +431,149 @@ impl DeltaStore {
     }
 
     /// Get missing parent IDs (for requesting from peers)
+    ///
+    /// This checks both the in-memory DAG and the database to avoid requesting
+    /// deltas that are already persisted but not loaded into RAM.
     pub async fn get_missing_parents(&self) -> Vec<[u8; 32]> {
         let dag = self.dag.read().await;
-        dag.get_missing_parents()
+        let potentially_missing = dag.get_missing_parents();
+        drop(dag); // Release lock before DB access
+
+        // Filter out parents that exist in the database
+        let handle = self.applier.context_client.datastore_handle();
+        let mut actually_missing = Vec::new();
+
+        for parent_id in &potentially_missing {
+            let db_key =
+                calimero_store::key::ContextDagDelta::new(self.applier.context_id, *parent_id);
+
+            match handle.get(&db_key) {
+                Ok(Some(stored_delta)) => {
+                    // Parent exists in database - load it into DAG!
+                    tracing::info!(
+                        context_id = %self.applier.context_id,
+                        parent_id = ?parent_id,
+                        "Parent delta found in database - loading into DAG cache"
+                    );
+
+                    // Reconstruct the delta and add to DAG
+                    let actions: Vec<calimero_storage::interface::Action> =
+                        match borsh::from_slice(&stored_delta.actions) {
+                            Ok(actions) => actions,
+                            Err(e) => {
+                                tracing::warn!(
+                                    ?e,
+                                    context_id = %self.applier.context_id,
+                                    parent_id = ?parent_id,
+                                    "Failed to deserialize parent delta actions"
+                                );
+                                actually_missing.push(*parent_id);
+                                continue;
+                            }
+                        };
+
+                    let dag_delta = calimero_dag::CausalDelta {
+                        id: stored_delta.delta_id,
+                        parents: stored_delta.parents,
+                        payload: actions,
+                        hlc: stored_delta.hlc,
+                        expected_root_hash: stored_delta.expected_root_hash,
+                    };
+
+                    // Add to DAG (this might trigger pending deltas to be applied via cascade!)
+                    // CRITICAL FIX: Track cascaded deltas here too, not just in main add_delta()
+                    let mut dag = self.dag.write().await;
+
+                    let pending_before: std::collections::HashSet<[u8; 32]> =
+                        dag.get_pending_delta_ids().into_iter().collect();
+
+                    if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
+                        tracing::warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            parent_id = ?parent_id,
+                            "Failed to load persisted parent delta into DAG"
+                        );
+                    }
+
+                    // Check for cascaded deltas
+                    let cascaded_deltas: Vec<[u8; 32]> = if !pending_before.is_empty() {
+                        let pending_after: std::collections::HashSet<[u8; 32]> =
+                            dag.get_pending_delta_ids().into_iter().collect();
+                        pending_before.difference(&pending_after).copied().collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Persist cascaded deltas
+                    if !cascaded_deltas.is_empty() {
+                        info!(
+                            context_id = %self.applier.context_id,
+                            cascaded_count = cascaded_deltas.len(),
+                            "Persisting cascaded deltas triggered by loading parent from DB"
+                        );
+
+                        for cascaded_id in &cascaded_deltas {
+                            if let Some(cascaded_delta) = dag.get_delta(cascaded_id) {
+                                let serialized_actions = match borsh::to_vec(
+                                    &cascaded_delta.payload,
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        warn!(?e, context_id = %self.applier.context_id, delta_id = ?cascaded_id, "Failed to serialize");
+                                        continue;
+                                    }
+                                };
+
+                                if let Err(e) = self.applier.context_client.datastore_handle().put(
+                                    &calimero_store::key::ContextDagDelta::new(
+                                        self.applier.context_id,
+                                        *cascaded_id,
+                                    ),
+                                    &calimero_store::types::ContextDagDelta {
+                                        delta_id: *cascaded_id,
+                                        parents: cascaded_delta.parents.clone(),
+                                        actions: serialized_actions,
+                                        hlc: cascaded_delta.hlc,
+                                        applied: true,
+                                        expected_root_hash: cascaded_delta.expected_root_hash,
+                                    },
+                                ) {
+                                    warn!(?e, context_id = %self.applier.context_id, delta_id = ?cascaded_id, "Failed to persist cascaded delta");
+                                }
+                            }
+                        }
+                    }
+
+                    drop(dag);
+                }
+                Ok(None) => {
+                    // Truly missing - add to request list
+                    actually_missing.push(*parent_id);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        parent_id = ?parent_id,
+                        "Error checking database for parent delta, treating as missing"
+                    );
+                    actually_missing.push(*parent_id);
+                }
+            }
+        }
+
+        if !actually_missing.is_empty() && actually_missing.len() < potentially_missing.len() {
+            tracing::info!(
+                context_id = %self.applier.context_id,
+                total_checked = potentially_missing.len(),
+                in_database = potentially_missing.len() - actually_missing.len(),
+                truly_missing = actually_missing.len(),
+                "Filtered missing parents - some were already in database"
+            );
+        }
+
+        actually_missing
     }
 
     /// Get current DAG heads

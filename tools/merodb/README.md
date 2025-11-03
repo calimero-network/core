@@ -67,6 +67,21 @@ Validate the database integrity:
 merodb --db-path /path/to/rocksdb --validate --output validation.json
 ```
 
+### Export DAG Structure
+
+Export Context DAG deltas as a graph structure for visualization:
+
+```bash
+merodb --db-path /path/to/rocksdb --export-dag --output dag.json
+```
+
+This command extracts all Context DAG deltas from the Generic column family and outputs:
+- **Nodes**: Each delta with its metadata (timestamp, HLC, actions size, applied status)
+- **Edges**: Parent-child relationships between deltas
+- **Contexts**: Grouping of deltas by context ID
+- **Roots**: Genesis deltas (starting points)
+- **Leaves**: Most recent deltas (endpoints)
+
 ### Interactive GUI (requires `gui` feature)
 
 Launch the web-based GUI to interactively explore your database:
@@ -83,6 +98,7 @@ The GUI will start a local web server (default port 8080). You can then:
 4. Browse the database structure with an interactive tree view
 5. Run JQ queries to filter and analyze the data
 6. Explore query results in real-time
+7. **View DAG visualization** - Switch to the DAG View tab to see an interactive visualization of Context DAG deltas with hierarchical or force-directed layouts
 
 Specify a custom port:
 
@@ -166,10 +182,13 @@ merodb --schema --output schema.json
 merodb --db-path ~/.calimero/data --validate --output validation.json
 
 # 3. Export all data for analysis
-merodb --db-path ~/.calimero/data --export --all --output full-export.json
+merodb --db-path ~/.calimero/data --export --all --output full-export.json --wasm-file contract.wasm
 
 # 4. Export only context-related data
-merodb --db-path ~/.calimero/data --export --columns Meta,Config,Identity --output contexts.json
+merodb --db-path ~/.calimero/data --export --columns Meta,Config,Identity --output contexts.json --wasm-file contract.wasm
+
+# 5. Export DAG structure for visualization
+merodb --db-path ~/.calimero/data --export-dag --output dag.json
 ```
 
 ### Debugging a Specific Context

@@ -683,12 +683,44 @@ async fn internal_execute(
             };
 
             // Use current DAG heads as parents for this new delta
+            // CRITICAL: Verify all parent deltas actually exist in RocksDB before using them!
+            // DAG heads might include cascaded deltas that were applied in-memory but not yet persisted.
             let parents = if context.dag_heads.is_empty() {
                 // Genesis case: parent is the zero hash
                 vec![[0u8; 32]]
             } else {
-                // Normal case: parents are current DAG heads
-                context.dag_heads.clone()
+                // CRITICAL FIX: Filter out parents that aren't in RocksDB yet
+                // This prevents creating deltas with phantom parent references
+                let mut verified_parents = Vec::new();
+                for head in &context.dag_heads {
+                    if *head == [0u8; 32] {
+                        verified_parents.push(*head);
+                        continue;
+                    }
+
+                    // Check if this parent is actually in RocksDB
+                    let db_key = key::ContextDagDelta::new(context.id, *head);
+                    if store.handle().get(&db_key).is_ok_and(|v| v.is_some()) {
+                        verified_parents.push(*head);
+                    } else {
+                        warn!(
+                            context_id = %context.id,
+                            parent_id = ?head,
+                            "DAG head not in RocksDB - skipping as parent (likely cascaded delta not yet persisted)"
+                        );
+                    }
+                }
+
+                // If NO parents verified, use genesis
+                if verified_parents.is_empty() {
+                    warn!(
+                        context_id = %context.id,
+                        "No DAG heads in RocksDB - using genesis as parent"
+                    );
+                    vec![[0u8; 32]]
+                } else {
+                    verified_parents
+                }
             };
 
             let hlc = calimero_storage::env::hlc_timestamp();

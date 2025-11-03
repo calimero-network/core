@@ -11,6 +11,7 @@ use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 
 mod abi;
+mod dag;
 mod deserializer;
 mod export;
 mod schema;
@@ -56,8 +57,20 @@ struct Cli {
     columns: Option<String>,
 
     /// Validate database integrity
-    #[arg(long, conflicts_with_all = &["schema", "export"])]
+    #[arg(long, conflicts_with_all = &["schema", "export", "export_dag"])]
     validate: bool,
+
+    /// Export DAG structure from Context DAG deltas
+    #[arg(long, conflicts_with_all = &["schema", "export", "validate", "cleanup_orphaned_deltas"])]
+    export_dag: bool,
+
+    /// Clean up orphaned deltas (deltas for deleted contexts)
+    #[arg(long, conflicts_with_all = &["schema", "export", "validate", "export_dag"])]
+    cleanup_orphaned_deltas: bool,
+
+    /// Actually perform the cleanup (without this flag, only shows what would be deleted)
+    #[arg(long, requires = "cleanup_orphaned_deltas")]
+    yes: bool,
 
     /// Output file path (defaults to stdout if not specified)
     #[arg(short, long, value_name = "FILE")]
@@ -103,8 +116,12 @@ fn main() -> Result<()> {
         eyre::bail!("Database path does not exist: {}", db_path.display());
     }
 
-    // Open the database in read-only mode
-    let db = open_database(db_path)?;
+    // Open the database (read-write for cleanup, read-only otherwise)
+    let db = if cli.cleanup_orphaned_deltas {
+        open_database_rw(db_path)?
+    } else {
+        open_database(db_path)?
+    };
 
     // Load ABI manifest if WASM file is provided
     let abi_manifest = if let Some(wasm_path) = &cli.wasm_file {
@@ -141,11 +158,21 @@ fn main() -> Result<()> {
 
         let data = export::export_data(&db, &columns, manifest)?;
         output_json(&data, cli.output.as_deref())?;
+    } else if cli.export_dag {
+        let dag_data = dag::export_dag(&db)?;
+        output_json(&dag_data, cli.output.as_deref())?;
+    } else if cli.cleanup_orphaned_deltas {
+        eprintln!("WARNING: This command is deprecated and should not be used!");
+        eprintln!("Deltas for deleted contexts are intentionally kept for distributed sync.");
+        eprintln!("Deleting them will cause sync failures in distributed networks.");
+        eprintln!();
+        #[allow(deprecated)]
+        dag::cleanup_orphaned_deltas(&db, cli.yes)?;
     } else if cli.validate {
         let validation_result = validation::validate_database(&db)?;
         output_json(&validation_result, cli.output.as_deref())?;
     } else {
-        eyre::bail!("Must specify one of: --schema, --export, or --validate");
+        eyre::bail!("Must specify one of: --schema, --export, --export-dag, --cleanup-orphaned-deltas, or --validate");
     }
 
     Ok(())
@@ -169,6 +196,23 @@ fn open_database(path: &Path) -> Result<DBWithThreadMode<SingleThreaded>> {
     Ok(db)
 }
 
+fn open_database_rw(path: &Path) -> Result<DBWithThreadMode<SingleThreaded>> {
+    let mut options = Options::default();
+    options.create_if_missing(false);
+
+    // Get all column families
+    let cf_names: Vec<String> = Column::all()
+        .iter()
+        .map(|c| c.as_str().to_owned())
+        .collect();
+
+    // Open database in read-write mode
+    let db = DBWithThreadMode::<SingleThreaded>::open_cf(&options, path, &cf_names)
+        .wrap_err_with(|| format!("Failed to open database at {}", path.display()))?;
+
+    Ok(db)
+}
+
 fn parse_columns(column_names: &str) -> Result<Vec<Column>> {
     let mut columns = Vec::new();
 
@@ -179,6 +223,7 @@ fn parse_columns(column_names: &str) -> Result<Vec<Column>> {
             "Config" => Column::Config,
             "Identity" => Column::Identity,
             "State" => Column::State,
+            "Delta" => Column::Delta,
             "Blobs" => Column::Blobs,
             "Application" => Column::Application,
             "Alias" => Column::Alias,
