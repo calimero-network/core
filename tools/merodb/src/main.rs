@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 
@@ -23,140 +23,135 @@ mod gui;
 
 use types::Column;
 
-#[derive(Parser)]
-#[command(name = "merodb")]
-#[command(author, version, about = "CLI tool for debugging RocksDB in Calimero", long_about = None)]
+#[derive(Parser, Debug)]
+#[command(
+    name = "merodb",
+    author,
+    version,
+    about = "CLI tool for debugging RocksDB in Calimero",
+    long_about = None
+)]
 struct Cli {
-    /// Path to the RocksDB database (not required for --schema or --gui)
-    #[cfg_attr(feature = "gui", arg(long, value_name = "PATH", required_unless_present_any = ["schema", "gui"]))]
-    #[cfg_attr(
-        not(feature = "gui"),
-        arg(long, value_name = "PATH", required_unless_present = "schema")
-    )]
-    db_path: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
 
+#[derive(Subcommand, Debug)]
+enum Command {
     /// Generate JSON schema of the database structure
-    #[arg(long, conflicts_with_all = &["export", "validate"])]
-    schema: bool,
-
+    Schema {
+        /// Output file path (defaults to stdout if not specified)
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Export data from the database
-    #[arg(long, conflicts_with = "validate")]
-    export: bool,
+    Export(ExportArgs),
+    /// Validate database integrity
+    Validate(ValidateArgs),
+    /// Export DAG structure from Context DAG deltas
+    #[command(name = "export-dag")]
+    ExportDag(ExportDagArgs),
+    /// Launch interactive GUI (requires 'gui' feature)
+    #[cfg(feature = "gui")]
+    Gui(GuiArgs),
+    /// Placeholder for upcoming migration support
+    Migrate(MigrateArgs),
+}
+
+#[derive(Args, Debug)]
+struct ExportArgs {
+    /// Path to the RocksDB database
+    #[arg(long, value_name = "PATH")]
+    db_path: PathBuf,
 
     /// Export all column families
-    #[arg(long, requires = "export")]
+    #[arg(long)]
     all: bool,
 
     /// Export specific column families (comma-separated)
     #[arg(
         long,
         value_name = "COLUMNS",
-        requires = "export",
-        conflicts_with = "all"
+        conflicts_with = "all",
+        value_delimiter = ',',
+        use_value_delimiter = true
     )]
-    columns: Option<String>,
-
-    /// Validate database integrity
-    #[arg(long, conflicts_with_all = &["schema", "export", "export_dag"])]
-    validate: bool,
-
-    /// Export DAG structure from Context DAG deltas
-    #[arg(long, conflicts_with_all = &["schema", "export", "validate"])]
-    export_dag: bool,
-
-    /// Output file path (defaults to stdout if not specified)
-    #[arg(short, long, value_name = "FILE")]
-    output: Option<PathBuf>,
+    columns: Option<Vec<String>>,
 
     /// WASM file providing the ABI schema (required for export)
     #[arg(long, value_name = "WASM_FILE")]
     wasm_file: Option<PathBuf>,
 
-    /// Launch interactive GUI (requires 'gui' feature)
-    #[cfg(feature = "gui")]
-    #[arg(long, conflicts_with_all = &["schema", "export", "validate"])]
-    gui: bool,
+    /// Output file path (defaults to stdout if not specified)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+}
 
+#[derive(Args, Debug)]
+struct ValidateArgs {
+    /// Path to the RocksDB database
+    #[arg(long, value_name = "PATH")]
+    db_path: PathBuf,
+
+    /// Output file path (defaults to stdout if not specified)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ExportDagArgs {
+    /// Path to the RocksDB database
+    #[arg(long, value_name = "PATH")]
+    db_path: PathBuf,
+
+    /// Output file path (defaults to stdout if not specified)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+}
+
+#[cfg(feature = "gui")]
+#[derive(Args, Debug)]
+struct GuiArgs {
     /// Port for the GUI server (default: 8080)
-    #[cfg(feature = "gui")]
-    #[arg(long, default_value = "8080", requires = "gui")]
+    #[arg(long, default_value = "8080")]
     port: u16,
+}
+
+#[derive(Args, Debug, Default)]
+struct MigrateArgs {
+    /// Migration plan file (YAML/JSON)
+    #[arg(long, value_name = "PLAN")]
+    plan: Option<PathBuf>,
+
+    /// Source RocksDB path
+    #[arg(long, value_name = "PATH")]
+    db_path: Option<PathBuf>,
+
+    /// Target RocksDB path
+    #[arg(long, value_name = "PATH")]
+    target_db: Option<PathBuf>,
+
+    /// Perform a dry run without writing to the target
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Handle GUI mode
-    #[cfg(feature = "gui")]
-    if cli.gui {
-        return run_gui(cli.port);
-    }
-
-    // Handle schema generation (doesn't require opening the database)
-    if cli.schema {
-        let schema = schema::generate_schema();
-        output_json(&schema, cli.output.as_deref())?;
-        return Ok(());
-    }
-
-    // Ensure the database path exists
-    let db_path = cli.db_path.as_ref().ok_or_else(|| {
-        eyre::eyre!("Database path is required for export and validate operations")
-    })?;
-
-    if !db_path.exists() {
-        eyre::bail!("Database path does not exist: {}", db_path.display());
-    }
-
-    // Open the database in read-only mode
-    let db = open_database(db_path)?;
-
-    // Load ABI manifest if WASM file is provided
-    let abi_manifest = if let Some(wasm_path) = &cli.wasm_file {
-        if !wasm_path.exists() {
-            eyre::bail!("WASM file does not exist: {}", wasm_path.display());
+    match cli.command {
+        Command::Schema { output } => {
+            let schema = schema::generate_schema();
+            output_json(&schema, output.as_deref())?;
+            Ok(())
         }
-        println!("Loading ABI from WASM file: {}", wasm_path.display());
-        match abi::extract_abi_from_wasm(wasm_path) {
-            Ok(manifest) => {
-                println!("ABI loaded successfully");
-                Some(manifest)
-            }
-            Err(e) => {
-                eyre::bail!("Failed to load ABI from WASM: {e}");
-            }
-        }
-    } else {
-        None
-    };
-
-    // Handle different operations
-    if cli.export {
-        let columns = if cli.all {
-            Column::all().to_vec()
-        } else if let Some(column_names) = cli.columns {
-            parse_columns(&column_names)?
-        } else {
-            eyre::bail!("Must specify either --all or --columns when using --export");
-        };
-
-        let manifest = abi_manifest
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("--wasm-file is required when exporting data"))?;
-
-        let data = export::export_data(&db, &columns, manifest)?;
-        output_json(&data, cli.output.as_deref())?;
-    } else if cli.export_dag {
-        let dag_data = dag::export_dag(&db)?;
-        output_json(&dag_data, cli.output.as_deref())?;
-    } else if cli.validate {
-        let validation_result = validation::validate_database(&db)?;
-        output_json(&validation_result, cli.output.as_deref())?;
-    } else {
-        eyre::bail!("Must specify one of: --schema, --export, --export-dag, or --validate");
+        Command::Export(args) => run_export(args),
+        Command::Validate(args) => run_validate(args),
+        Command::ExportDag(args) => run_export_dag(args),
+        #[cfg(feature = "gui")]
+        Command::Gui(args) => run_gui(args.port),
+        Command::Migrate(args) => run_migrate_placeholder(args),
     }
-
-    Ok(())
 }
 
 fn open_database(path: &Path) -> Result<DBWithThreadMode<SingleThreaded>> {
@@ -177,12 +172,12 @@ fn open_database(path: &Path) -> Result<DBWithThreadMode<SingleThreaded>> {
     Ok(db)
 }
 
-fn parse_columns(column_names: &str) -> Result<Vec<Column>> {
+fn parse_columns(column_names: &[String]) -> Result<Vec<Column>> {
     let mut columns = Vec::new();
 
-    for name in column_names.split(',') {
-        let name = name.trim();
-        let column = match name {
+    for name in column_names {
+        let column_name = name.trim();
+        let column = match column_name {
             "Meta" => Column::Meta,
             "Config" => Column::Config,
             "Identity" => Column::Identity,
@@ -192,7 +187,7 @@ fn parse_columns(column_names: &str) -> Result<Vec<Column>> {
             "Application" => Column::Application,
             "Alias" => Column::Alias,
             "Generic" => Column::Generic,
-            _ => eyre::bail!("Unknown column family: {}", name),
+            _ => eyre::bail!("Unknown column family: {}", column_name),
         };
         columns.push(column);
     }
@@ -226,7 +221,7 @@ fn run_gui(port: u16) -> Result<()> {
     println!("The GUI will be available at http://127.0.0.1:{port}");
     println!();
     println!("Instructions:");
-    println!("1. Export your database using: merodb --export --all --wasm-file contract.wasm --output export.json");
+    println!("1. Export your database using: merodb export --db-path /path/to/db --all --wasm-file contract.wasm --output export.json");
     println!("2. Open the GUI in your browser and load the exported JSON file");
     println!("3. Use JQ queries to explore and analyze your database");
     println!();
@@ -235,4 +230,71 @@ fn run_gui(port: u16) -> Result<()> {
     rt.block_on(gui::start_gui_server(port))?;
 
     Ok(())
+}
+
+fn run_export(args: ExportArgs) -> Result<()> {
+    if !args.db_path.exists() {
+        eyre::bail!("Database path does not exist: {}", args.db_path.display());
+    }
+
+    let db = open_database(&args.db_path)?;
+
+    let manifest = if let Some(wasm_path) = args.wasm_file {
+        if !wasm_path.exists() {
+            eyre::bail!("WASM file does not exist: {}", wasm_path.display());
+        }
+        println!("Loading ABI from WASM file: {}", wasm_path.display());
+        match abi::extract_abi_from_wasm(&wasm_path) {
+            Ok(manifest) => {
+                println!("ABI loaded successfully");
+                manifest
+            }
+            Err(e) => eyre::bail!("Failed to load ABI from WASM: {e}"),
+        }
+    } else {
+        eyre::bail!("--wasm-file is required when exporting data");
+    };
+
+    let columns = if args.all {
+        Column::all().to_vec()
+    } else if let Some(column_names) = args.columns {
+        parse_columns(&column_names)?
+    } else {
+        eyre::bail!("Must specify either --all or --columns when using export");
+    };
+
+    let data = export::export_data(&db, &columns, &manifest)?;
+    output_json(&data, args.output.as_deref())
+}
+
+fn run_validate(args: ValidateArgs) -> Result<()> {
+    if !args.db_path.exists() {
+        eyre::bail!("Database path does not exist: {}", args.db_path.display());
+    }
+
+    let db = open_database(&args.db_path)?;
+    let validation_result = validation::validate_database(&db)?;
+    output_json(&validation_result, args.output.as_deref())
+}
+
+fn run_export_dag(args: ExportDagArgs) -> Result<()> {
+    if !args.db_path.exists() {
+        eyre::bail!("Database path does not exist: {}", args.db_path.display());
+    }
+
+    let db = open_database(&args.db_path)?;
+    let dag_data = dag::export_dag(&db)?;
+    output_json(&dag_data, args.output.as_deref())
+}
+
+fn run_migrate_placeholder(args: MigrateArgs) -> Result<()> {
+    let mut message = String::from(
+        "Migration support is not yet implemented. Track progress in tools/merodb/migrations.md.",
+    );
+
+    if args.plan.is_some() || args.db_path.is_some() || args.target_db.is_some() || args.dry_run {
+        message.push_str(" Supplied migration arguments are acknowledged but ignored for now.");
+    }
+
+    eyre::bail!(message)
 }
