@@ -44,10 +44,10 @@ impl SyncManager {
             [u8; 32],
         )> = Vec::new();
         let mut fetch_count = 0;
-        const MAX_FETCH_DEPTH: usize = 100; // Prevent infinite loops
 
         // Phase 1: Fetch ALL missing deltas recursively
-        while !to_fetch.is_empty() && fetch_count < MAX_FETCH_DEPTH {
+        // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
+        while !to_fetch.is_empty() {
             let current_batch = to_fetch.clone();
             to_fetch.clear();
 
@@ -130,13 +130,15 @@ impl SyncManager {
                 total_fetched = fetch_count,
                 "Completed fetching missing delta ancestors"
             );
-        }
-
-        if fetch_count >= MAX_FETCH_DEPTH {
-            warn!(
-                %context_id,
-                "Reached maximum fetch depth - possible infinite loop or very deep delta chain"
-            );
+            
+            // Log warning for very large syncs (informational, not a hard limit)
+            if fetch_count > 1000 {
+                warn!(
+                    %context_id,
+                    total_fetched = fetch_count,
+                    "Large sync detected - fetched many deltas from peer (context has deep history)"
+                );
+            }
         }
 
         Ok(())
