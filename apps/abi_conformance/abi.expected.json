@@ -61,6 +61,29 @@
         }
       ]
     },
+    "CustomRecord": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "name",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "value",
+          "type": {
+            "kind": "u64"
+          }
+        },
+        {
+          "name": "active",
+          "type": {
+            "kind": "bool"
+          }
+        }
+      ]
+    },
     "Hash64": {
       "kind": "alias",
       "target": {
@@ -80,6 +103,26 @@
           "name": "calculated",
           "type": {
             "kind": "u32"
+          }
+        }
+      ]
+    },
+    "NestedRecord": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "record",
+          "type": {
+            "$ref": "CustomRecord"
+          }
+        },
+        {
+          "name": "tags",
+          "type": {
+            "kind": "list",
+            "items": {
+              "kind": "string"
+            }
           }
         }
       ]
@@ -131,6 +174,48 @@
             "items": {
               "kind": "string"
             }
+          }
+        }
+      ]
+    },
+    "Status": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "Pending"
+        },
+        {
+          "name": "Active",
+          "payload": {
+            "$ref": "Status_Active"
+          }
+        },
+        {
+          "name": "Completed",
+          "payload": {
+            "$ref": "Status_Completed"
+          }
+        }
+      ]
+    },
+    "Status_Active": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "timestamp",
+          "type": {
+            "kind": "u64"
+          }
+        }
+      ]
+    },
+    "Status_Completed": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "result",
+          "type": {
+            "kind": "string"
           }
         }
       ]
@@ -647,6 +732,54 @@
       ],
       "returns": {
         "$ref": "InternalResult"
+      }
+    },
+    {
+      "name": "create_custom_record",
+      "params": [
+        {
+          "name": "name",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "value",
+          "type": {
+            "kind": "u64"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "CustomRecord"
+      }
+    },
+    {
+      "name": "get_nested_record",
+      "params": [
+        {
+          "name": "name",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "NestedRecord"
+      }
+    },
+    {
+      "name": "get_status",
+      "params": [
+        {
+          "name": "timestamp",
+          "type": {
+            "kind": "u64"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "Status"
       }
     }
   ],

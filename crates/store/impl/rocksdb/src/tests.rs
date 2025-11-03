@@ -4,13 +4,13 @@ use calimero_store::config::StoreConfig;
 use calimero_store::db::{Column, Database};
 use calimero_store::slice::Slice;
 use eyre::Ok as EyreOk;
-use tempfile::TempDir;
+use tempdir::TempDir;
 
 use crate::RocksDB;
 
 #[test]
 fn test_rocksdb() {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new("_calimero_store_rocksdb").unwrap();
 
     let dir_path = dir.path().to_owned().try_into().unwrap();
 
@@ -66,7 +66,7 @@ fn test_rocksdb() {
 
 #[test]
 fn test_rocksdb_iter() {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new("_calimero_store_rocks").unwrap();
 
     let dir_path = dir.path().to_owned().try_into().unwrap();
 
