@@ -66,6 +66,13 @@ fn create_default_config() -> AuthConfig {
                         "'unsafe-eval'".to_string(),
                     ],
                     style_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
+                    connect_src: vec![
+                        "'self'".to_string(),
+                        "http://localhost:*".to_string(),
+                        "http://host.docker.internal:*".to_string(),
+                        "http://*.nip.io:*".to_string(),
+                        "https://*.nip.io:*".to_string(),
+                    ],
                 },
             },
         },
