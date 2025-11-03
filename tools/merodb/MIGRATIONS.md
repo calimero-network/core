@@ -8,9 +8,9 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
   - [x] Convert current flag-based CLI to a `clap::Subcommand` layout (`schema`, `export`, `validate`, `export-dag`, `migrate`).
   - [x] Preserve existing behaviours/help text while adding a `migrate` subcommand stub.
 
-- [ ] **Define YAML Plan Schema**
-  - [ ] Create strongly typed `serde` structs/enums for plan metadata, defaults, and step variants (`copy`, `delete`, `upsert`, `verify`).
-  - [ ] Add versioning and forward-compatibility guards; emit descriptive errors for malformed documents.
+- [x] **Define YAML Plan Schema**
+  - [x] Create strongly typed `serde` structs/enums for plan metadata, defaults, and step variants (`copy`, `delete`, `upsert`, `verify`).
+  - [x] Add versioning and forward-compatibility guards; emit descriptive errors for malformed documents.
 
 - [ ] **Implement Plan Loader**
   - [ ] Wire `--plan <FILE>` (and optional `--format json|yaml` if needed later) to deserialize the plan and print a summary (steps, columns, filters).

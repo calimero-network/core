@@ -14,6 +14,7 @@ mod abi;
 mod dag;
 mod deserializer;
 mod export;
+mod migration;
 mod schema;
 mod types;
 mod validation;
@@ -177,18 +178,8 @@ fn parse_columns(column_names: &[String]) -> Result<Vec<Column>> {
 
     for name in column_names {
         let column_name = name.trim();
-        let column = match column_name {
-            "Meta" => Column::Meta,
-            "Config" => Column::Config,
-            "Identity" => Column::Identity,
-            "State" => Column::State,
-            "Delta" => Column::Delta,
-            "Blobs" => Column::Blobs,
-            "Application" => Column::Application,
-            "Alias" => Column::Alias,
-            "Generic" => Column::Generic,
-            _ => eyre::bail!("Unknown column family: {}", column_name),
-        };
+        let column = Column::from_name(column_name)
+            .ok_or_else(|| eyre::eyre!("Unknown column family: {column_name}"))?;
         columns.push(column);
     }
 

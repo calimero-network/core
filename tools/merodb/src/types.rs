@@ -26,6 +26,7 @@ use calimero_store::types::{
     ContextIdentity as StoreContextIdentity, ContextMeta as StoreContextMeta,
 };
 use eyre::Result;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// All column families in Calimero's RocksDB
@@ -116,6 +117,41 @@ impl Column {
             Self::Alias => "Hash (32 bytes) - can point to ContextId, PublicKey, or ApplicationId",
             Self::Generic => "Raw bytes (generic key-value storage)",
         }
+    }
+
+    /// Parse a column from its canonical string representation.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Meta" => Some(Self::Meta),
+            "Config" => Some(Self::Config),
+            "Identity" => Some(Self::Identity),
+            "State" => Some(Self::State),
+            "Delta" => Some(Self::Delta),
+            "Blobs" => Some(Self::Blobs),
+            "Application" => Some(Self::Application),
+            "Alias" => Some(Self::Alias),
+            "Generic" => Some(Self::Generic),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Column {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as Deserialize>::deserialize(deserializer)?;
+        Column::from_name(value.trim()).ok_or_else(|| {
+            let expected = Column::all()
+                .iter()
+                .map(Column::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            serde::de::Error::custom(format!(
+                "Unknown column family '{value}'. Expected one of: {expected}"
+            ))
+        })
     }
 }
 

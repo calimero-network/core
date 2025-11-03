@@ -6447,6 +6447,7 @@ dependencies = [
  "rocksdb",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "wasmparser 0.118.2",
 ]
