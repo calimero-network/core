@@ -10,12 +10,7 @@ publish = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-use-home-dir = []  # Server mode: use ~/.calimero
-
 [dependencies]
-directories.workspace = true
-dirs.workspace = true
 bs58.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
