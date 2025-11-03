@@ -486,34 +486,6 @@ impl<S: StorageAdaptor> Interface<S> {
         Self::find_by_id_raw(id).ok_or(StorageError::IndexNotFound(id))
     }
 
-    /// Finds entities by hierarchical path.
-    ///
-    /// **Note**: Not yet implemented.
-    ///
-    /// # Errors
-    /// Currently panics (unimplemented).
-    ///
-    pub fn find_by_path<D: Data>(_path: &Path) -> Result<Vec<D>, StorageError> {
-        unimplemented!()
-    }
-
-    /// Finds children by parent ID and collection name.
-    ///
-    /// # Errors
-    /// - `IndexNotFound` if parent doesn't exist
-    /// - `DeserializationError` if child data is corrupt
-    ///
-    pub fn find_children_by_id<D: Data>(parent_id: Id) -> Result<Vec<D>, StorageError> {
-        let child_infos = <Index<S>>::get_children_of(parent_id)?;
-        let mut children = Vec::new();
-        for child_info in child_infos {
-            if let Some(child) = Self::find_by_id(child_info.id())? {
-                children.push(child);
-            }
-        }
-        Ok(children)
-    }
-
     /// Generates comparison metadata for tree synchronization.
     ///
     /// Includes hashes, ancestors, children info. Used by [`compare_trees()`](Self::compare_trees()).
