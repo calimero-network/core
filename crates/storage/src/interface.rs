@@ -793,32 +793,4 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
-
-    // NOTE: Sync orchestration moved to node layer (YAGNI)
-    //
-    // The sync decision logic should be in the node's sync manager, not in storage.
-    // Storage provides primitives (generate_snapshot, full_resync, needs_full_resync),
-    // but the orchestration belongs in the network/node layer where it can access
-    // network protocols and handle peer communication.
-    //
-    // Example node layer implementation:
-    //
-    // ```rust
-    // impl SyncManager {
-    //     async fn sync_with_peer(&self, peer_id: NodeId) -> Result<()> {
-    //         use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
-    //
-    //         if Interface::needs_full_resync(peer_id, TOMBSTONE_RETENTION_NANOS)? {
-    //             let snapshot = network::request_snapshot(peer_id).await?;
-    //             Interface::full_resync(peer_id, snapshot)?;
-    //         } else {
-    //             // Incremental sync via compare_trees
-    //             let comparison = network::request_comparison(peer_id).await?;
-    //             let (local_actions, remote_actions) = Interface::compare_trees(comparison)?;
-    //             // Apply actions...
-    //         }
-    //         Ok(())
-    //     }
-    // }
-    // ```
 }
