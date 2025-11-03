@@ -503,10 +503,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if parent doesn't exist
     /// - `DeserializationError` if child data is corrupt
     ///
-    pub fn find_children_by_id<D: Data>(
-        parent_id: Id,
-        collection: &str,
-    ) -> Result<Vec<D>, StorageError> {
+    pub fn find_children_by_id<D: Data>(parent_id: Id) -> Result<Vec<D>, StorageError> {
         let child_infos = <Index<S>>::get_children_of(parent_id)?;
         let mut children = Vec::new();
         for child_info in child_infos {

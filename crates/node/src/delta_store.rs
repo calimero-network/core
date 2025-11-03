@@ -17,6 +17,24 @@ use eyre::Result;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+/// Result of adding a delta with cascaded event information
+#[derive(Debug)]
+pub struct AddDeltaResult {
+    /// Whether the delta was applied immediately (true) or went pending (false)
+    pub applied: bool,
+    /// List of (delta_id, events_data) for cascaded deltas that have event handlers to execute
+    pub cascaded_events: Vec<([u8; 32], Vec<u8>)>,
+}
+
+/// Result of checking for missing parents with cascaded event information
+#[derive(Debug)]
+pub struct MissingParentsResult {
+    /// IDs of deltas that are truly missing (need to be requested from network)
+    pub missing_ids: Vec<[u8; 32]>,
+    /// List of (delta_id, events_data) for cascaded deltas that have event handlers to execute
+    pub cascaded_events: Vec<([u8; 32], Vec<u8>)>,
+}
+
 /// Applier that applies actions to WASM storage via ContextClient
 #[derive(Debug)]
 struct ContextStorageApplier {
@@ -182,7 +200,7 @@ impl DeltaStore {
                 let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
             }
 
-            let _ = all_deltas.insert(stored_delta.delta_id, dag_delta);
+            drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
         }
 
         if all_deltas.is_empty() {
@@ -226,7 +244,7 @@ impl DeltaStore {
             }
 
             for delta_id in to_remove {
-                let _ = remaining.remove(&delta_id);
+                drop(remaining.remove(&delta_id));
             }
         }
 
@@ -258,10 +276,34 @@ impl DeltaStore {
         Ok(loaded_count)
     }
 
-    /// Add a delta to the store
+    /// Add a delta with optional event data to the store
+    ///
+    /// If events are provided and the delta goes pending, events are persisted
+    /// so handlers can execute when the delta cascades later.
+    ///
+    /// Returns applied status and any cascaded events that need handler execution
+    pub async fn add_delta_with_events(
+        &self,
+        delta: CausalDelta<Vec<Action>>,
+        events: Option<Vec<u8>>,
+    ) -> Result<AddDeltaResult> {
+        self.add_delta_internal(delta, events).await
+    }
+
+    /// Add a delta to the store (without event data)
     ///
     /// Returns Ok(true) if applied immediately, Ok(false) if pending
     pub async fn add_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<bool> {
+        let result = self.add_delta_internal(delta, None).await?;
+        Ok(result.applied)
+    }
+
+    /// Internal add_delta implementation
+    async fn add_delta_internal(
+        &self,
+        delta: CausalDelta<Vec<Action>>,
+        events: Option<Vec<u8>>,
+    ) -> Result<AddDeltaResult> {
         let delta_id = delta.id;
         let expected_root_hash = delta.expected_root_hash;
         let parents = delta.parents.clone();
@@ -272,6 +314,35 @@ impl DeltaStore {
         {
             let mut head_hashes = self.head_root_hashes.write().await;
             let _previous = head_hashes.insert(delta_id, expected_root_hash);
+        }
+
+        // CRITICAL: If this delta has events, persist it BEFORE adding to DAG
+        // This ensures events are available if the delta cascades during add_delta()
+        if events.is_some() {
+            let mut handle = self.applier.context_client.datastore_handle();
+            let serialized_actions = borsh::to_vec(&actions_for_db)
+                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+
+            handle
+                .put(
+                    &calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
+                    &calimero_store::types::ContextDagDelta {
+                        delta_id,
+                        parents: parents.clone(),
+                        actions: serialized_actions,
+                        hlc,
+                        applied: false, // Not applied yet, will update if it applies
+                        expected_root_hash,
+                        events: events.clone(), // Store events for potential cascade
+                    },
+                )
+                .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
+
+            info!(
+                context_id = %self.applier.context_id,
+                delta_id = ?delta_id,
+                "Pre-persisted pending delta WITH events (before DAG add)"
+            );
         }
 
         let mut dag = self.dag.write().await;
@@ -297,8 +368,8 @@ impl DeltaStore {
 
         drop(dag); // Release lock before calling context_client
 
-        // Persist newly applied delta to RocksDB
-        if result {
+        // Update persistence if delta applied (was pre-persisted with events=Some, now needs events=None)
+        if result && events.is_some() {
             let mut handle = self.applier.context_client.datastore_handle();
             let serialized_actions = borsh::to_vec(&actions_for_db)
                 .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
@@ -313,9 +384,36 @@ impl DeltaStore {
                         hlc,
                         applied: true,
                         expected_root_hash,
+                        events: None, // Clear events after immediate application
                     },
                 )
-                .map_err(|e| eyre::eyre!("Failed to persist delta to database: {}", e))?;
+                .map_err(|e| eyre::eyre!("Failed to update applied delta: {}", e))?;
+
+            debug!(
+                context_id = %self.applier.context_id,
+                delta_id = ?delta_id,
+                "Updated pre-persisted delta as applied (cleared events)"
+            );
+        } else if result {
+            // Delta applied and had no events - just persist normally
+            let mut handle = self.applier.context_client.datastore_handle();
+            let serialized_actions = borsh::to_vec(&actions_for_db)
+                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+
+            handle
+                .put(
+                    &calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
+                    &calimero_store::types::ContextDagDelta {
+                        delta_id,
+                        parents,
+                        actions: serialized_actions,
+                        hlc,
+                        applied: true,
+                        expected_root_hash,
+                        events: None,
+                    },
+                )
+                .map_err(|e| eyre::eyre!("Failed to persist applied delta: {}", e))?;
 
             debug!(
                 context_id = %self.applier.context_id,
@@ -323,9 +421,10 @@ impl DeltaStore {
                 "Persisted applied delta to database"
             );
         }
+        // If !result, delta is pending and was already pre-persisted with events (if any)
 
-        // Persist cascaded deltas that were applied from pending queue
-        if !cascaded_deltas.is_empty() {
+        // Handle cascaded deltas: persist as applied and return event data for handler execution
+        let cascaded_with_events: Vec<([u8; 32], Vec<u8>)> = if !cascaded_deltas.is_empty() {
             info!(
                 context_id = %self.applier.context_id,
                 cascaded_count = cascaded_deltas.len(),
@@ -334,8 +433,46 @@ impl DeltaStore {
 
             let dag = self.dag.read().await;
             let mut handle = self.applier.context_client.datastore_handle();
+            let mut deltas_with_events = Vec::new();
 
             for cascaded_id in &cascaded_deltas {
+                // Check if this delta has stored events
+                let db_key = calimero_store::key::ContextDagDelta::new(
+                    self.applier.context_id,
+                    *cascaded_id,
+                );
+
+                let stored_delta_result = handle.get(&db_key);
+                let stored_events = match stored_delta_result {
+                    Ok(Some(stored)) => {
+                        let has_events = stored.events.is_some();
+                        debug!(
+                            context_id = %self.applier.context_id,
+                            delta_id = ?cascaded_id,
+                            has_events,
+                            "Retrieved stored delta for cascaded delta"
+                        );
+                        stored.events
+                    }
+                    Ok(None) => {
+                        debug!(
+                            context_id = %self.applier.context_id,
+                            delta_id = ?cascaded_id,
+                            "Cascaded delta not found in database (was never persisted)"
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            delta_id = ?cascaded_id,
+                            "Failed to query database for cascaded delta"
+                        );
+                        None
+                    }
+                };
+
                 if let Some(cascaded_delta) = dag.get_delta(cascaded_id) {
                     let serialized_actions = match borsh::to_vec(&cascaded_delta.payload) {
                         Ok(s) => s,
@@ -350,11 +487,13 @@ impl DeltaStore {
                         }
                     };
 
+                    // Store events for later handler execution
+                    if let Some(ref events_data) = stored_events {
+                        deltas_with_events.push((*cascaded_id, events_data.clone()));
+                    }
+
                     if let Err(e) = handle.put(
-                        &calimero_store::key::ContextDagDelta::new(
-                            self.applier.context_id,
-                            *cascaded_id,
-                        ),
+                        &db_key,
                         &calimero_store::types::ContextDagDelta {
                             delta_id: *cascaded_id,
                             parents: cascaded_delta.parents.clone(),
@@ -362,6 +501,7 @@ impl DeltaStore {
                             hlc: cascaded_delta.hlc,
                             applied: true,
                             expected_root_hash: cascaded_delta.expected_root_hash,
+                            events: None, // Clear events after cascading (handlers will execute below)
                         },
                     ) {
                         warn!(
@@ -370,17 +510,21 @@ impl DeltaStore {
                             delta_id = ?cascaded_id,
                             "Failed to persist cascaded delta to database"
                         );
-                    } else {
-                        debug!(
+                    } else if stored_events.is_some() {
+                        info!(
                             context_id = %self.applier.context_id,
                             delta_id = ?cascaded_id,
-                            "Persisted cascaded delta to database"
+                            "Persisted cascaded delta - has events for handler execution"
                         );
                     }
                 }
             }
             drop(dag);
-        }
+
+            deltas_with_events
+        } else {
+            Vec::new()
+        };
 
         self.applier
             .context_client
@@ -418,14 +562,19 @@ impl DeltaStore {
             head_hashes.retain(|head_id, _| heads.contains(head_id));
         }
 
-        Ok(result)
+        Ok(AddDeltaResult {
+            applied: result,
+            cascaded_events: cascaded_with_events,
+        })
     }
 
-    /// Get missing parent IDs (for requesting from peers)
+    /// Get missing parent IDs and handle any cascades from DB loads
     ///
     /// This checks both the in-memory DAG and the database to avoid requesting
     /// deltas that are already persisted but not loaded into RAM.
-    pub async fn get_missing_parents(&self) -> Vec<[u8; 32]> {
+    ///
+    /// Returns missing IDs and any cascaded events that need handler execution.
+    pub async fn get_missing_parents(&self) -> MissingParentsResult {
         let dag = self.dag.read().await;
         let potentially_missing = dag.get_missing_parents();
         drop(dag); // Release lock before DB access
@@ -433,6 +582,7 @@ impl DeltaStore {
         // Filter out parents that exist in the database
         let handle = self.applier.context_client.datastore_handle();
         let mut actually_missing = Vec::new();
+        let mut all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         for parent_id in &potentially_missing {
             let db_key =
@@ -494,7 +644,7 @@ impl DeltaStore {
                         Vec::new()
                     };
 
-                    // Persist cascaded deltas
+                    // Persist cascaded deltas and retrieve their stored events
                     if !cascaded_deltas.is_empty() {
                         info!(
                             context_id = %self.applier.context_id,
@@ -503,6 +653,24 @@ impl DeltaStore {
                         );
 
                         for cascaded_id in &cascaded_deltas {
+                            // Retrieve stored events for this cascaded delta
+                            let cascaded_db_key = calimero_store::key::ContextDagDelta::new(
+                                self.applier.context_id,
+                                *cascaded_id,
+                            );
+                            let stored_events =
+                                handle.get(&cascaded_db_key).ok().flatten().and_then(
+                                    |stored: calimero_store::types::ContextDagDelta| stored.events,
+                                );
+
+                            if stored_events.is_some() {
+                                info!(
+                                    context_id = %self.applier.context_id,
+                                    delta_id = ?cascaded_id,
+                                    "Found stored events for cascaded delta - will execute handlers"
+                                );
+                            }
+
                             if let Some(cascaded_delta) = dag.get_delta(cascaded_id) {
                                 let serialized_actions = match borsh::to_vec(
                                     &cascaded_delta.payload,
@@ -514,11 +682,13 @@ impl DeltaStore {
                                     }
                                 };
 
+                                // Add events to return list
+                                if let Some(events_data) = stored_events {
+                                    all_cascaded_events.push((*cascaded_id, events_data));
+                                }
+
                                 if let Err(e) = self.applier.context_client.datastore_handle().put(
-                                    &calimero_store::key::ContextDagDelta::new(
-                                        self.applier.context_id,
-                                        *cascaded_id,
-                                    ),
+                                    &cascaded_db_key,
                                     &calimero_store::types::ContextDagDelta {
                                         delta_id: *cascaded_id,
                                         parents: cascaded_delta.parents.clone(),
@@ -526,6 +696,7 @@ impl DeltaStore {
                                         hlc: cascaded_delta.hlc,
                                         applied: true,
                                         expected_root_hash: cascaded_delta.expected_root_hash,
+                                        events: None, // Clear events after cascading
                                     },
                                 ) {
                                     warn!(?e, context_id = %self.applier.context_id, delta_id = ?cascaded_id, "Failed to persist cascaded delta");
@@ -558,11 +729,15 @@ impl DeltaStore {
                 total_checked = potentially_missing.len(),
                 in_database = potentially_missing.len() - actually_missing.len(),
                 truly_missing = actually_missing.len(),
+                cascaded_with_events = all_cascaded_events.len(),
                 "Filtered missing parents - some were already in database"
             );
         }
 
-        actually_missing
+        MissingParentsResult {
+            missing_ids: actually_missing,
+            cascaded_events: all_cascaded_events,
+        }
     }
 
     /// Check if a delta has been applied to the DAG

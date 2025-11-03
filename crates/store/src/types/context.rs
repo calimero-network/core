@@ -121,6 +121,7 @@ pub struct ContextDagDelta {
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
     pub applied: bool,
     pub expected_root_hash: [u8; 32],
+    pub events: Option<Vec<u8>>,
 }
 
 impl PredefinedEntry for key::ContextDagDelta {

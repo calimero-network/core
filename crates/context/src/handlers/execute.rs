@@ -783,6 +783,7 @@ async fn internal_execute(
                     hlc: delta.hlc,
                     applied: true,
                     expected_root_hash: delta.expected_root_hash,
+                    events: None, // No events stored for locally created deltas
                 },
             )?;
 

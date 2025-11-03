@@ -551,16 +551,25 @@ impl SyncManager {
             return Ok(result);
         }
 
-        // CRITICAL FIX: Check if we have pending deltas (incomplete DAG)
+        // Check if we have pending deltas (incomplete DAG)
         // Even if node has some state, it might be missing parent deltas
         if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
-            let missing_parents = delta_store.get_missing_parents().await;
+            let missing_result = delta_store.get_missing_parents().await;
 
-            if !missing_parents.is_empty() {
+            // Note: Cascaded events from DB loads are handled in state_delta handler
+            if !missing_result.cascaded_events.is_empty() {
+                info!(
+                    %context_id,
+                    cascaded_count = missing_result.cascaded_events.len(),
+                    "Cascaded deltas from DB load (handlers executed in state_delta path)"
+                );
+            }
+
+            if !missing_result.missing_ids.is_empty() {
                 warn!(
                     %context_id,
                     %chosen_peer,
-                    missing_count = missing_parents.len(),
+                    missing_count = missing_result.missing_ids.len(),
                     "Node has incomplete DAG (pending deltas), requesting DAG heads to catch up"
                 );
 
@@ -743,11 +752,21 @@ impl SyncManager {
                 }
 
                 // Phase 2: Now check for missing parents and fetch them recursively
-                let missing_parents = delta_store_ref.get_missing_parents().await;
-                if !missing_parents.is_empty() {
+                let missing_result = delta_store_ref.get_missing_parents().await;
+
+                // Note: Cascaded events from DB loads logged but not executed here (state_delta handler will catch them)
+                if !missing_result.cascaded_events.is_empty() {
                     info!(
                         %context_id,
-                        missing_count = missing_parents.len(),
+                        cascaded_count = missing_result.cascaded_events.len(),
+                        "Cascaded deltas from DB load during DAG head sync"
+                    );
+                }
+
+                if !missing_result.missing_ids.is_empty() {
+                    info!(
+                        %context_id,
+                        missing_count = missing_result.missing_ids.len(),
                         "DAG heads have missing parents, requesting them recursively"
                     );
 
@@ -755,7 +774,7 @@ impl SyncManager {
                     if let Err(e) = self
                         .request_missing_deltas(
                             context_id,
-                            missing_parents,
+                            missing_result.missing_ids,
                             peer_id,
                             delta_store_ref.clone(),
                             our_identity,

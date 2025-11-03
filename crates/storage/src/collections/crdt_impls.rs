@@ -9,10 +9,9 @@
 //! - Vector
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
-use super::{
-    Counter, GCounter, LwwRegister, PNCounter, ReplicatedGrowableArray, UnorderedMap, UnorderedSet,
-    Vector,
-};
+use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector};
+#[cfg(test)]
+use super::{GCounter, PNCounter};
 use crate::store::StorageAdaptor;
 
 // ============================================================================
@@ -143,12 +142,12 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
             // Take max for this executor (monotonic property)
             let new_count = self_count.max(other_count);
             if new_count > self_count {
-                drop(self.positive.insert(executor_id, new_count).map_err(|e| {
+                let _ = self.positive.insert(executor_id, new_count).map_err(|e| {
                     MergeError::StorageError(format!(
                         "Failed to insert positive counter value: {:?}",
                         e
                     ))
-                })?);
+                })?;
             }
         }
 
@@ -171,12 +170,12 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
                 // Take max for this executor (monotonic property)
                 let new_count = self_count.max(other_count);
                 if new_count > self_count {
-                    drop(self.negative.insert(executor_id, new_count).map_err(|e| {
+                    let _ = self.negative.insert(executor_id, new_count).map_err(|e| {
                         MergeError::StorageError(format!(
                             "Failed to insert negative counter value: {:?}",
                             e
                         ))
-                    })?);
+                    })?;
                 }
             }
         }

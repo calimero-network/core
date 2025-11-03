@@ -140,31 +140,111 @@ pub async fn handle_state_delta(
             );
         }
 
-        // After loading, check for missing parents and request from network
-        let missing_after_load = delta_store_ref.get_missing_parents().await;
-        if !missing_after_load.is_empty() {
+        // After loading, check for missing parents and handle any cascaded events
+        let missing_result = delta_store_ref.get_missing_parents().await;
+        if !missing_result.missing_ids.is_empty() {
             warn!(
                 %context_id,
-                missing_count = missing_after_load.len(),
+                missing_count = missing_result.missing_ids.len(),
                 "Missing parents after loading persisted deltas - will request from network"
             );
 
             // Note: We don't request here synchronously because we don't have the source peer
             // These will be requested when the next delta arrives or via periodic sync
         }
+
+        // Execute handlers for any cascaded deltas from initial load
+        if !missing_result.cascaded_events.is_empty() {
+            info!(
+                %context_id,
+                cascaded_count = missing_result.cascaded_events.len(),
+                "Executing event handlers for deltas cascaded during initial load"
+            );
+
+            for (cascaded_id, events_data) in missing_result.cascaded_events {
+                match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
+                    Ok(cascaded_payload) => {
+                        execute_event_handlers_parsed(
+                            &node_clients.context,
+                            &context_id,
+                            &our_identity,
+                            &cascaded_payload,
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events from initial load");
+                    }
+                }
+            }
+        }
     }
 
-    // Add delta (applies immediately if parents available, pends otherwise)
-    let mut applied = delta_store_ref.add_delta(delta).await?;
+    // Add delta with event data (for cascade handler execution)
+    let add_result = delta_store_ref
+        .add_delta_with_events(delta, events.clone())
+        .await?;
+    let mut applied = add_result.applied;
+
+    // Track if we executed handlers for the current delta during cascade
+    let mut handlers_already_executed = false;
 
     if !applied {
         // Delta is pending - check for missing parents
-        let missing = delta_store_ref.get_missing_parents().await;
+        let missing_result = delta_store_ref.get_missing_parents().await;
 
-        if !missing.is_empty() {
+        // Execute handlers for cascaded deltas from DB load (including this delta if it cascaded)
+        if !missing_result.cascaded_events.is_empty() {
+            info!(
+                %context_id,
+                cascaded_count = missing_result.cascaded_events.len(),
+                "Executing event handlers for deltas cascaded during missing parent check"
+            );
+
+            for (cascaded_id, events_data) in &missing_result.cascaded_events {
+                // Check if this is the current delta that cascaded
+                let is_current_delta = *cascaded_id == delta_id;
+                if is_current_delta {
+                    info!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        "Current delta cascaded during missing parent check - marking as applied"
+                    );
+                    applied = true;
+                }
+
+                match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+                    Ok(cascaded_payload) => {
+                        info!(
+                            %context_id,
+                            delta_id = ?cascaded_id,
+                            events_count = cascaded_payload.len(),
+                            "Executing handlers for cascaded delta"
+                        );
+                        execute_event_handlers_parsed(
+                            &node_clients.context,
+                            &context_id,
+                            &our_identity,
+                            &cascaded_payload,
+                        )
+                        .await?;
+
+                        // Mark that we executed handlers for the current delta
+                        if is_current_delta {
+                            handlers_already_executed = true;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events");
+                    }
+                }
+            }
+        }
+
+        if !missing_result.missing_ids.is_empty() {
             warn!(
                 %context_id,
-                missing_count = missing.len(),
+                missing_count = missing_result.missing_ids.len(),
                 context_is_uninitialized = is_uninitialized,
                 has_events = events.is_some(),
                 "Delta pending due to missing parents - requesting them from peer"
@@ -175,7 +255,7 @@ pub async fn handle_state_delta(
                 network_client,
                 sync_timeout,
                 context_id,
-                missing,
+                missing_result.missing_ids,
                 source,
                 our_identity,
                 delta_store_ref.clone(),
@@ -205,6 +285,17 @@ pub async fn handle_state_delta(
                 "Delta was applied via cascade - will execute handlers"
             );
             applied = true;
+
+            // Important: If delta cascaded but we haven't executed handlers yet,
+            // and we have events, we need to execute them now.
+            // This can happen if the cascade occurred via another concurrent handler.
+            if !handlers_already_executed && events.is_some() {
+                info!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "Delta cascaded via alternate path - handlers will be executed in main flow"
+                );
+            }
         }
     }
 
@@ -225,11 +316,10 @@ pub async fn handle_state_delta(
         None
     };
 
-    // Execute event handlers only if the delta was applied
+    // Execute event handlers only if the delta was applied AND we haven't already executed them
     // Note: Handlers are only executed on receiving nodes, not on the author node,
     // to avoid infinite loops and ensure proper distributed execution.
-    // If the delta is pending, event data won't be available when it's applied later.
-    if applied {
+    if applied && !handlers_already_executed {
         if let Some(ref payload) = events_payload {
             if author_id != our_identity {
                 info!(
@@ -265,6 +355,43 @@ pub async fn handle_state_delta(
     // Use already-parsed events (no re-deserialization!)
     if let Some(payload) = events_payload {
         emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
+    }
+
+    // Execute handlers for any cascaded deltas that had stored events
+    if !add_result.cascaded_events.is_empty() {
+        info!(
+            %context_id,
+            cascaded_count = add_result.cascaded_events.len(),
+            "Executing event handlers for cascaded deltas"
+        );
+
+        for (cascaded_id, events_data) in add_result.cascaded_events {
+            match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
+                Ok(cascaded_payload) => {
+                    info!(
+                        %context_id,
+                        delta_id = ?cascaded_id,
+                        events_count = cascaded_payload.len(),
+                        "Executing handlers for cascaded delta"
+                    );
+                    execute_event_handlers_parsed(
+                        &node_clients.context,
+                        &context_id,
+                        &our_identity,
+                        &cascaded_payload,
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        delta_id = ?cascaded_id,
+                        error = %e,
+                        "Failed to deserialize cascaded events, skipping handler execution"
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
