@@ -69,18 +69,6 @@ mod interface__public_methods {
     }
 
     #[test]
-    #[ignore]
-    fn find_by_path() {
-        todo!()
-    }
-
-    #[test]
-    #[ignore]
-    fn find_children_by_id() {
-        todo!()
-    }
-
-    #[test]
     fn save__basic() {
         let element = Element::root();
         let mut page = Page::new_from_element("Node", element);

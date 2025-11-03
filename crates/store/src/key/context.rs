@@ -279,7 +279,7 @@ impl AsKeyParts for ContextDagDelta {
     type Components = (ContextId, DeltaId);
 
     fn column() -> Column {
-        Column::Generic
+        Column::Delta
     }
 
     fn as_key(&self) -> &Key<Self::Components> {

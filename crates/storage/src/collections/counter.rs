@@ -6,7 +6,7 @@
 //!
 //! The mode is selected at compile-time using const generics for zero runtime overhead.
 
-use borsh::io::{Error, ErrorKind, Read, Result as BorshResult, Write};
+use borsh::io::{ErrorKind, Read, Result as BorshResult, Write};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::{StorageAdaptor, UnorderedMap};

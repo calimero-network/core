@@ -19,9 +19,9 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
+        "durationMs": 500,
         "description": [
-          "Wait for context initialization to complete"
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
         ]
       }
     },
@@ -31,9 +31,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "Wait for gossipsub mesh formation + initial sync completion"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -54,9 +54,9 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000,
+        "durationMs": 500,
         "description": [
-          "Wait for initial set to propagate"
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
         ]
       }
     },
@@ -107,10 +107,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "Wait for concurrent mutations to propagate and DAG to converge",
-          "Both branches should be resolved with deterministic root_hash selection"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -148,9 +147,9 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000,
+        "durationMs": 500,
         "description": [
-          "Wait for final write to propagate"
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
         ]
       }
     },
@@ -171,4 +170,3 @@
     }
   ]
 }
-

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MeroDB Inspector</title>
     <script src="https://cdn.jsdelivr.net/npm/jq-web@0.6.2/jq.js" crossorigin="anonymous"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -531,6 +532,216 @@
         .hidden {
             display: none !important;
         }
+
+        /* Tab Navigation */
+        .view-tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 2px solid #3e3e42;
+            margin-bottom: 20px;
+        }
+
+        .tab-button {
+            background: #2d2d30;
+            border: none;
+            color: #858585;
+            padding: 12px 24px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            border-top: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab-button:hover {
+            background: #3e3e42;
+            color: #d4d4d4;
+        }
+
+        .tab-button.active {
+            background: #1e1e1e;
+            color: #ffffff;
+            border-top-color: #007acc;
+        }
+
+        /* DAG View */
+        .dag-container {
+            background: #2d2d30;
+            border-radius: 8px;
+            padding: 20px;
+            min-height: 600px;
+            position: relative;
+        }
+
+        .dag-controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .dag-control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .dag-control-group label {
+            color: #d4d4d4;
+            font-size: 13px;
+        }
+
+        .dag-control-group select,
+        .dag-control-group input {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .dag-control-button {
+            background: #0e639c;
+            border: none;
+            color: #ffffff;
+            padding: 6px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+
+        .dag-control-button:hover {
+            background: #1177bb;
+        }
+
+        .dag-stats {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        .dag-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .dag-stat-label {
+            color: #858585;
+            font-size: 12px;
+        }
+
+        .dag-stat-value {
+            color: #ffffff;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        #dag-svg {
+            background: #1e1e1e;
+            border-radius: 4px;
+            width: 100%;
+            min-height: 500px;
+        }
+
+        .dag-node {
+            cursor: pointer;
+        }
+
+        .dag-node circle {
+            fill: #0e639c;
+            stroke: #007acc;
+            stroke-width: 2px;
+        }
+
+        .dag-node.root circle {
+            fill: #7cb342;
+            stroke: #8bc34a;
+        }
+
+        .dag-node.detached circle {
+            fill: #d32f2f;
+            stroke: #f44336;
+        }
+
+        .dag-node.leaf circle {
+            fill: #f57c00;
+            stroke: #ff9800;
+        }
+
+        .dag-node.dag-head circle {
+            fill: #9c27b0;
+            stroke: #ba68c8;
+            stroke-width: 3px;
+        }
+
+        .dag-node.genesis circle {
+            fill: #424242;
+            stroke: #616161;
+            stroke-width: 2px;
+            stroke-dasharray: 4;
+        }
+
+        .dag-node.selected circle {
+            fill: #ff6b6b;
+            stroke: #ff5252;
+            stroke-width: 3px;
+        }
+
+        .dag-node text {
+            fill: #d4d4d4;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .dag-link {
+            stroke: #3e3e42;
+            stroke-width: 2px;
+            fill: none;
+        }
+
+        .dag-link.highlighted {
+            stroke: #007acc;
+            stroke-width: 3px;
+        }
+
+        .dag-tooltip {
+            position: absolute;
+            background: #2d2d30;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            padding: 12px;
+            color: #d4d4d4;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            max-width: 400px;
+        }
+
+        .dag-tooltip h4 {
+            color: #ffffff;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .dag-tooltip .tooltip-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .dag-tooltip .tooltip-label {
+            color: #858585;
+        }
+
+        .dag-tooltip .tooltip-value {
+            color: #d4d4d4;
+            font-family: 'Courier New', monospace;
+        }
     </style>
 </head>
 <body>
@@ -560,18 +771,20 @@
                         </div>
 
                         <div class="form-group">
-                            <label for="wasm-input">WASM Contract File:</label>
+                            <label for="wasm-input">WASM Contract File (Optional):</label>
                             <input
                                 type="file"
                                 accept=".wasm"
                                 id="wasm-input"
                                 class="file-input"
-                                required
                             >
                             <button type="button" class="file-button" onclick="document.getElementById('wasm-input').click()">
                                 Choose WASM File
                             </button>
                             <span id="wasm-filename" class="filename"></span>
+                            <p style="color: #858585; font-size: 12px; margin-top: 8px;">
+                                ℹ️ WASM file is only needed to decode application state. DAG visualization works without it.
+                            </p>
                         </div>
 
                         <button type="submit" class="submit-button" id="load-button">
@@ -589,8 +802,9 @@
                     <h3>How to use:</h3>
                     <ol>
                         <li>Enter the path to your RocksDB database folder</li>
-                        <li>Select the instrumented WASM contract file that contains the ABI schema</li>
+                        <li>(Optional) Select the instrumented WASM contract file for state decoding</li>
                         <li>Click "Load Database" to process and view the data</li>
+                        <li>Switch to DAG View to visualize Context DAG deltas</li>
                         <li>Use JQ queries to explore and analyze your database</li>
                     </ol>
                 </div>
@@ -599,9 +813,18 @@
             <div id="viewer-view" class="viewer-container hidden">
                 <div class="file-info">
                     <span id="file-name" class="file-name"></span>
+                    <button class="reload-button" onclick="refreshCurrentDatabase()" style="margin-right: 10px;">🔄 Refresh</button>
                     <button class="reload-button" onclick="resetView()">Load Different File</button>
                 </div>
-                <div class="content-panels">
+
+                <!-- View Tabs -->
+                <div class="view-tabs">
+                    <button class="tab-button active" onclick="switchTab('data')">📊 Data View</button>
+                    <button class="tab-button" onclick="switchTab('dag')">🔗 DAG View</button>
+                </div>
+
+                <!-- Data View (existing panels) -->
+                <div id="data-view" class="content-panels">
                     <div class="json-panel">
                         <h3>Database Content</h3>
                         <div id="json-viewer" class="json-viewer"></div>
@@ -654,14 +877,79 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- DAG View -->
+                <div id="dag-view" class="hidden">
+                    <div class="dag-container">
+                        <div class="dag-controls">
+                            <div class="dag-control-group">
+                                <label for="context-select">Context:</label>
+                                <select id="context-select" onchange="renderDAG()">
+                                    <option value="all">All Contexts</option>
+                                </select>
+                            </div>
+                            <div class="dag-control-group">
+                                <label for="layout-select">Layout:</label>
+                                <select id="layout-select" onchange="renderDAG()">
+                                    <option value="hierarchical">Hierarchical</option>
+                                    <option value="force">Force-Directed</option>
+                                </select>
+                            </div>
+                            <button class="dag-control-button" onclick="resetZoom()">Reset Zoom</button>
+                            <button class="dag-control-button" onclick="exportDAGImage()">Export Image</button>
+                        </div>
+
+                        <div class="dag-stats">
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Total Nodes</span>
+                                <span class="dag-stat-value" id="stat-nodes">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Total Edges</span>
+                                <span class="dag-stat-value" id="stat-edges">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Contexts</span>
+                                <span class="dag-stat-value" id="stat-contexts">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Root Nodes</span>
+                                <span class="dag-stat-value" id="stat-roots">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Detached Nodes</span>
+                                <span class="dag-stat-value" id="stat-detached">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">DAG Heads</span>
+                                <span class="dag-stat-value" id="stat-dag-heads">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Leaf Nodes</span>
+                                <span class="dag-stat-value" id="stat-leaves">0</span>
+                            </div>
+                        </div>
+                        <div style="margin-top: 12px; color: #858585; font-size: 12px;">
+                            Legend: ⚫ Genesis | 🟢 Root | 🔴 Detached | 🔵 Intermediate | 🟠 Leaf | 🟣 DAG Head
+                        </div>
+
+                        <svg id="dag-svg"></svg>
+                        <div id="dag-tooltip" class="dag-tooltip hidden"></div>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
 
     <script>
+        console.log('=== MeroDB JavaScript Loading ===');
+        console.log('Script timestamp:', new Date().toISOString());
+        
         let jsonData = null;
         let queryHistory = [];
         let jqReady = null;
+        let currentDbPath = null;
+        let currentWasmFile = null;
 
         // Initialize jq-web library
         if (typeof jq !== 'undefined') {
@@ -698,11 +986,6 @@
                 return;
             }
 
-            if (!wasmFile) {
-                showError('Please select a WASM file');
-                return;
-            }
-
             // Show loading state
             loadButton.disabled = true;
             loadingMessage.classList.remove('hidden');
@@ -712,7 +995,9 @@
                 // Create form data
                 const formData = new FormData();
                 formData.append('db_path', dbPath);
-                formData.append('wasm_file', wasmFile);
+                if (wasmFile) {
+                    formData.append('wasm_file', wasmFile);
+                }
 
                 // Send request to backend
                 const response = await fetch('/api/export', {
@@ -728,7 +1013,14 @@
 
                 // Success - load the data
                 jsonData = result.data;
-                document.getElementById('file-name').textContent = `${dbPath} (via ${wasmFile.name})`;
+                dagData = null;  // Clear DAG cache to force reload for new database
+                
+                // Store current path and WASM for refresh functionality
+                currentDbPath = dbPath;
+                currentWasmFile = wasmFile;
+                
+                const fileName = wasmFile ? `${dbPath} (via ${wasmFile.name})` : `${dbPath} (no ABI)`;
+                document.getElementById('file-name').textContent = fileName;
                 showViewer();
                 renderJson(jsonData);
                 hideError();
@@ -758,11 +1050,77 @@
 
         function resetView() {
             jsonData = null;
+            dagData = null;  // Clear DAG data cache
             queryHistory = [];
+            currentDbPath = null;
+            currentWasmFile = null;
             document.getElementById('upload-view').classList.remove('hidden');
             document.getElementById('viewer-view').classList.add('hidden');
-            fileInput.value = '';
+            document.getElementById('data-view').classList.remove('hidden');
+            document.getElementById('dag-view').classList.add('hidden');
+            // Reset tab to data view
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-button')[0].classList.add('active');
             hideError();
+        }
+
+        async function refreshCurrentDatabase() {
+            if (!currentDbPath) {
+                showError('No database loaded to refresh');
+                return;
+            }
+
+            const loadButton = document.getElementById('load-button');
+            const loadingMessage = document.getElementById('loading-message');
+
+            try {
+                // Show loading state
+                loadButton.disabled = true;
+                loadingMessage.classList.remove('hidden');
+                hideError();
+
+                // Create form data with the saved path and WASM
+                const formData = new FormData();
+                formData.append('db_path', currentDbPath);
+                if (currentWasmFile) {
+                    formData.append('wasm_file', currentWasmFile);
+                }
+
+                const response = await fetch('/api/export', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to reload database');
+                }
+
+                // Success - reload the data
+                jsonData = result.data;
+                dagData = null;  // Clear DAG cache to force reload
+                
+                // Re-render based on current tab
+                const activeTab = document.querySelector('.tab-button.active');
+                const currentView = activeTab ? activeTab.textContent.includes('DAG') ? 'dag' : 'data' : 'data';
+                
+                if (currentView === 'data') {
+                    renderJson(jsonData);
+                } else {
+                    switchTab('dag');  // This will reload the DAG view
+                }
+                
+                hideError();
+                console.log('Database refreshed successfully');
+
+            } catch (err) {
+                showError(err.message || 'Failed to refresh database');
+            } finally {
+                // Hide loading state
+                loadButton.disabled = false;
+                loadingMessage.classList.add('hidden');
+            }
         }
 
         // JSON viewer rendering
@@ -1018,6 +1376,651 @@
             } else {
                 historySection.classList.add('hidden');
             }
+        }
+
+        // ===== DAG Visualization Functions =====
+
+        let dagData = null;
+        let currentZoom = null;
+
+        function switchTab(tab) {
+            console.log('switchTab called with:', tab);
+            // Update tab buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // Toggle views
+            if (tab === 'data') {
+                document.getElementById('data-view').classList.remove('hidden');
+                document.getElementById('dag-view').classList.add('hidden');
+            } else if (tab === 'dag') {
+                console.log('Switching to DAG view, dagData:', dagData, 'jsonData exists:', !!jsonData);
+                document.getElementById('data-view').classList.add('hidden');
+                document.getElementById('dag-view').classList.remove('hidden');
+                // Load DAG data if not already loaded
+                if (!dagData && jsonData) {
+                    console.log('Calling loadDAGData...');
+                    loadDAGData();
+                } else {
+                    console.log('DAG data already loaded or no jsonData');
+                    if (dagData) {
+                        renderDAG();
+                    }
+                }
+            }
+        }
+
+        async function loadDAGData() {
+            console.log('loadDAGData called');
+            console.log('jsonData:', jsonData);
+            try {
+                // First, extract dag_heads from Meta column
+                const metaData = jsonData?.data?.Meta?.entries || [];
+                console.log('Meta entries:', metaData.length);
+                const contextHeads = new Map();
+                
+                for (const entry of metaData) {
+                    const key = entry.key;
+                    const value = entry.value;
+                    
+                    if (key?.id && value?.dag_heads && Array.isArray(value.dag_heads)) {
+                        // dag_heads are now properly hex-encoded by the Rust backend
+                        const heads = value.dag_heads;
+                        console.log('Context', key.id.substring(0, 8), 'has dag_heads:', heads.length, 'heads');
+                        console.log('  First head:', heads[0]?.substring(0, 16) + '...');
+                        contextHeads.set(key.id, heads);
+                    }
+                }
+
+                // Extract DAG data from both Delta and Generic columns
+                const deltaData = jsonData?.data?.Delta?.entries || [];
+                const genericData = jsonData?.data?.Generic?.entries || [];
+                console.log('Delta column entries:', deltaData.length);
+                console.log('Generic column entries:', genericData.length);
+                
+                // Combine both sources
+                const allDeltaEntries = [...deltaData, ...genericData];
+                
+                // Count entry types
+                let dagDeltaCount = 0;
+                let genericCount = 0;
+                let otherCount = 0;
+                
+                for (const entry of allDeltaEntries) {
+                    if (entry.value?.type === 'context_dag_delta') {
+                        dagDeltaCount++;
+                    } else if (entry.value?.type === 'generic') {
+                        genericCount++;
+                    } else {
+                        otherCount++;
+                    }
+                }
+                console.log('Entry types - dag_delta:', dagDeltaCount, 'generic:', genericCount, 'other:', otherCount);
+                
+                const nodes = [];
+                const edges = [];
+                const contexts = new Map();
+                const nodeSet = new Set();
+                const roots = new Set();
+                const leaves = new Set();
+
+                for (const entry of allDeltaEntries) {
+                    const key = entry.key;
+                    const value = entry.value;
+
+                    // Check if this is a context_dag_delta (works for both Delta column and Generic entries)
+                    if (value.type === 'context_dag_delta') {
+                        const contextId = key.context_id || key.id;  // Delta column uses 'context_id', might vary
+                        const deltaId = value.delta_id;
+                        const nodeId = `${contextId}:${deltaId}`;
+
+                        if (nodeSet.has(nodeId)) continue;
+                        nodeSet.add(nodeId);
+
+                        // Track deltas per context
+                        if (!contexts.has(contextId)) {
+                            contexts.set(contextId, []);
+                        }
+                        contexts.get(contextId).push(deltaId);
+
+                        // Check if this delta is a DAG head for its context
+                        const isDagHead = contextHeads.get(contextId)?.includes(deltaId) || false;
+                        
+                        if (nodes.length === 0) {
+                            console.log('First node:', {contextId, deltaId, isDagHead, parents: value.parents});
+                        }
+
+                        // Create node
+                        nodes.push({
+                            id: nodeId,
+                            context_id: contextId,
+                            delta_id: deltaId,
+                            timestamp: value.timestamp || 0,
+                            physical_time: value.hlc?.physical_time_secs || 0,
+                            logical_counter: value.hlc?.logical_counter || 0,
+                            hlc: value.hlc?.raw || '',
+                            actions_size: value.actions_size || 0,
+                            applied: value.applied || false,
+                            parents: value.parents || [],
+                            is_dag_head: isDagHead
+                        });
+
+                        // Create edges from this node to its parents
+                        if (value.parents && value.parents.length > 0) {
+                            for (const parent of value.parents) {
+                                const parentNodeId = `${contextId}:${parent}`;
+                                edges.push({
+                                    source: parentNodeId,
+                                    target: nodeId,
+                                    type: 'parent'
+                                });
+                            }
+                        }
+                    }
+                }
+
+                console.log('Before adding genesis nodes:', nodes.length, 'contexts:', contexts.size);
+                
+                // Check for missing dag_heads (referenced in Meta but not in Generic/Delta)
+                const existingDeltaIds = new Set(nodes.map(n => n.delta_id));
+                for (const [contextId, heads] of contextHeads.entries()) {
+                    const missingHeads = heads.filter(h => !existingDeltaIds.has(h));
+                    if (missingHeads.length > 0) {
+                        console.warn(`Context ${contextId.substring(0, 8)} has ${missingHeads.length} dag_heads NOT in Delta/Generic columns`);
+                        console.log('  Missing deltas:', missingHeads.map(h => h.substring(0, 8)));
+                    }
+                    
+                    // Check for orphaned dag_heads (no path to genesis)
+                    const presentHeads = heads.filter(h => existingDeltaIds.has(h));
+                    if (presentHeads.length > 0) {
+                        console.log(`  Present dag_heads for ${contextId.substring(0, 8)}:`, presentHeads.map(h => h.substring(0, 8)));
+                    }
+                }
+                
+                // Add genesis nodes (one per context) for the all-zeros hash
+                const genesisHash = '0000000000000000000000000000000000000000000000000000000000000000';
+                for (const [contextId, deltas] of contexts.entries()) {
+                    const genesisNodeId = `${contextId}:${genesisHash}`;
+                    
+                    // Add genesis node
+                    nodes.push({
+                        id: genesisNodeId,
+                        context_id: contextId,
+                        delta_id: genesisHash,
+                        timestamp: 0,
+                        physical_time: 0,
+                        logical_counter: 0,
+                        hlc: 'genesis',
+                        actions_size: 0,
+                        applied: true,
+                        parents: [],
+                        is_genesis: true,
+                        is_dag_head: false
+                    });
+                    
+                    nodeSet.add(genesisNodeId);
+                }
+
+                // Now create edges - check if parent nodes exist
+                const finalEdges = [];
+                let edgesSkipped = 0;
+                for (const edge of edges) {
+                    // Only add edge if both source and target exist in nodeSet
+                    if (nodeSet.has(edge.source) && nodeSet.has(edge.target)) {
+                        finalEdges.push(edge);
+                    } else {
+                        edgesSkipped++;
+                        if (edgesSkipped <= 3) {
+                            console.log('Edge skipped - source exists:', nodeSet.has(edge.source), 'target exists:', nodeSet.has(edge.target));
+                            console.log('  Edge:', edge);
+                        }
+                    }
+                }
+                
+                if (edgesSkipped > 0) {
+                    console.log(`Total edges skipped: ${edgesSkipped} out of ${edges.length}`);
+                }
+                
+                // Debug: Check if all nodes except genesis have connections
+                const connectedNodes = new Set();
+                for (const edge of finalEdges) {
+                    connectedNodes.add(edge.source);
+                    connectedNodes.add(edge.target);
+                }
+                const disconnectedNodes = nodes.filter(n => !connectedNodes.has(n.id) && !n.is_genesis);
+                if (disconnectedNodes.length > 0) {
+                    console.log('Disconnected non-genesis nodes:', disconnectedNodes.length);
+                    console.log('Sample:', disconnectedNodes[0]);
+                }
+
+                // Find roots and leaves
+                const sources = new Set();
+                const targets = new Set();
+                for (const edge of finalEdges) {
+                    sources.add(edge.source);
+                    targets.add(edge.target);
+                }
+                
+                for (const node of nodes) {
+                    // Roots are nodes with no incoming edges (including genesis nodes)
+                    if (!targets.has(node.id)) {
+                        roots.add(node.id);
+                    }
+                    // Leaves are nodes with no outgoing edges (excluding genesis nodes)
+                    if (!sources.has(node.id) && !node.is_genesis) {
+                        leaves.add(node.id);
+                    }
+                }
+
+                // Find detached nodes (nodes with missing parents)
+                const detached = new Set();
+                for (const node of nodes) {
+                    if (node.has_missing_parents) {
+                        detached.add(node.id);
+                    }
+                }
+
+                dagData = {
+                    nodes,
+                    edges: finalEdges,
+                    contexts: Array.from(contexts.entries()).map(([id, deltas]) => ({
+                        context_id: id,
+                        delta_count: deltas.length
+                    })),
+                    roots: Array.from(roots),
+                    detached: Array.from(detached),
+                    leaves: Array.from(leaves),
+                    summary: {
+                        total_nodes: nodes.length,
+                        total_edges: finalEdges.length,
+                        context_count: contexts.size,
+                        root_nodes: roots.size,
+                        detached_nodes: detached.size,
+                        leaf_nodes: leaves.size
+                    }
+                };
+
+                console.log('DAG Data Loaded:', {
+                    total_nodes: nodes.length,
+                    genesis_nodes: nodes.filter(n => n.is_genesis).length,
+                    total_edges: finalEdges.length,
+                    contexts: contexts.size,
+                    roots: roots.size,
+                    leaves: leaves.size
+                });
+
+                // Update context selector
+                const contextSelect = document.getElementById('context-select');
+                contextSelect.innerHTML = '<option value="all">All Contexts</option>';
+                for (const ctx of dagData.contexts) {
+                    const option = document.createElement('option');
+                    option.value = ctx.context_id;
+                    option.textContent = `${ctx.context_id.substring(0, 8)}... (${ctx.delta_count} deltas)`;
+                    contextSelect.appendChild(option);
+                }
+
+                // Render the DAG
+                renderDAG();
+            } catch (err) {
+                console.error('Failed to load DAG data:', err);
+                console.error('Error stack:', err.stack);
+                alert('Failed to extract DAG data from database: ' + err.message);
+            }
+        }
+
+        function renderDAG() {
+            console.log('renderDAG called, dagData exists:', !!dagData);
+            if (!dagData) {
+                console.log('No dagData, returning');
+                return;
+            }
+
+            const selectedContext = document.getElementById('context-select').value;
+            const layoutType = document.getElementById('layout-select').value;
+            console.log('Rendering with context:', selectedContext, 'layout:', layoutType);
+
+            // Filter nodes and edges by context
+            let filteredNodes = dagData.nodes;
+            let filteredEdges = dagData.edges;
+            let filteredRoots = Array.from(dagData.roots);
+            let filteredDetached = Array.from(dagData.detached);
+            let filteredLeaves = Array.from(dagData.leaves);
+
+            if (selectedContext !== 'all') {
+                filteredNodes = dagData.nodes.filter(n => n.context_id === selectedContext);
+                const nodeIds = new Set(filteredNodes.map(n => n.id));
+                // Filter edges - handle both string and object source/target (D3 mutates these)
+                filteredEdges = dagData.edges.filter(e => {
+                    const sourceId = typeof e.source === 'string' ? e.source : e.source.id;
+                    const targetId = typeof e.target === 'string' ? e.target : e.target.id;
+                    return nodeIds.has(sourceId) && nodeIds.has(targetId);
+                });
+                filteredRoots = dagData.roots.filter(r => nodeIds.has(r));
+                filteredDetached = dagData.detached.filter(d => nodeIds.has(d));
+                filteredLeaves = dagData.leaves.filter(l => nodeIds.has(l));
+                console.log('Filtered to context:', selectedContext, 'nodes:', filteredNodes.length, 'edges:', filteredEdges.length, 'roots:', filteredRoots.length, 'detached:', filteredDetached.length);
+            } else {
+                console.log('Showing all contexts - nodes:', filteredNodes.length, 'edges:', filteredEdges.length, 'roots:', filteredRoots.length, 'detached:', filteredDetached.length);
+            }
+
+            // Deep clone nodes and edges to prevent D3 mutations from affecting original data
+            filteredNodes = JSON.parse(JSON.stringify(filteredNodes));
+            filteredEdges = JSON.parse(JSON.stringify(filteredEdges));
+
+            // Update stats
+            const dagHeadsCount = filteredNodes.filter(n => n.is_dag_head).length;
+            document.getElementById('stat-nodes').textContent = filteredNodes.length;
+            document.getElementById('stat-edges').textContent = filteredEdges.length;
+            document.getElementById('stat-contexts').textContent = selectedContext === 'all' ? dagData.contexts.length : 1;
+            document.getElementById('stat-roots').textContent = filteredRoots.length;
+            document.getElementById('stat-detached').textContent = filteredDetached.length;
+            document.getElementById('stat-dag-heads').textContent = dagHeadsCount;
+            document.getElementById('stat-leaves').textContent = filteredLeaves.length;
+
+            // Render based on layout type
+            if (layoutType === 'hierarchical') {
+                renderHierarchicalDAG(filteredNodes, filteredEdges, filteredRoots, filteredDetached, filteredLeaves);
+            } else {
+                renderForceDAG(filteredNodes, filteredEdges, filteredRoots, filteredDetached, filteredLeaves);
+            }
+        }
+
+        function renderHierarchicalDAG(nodes, edges, roots, detached, leaves) {
+            console.log('renderHierarchicalDAG called with', nodes.length, 'nodes,', edges.length, 'edges,', roots.length, 'roots,', detached.length, 'detached');
+            const svg = d3.select('#dag-svg');
+            svg.selectAll('*').remove();
+            svg.on('.zoom', null); // Clear any existing zoom behavior
+
+            const width = document.getElementById('dag-svg').clientWidth || 1200;
+            const height = 600;
+
+            svg.attr('viewBox', [0, 0, width, height]);
+
+            const g = svg.append('g');
+
+            // Setup zoom
+            currentZoom = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => {
+                    g.attr('transform', event.transform);
+                });
+            svg.call(currentZoom);
+
+            // Calculate hierarchical layout
+            const nodeMap = new Map(nodes.map(n => [n.id, { ...n, children: [] }]));
+            const edgesByTarget = new Map();
+            for (const edge of edges) {
+                if (!edgesByTarget.has(edge.target)) {
+                    edgesByTarget.set(edge.target, []);
+                }
+                edgesByTarget.get(edge.target).push(edge.source);
+            }
+
+            // Assign levels (BFS from roots)
+            const levels = new Map();
+            const queue = [...roots.map(r => ({ id: r, level: 0 }))];
+            const visited = new Set();
+
+            while (queue.length > 0) {
+                const { id, level } = queue.shift();
+                if (visited.has(id)) continue;
+                visited.add(id);
+                levels.set(id, level);
+
+                // Find children (nodes that have this node as parent)
+                for (const edge of edges) {
+                    if (edge.source === id && !visited.has(edge.target)) {
+                        queue.push({ id: edge.target, level: level + 1 });
+                    }
+                }
+            }
+
+            // Group nodes by level
+            const levelGroups = new Map();
+            for (const [nodeId, level] of levels.entries()) {
+                if (!levelGroups.has(level)) {
+                    levelGroups.set(level, []);
+                }
+                levelGroups.get(level).push(nodeId);
+            }
+
+            const maxLevel = Math.max(...levels.values(), 0);
+            const levelHeight = height / (maxLevel + 2);
+
+            // Position nodes
+            const nodePositions = new Map();
+            for (const [level, nodeIds] of levelGroups.entries()) {
+                const levelWidth = width / (nodeIds.length + 1);
+                nodeIds.forEach((nodeId, idx) => {
+                    nodePositions.set(nodeId, {
+                        x: (idx + 1) * levelWidth,
+                        y: (level + 1) * levelHeight
+                    });
+                });
+            }
+
+            // Draw edges
+            g.selectAll('.dag-link')
+                .data(edges)
+                .join('path')
+                .attr('class', 'dag-link')
+                .attr('d', d => {
+                    const source = nodePositions.get(d.source);
+                    const target = nodePositions.get(d.target);
+                    if (!source || !target) return '';
+                    return `M${source.x},${source.y} L${target.x},${target.y}`;
+                });
+
+            // Draw nodes
+            const nodeGroup = g.selectAll('.dag-node')
+                .data(nodes)
+                .join('g')
+                .attr('class', d => {
+                    let classes = 'dag-node';
+                    if (d.is_genesis) classes += ' genesis';
+                    else if (d.is_dag_head) classes += ' dag-head';
+                    else if (detached.includes(d.id)) classes += ' detached';
+                    else if (roots.includes(d.id)) classes += ' root';
+                    else if (leaves.includes(d.id)) classes += ' leaf';
+                    return classes;
+                })
+                .attr('transform', d => {
+                    const pos = nodePositions.get(d.id);
+                    if (!pos) return 'translate(0,0)';
+                    return `translate(${pos.x},${pos.y})`;
+                });
+
+            nodeGroup.append('circle')
+                .attr('r', 8)
+                .on('mouseenter', showTooltip)
+                .on('mouseleave', hideTooltip)
+                .on('click', (event, d) => {
+                    d3.selectAll('.dag-node').classed('selected', false);
+                    d3.select(event.currentTarget.parentNode).classed('selected', true);
+                });
+
+            nodeGroup.append('text')
+                .attr('dy', -12)
+                .attr('text-anchor', 'middle')
+                .text(d => d.delta_id.substring(0, 6));
+        }
+
+        function renderForceDAG(nodes, edges, roots, detached, leaves) {
+            console.log('renderForceDAG called with', nodes.length, 'nodes,', edges.length, 'edges,', detached.length, 'detached');
+            const svg = d3.select('#dag-svg');
+            svg.selectAll('*').remove();
+            svg.on('.zoom', null); // Clear any existing zoom behavior
+
+            const width = document.getElementById('dag-svg').clientWidth || 1200;
+            const height = 600;
+
+            svg.attr('viewBox', [0, 0, width, height]);
+
+            const g = svg.append('g');
+
+            // Setup zoom
+            currentZoom = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => {
+                    g.attr('transform', event.transform);
+                });
+            svg.call(currentZoom);
+
+            // Force simulation
+            const simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(edges).id(d => d.id).distance(100))
+                .force('charge', d3.forceManyBody().strength(-300))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(20));
+
+            // Draw edges
+            const link = g.selectAll('.dag-link')
+                .data(edges)
+                .join('line')
+                .attr('class', 'dag-link');
+
+            // Draw nodes
+            const node = g.selectAll('.dag-node')
+                .data(nodes)
+                .join('g')
+                .attr('class', d => {
+                    let classes = 'dag-node';
+                    if (d.is_genesis) classes += ' genesis';
+                    else if (d.is_dag_head) classes += ' dag-head';
+                    else if (detached.includes(d.id)) classes += ' detached';
+                    else if (roots.includes(d.id)) classes += ' root';
+                    else if (leaves.includes(d.id)) classes += ' leaf';
+                    return classes;
+                })
+                .call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended));
+
+            node.append('circle')
+                .attr('r', 8)
+                .on('mouseenter', showTooltip)
+                .on('mouseleave', hideTooltip)
+                .on('click', (event, d) => {
+                    d3.selectAll('.dag-node').classed('selected', false);
+                    d3.select(event.currentTarget.parentNode).classed('selected', true);
+                });
+
+            node.append('text')
+                .attr('dy', -12)
+                .attr('text-anchor', 'middle')
+                .text(d => d.delta_id.substring(0, 6));
+
+            simulation.on('tick', () => {
+                link
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+
+            function dragstarted(event) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            }
+
+            function dragged(event) {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            }
+
+            function dragended(event) {
+                if (!event.active) simulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            }
+        }
+
+        function showTooltip(event, d) {
+            const tooltip = document.getElementById('dag-tooltip');
+            const genesisBadge = d.is_genesis ? ' <strong style="color: #616161;">⚫ GENESIS</strong>' : '';
+            const dagHeadBadge = d.is_dag_head ? ' <strong style="color: #ba68c8;">🟣 DAG HEAD</strong>' : '';
+            const detachedBadge = d.has_missing_parents ? ' <strong style="color: #f44336;">🔴 DETACHED</strong>' : '';
+            tooltip.innerHTML = `
+                <h4>Delta: ${d.delta_id.substring(0, 12)}...${genesisBadge}${dagHeadBadge}${detachedBadge}</h4>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Context:</span>
+                    <span class="tooltip-value">${d.context_id.substring(0, 12)}...</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Timestamp:</span>
+                    <span class="tooltip-value">${d.timestamp}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Physical Time:</span>
+                    <span class="tooltip-value">${d.physical_time}s</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Logical Counter:</span>
+                    <span class="tooltip-value">${d.logical_counter}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Actions Size:</span>
+                    <span class="tooltip-value">${d.actions_size} bytes</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Applied:</span>
+                    <span class="tooltip-value">${d.applied ? 'Yes' : 'No'}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Parents:</span>
+                    <span class="tooltip-value">${d.parents ? d.parents.length : 0}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">DAG Head:</span>
+                    <span class="tooltip-value">${d.is_dag_head ? 'Yes' : 'No'}</span>
+                </div>
+            `;
+            
+            // Show tooltip first to get its dimensions
+            tooltip.classList.remove('hidden');
+            
+            // Position tooltip relative to the node's SVG coordinates
+            const svgRect = document.getElementById('dag-svg').getBoundingClientRect();
+            const nodeX = (d.x !== undefined ? d.x : event.clientX - svgRect.left);
+            const nodeY = (d.y !== undefined ? d.y : event.clientY - svgRect.top);
+            
+            // Get tooltip dimensions
+            const tooltipHeight = tooltip.offsetHeight;
+            const tooltipWidth = tooltip.offsetWidth;
+            
+            // Position tooltip above the node
+            // Place it centered horizontally and fully above the node with some padding
+            tooltip.style.left = (svgRect.left + nodeX - tooltipWidth / 2) + 'px';
+            tooltip.style.top = (svgRect.top + nodeY - tooltipHeight - 20) + 'px';
+        }
+
+        function hideTooltip() {
+            document.getElementById('dag-tooltip').classList.add('hidden');
+        }
+
+        function resetZoom() {
+            if (currentZoom) {
+                d3.select('#dag-svg').transition().duration(750).call(currentZoom.transform, d3.zoomIdentity);
+            }
+        }
+
+        function exportDAGImage() {
+            const svg = document.getElementById('dag-svg');
+            const serializer = new XMLSerializer();
+            const source = serializer.serializeToString(svg);
+            const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'dag-visualization.svg';
+            link.click();
+            URL.revokeObjectURL(url);
         }
     </script>
 </body>

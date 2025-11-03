@@ -1,117 +1,117 @@
 {
-  "steps": [
-    {
-      "applicationInstall": {
-        "application": {
-          "localFile": "./apps/kv-store/res/kv_store.wasm"
-        },
-        "target": "allMembers"
+    "steps": [
+      {
+        "applicationInstall": {
+          "application": {
+            "localFile": "./apps/kv-store/res/kv_store.wasm"
+          },
+          "target": "allMembers"
+        }
+      },
+      {
+        "contextCreate": null
+      },
+      {
+        "contextCreateAlias": {
+          "aliasName": "my_context_open"
+        }
+      },
+      {
+        "wait": {
+          "for": "broadcast",
+          "durationMs": 5000,
+          "description": [
+            "Wait for context initialization to complete"
+          ]
+        }
+      },
+      {
+        "call": {
+          "methodName": "set",
+          "argsJson": {
+            "key": "foo",
+            "value": "bar"
+          },
+          "expectedResultJson": null,
+          "target": "inviter"
+        }
+      },
+      {
+        "call": {
+          "methodName": "get",
+          "argsJson": {
+            "key": "foo"
+          },
+          "expectedResultJson": "bar",
+          "target": "inviter"
+        }
+      },
+      {
+        "contextInviteJoinOpen": null
+      },
+      {
+        "wait": {
+          "for": "consensus",
+          "durationMs": 5000,
+          "description": [
+            "Wait for gossipsub mesh formation + initial sync completion.",
+            "Increased to 5s base (10s total with 3 nodes) for CI reliability."
+          ]
+        }
+      },
+      {
+        "call": {
+          "methodName": "get",
+          "argsJson": {
+            "key": "foo"
+          },
+          "expectedResultJson": "bar",
+          "target": "allMembers",
+          "retries": 5,
+          "intervalMs": 1000,
+          "description": [
+            "if we don't reach consensus in the ideal case",
+            "wait 5 seconds for nodes that have not yet synced",
+            "in the worst case, wait 20 * 5s for nodes that uselessly",
+            "keep syncing with themselves without having the state"
+          ]
+        }
+      },
+      {
+        "call": {
+          "methodName": "set",
+          "argsJson": {
+            "key": "foo",
+            "value": "baz"
+          },
+          "expectedResultJson": null,
+          "target": "inviter"
+        }
+      },
+      {
+        "wait": {
+          "for": "broadcast",
+          "durationMs": 5000,
+          "description": [
+            "wait exactly 5s for the broadcast to propagate"
+          ]
+        }
+      },
+      {
+        "call": {
+          "methodName": "get",
+          "argsJson": {
+            "key": "foo"
+          },
+          "expectedResultJson": "baz",
+          "target": "allMembers",
+          "retries": 5,
+          "intervalMs": 1000,
+          "description": [
+            "if a node still hasn't received the broadcast",
+            "try 5 more times in 5 seconds, but no more"
+          ]
+        }
       }
-    },
-    {
-      "contextCreate": null
-    },
-    {
-      "contextCreateAlias": {
-        "aliasName": "my_context_open"
-      }
-    },
-    {
-      "wait": {
-        "for": "broadcast",
-        "durationMs": 5000,
-        "description": [
-          "Wait for context initialization to complete"
-        ]
-      }
-    },
-    {
-      "call": {
-        "methodName": "set",
-        "argsJson": {
-          "key": "foo",
-          "value": "bar"
-        },
-        "expectedResultJson": null,
-        "target": "inviter"
-      }
-    },
-    {
-      "call": {
-        "methodName": "get",
-        "argsJson": {
-          "key": "foo"
-        },
-        "expectedResultJson": "bar",
-        "target": "inviter"
-      }
-    },
-    {
-      "contextInviteJoinOpen": null
-    },
-    {
-      "wait": {
-        "for": "consensus",
-        "durationMs": 5000,
-        "description": [
-          "Wait for gossipsub mesh formation + initial sync completion.",
-          "Increased to 5s base (10s total with 3 nodes) for CI reliability."
-        ]
-      }
-    },
-    {
-      "call": {
-        "methodName": "get",
-        "argsJson": {
-          "key": "foo"
-        },
-        "expectedResultJson": "bar",
-        "target": "allMembers",
-        "retries": 5,
-        "intervalMs": 1000,
-        "description": [
-          "if we don't reach consensus in the ideal case",
-          "wait 5 seconds for nodes that have not yet synced",
-          "in the worst case, wait 20 * 5s for nodes that uselessly",
-          "keep syncing with themselves without having the state"
-        ]
-      }
-    },
-    {
-      "call": {
-        "methodName": "set",
-        "argsJson": {
-          "key": "foo",
-          "value": "baz"
-        },
-        "expectedResultJson": null,
-        "target": "inviter"
-      }
-    },
-    {
-      "wait": {
-        "for": "broadcast",
-        "durationMs": 5000,
-        "description": [
-          "wait exactly 5s for the broadcast to propagate"
-        ]
-      }
-    },
-    {
-      "call": {
-        "methodName": "get",
-        "argsJson": {
-          "key": "foo"
-        },
-        "expectedResultJson": "baz",
-        "target": "allMembers",
-        "retries": 5,
-        "intervalMs": 1000,
-        "description": [
-          "if a node still hasn't received the broadcast",
-          "try 5 more times in 5 seconds, but no more"
-        ]
-      }
-    }
-  ]
-}
+    ]
+  }

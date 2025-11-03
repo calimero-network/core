@@ -14,9 +14,9 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
+        "durationMs": 500,
         "description": [
-          "Wait for context initialization to complete"
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
         ]
       }
     },
@@ -25,9 +25,11 @@
     },
     {
       "wait": {
-        "durationMs": 3000,
+        "durationMs": 2000,
         "for": "consensus",
-        "description": "Wait for invitee to join and initialize"
+        "description": [
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
+        ]
       }
     },
     {
@@ -95,9 +97,11 @@
     },
     {
       "wait": {
-        "durationMs": 5000,
+        "durationMs": 500,
         "for": "broadcast",
-        "description": "Wait for delta propagation via Gossipsub"
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -136,9 +140,11 @@
     },
     {
       "wait": {
-        "durationMs": 5000,
+        "durationMs": 500,
         "for": "broadcast",
-        "description": "Wait for delta propagation back to inviter"
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {

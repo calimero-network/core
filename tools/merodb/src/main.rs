@@ -11,6 +11,7 @@ use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 
 mod abi;
+mod dag;
 mod deserializer;
 mod export;
 mod schema;
@@ -56,8 +57,12 @@ struct Cli {
     columns: Option<String>,
 
     /// Validate database integrity
-    #[arg(long, conflicts_with_all = &["schema", "export"])]
+    #[arg(long, conflicts_with_all = &["schema", "export", "export_dag"])]
     validate: bool,
+
+    /// Export DAG structure from Context DAG deltas
+    #[arg(long, conflicts_with_all = &["schema", "export", "validate"])]
+    export_dag: bool,
 
     /// Output file path (defaults to stdout if not specified)
     #[arg(short, long, value_name = "FILE")]
@@ -141,11 +146,14 @@ fn main() -> Result<()> {
 
         let data = export::export_data(&db, &columns, manifest)?;
         output_json(&data, cli.output.as_deref())?;
+    } else if cli.export_dag {
+        let dag_data = dag::export_dag(&db)?;
+        output_json(&dag_data, cli.output.as_deref())?;
     } else if cli.validate {
         let validation_result = validation::validate_database(&db)?;
         output_json(&validation_result, cli.output.as_deref())?;
     } else {
-        eyre::bail!("Must specify one of: --schema, --export, or --validate");
+        eyre::bail!("Must specify one of: --schema, --export, --export-dag, or --validate");
     }
 
     Ok(())
@@ -179,6 +187,7 @@ fn parse_columns(column_names: &str) -> Result<Vec<Column>> {
             "Config" => Column::Config,
             "Identity" => Column::Identity,
             "State" => Column::State,
+            "Delta" => Column::Delta,
             "Blobs" => Column::Blobs,
             "Application" => Column::Application,
             "Alias" => Column::Alias,

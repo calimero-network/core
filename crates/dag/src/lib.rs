@@ -170,6 +170,35 @@ impl<T: Clone> DagStore<T> {
         }
     }
 
+    /// Restore an already-applied delta from persistent storage
+    ///
+    /// This adds the delta to the DAG topology WITHOUT applying it again.
+    /// Use this when loading deltas from the database that were previously applied.
+    ///
+    /// Returns true if the delta was restored, false if it was already in the DAG.
+    pub fn restore_applied_delta(&mut self, delta: CausalDelta<T>) -> bool {
+        let delta_id = delta.id;
+
+        // Skip if already seen
+        if self.deltas.contains_key(&delta_id) {
+            return false;
+        }
+
+        // Store delta in memory
+        self.deltas.insert(delta_id, delta.clone());
+
+        // Mark as applied (it was already applied when it was persisted)
+        self.applied.insert(delta_id);
+
+        // Update heads: remove parents (if they're heads), add this delta
+        for parent in &delta.parents {
+            self.heads.remove(parent);
+        }
+        self.heads.insert(delta_id);
+
+        true
+    }
+
     /// Add a delta to the DAG
     ///
     /// Returns:
@@ -202,9 +231,20 @@ impl<T: Clone> DagStore<T> {
         }
     }
 
-    /// Check if a delta can be applied (all parents applied)
+    /// Check if a delta can be applied
+    ///
+    /// Returns true if all parent deltas have been applied and exist in the DAG.
+    /// This ensures topological ordering and prevents phantom references.
     fn can_apply(&self, delta: &CausalDelta<T>) -> bool {
-        delta.parents.iter().all(|p| self.applied.contains(p))
+        delta.parents.iter().all(|p| {
+            // Genesis (zero hash) is always considered applied
+            if *p == [0; 32] {
+                return true;
+            }
+
+            // Parent must be both applied and exist in the DAG
+            self.applied.contains(p) && self.deltas.contains_key(p)
+        })
     }
 
     /// Apply a delta using the provided applier
@@ -259,12 +299,23 @@ impl<T: Clone> DagStore<T> {
         Ok(())
     }
 
-    /// Get missing parent IDs
+    /// Get missing parent IDs (parents that are not in the DAG at all)
+    ///
+    /// Returns parents that are not yet in the DAG. If a parent is in the DAG
+    /// but not yet applied, it's not considered "missing" - it will cascade
+    /// when its own parents arrive.
     pub fn get_missing_parents(&self) -> Vec<[u8; 32]> {
         let mut missing = HashSet::new();
 
-        for pending in self.pending.values() {
+        for (_pending_id, pending) in &self.pending {
             for parent in &pending.delta.parents {
+                // Skip genesis
+                if *parent == [0; 32] {
+                    continue;
+                }
+
+                // Only return parents that aren't in the DAG at all
+                // Parents that are in the DAG but pending will cascade when ready
                 if !self.deltas.contains_key(parent) {
                     missing.insert(*parent);
                 }
@@ -272,6 +323,11 @@ impl<T: Clone> DagStore<T> {
         }
 
         missing.into_iter().collect()
+    }
+
+    /// Get IDs of deltas that are currently pending (not yet applied)
+    pub fn get_pending_delta_ids(&self) -> Vec<[u8; 32]> {
+        self.pending.keys().copied().collect()
     }
 
     /// Cleanup stale pending deltas (timeout eviction)
@@ -348,6 +404,11 @@ impl<T: Clone> DagStore<T> {
     /// Check if we have a specific delta
     pub fn has_delta(&self, id: &[u8; 32]) -> bool {
         self.deltas.contains_key(id)
+    }
+
+    /// Check if a specific delta has been applied (not just exists)
+    pub fn is_applied(&self, id: &[u8; 32]) -> bool {
+        self.applied.contains(id)
     }
 
     /// Get a delta by ID

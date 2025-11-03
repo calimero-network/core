@@ -19,9 +19,9 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
+        "durationMs": 500,
         "description": [
-          "Wait for context initialization to complete"
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
         ]
       }
     },
@@ -30,9 +30,11 @@
     },
     {
       "wait": {
-        "durationMs": 3000,
+        "durationMs": 2000,
         "for": "consensus",
-        "description": "Wait for key exchange (2-3s) + gossipsub mesh formation + initial sync"
+        "description": [
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
+        ]
       }
     },
     {
@@ -49,8 +51,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -78,8 +82,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -90,7 +96,7 @@
         "target": "invitees",
         "retries": 10,
         "intervalMs": 2000,
-        "description": "Global G-Counter shows 4 (both nodes execute × 2 sets). Retries for G-Counter CRDT merge."
+        "description": "Global G-Counter shows 4 (both nodes execute \u00d7 2 sets). Retries for G-Counter CRDT merge."
       }
     },
     {
@@ -106,8 +112,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -135,8 +143,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -150,8 +160,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
-        "description": "Wait for network sync, handler execution, and CRDT counter merge"
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {

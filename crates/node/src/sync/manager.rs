@@ -273,10 +273,29 @@ impl SyncManager {
             return self.initiate_sync(context_id, peer_id).await;
         }
 
-        let peers = self
-            .network_client
-            .mesh_peers(TopicHash::from_raw(context_id))
-            .await;
+        // CRITICAL FIX: Retry peer discovery if mesh is still forming
+        // After subscribing to a context, gossipsub needs time to form the mesh.
+        // We retry a few times with short delays to handle this gracefully.
+        let mut peers = Vec::new();
+        for attempt in 1..=3 {
+            peers = self
+                .network_client
+                .mesh_peers(TopicHash::from_raw(context_id))
+                .await;
+
+            if !peers.is_empty() {
+                break;
+            }
+
+            if attempt < 3 {
+                debug!(
+                    %context_id,
+                    attempt,
+                    "No peers found yet, mesh may still be forming, retrying..."
+                );
+                time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
 
         if peers.is_empty() {
             bail!("No peers to sync with for context {}", context_id);
@@ -532,6 +551,42 @@ impl SyncManager {
             return Ok(result);
         }
 
+        // Check if we have pending deltas (incomplete DAG)
+        // Even if node has some state, it might be missing parent deltas
+        if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+            let missing_result = delta_store.get_missing_parents().await;
+
+            // Note: Cascaded events from DB loads are handled in state_delta handler
+            if !missing_result.cascaded_events.is_empty() {
+                info!(
+                    %context_id,
+                    cascaded_count = missing_result.cascaded_events.len(),
+                    "Cascaded deltas from DB load (handlers executed in state_delta path)"
+                );
+            }
+
+            if !missing_result.missing_ids.is_empty() {
+                warn!(
+                    %context_id,
+                    %chosen_peer,
+                    missing_count = missing_result.missing_ids.len(),
+                    "Node has incomplete DAG (pending deltas), requesting DAG heads to catch up"
+                );
+
+                // Request DAG heads just like uninitialized nodes
+                let result = self
+                    .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, &mut stream)
+                    .await?;
+
+                // If peer had no data, return error to try next peer
+                if matches!(result, SyncProtocol::None) {
+                    bail!("Peer has no data for this context");
+                }
+
+                return Ok(result);
+            }
+        }
+
         // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
         debug!(%context_id, "Node is in sync, no active protocol needed");
         Ok(SyncProtocol::None)
@@ -541,7 +596,7 @@ impl SyncManager {
     async fn request_dag_heads_and_sync(
         &self,
         context_id: ContextId,
-        _peer_id: PeerId,
+        peer_id: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
@@ -598,8 +653,42 @@ impl SyncManager {
                     return Ok(SyncProtocol::None);
                 }
 
-                // Request each head delta (these are the tips of the DAG)
-                // The DeltaStore will recursively request parent deltas as needed
+                // CRITICAL FIX: Fetch ALL DAG heads first, THEN request missing parents
+                // This ensures we don't miss sibling heads that might be the missing parents
+
+                // Get or create DeltaStore for this context (do this once before the loop)
+                let (delta_store_ref, is_new_store) = {
+                    let mut is_new = false;
+                    let delta_store = self
+                        .node_state
+                        .delta_stores
+                        .entry(context_id)
+                        .or_insert_with(|| {
+                            is_new = true;
+                            crate::delta_store::DeltaStore::new(
+                                [0u8; 32],
+                                self.context_client.clone(),
+                                context_id,
+                                our_identity,
+                            )
+                        });
+
+                    let delta_store_ref = delta_store.clone();
+                    (delta_store_ref, is_new)
+                };
+
+                // Load persisted deltas from database on first access
+                if is_new_store {
+                    if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                        warn!(
+                            ?e,
+                            %context_id,
+                            "Failed to load persisted deltas, starting with empty DAG"
+                        );
+                    }
+                }
+
+                // Phase 1: Request and add ALL DAG heads
                 for head_id in &dag_heads {
                     info!(
                         %context_id,
@@ -641,23 +730,6 @@ impl SyncManager {
                                 expected_root_hash: storage_delta.expected_root_hash,
                             };
 
-                            // Get or create DeltaStore for this context
-                            let delta_store = self
-                                .node_state
-                                .delta_stores
-                                .entry(context_id)
-                                .or_insert_with(|| {
-                                    crate::delta_store::DeltaStore::new(
-                                        [0u8; 32],
-                                        self.context_client.clone(),
-                                        context_id,
-                                        our_identity,
-                                    )
-                                });
-
-                            let delta_store_ref = delta_store.clone();
-                            drop(delta_store);
-
                             if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
                                 warn!(
                                     ?e,
@@ -676,6 +748,44 @@ impl SyncManager {
                         _ => {
                             warn!(%context_id, head_id = ?head_id, "Unexpected response to delta request");
                         }
+                    }
+                }
+
+                // Phase 2: Now check for missing parents and fetch them recursively
+                let missing_result = delta_store_ref.get_missing_parents().await;
+
+                // Note: Cascaded events from DB loads logged but not executed here (state_delta handler will catch them)
+                if !missing_result.cascaded_events.is_empty() {
+                    info!(
+                        %context_id,
+                        cascaded_count = missing_result.cascaded_events.len(),
+                        "Cascaded deltas from DB load during DAG head sync"
+                    );
+                }
+
+                if !missing_result.missing_ids.is_empty() {
+                    info!(
+                        %context_id,
+                        missing_count = missing_result.missing_ids.len(),
+                        "DAG heads have missing parents, requesting them recursively"
+                    );
+
+                    // Request missing parents (this uses recursive topological fetching)
+                    if let Err(e) = self
+                        .request_missing_deltas(
+                            context_id,
+                            missing_result.missing_ids,
+                            peer_id,
+                            delta_store_ref.clone(),
+                            our_identity,
+                        )
+                        .await
+                    {
+                        warn!(
+                            ?e,
+                            %context_id,
+                            "Failed to request missing parent deltas during DAG catchup"
+                        );
                     }
                 }
 

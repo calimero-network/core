@@ -36,9 +36,10 @@ const fn get_column_description(column: Column) -> &'static str {
         Column::Config => "Stores context configuration including protocol, network, contract addresses, and revision numbers.",
         Column::Identity => "Stores context membership. Each entry represents a public key that is a member of a context.",
         Column::State => "Stores application-specific state as raw bytes. The structure depends on the application.",
+        Column::Delta => "Stores Context DAG deltas for CRDT synchronization. Each delta represents a state transition with its parent deltas, actions, and HLC timestamp.",
         Column::Blobs => "Stores blob metadata including size and content type. The actual blob data is stored separately.",
         Column::Application => "Stores application metadata including the blob ID and source hash.",
         Column::Alias => "Stores human-readable aliases for contexts, applications, and public keys.",
-        Column::Generic => "Generic key-value storage for arbitrary data organized by scope and fragment. Also stores ContextDagDelta entries for CRDT synchronization.",
+        Column::Generic => "Generic key-value storage for arbitrary data organized by scope and fragment.",
     }
 }
