@@ -238,8 +238,8 @@ pub fn get_missing_parents(&self) -> Vec<[u8; 32]> {
     
     for pending in self.pending.values() {
         for parent in &pending.delta.parents {
-            // Not applied yet = missing (includes both not-in-DAG and pending)
-            if !self.applied.contains(parent) {
+            // Not in deltas map at all = missing
+            if !self.deltas.contains_key(parent) {
                 missing.insert(*parent);
             }
         }
