@@ -299,15 +299,15 @@ impl<T: Clone> DagStore<T> {
         Ok(())
     }
 
-    /// Get missing parent IDs (parents that are not applied yet)
+    /// Get missing parent IDs (parents that are not in the DAG at all)
     ///
-    /// Returns parents that haven't been successfully applied to storage yet.
-    /// This includes both:
-    /// 1. Parents not in the DAG at all (need to be fetched)
-    /// 2. Parents in the DAG but still pending (need their ancestors fetched)
+    /// Returns parents that aren't in the DAG yet and need to be fetched from peers.
     ///
-    /// This ensures we re-fetch parent chains that got stuck pending in previous
-    /// sync attempts due to depth limits or network issues.
+    /// Parents that are already in the DAG but still pending will cascade and apply
+    /// automatically when their own missing parents arrive.
+    ///
+    /// Note: With proper eviction (removing from both pending AND deltas), stale
+    /// pending deltas are fully removed, allowing them to be re-fetched in future syncs.
     pub fn get_missing_parents(&self) -> Vec<[u8; 32]> {
         let mut missing = HashSet::new();
 
@@ -318,10 +318,9 @@ impl<T: Clone> DagStore<T> {
                     continue;
                 }
 
-                // Return parents that aren't APPLIED yet
-                // This includes parents that are in deltas but still pending
-                // (stuck waiting for their own parents from previous incomplete syncs)
-                if !self.applied.contains(parent) {
+                // Only return parents that aren't in the DAG at all
+                // Parents that are in the DAG but pending will cascade when ready
+                if !self.deltas.contains_key(parent) {
                     missing.insert(*parent);
                 }
             }
