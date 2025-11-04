@@ -26,6 +26,7 @@ use calimero_store::types::{
     ContextIdentity as StoreContextIdentity, ContextMeta as StoreContextMeta,
 };
 use eyre::Result;
+use serde::de::Error as DeError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -142,13 +143,13 @@ impl<'de> Deserialize<'de> for Column {
         D: serde::Deserializer<'de>,
     {
         let value = <String as Deserialize>::deserialize(deserializer)?;
-        Column::from_name(value.trim()).ok_or_else(|| {
-            let expected = Column::all()
+        Self::from_name(value.trim()).ok_or_else(|| {
+            let expected = Self::all()
                 .iter()
-                .map(Column::as_str)
+                .map(Self::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
-            serde::de::Error::custom(format!(
+            DeError::custom(format!(
                 "Unknown column family '{value}'. Expected one of: {expected}"
             ))
         })
@@ -156,6 +157,10 @@ impl<'de> Deserialize<'de> for Column {
 }
 
 /// Parse a key into a human-readable JSON representation
+#[expect(
+    clippy::too_many_lines,
+    reason = "Branch-heavy decoding logic mirrors database schema"
+)]
 pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
     match column {
         Column::Meta | Column::Config | Column::Blobs | Column::Application => {
@@ -291,7 +296,7 @@ fn parse_context_meta(data: &[u8]) -> Result<Value> {
         Ok(meta) => Ok(json!({
             "application_id": String::from_utf8_lossy(meta.application.application_id().as_ref()),
             "root_hash": String::from_utf8_lossy(&meta.root_hash),
-            "dag_heads": meta.dag_heads.iter().map(|h| hex::encode(h)).collect::<Vec<_>>()
+            "dag_heads": meta.dag_heads.iter().map(hex::encode).collect::<Vec<_>>()
         })),
         Err(e) => Ok(json!({
             "error": format!("Failed to parse ContextMeta: {e}"),
@@ -395,13 +400,13 @@ fn parse_dag_delta(data: &[u8]) -> Result<Value> {
             let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
             Ok(json!({
                 "type": "context_dag_delta",
-                "delta_id": hex::encode(&delta.delta_id),
-                "parents": delta.parents.iter().map(|p| hex::encode(p)).collect::<Vec<_>>(),
+                "delta_id": hex::encode(delta.delta_id),
+                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,
                 "applied": delta.applied,
-                "expected_root_hash": hex::encode(&delta.expected_root_hash)
+                "expected_root_hash": hex::encode(delta.expected_root_hash)
             }))
         }
         Err(e) => Ok(json!({
@@ -419,8 +424,8 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
             let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
             Ok(json!({
                 "type": "context_dag_delta",
-                "delta_id": hex::encode(&delta.delta_id),
-                "parents": delta.parents.iter().map(|p| hex::encode(p)).collect::<Vec<_>>(),
+                "delta_id": hex::encode(delta.delta_id),
+                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,

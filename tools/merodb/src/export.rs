@@ -11,55 +11,6 @@ use std::io::{Cursor, Read};
 use crate::deserializer;
 use crate::types::{parse_key, parse_value, Column};
 
-/// Export data from RocksDB to JSON without ABI (raw values only)
-pub fn export_data_without_abi(
-    db: &DBWithThreadMode<SingleThreaded>,
-    columns: &[Column],
-) -> Result<Value> {
-    let mut data = serde_json::Map::new();
-
-    for column in columns {
-        let cf_name = column.as_str();
-        let cf = db
-            .cf_handle(cf_name)
-            .ok_or_else(|| eyre::eyre!("Column family '{cf_name}' not found"))?;
-
-        let mut entries = Vec::new();
-        let iter = db.iterator_cf(&cf, IteratorMode::Start);
-
-        for item in iter {
-            let (key, value) = item
-                .wrap_err_with(|| format!("Failed to read entry from column family '{cf_name}'"))?;
-
-            let key_json = parse_key(*column, &key)
-                .wrap_err_with(|| format!("Failed to parse key in column '{cf_name}'"))?;
-
-            let value_json = parse_value(*column, &value)
-                .wrap_err_with(|| format!("Failed to parse value in column '{cf_name}'"))?;
-
-            entries.push(json!({
-                "key": key_json,
-                "value": value_json
-            }));
-        }
-
-        drop(data.insert(
-            cf_name.to_owned(),
-            json!({
-                "count": entries.len(),
-                "entries": entries
-            }),
-        ));
-    }
-
-    Ok(json!({
-        "database": "Calimero RocksDB Export",
-        "exported_columns": columns.iter().map(Column::as_str).collect::<Vec<_>>(),
-        "note": "Exported without ABI - state values are not decoded",
-        "data": data
-    }))
-}
-
 /// Export data from RocksDB to JSON
 pub fn export_data(
     db: &DBWithThreadMode<SingleThreaded>,
@@ -359,8 +310,8 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                         let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                         return Ok(json!({
                             "type": "context_dag_delta",
-                            "delta_id": hex::encode(&delta.delta_id),
-                            "parents": delta.parents.iter().map(|p| hex::encode(p)).collect::<Vec<_>>(),
+                            "delta_id": hex::encode(delta.delta_id),
+                            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                             "actions": {
                                 "parsed": parsed,
                                 "raw": String::from_utf8_lossy(&delta.actions)
@@ -375,8 +326,8 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                 let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                 return Ok(json!({
                     "type": "context_dag_delta",
-                    "delta_id": hex::encode(&delta.delta_id),
-                    "parents": delta.parents.iter().map(|p| hex::encode(p)).collect::<Vec<_>>(),
+                    "delta_id": hex::encode(delta.delta_id),
+                    "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                     "actions": {
                         "raw": String::from_utf8_lossy(&delta.actions),
                         "note": "Unable to decode actions with ABI"

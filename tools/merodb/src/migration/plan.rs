@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fmt;
 use std::path::PathBuf;
 
@@ -187,13 +185,45 @@ impl PlanFilters {
         Ok(())
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.context_ids.is_empty()
             && self.context_aliases.is_empty()
             && self.state_key_prefix.is_none()
             && self.raw_key_prefix.is_none()
             && self.alias_name.is_none()
             && self.key_range.is_none()
+    }
+
+    pub fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+
+        if !self.context_ids.is_empty() {
+            parts.push(format!("context_ids={}", self.context_ids.len()));
+        }
+        if !self.context_aliases.is_empty() {
+            parts.push(format!(
+                "context_aliases={}",
+                self.context_aliases.join("|")
+            ));
+        }
+        if let Some(prefix) = &self.state_key_prefix {
+            parts.push(format!("state_key_prefix={prefix}"));
+        }
+        if let Some(prefix) = &self.raw_key_prefix {
+            parts.push(format!("raw_key_prefix={prefix}"));
+        }
+        if let Some(name) = &self.alias_name {
+            parts.push(format!("alias_name={name}"));
+        }
+        if let Some(range) = &self.key_range {
+            parts.push(format!("key_range={}", range.summary()));
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(", "))
+        }
     }
 }
 
@@ -205,12 +235,18 @@ pub struct KeyRange {
 
 impl KeyRange {
     fn validate(&self, context: &str) -> Result<()> {
-        if self.start.as_deref().map_or(true, str::is_empty)
-            && self.end.as_deref().map_or(true, str::is_empty)
+        if self.start.as_deref().is_none_or(str::is_empty)
+            && self.end.as_deref().is_none_or(str::is_empty)
         {
             bail!("{context}: key_range requires at least 'start' or 'end'");
         }
         Ok(())
+    }
+
+    pub fn summary(&self) -> String {
+        let start = self.start.as_deref().unwrap_or("");
+        let end = self.end.as_deref().unwrap_or("");
+        format!("{start}..{end}")
     }
 }
 
@@ -230,6 +266,42 @@ impl PlanStep {
             Self::Delete(step) => step.validate(index),
             Self::Upsert(step) => step.validate(index),
             Self::Verify(step) => step.validate(index),
+        }
+    }
+
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Copy(_) => "copy",
+            Self::Delete(_) => "delete",
+            Self::Upsert(_) => "upsert",
+            Self::Verify(_) => "verify",
+        }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::Copy(step) => step.name.as_deref(),
+            Self::Delete(step) => step.name.as_deref(),
+            Self::Upsert(step) => step.name.as_deref(),
+            Self::Verify(step) => step.name.as_deref(),
+        }
+    }
+
+    pub const fn column(&self) -> Column {
+        match self {
+            Self::Copy(step) => step.column,
+            Self::Delete(step) => step.column,
+            Self::Upsert(step) => step.column,
+            Self::Verify(step) => step.column,
+        }
+    }
+
+    pub const fn filters(&self) -> Option<&PlanFilters> {
+        match self {
+            Self::Copy(step) => Some(&step.filters),
+            Self::Delete(step) => Some(&step.filters),
+            Self::Verify(step) => Some(&step.filters),
+            Self::Upsert(_) => None,
         }
     }
 }
@@ -273,6 +345,21 @@ impl CopyTransform {
             );
         }
         Ok(())
+    }
+
+    pub fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(flag) = self.decode_with_abi {
+            parts.push(format!("decode_with_abi={flag}"));
+        }
+        if let Some(jq) = &self.jq {
+            parts.push(format!("jq={jq}"));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(", "))
+        }
     }
 }
 
@@ -343,17 +430,45 @@ pub enum EncodedValue {
 impl EncodedValue {
     fn validate(&self, context: &str) -> Result<()> {
         match self {
-            EncodedValue::Hex { data }
-            | EncodedValue::Base64 { data }
-            | EncodedValue::Utf8 { data } => {
+            Self::Hex { data } | Self::Base64 { data } | Self::Utf8 { data } => {
                 ensure!(
                     !data.trim().is_empty(),
                     "{context}: value must not be empty"
                 );
             }
-            EncodedValue::Json { .. } => {}
+            Self::Json { .. } => {}
         }
         Ok(())
+    }
+
+    pub const fn encoding_label(&self) -> &'static str {
+        match self {
+            Self::Hex { .. } => "hex",
+            Self::Base64 { .. } => "base64",
+            Self::Utf8 { .. } => "utf8",
+            Self::Json { .. } => "json",
+        }
+    }
+
+    pub fn preview(&self, max_len: usize) -> String {
+        fn truncate(value: &str, max_len: usize) -> String {
+            let mut truncated = String::new();
+            for (idx, ch) in value.chars().enumerate() {
+                if idx >= max_len {
+                    truncated.push('…');
+                    break;
+                }
+                truncated.push(ch);
+            }
+            truncated
+        }
+
+        match self {
+            Self::Hex { data } | Self::Base64 { data } | Self::Utf8 { data } => {
+                truncate(data, max_len)
+            }
+            Self::Json { value } => truncate(&value.to_string(), max_len),
+        }
     }
 }
 
@@ -390,17 +505,39 @@ pub enum VerificationAssertion {
 impl VerificationAssertion {
     fn validate(&self, context: &str) -> Result<()> {
         match self {
-            VerificationAssertion::ExpectedCount { .. }
-            | VerificationAssertion::MinCount { .. }
-            | VerificationAssertion::MaxCount { .. } => {}
-            VerificationAssertion::ContainsKey { contains_key } => {
+            Self::ExpectedCount { .. } | Self::MinCount { .. } | Self::MaxCount { .. } => {}
+            Self::ContainsKey { contains_key } => {
                 contains_key.validate(&format!("{context}.contains_key"))?;
             }
-            VerificationAssertion::MissingKey { missing_key } => {
+            Self::MissingKey { missing_key } => {
                 missing_key.validate(&format!("{context}.missing_key"))?;
             }
         }
         Ok(())
+    }
+
+    pub fn summary(&self) -> String {
+        match self {
+            Self::ExpectedCount { expected_count } => {
+                format!("expect count == {expected_count}")
+            }
+            Self::MinCount { min_count } => {
+                format!("expect count >= {min_count}")
+            }
+            Self::MaxCount { max_count } => {
+                format!("expect count <= {max_count}")
+            }
+            Self::ContainsKey { contains_key } => format!(
+                "expect key present ({}, preview: {})",
+                contains_key.encoding_label(),
+                contains_key.preview(16)
+            ),
+            Self::MissingKey { missing_key } => format!(
+                "expect key missing ({}, preview: {})",
+                missing_key.encoding_label(),
+                missing_key.preview(16)
+            ),
+        }
     }
 }
 

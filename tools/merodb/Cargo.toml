@@ -16,6 +16,7 @@ gui = ["axum", "tokio"]
 rocksdb = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 serde = { workspace = true, features = ["derive"] }
 borsh = { workspace = true, features = ["derive"] }
 eyre = { workspace = true }
@@ -27,9 +28,6 @@ wasmparser = "0.118"
 # GUI dependencies (optional)
 axum = { version = "0.7", optional = true, features = ["multipart"] }
 tokio = { version = "1", features = ["full"], optional = true }
-
-[dev-dependencies]
-serde_yaml = "0.9"
 
 [lints]
 workspace = true

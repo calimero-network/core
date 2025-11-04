@@ -22,6 +22,8 @@ mod validation;
 #[cfg(feature = "gui")]
 mod gui;
 
+use migration::loader::load_plan;
+use migration::plan::{MigrationPlan, PlanStep};
 use types::Column;
 
 #[derive(Parser, Debug)]
@@ -118,11 +120,11 @@ struct GuiArgs {
     port: u16,
 }
 
-#[derive(Args, Debug, Default)]
+#[derive(Args, Debug)]
 struct MigrateArgs {
-    /// Migration plan file (YAML/JSON)
+    /// Migration plan file (YAML)
     #[arg(long, value_name = "PLAN")]
-    plan: Option<PathBuf>,
+    plan: PathBuf,
 
     /// Source RocksDB path
     #[arg(long, value_name = "PATH")]
@@ -147,11 +149,11 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Export(args) => run_export(args),
-        Command::Validate(args) => run_validate(args),
-        Command::ExportDag(args) => run_export_dag(args),
+        Command::Validate(args) => run_validate(&args),
+        Command::ExportDag(args) => run_export_dag(&args),
         #[cfg(feature = "gui")]
         Command::Gui(args) => run_gui(args.port),
-        Command::Migrate(args) => run_migrate_placeholder(args),
+        Command::Migrate(args) => run_migrate(&args),
     }
 }
 
@@ -228,7 +230,7 @@ fn run_export(args: ExportArgs) -> Result<()> {
         eyre::bail!("Database path does not exist: {}", args.db_path.display());
     }
 
-    let db = open_database(&args.db_path)?;
+    let db = open_database(args.db_path.as_path())?;
 
     let manifest = if let Some(wasm_path) = args.wasm_file {
         if !wasm_path.exists() {
@@ -258,17 +260,17 @@ fn run_export(args: ExportArgs) -> Result<()> {
     output_json(&data, args.output.as_deref())
 }
 
-fn run_validate(args: ValidateArgs) -> Result<()> {
+fn run_validate(args: &ValidateArgs) -> Result<()> {
     if !args.db_path.exists() {
         eyre::bail!("Database path does not exist: {}", args.db_path.display());
     }
 
-    let db = open_database(&args.db_path)?;
+    let db = open_database(args.db_path.as_path())?;
     let validation_result = validation::validate_database(&db)?;
     output_json(&validation_result, args.output.as_deref())
 }
 
-fn run_export_dag(args: ExportDagArgs) -> Result<()> {
+fn run_export_dag(args: &ExportDagArgs) -> Result<()> {
     if !args.db_path.exists() {
         eyre::bail!("Database path does not exist: {}", args.db_path.display());
     }
@@ -278,14 +280,137 @@ fn run_export_dag(args: ExportDagArgs) -> Result<()> {
     output_json(&dag_data, args.output.as_deref())
 }
 
-fn run_migrate_placeholder(args: MigrateArgs) -> Result<()> {
-    let mut message = String::from(
-        "Migration support is not yet implemented. Track progress in tools/merodb/migrations.md.",
-    );
-
-    if args.plan.is_some() || args.db_path.is_some() || args.target_db.is_some() || args.dry_run {
-        message.push_str(" Supplied migration arguments are acknowledged but ignored for now.");
+fn run_migrate(args: &MigrateArgs) -> Result<()> {
+    if let Some(db_path) = &args.db_path {
+        eprintln!(
+            "note: --db-path ({}) is acknowledged but not yet used by the migration workflow.",
+            db_path.display()
+        );
+    }
+    if let Some(target_db) = &args.target_db {
+        eprintln!(
+            "note: --target-db ({}) is acknowledged but not yet used by the migration workflow.",
+            target_db.display()
+        );
+    }
+    if args.dry_run {
+        eprintln!("note: --dry-run is implicit while the migrate command only inspects plans.");
     }
 
-    eyre::bail!(message)
+    let plan_path = &args.plan;
+    if !plan_path.exists() {
+        eyre::bail!(
+            "Migration plan file does not exist: {}",
+            plan_path.display()
+        );
+    }
+
+    let plan = load_plan(plan_path)?;
+
+    print_plan_summary(&plan, plan_path);
+
+    Ok(())
+}
+
+fn print_plan_summary(plan: &MigrationPlan, plan_path: &Path) {
+    println!("Loaded migration plan: {}", plan_path.display());
+    println!("  Version: {}", plan.version.as_u32());
+    if let Some(name) = plan.name.as_deref() {
+        println!("  Name: {name}");
+    }
+    if let Some(description) = plan.description.as_deref() {
+        println!("  Description: {description}");
+    }
+    println!("  Source DB: {}", plan.source.db_path.display());
+    if let Some(wasm) = plan.source.wasm_file.as_ref() {
+        println!("  Source WASM: {}", wasm.display());
+    }
+    if let Some(target) = plan.target.as_ref() {
+        println!("  Target DB: {}", target.db_path.display());
+        if let Some(backup) = target.backup_dir.as_ref() {
+            println!("  Target backup dir: {}", backup.display());
+        }
+    } else {
+        println!("  Target DB: <not specified>");
+    }
+
+    if plan.defaults.columns.is_empty() {
+        println!("  Default columns: <none>");
+    } else {
+        let columns = plan
+            .defaults
+            .columns
+            .iter()
+            .map(Column::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  Default columns: {columns}");
+    }
+
+    if let Some(filters) = plan.defaults.filters.summary() {
+        println!("  Default filters: {filters}");
+    } else {
+        println!("  Default filters: <none>");
+    }
+
+    if let Some(flag) = plan.defaults.decode_with_abi {
+        println!("  Default decode_with_abi: {flag}");
+    }
+    if let Some(flag) = plan.defaults.write_if_missing {
+        println!("  Default write_if_missing: {flag}");
+    }
+
+    println!("  Steps: {}", plan.steps.len());
+    for (index, step) in plan.steps.iter().enumerate() {
+        let step_number = index.saturating_add(1);
+        println!("    {step_number}. {}", format_plan_step(step));
+    }
+}
+
+fn format_plan_step(step: &PlanStep) -> String {
+    let mut details = Vec::new();
+
+    details.push(format!("column {}", step.column().as_str()));
+
+    if let Some(filters) = step.filters() {
+        if let Some(summary) = filters.summary() {
+            details.push(format!("filters: {summary}"));
+        } else if filters.is_empty() {
+            details.push("filters: <none>".to_owned());
+        }
+    }
+
+    match step {
+        PlanStep::Copy(copy) => {
+            if let Some(transform) = copy.transform.summary() {
+                details.push(format!("transform: {transform}"));
+            }
+        }
+        PlanStep::Delete(_) => {}
+        PlanStep::Upsert(upsert) => {
+            details.push(format!("entries={}", upsert.entries.len()));
+            if let Some(first) = upsert.entries.first() {
+                details.push(format!(
+                    "first_key={} ({})",
+                    first.key.encoding_label(),
+                    first.key.preview(16)
+                ));
+            }
+        }
+        PlanStep::Verify(verify) => {
+            details.push(verify.assertion.summary());
+        }
+    }
+
+    let mut label = step.name().map_or_else(
+        || step.kind().to_owned(),
+        |name| format!("{name} [{}]", step.kind()),
+    );
+
+    if !details.is_empty() {
+        label.push_str(" - ");
+        label.push_str(&details.join("; "));
+    }
+
+    label
 }

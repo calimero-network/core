@@ -10,6 +10,10 @@ use std::collections::{HashMap, HashSet};
 use crate::types::Column;
 
 /// Export DAG structure from the Generic column family
+#[expect(
+    clippy::too_many_lines,
+    reason = "Existing DAG export logic is monolithic and will be refactored separately"
+)]
 pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
     // First, read ContextMeta to get dag_heads for each context
     let meta_cf_name = Column::Meta.as_str();
@@ -28,10 +32,16 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
 
         if key.len() == 32 {
             let context_id = hex::encode(&key);
-            valid_contexts.insert(context_id.clone());
+            if !valid_contexts.insert(context_id.clone()) {
+                continue;
+            }
             if let Ok(meta) = StoreContextMeta::try_from_slice(&value) {
-                let heads: Vec<String> = meta.dag_heads.iter().map(|h| hex::encode(h)).collect();
-                let _ = context_heads.insert(context_id, heads);
+                let heads: Vec<String> = meta.dag_heads.iter().map(hex::encode).collect();
+                let replaced = context_heads.insert(context_id, heads);
+                debug_assert!(
+                    replaced.is_none(),
+                    "Context metadata appears multiple times"
+                );
             }
         }
     }
@@ -65,13 +75,13 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                 // They're part of the immutable distributed DAG and must remain for sync.
                 // We track them separately for diagnostics but don't skip them.
                 if !valid_contexts.contains(&context_id) {
-                    let delta_id = hex::encode(&delta.delta_id);
+                    let delta_id = hex::encode(delta.delta_id);
                     orphaned_deltas.push((context_id.clone(), delta_id));
                     // Don't continue - still process these deltas for visualization
                 }
 
-                let delta_id = hex::encode(&delta.delta_id);
-                let node_id = format!("{}:{}", context_id, delta_id);
+                let delta_id = hex::encode(delta.delta_id);
+                let node_id = format!("{context_id}:{delta_id}");
 
                 // Track which deltas belong to which context
                 context_dags
@@ -91,14 +101,12 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                 let logical_counter = (raw_time & 0xF) as u32;
 
                 // Convert parents to hex-encoded strings
-                let parent_hashes: Vec<String> =
-                    delta.parents.iter().map(|p| hex::encode(p)).collect();
+                let parent_hashes: Vec<String> = delta.parents.iter().map(hex::encode).collect();
 
                 // Check if this delta is a DAG head for its context
                 let is_dag_head = context_heads
                     .get(&context_id)
-                    .map(|heads| heads.contains(&delta_id))
-                    .unwrap_or(false);
+                    .is_some_and(|heads| heads.contains(&delta_id));
 
                 // Create node
                 let node = json!({
@@ -140,29 +148,29 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
 
     // Add genesis nodes (one per context) for the all-zeros hash
     let genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000";
-    let mut genesis_nodes_added: HashSet<String> = HashSet::new();
 
-    for (context_id, _) in &context_dags {
-        let genesis_node_id = format!("{}:{}", context_id, genesis_hash);
+    let mut sorted_context_ids: Vec<_> = context_dags.keys().cloned().collect();
+    sorted_context_ids.sort_unstable();
+
+    for context_id in sorted_context_ids {
+        let genesis_node_id = format!("{context_id}:{genesis_hash}");
 
         // Add genesis node for this context
         nodes.push(json!({
             "id": genesis_node_id.clone(),
             "context_id": context_id,
             "delta_id": genesis_hash,
-            "timestamp": 0,
-            "physical_time": 0,
-            "logical_counter": 0,
+            "timestamp": 0_u64,
+            "physical_time": 0_u64,
+            "logical_counter": 0_u64,
             "hlc": "genesis",
-            "actions_size": 0,
+            "actions_size": 0_u64,
             "applied": true,
-            "parent_count": 0,
+            "parent_count": 0_u64,
             "parents": [],
             "is_dag_head": false,
             "is_genesis": true
         }));
-
-        let _ = genesis_nodes_added.insert(genesis_node_id);
     }
 
     // Build a set of all actual node IDs for validation
@@ -180,7 +188,7 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
             let mut has_missing = false;
             for parent in parents {
                 let parent_id = parent.as_str().unwrap();
-                let parent_node_id = format!("{}:{}", context_id, parent_id);
+                let parent_node_id = format!("{context_id}:{parent_id}");
 
                 if !node_id_set.contains(&parent_node_id) {
                     has_missing = true;
@@ -202,7 +210,7 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
 
         for parent in parents {
             let parent_id = parent.as_str().unwrap();
-            let parent_node_id = format!("{}:{}", context_id, parent_id);
+            let parent_node_id = format!("{context_id}:{parent_id}");
 
             // Only create edge if the parent node actually exists in our node set
             if node_id_set.contains(&parent_node_id) {
@@ -282,11 +290,9 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
         eprintln!("These deltas are intentionally kept in the database for distributed sync.");
         eprintln!("First 5 deltas for deleted contexts:");
         for (ctx_id, delta_id) in orphaned_deltas.iter().take(5) {
-            eprintln!(
-                "  - Context: {}..., Delta: {}...",
-                &ctx_id[..8],
-                &delta_id[..8]
-            );
+            let ctx_preview: String = ctx_id.chars().take(8).collect();
+            let delta_preview: String = delta_id.chars().take(8).collect();
+            eprintln!("  - Context: {ctx_preview}..., Delta: {delta_preview}...");
         }
     }
 

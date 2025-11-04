@@ -12,9 +12,9 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
   - [x] Create strongly typed `serde` structs/enums for plan metadata, defaults, and step variants (`copy`, `delete`, `upsert`, `verify`).
   - [x] Add versioning and forward-compatibility guards; emit descriptive errors for malformed documents.
 
-- [ ] **Implement Plan Loader**
-  - [ ] Wire `--plan <FILE>` (and optional `--format json|yaml` if needed later) to deserialize the plan and print a summary (steps, columns, filters).
-  - [ ] Integrate plan parsing into the `migrate` command, failing fast on validation errors.
+- [x] **Implement Plan Loader**
+  - [x] Wire `--plan <FILE>` to deserialize the YAML plan and print a summary (steps, columns, filters).
+  - [x] Integrate plan parsing into the `migrate` command, failing fast on validation errors.
 
 - [ ] **Set Up Migration Context**
   - [ ] Open the source RocksDB in read-only mode and lazily load the ABI manifest when `--wasm-file` is supplied.
