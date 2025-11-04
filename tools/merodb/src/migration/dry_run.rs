@@ -1,0 +1,705 @@
+//!
+//! Dry-run engine for the `migrate` command.
+//!
+//! The goal of this module is to preview a migration plan without mutating RocksDB. It wires the
+//! plan, the source database handle, and optional ABI manifest together to produce a
+//! per-step summary containing:
+//!
+//! - **Resolved filters** – merge plan defaults with step overrides, interpret context IDs,
+//!   raw key prefixes, alias names, etc., and emit warnings when a filter is not yet supported
+//!   (e.g. alias resolution).
+//! - **Matched key counts & samples** – iterate the relevant RocksDB column, apply the resolved
+//!   filters, keep a running count, and capture a few representative keys (rendered via
+//!   `types::parse_key`) so users can sanity-check the scope.
+//! - **Step detail** – annotate each step with extra information (copy vs delete vs upsert vs verify).
+//!   For copy steps we note whether ABI decoding was requested and available; for verify steps we
+//!   evaluate the assertion immediately and display pass/fail state.
+//! - **Warnings** – surface anything that might surprise the user (missing ABI while
+//!   `decode_with_abi` is true, hex decoding failures, unsupported filters, etc.).
+//!
+//! The CLI consumes the `DryRunReport` and prints a human-readable preview. A future iteration can
+//! serialize the same data structure as JSON for `--report` output.
+
+use std::collections::HashSet;
+
+use eyre::{bail, Result, WrapErr};
+use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
+
+use core::convert::TryFrom;
+
+use calimero_wasm_abi::schema::Manifest;
+
+use crate::types;
+use crate::types::Column;
+
+use super::context::MigrationContext;
+use super::plan::{
+    CopyStep, DeleteStep, PlanDefaults, PlanFilters, PlanStep, UpsertStep, VerificationAssertion,
+    VerifyStep,
+};
+
+const SAMPLE_LIMIT: usize = 3;
+
+/// Aggregated dry-run information for each step in the migration plan.
+pub struct DryRunReport {
+    pub steps: Vec<StepReport>,
+}
+
+/// Per-step dry-run preview including key counts, sample data, and warnings.
+pub struct StepReport {
+    pub index: usize,
+    pub matched_keys: usize,
+    pub filters_summary: Option<String>,
+    pub samples: Vec<String>,
+    pub warnings: Vec<String>,
+    pub detail: StepDetail,
+}
+
+/// Additional information that depends on the step type.
+#[derive(Debug)]
+pub enum StepDetail {
+    Copy {
+        decode_with_abi: bool,
+    },
+    Delete,
+    Upsert {
+        entries: usize,
+    },
+    Verify {
+        summary: String,
+        passed: Option<bool>,
+    },
+}
+
+impl StepDetail {}
+
+/// Generate a dry-run report for the supplied migration context.
+pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
+    let plan = context.plan();
+    let db = context.source().db();
+    let abi_manifest = context.source().abi_manifest()?;
+
+    let mut steps = Vec::with_capacity(plan.steps.len());
+
+    for (index, step) in plan.steps.iter().enumerate() {
+        let report = match step {
+            PlanStep::Copy(copy) => {
+                preview_copy_step(index, copy, &plan.defaults, db, abi_manifest)?
+            }
+            PlanStep::Delete(delete) => preview_delete_step(index, delete, &plan.defaults, db)?,
+            PlanStep::Upsert(upsert) => preview_upsert_step(index, upsert, &plan.defaults),
+            PlanStep::Verify(verify) => preview_verify_step(index, verify, &plan.defaults, db)?,
+        };
+
+        steps.push(report);
+    }
+
+    Ok(DryRunReport { steps })
+}
+
+fn preview_copy_step(
+    index: usize,
+    step: &CopyStep,
+    defaults: &PlanDefaults,
+    db: &DBWithThreadMode<SingleThreaded>,
+    abi_manifest: Option<&Manifest>,
+) -> Result<StepReport> {
+    let filters = defaults.merge_filters(&step.filters);
+    let mut resolved = ResolvedFilters::resolve(step.column, &filters);
+
+    let decode_with_abi = defaults.effective_decode_with_abi(step.transform.decode_with_abi);
+    if decode_with_abi && abi_manifest.is_none() {
+        resolved
+            .warnings
+            .push("decode_with_abi requested but source ABI manifest is unavailable".into());
+    }
+
+    let scan = scan_column(db, step.column, &resolved)?;
+
+    let detail = StepDetail::Copy { decode_with_abi };
+
+    Ok(StepReport {
+        index,
+        matched_keys: scan.matched,
+        filters_summary: filters.summary(),
+        samples: scan.samples,
+        warnings: resolved.warnings,
+        detail,
+    })
+}
+
+fn preview_delete_step(
+    index: usize,
+    step: &DeleteStep,
+    defaults: &PlanDefaults,
+    db: &DBWithThreadMode<SingleThreaded>,
+) -> Result<StepReport> {
+    let filters = defaults.merge_filters(&step.filters);
+    let resolved = ResolvedFilters::resolve(step.column, &filters);
+    let scan = scan_column(db, step.column, &resolved)?;
+
+    Ok(StepReport {
+        index,
+        matched_keys: scan.matched,
+        filters_summary: filters.summary(),
+        samples: scan.samples,
+        warnings: resolved.warnings,
+        detail: StepDetail::Delete,
+    })
+}
+
+fn preview_upsert_step(index: usize, step: &UpsertStep, _defaults: &PlanDefaults) -> StepReport {
+    let mut samples = Vec::new();
+
+    for entry in step.entries.iter().take(SAMPLE_LIMIT) {
+        samples.push(format!(
+            "key={} value={}",
+            entry.key.preview(16),
+            entry.value.preview(32)
+        ));
+    }
+
+    StepReport {
+        index,
+        matched_keys: step.entries.len(),
+        filters_summary: None,
+        samples,
+        warnings: Vec::new(),
+        detail: StepDetail::Upsert {
+            entries: step.entries.len(),
+        },
+    }
+}
+
+fn preview_verify_step(
+    index: usize,
+    step: &VerifyStep,
+    defaults: &PlanDefaults,
+    db: &DBWithThreadMode<SingleThreaded>,
+) -> Result<StepReport> {
+    let filters = defaults.merge_filters(&step.filters);
+    let mut resolved = ResolvedFilters::resolve(step.column, &filters);
+    let scan = scan_column(db, step.column, &resolved)?;
+
+    let outcome = evaluate_assertion(db, step.column, &step.assertion, scan.matched)?;
+    resolved.warnings.extend(outcome.warnings);
+
+    Ok(StepReport {
+        index,
+        matched_keys: scan.matched,
+        filters_summary: filters.summary(),
+        samples: scan.samples,
+        warnings: resolved.warnings,
+        detail: StepDetail::Verify {
+            summary: outcome.summary,
+            passed: outcome.passed,
+        },
+    })
+}
+
+struct ScanResult {
+    matched: usize,
+    samples: Vec<String>,
+}
+
+fn scan_column(
+    db: &DBWithThreadMode<SingleThreaded>,
+    column: Column,
+    filters: &ResolvedFilters,
+) -> Result<ScanResult> {
+    let cf = db
+        .cf_handle(column.as_str())
+        .ok_or_else(|| eyre::eyre!("Column family '{}' not found", column.as_str()))?;
+
+    let mut matched: usize = 0;
+    let mut samples = Vec::new();
+
+    let iter = db.iterator_cf(cf, IteratorMode::Start);
+    for item in iter {
+        let (key, _value) = item.wrap_err_with(|| {
+            format!(
+                "Failed to iterate column family '{}' during dry-run",
+                column.as_str()
+            )
+        })?;
+
+        if filters.matches(column, &key) {
+            matched = matched.saturating_add(1);
+            if samples.len() < SAMPLE_LIMIT {
+                samples.push(sample_from_key(column, &key));
+            }
+        }
+    }
+
+    Ok(ScanResult { matched, samples })
+}
+
+fn sample_from_key(column: Column, key: &[u8]) -> String {
+    types::parse_key(column, key).map_or_else(
+        |_| format!("raw_hex={}", hex::encode(key)),
+        |value| {
+            serde_json::to_string(&value)
+                .unwrap_or_else(|_| format!("raw_hex={}", hex::encode(key)))
+        },
+    )
+}
+
+struct VerificationOutcome {
+    summary: String,
+    passed: Option<bool>,
+    warnings: Vec<String>,
+}
+
+fn evaluate_assertion(
+    db: &DBWithThreadMode<SingleThreaded>,
+    column: Column,
+    assertion: &VerificationAssertion,
+    matched_count: usize,
+) -> Result<VerificationOutcome> {
+    let cf = db
+        .cf_handle(column.as_str())
+        .ok_or_else(|| eyre::eyre!("Column family '{}' not found", column.as_str()))?;
+
+    let matched_u64 = u64::try_from(matched_count).unwrap_or(u64::MAX);
+
+    match assertion {
+        VerificationAssertion::ExpectedCount { expected_count } => {
+            let passed = matched_u64 == *expected_count;
+            Ok(VerificationOutcome {
+                summary: format!(
+                    "expected count == {expected_count}, actual {matched_count} ({})",
+                    pass_label(passed)
+                ),
+                passed: Some(passed),
+                warnings: Vec::new(),
+            })
+        }
+        VerificationAssertion::MinCount { min_count } => {
+            let passed = matched_u64 >= *min_count;
+            Ok(VerificationOutcome {
+                summary: format!(
+                    "expected count >= {min_count}, actual {matched_count} ({})",
+                    pass_label(passed)
+                ),
+                passed: Some(passed),
+                warnings: Vec::new(),
+            })
+        }
+        VerificationAssertion::MaxCount { max_count } => {
+            let passed = matched_u64 <= *max_count;
+            Ok(VerificationOutcome {
+                summary: format!(
+                    "expected count <= {max_count}, actual {matched_count} ({})",
+                    pass_label(passed)
+                ),
+                passed: Some(passed),
+                warnings: Vec::new(),
+            })
+        }
+        VerificationAssertion::ContainsKey { contains_key } => {
+            let mut warnings = Vec::new();
+            match contains_key.to_bytes() {
+                Ok(bytes) => {
+                    let present = db.get_cf(cf, &bytes)?.is_some();
+                    Ok(VerificationOutcome {
+                        summary: format!(
+                            "expect key present ({}), actual {} ({})",
+                            contains_key.preview(16),
+                            if present { "present" } else { "missing" },
+                            pass_label(present)
+                        ),
+                        passed: Some(present),
+                        warnings,
+                    })
+                }
+                Err(err) => {
+                    warnings.push(format!("unable to decode contains_key value: {err}"));
+                    Ok(VerificationOutcome {
+                        summary: "expect key present, but decoding failed".into(),
+                        passed: None,
+                        warnings,
+                    })
+                }
+            }
+        }
+        VerificationAssertion::MissingKey { missing_key } => {
+            let mut warnings = Vec::new();
+            match missing_key.to_bytes() {
+                Ok(bytes) => {
+                    let present = db.get_cf(cf, &bytes)?.is_some();
+                    let passed = !present;
+                    Ok(VerificationOutcome {
+                        summary: format!(
+                            "expect key missing ({}), actual {} ({})",
+                            missing_key.preview(16),
+                            if present { "present" } else { "missing" },
+                            pass_label(passed)
+                        ),
+                        passed: Some(passed),
+                        warnings,
+                    })
+                }
+                Err(err) => {
+                    warnings.push(format!("unable to decode missing_key value: {err}"));
+                    Ok(VerificationOutcome {
+                        summary: "expect key missing, but decoding failed".into(),
+                        passed: None,
+                        warnings,
+                    })
+                }
+            }
+        }
+    }
+}
+
+const fn pass_label(passed: bool) -> &'static str {
+    if passed {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+struct ResolvedFilters {
+    context_ids: Option<HashSet<Vec<u8>>>,
+    state_key_prefix: Option<Vec<u8>>,
+    raw_key_prefix: Option<Vec<u8>>,
+    key_range_start: Option<Vec<u8>>,
+    key_range_end: Option<Vec<u8>>,
+    alias_name: Option<String>,
+    warnings: Vec<String>,
+}
+
+impl ResolvedFilters {
+    fn resolve(column: Column, filters: &PlanFilters) -> Self {
+        let mut warnings = Vec::new();
+
+        let context_ids = if filters.context_ids.is_empty() {
+            None
+        } else {
+            let mut set = HashSet::new();
+            for id in &filters.context_ids {
+                match decode_hex_string(id) {
+                    Ok(bytes) => {
+                        let _ = set.insert(bytes);
+                    }
+                    Err(err) => warnings.push(format!("unable to parse context_id '{id}': {err}")),
+                }
+            }
+            Some(set)
+        };
+
+        if !filters.context_aliases.is_empty() {
+            warnings.push(
+                "context_aliases filter is not yet applied during dry-run (preview may be broader than expected)"
+                    .into(),
+            );
+        }
+
+        let state_key_prefix =
+            filters
+                .state_key_prefix
+                .as_ref()
+                .map(|prefix| match decode_hex_string(prefix) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        warnings.push(format!(
+                            "unable to interpret state_key_prefix '{prefix}': {err}"
+                        ));
+                        prefix.as_bytes().to_vec()
+                    }
+                });
+
+        let raw_key_prefix =
+            filters
+                .raw_key_prefix
+                .as_ref()
+                .and_then(|prefix| match decode_hex_string(prefix) {
+                    Ok(bytes) => Some(bytes),
+                    Err(err) => {
+                        warnings.push(format!(
+                            "unable to interpret raw_key_prefix '{prefix}': {err}"
+                        ));
+                        None
+                    }
+                });
+
+        let key_range_start = filters.key_range.as_ref().and_then(|range| {
+            range
+                .start
+                .as_ref()
+                .and_then(|start| match decode_hex_string(start) {
+                    Ok(bytes) => Some(bytes),
+                    Err(err) => {
+                        warnings.push(format!(
+                            "unable to interpret key_range start '{start}': {err}"
+                        ));
+                        None
+                    }
+                })
+        });
+
+        let key_range_end = filters.key_range.as_ref().and_then(|range| {
+            range
+                .end
+                .as_ref()
+                .and_then(|end| match decode_hex_string(end) {
+                    Ok(bytes) => Some(bytes),
+                    Err(err) => {
+                        warnings.push(format!("unable to interpret key_range end '{end}': {err}"));
+                        None
+                    }
+                })
+        });
+
+        let alias_name = filters.alias_name.clone();
+        if alias_name.is_some() && column != Column::Alias {
+            warnings.push(
+                "alias_name filter only applies to the Alias column; no rows will match in other columns"
+                    .into(),
+            );
+        }
+
+        Self {
+            context_ids,
+            state_key_prefix,
+            raw_key_prefix,
+            key_range_start,
+            key_range_end,
+            alias_name,
+            warnings,
+        }
+    }
+
+    fn matches(&self, column: Column, key: &[u8]) -> bool {
+        if let Some(set) = &self.context_ids {
+            let Some(context_slice) = extract_context_id(column, key) else {
+                return false;
+            };
+
+            if !set.contains(&context_slice.to_vec()) {
+                return false;
+            }
+        }
+
+        if let Some(prefix) = &self.state_key_prefix {
+            if column != Column::State {
+                return false;
+            }
+            let Some(end) = 32_usize.checked_add(prefix.len()) else {
+                return false;
+            };
+            if key.len() < end || !key[32..end].starts_with(prefix) {
+                return false;
+            }
+        }
+
+        if let Some(prefix) = &self.raw_key_prefix {
+            if !key.starts_with(prefix) {
+                return false;
+            }
+        }
+
+        if let Some(start) = &self.key_range_start {
+            if key < start.as_slice() {
+                return false;
+            }
+        }
+
+        if let Some(end) = &self.key_range_end {
+            if key >= end.as_slice() {
+                return false;
+            }
+        }
+
+        if let Some(alias) = &self.alias_name {
+            if column != Column::Alias {
+                return false;
+            }
+
+            match extract_alias_name(key) {
+                Some(name) => {
+                    if &name != alias {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+
+        true
+    }
+}
+
+fn decode_hex_string(value: &str) -> Result<Vec<u8>> {
+    let trimmed = value.trim().trim_start_matches("0x");
+    if trimmed.len() % 2 != 0 {
+        bail!("hex string has odd length");
+    }
+    Ok(hex::decode(trimmed)?)
+}
+
+fn extract_context_id(column: Column, key: &[u8]) -> Option<&[u8]> {
+    if key.len() < 32 {
+        return None;
+    }
+
+    match column {
+        Column::Meta | Column::Config | Column::Identity | Column::State | Column::Delta => {
+            Some(&key[0..32])
+        }
+        _ => None,
+    }
+}
+
+fn extract_alias_name(key: &[u8]) -> Option<String> {
+    if key.len() != 83 {
+        return None;
+    }
+    let name_bytes = &key[33..83];
+    Some(
+        String::from_utf8_lossy(name_bytes)
+            .trim_end_matches('\0')
+            .to_owned(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::context::{MigrationContext, MigrationOverrides};
+    use crate::migration::plan::{
+        CopyStep, MigrationPlan, PlanDefaults, PlanFilters, PlanStep, PlanVersion, SourceEndpoint,
+    };
+    use crate::types::Column;
+    use eyre::ensure;
+    use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn setup_db(path: &Path) -> Result<()> {
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let descriptors: Vec<_> = Column::all()
+            .iter()
+            .map(|column| ColumnFamilyDescriptor::new(column.as_str(), Options::default()))
+            .collect();
+
+        let db = DB::open_cf_descriptors(&opts, path, descriptors)?;
+
+        let cf_state = db.cf_handle(Column::State.as_str()).unwrap();
+
+        let mut state_key = [0_u8; 64];
+        state_key[..32].copy_from_slice(&[0x11; 32]);
+        state_key[32..64].copy_from_slice(&[0x22; 32]);
+
+        let mut batch = WriteBatch::default();
+        batch.put_cf(cf_state, state_key, b"value-1");
+        db.write(batch)?;
+
+        drop(db);
+        Ok(())
+    }
+
+    /// Build a minimal two-step plan (copy + verify) scoped to the synthetic state row we insert.
+    fn basic_plan(path: &Path) -> MigrationPlan {
+        MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: path.to_path_buf(),
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults {
+                columns: Vec::new(),
+                filters: PlanFilters::default(),
+                decode_with_abi: Some(false),
+                write_if_missing: Some(false),
+            },
+            steps: vec![
+                PlanStep::Copy(CopyStep {
+                    name: Some("copy-state".into()),
+                    column: Column::State,
+                    filters: PlanFilters {
+                        context_ids: vec![hex::encode([0x11; 32])],
+                        ..PlanFilters::default()
+                    },
+                    transform: Default::default(),
+                }),
+                PlanStep::Verify(VerifyStep {
+                    name: Some("expect-one".into()),
+                    column: Column::State,
+                    filters: PlanFilters {
+                        context_ids: vec![hex::encode([0x11; 32])],
+                        ..PlanFilters::default()
+                    },
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 1 },
+                }),
+            ],
+        }
+    }
+
+    #[test]
+    /// End-to-end smoke test: run the dry-run engine against the synthetic DB and ensure the
+    /// copy step and verify step both report the expected counts and statuses.
+    fn dry_run_reports_copy_and_verify() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        // Seed RocksDB with a single entry so the plan has a deterministic target.
+        setup_db(&db_path)?;
+
+        let plan = basic_plan(&db_path);
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+
+        let report = generate_report(&context)?;
+        // Plan contains exactly two steps (copy + verify).
+        ensure!(
+            report.steps.len() == 2,
+            "expected two steps, found {}",
+            report.steps.len()
+        );
+
+        let copy = &report.steps[0];
+        // Dry-run preview should classify the first step as copy and report one matched key.
+        ensure!(
+            matches!(copy.detail, StepDetail::Copy { .. }),
+            "expected copy detail"
+        );
+        ensure!(
+            copy.matched_keys == 1,
+            "expected 1 matched key, got {}",
+            copy.matched_keys
+        );
+        ensure!(
+            !copy.samples.is_empty(),
+            "expected at least one sample for copy step"
+        );
+
+        let verify = &report.steps[1];
+        // Second step is the verification assertion; it should also match the single seeded key.
+        ensure!(
+            matches!(verify.detail, StepDetail::Verify { .. }),
+            "expected verify detail"
+        );
+        ensure!(
+            verify.matched_keys == 1,
+            "expected 1 matched key in verify step, got {}",
+            verify.matched_keys
+        );
+        match &verify.detail {
+            StepDetail::Verify { passed, .. } => ensure!(
+                passed == &Some(true),
+                "expected verification to pass, got {:?}",
+                passed
+            ),
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        Ok(())
+    }
+}

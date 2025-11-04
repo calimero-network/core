@@ -21,8 +21,8 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
   - [x] Add `--target-db` support; keep the target read-only until mutating mode is enabled. ✅ CLI overrides resolve into the new context and open the target in read-only mode.
 
 - [ ] **Build Dry-run Engine**
-  - [ ] Resolve high-level filters (context IDs, alias names, key prefixes) to RocksDB iterators and collect a structured action preview.
-  - [ ] Output dry-run results to stdout/JSON with per-step key counts and examples; guarantee no writes occur.
+  - [x] Resolve high-level filters (context IDs, alias names, key prefixes) to RocksDB iterators and collect a structured action preview. ✅ `migration::dry_run::generate_report` scans the RocksDB column families, applies merged filters, and captures per-step key counts plus samples.
+  - [ ] Output dry-run results to stdout/JSON with per-step key counts and examples; guarantee no writes occur. 🚧 CLI preview is live; JSON export still pending.
 
 - [ ] **Develop Test Fixtures & Dry-run Tests**
   - [ ] Introduce utilities for creating temporary RocksDB instances populated with sample Calimero data.

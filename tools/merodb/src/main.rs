@@ -24,6 +24,7 @@ mod validation;
 mod gui;
 
 use migration::context::{AbiManifestStatus, MigrationContext, MigrationOverrides};
+use migration::dry_run::{generate_report as generate_dry_run_report, DryRunReport, StepDetail};
 use migration::loader::load_plan;
 use migration::plan::{MigrationPlan, PlanStep};
 use types::Column;
@@ -379,6 +380,10 @@ fn run_migrate(args: &MigrateArgs) -> Result<()> {
         }
     );
 
+    let dry_run_report = generate_dry_run_report(&context)?;
+    println!();
+    print_dry_run_report(&context, &dry_run_report);
+
     Ok(())
 }
 
@@ -483,4 +488,55 @@ fn format_plan_step(step: &PlanStep) -> String {
     }
 
     label
+}
+
+fn print_dry_run_report(context: &MigrationContext, report: &DryRunReport) {
+    println!("Dry-run preview:");
+    let plan = context.plan();
+
+    for step_report in &report.steps {
+        if step_report.index >= plan.steps.len() {
+            continue;
+        }
+
+        let label = format_plan_step(&plan.steps[step_report.index]);
+        let step_number = step_report.index.saturating_add(1);
+        println!("  {step_number}. {label}");
+        println!("       matched keys: {}", step_report.matched_keys);
+
+        if let Some(summary) = step_report.filters_summary.as_deref() {
+            if !summary.is_empty() {
+                println!("       filters applied: {summary}");
+            }
+        }
+
+        match &step_report.detail {
+            StepDetail::Copy { decode_with_abi } => {
+                println!("       action: copy (decode_with_abi={decode_with_abi})");
+            }
+            StepDetail::Delete => {
+                println!("       action: delete preview");
+            }
+            StepDetail::Upsert { entries } => {
+                println!("       entries to write: {entries}");
+            }
+            StepDetail::Verify { summary, passed } => {
+                println!("       verify: {summary}");
+                if passed.is_none() {
+                    println!("       verify outcome: unknown (see warnings)");
+                }
+            }
+        }
+
+        for sample in &step_report.samples {
+            println!("       sample: {sample}");
+        }
+        for warning in &step_report.warnings {
+            println!("       warning: {warning}");
+        }
+
+        if !step_report.samples.is_empty() || !step_report.warnings.is_empty() {
+            println!();
+        }
+    }
 }

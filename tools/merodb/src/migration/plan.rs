@@ -1,6 +1,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine;
 use eyre::{bail, ensure, Result};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -170,6 +172,16 @@ impl PlanDefaults {
         self.filters.validate(&format!("{context}.filters"))?;
         Ok(())
     }
+
+    /// Combine default filters with step-specific filters, preferring step overrides when present.
+    pub fn merge_filters(&self, overrides: &PlanFilters) -> PlanFilters {
+        self.filters.merged_with(overrides)
+    }
+
+    /// Resolve the effective `decode_with_abi` flag, allowing step overrides to take precedence.
+    pub fn effective_decode_with_abi(&self, override_flag: Option<bool>) -> bool {
+        override_flag.or(self.decode_with_abi).unwrap_or(false)
+    }
 }
 
 /// Common filters that can be referenced by multiple steps.
@@ -244,10 +256,42 @@ impl PlanFilters {
             Some(parts.join(", "))
         }
     }
+
+    /// Merge two filter sets, where empty/`None` fields in `overrides` inherit from `self`.
+    pub fn merged_with(&self, overrides: &Self) -> Self {
+        Self {
+            context_ids: if overrides.context_ids.is_empty() {
+                self.context_ids.clone()
+            } else {
+                overrides.context_ids.clone()
+            },
+            context_aliases: if overrides.context_aliases.is_empty() {
+                self.context_aliases.clone()
+            } else {
+                overrides.context_aliases.clone()
+            },
+            state_key_prefix: overrides
+                .state_key_prefix
+                .clone()
+                .or_else(|| self.state_key_prefix.clone()),
+            raw_key_prefix: overrides
+                .raw_key_prefix
+                .clone()
+                .or_else(|| self.raw_key_prefix.clone()),
+            alias_name: overrides
+                .alias_name
+                .clone()
+                .or_else(|| self.alias_name.clone()),
+            key_range: overrides
+                .key_range
+                .clone()
+                .or_else(|| self.key_range.clone()),
+        }
+    }
 }
 
 /// Inclusive/exclusive key range filter for byte prefixes.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct KeyRange {
     pub start: Option<String>,
     pub end: Option<String>,
@@ -463,6 +507,19 @@ impl EncodedValue {
             Self::Json { .. } => {}
         }
         Ok(())
+    }
+
+    /// Decode the encoded value into raw bytes for key comparison.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::Hex { data } => {
+                let trimmed = data.trim_start_matches("0x");
+                Ok(hex::decode(trimmed)?)
+            }
+            Self::Base64 { data } => Ok(BASE64_ENGINE.decode(data)?),
+            Self::Utf8 { data } => Ok(data.as_bytes().to_vec()),
+            Self::Json { value } => Ok(value.to_string().into_bytes()),
+        }
     }
 
     pub const fn encoding_label(&self) -> &'static str {
@@ -695,6 +752,48 @@ mod validation_tests {
         let summary = filters.summary().expect("summary should exist");
         assert!(summary.contains("context_ids=1"));
         assert!(summary.contains("context_aliases=marketing"));
+    }
+
+    #[test]
+    fn plan_filters_merge_prefers_overrides() {
+        let defaults = PlanFilters {
+            context_ids: vec!["default".into()],
+            state_key_prefix: Some("aaaa".into()),
+            ..PlanFilters::default()
+        };
+
+        let overrides = PlanFilters {
+            state_key_prefix: Some("bbbb".into()),
+            ..PlanFilters::default()
+        };
+
+        let merged = defaults.merged_with(&overrides);
+        assert_eq!(merged.context_ids, defaults.context_ids);
+        assert_eq!(merged.state_key_prefix.as_deref(), Some("bbbb"));
+    }
+
+    #[test]
+    fn encoded_value_to_bytes_decodes() {
+        let hex_value = EncodedValue::Hex {
+            data: "0x0a0b".into(),
+        }
+        .to_bytes()
+        .expect("hex decode");
+        assert_eq!(hex_value, vec![0x0a, 0x0b]);
+
+        let base64_value = EncodedValue::Base64 {
+            data: BASE64_ENGINE.encode("hi"),
+        }
+        .to_bytes()
+        .expect("base64 decode");
+        assert_eq!(base64_value, b"hi");
+
+        let utf8_value = EncodedValue::Utf8 {
+            data: "hello".into(),
+        }
+        .to_bytes()
+        .expect("utf8 decode");
+        assert_eq!(utf8_value, b"hello");
     }
 }
 
