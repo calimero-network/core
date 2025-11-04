@@ -63,8 +63,8 @@ impl SyncManager {
                             %context_id,
                             delta_id = ?missing_id,
                             action_count = parent_delta.actions.len(),
-                            total_fetched = fetch_count,
-                            "Received missing parent delta"
+                                total_fetched = fetch_count,
+                                "Received missing parent delta"
                         );
 
                         // Convert to DAG delta format
