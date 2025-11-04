@@ -585,11 +585,72 @@ impl SyncManager {
 
                 return Ok(result);
             }
-        }
 
-        // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
-        debug!(%context_id, "Node is in sync, no active protocol needed");
-        Ok(SyncProtocol::None)
+            // Even if local DAG is complete, verify we're actually in sync by comparing DAG heads.
+            // This catches the critical case where a node was offline and comes back with stale
+            // but internally consistent state (no pending deltas, but missing recent updates).
+            let our_heads = delta_store.get_heads().await;
+
+            info!(
+                %context_id,
+                our_heads_count = our_heads.len(),
+                "DAG complete locally, comparing heads with peer to detect stale state"
+            );
+
+            match self
+                .compare_dag_heads_with_peer(
+                    context_id,
+                    chosen_peer,
+                    our_identity,
+                    &mut stream,
+                    &our_heads,
+                )
+                .await
+            {
+                Ok(true) => {
+                    // Heads match - truly in sync
+                    debug!(%context_id, "DAG heads match peer, node is in sync");
+                    Ok(SyncProtocol::None)
+                }
+                Ok(false) => {
+                    // Heads differ - we're behind or diverged, need to sync
+                    info!(
+                        %context_id,
+                        %chosen_peer,
+                        "DAG heads differ from peer - syncing to catch up"
+                    );
+
+                    let result = self
+                        .request_dag_heads_and_sync(
+                            context_id,
+                            chosen_peer,
+                            our_identity,
+                            &mut stream,
+                        )
+                        .await?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        bail!("Peer has no data for this context");
+                    }
+
+                    Ok(result)
+                }
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        %chosen_peer,
+                        "Failed to compare DAG heads with peer, assuming in sync"
+                    );
+                    // On error, assume in sync (gossipsub will trigger sync on next delta)
+                    Ok(SyncProtocol::None)
+                }
+            }
+        } else {
+            // No delta store yet - DAG-based sync happens automatically via gossipsub
+            debug!(%context_id, "No delta store, relying on gossipsub for sync");
+            Ok(SyncProtocol::None)
+        }
     }
 
     /// Request peer's DAG heads and sync all missing deltas
@@ -795,6 +856,83 @@ impl SyncManager {
             _ => {
                 warn!(%context_id, "Unexpected response to DAG heads request, trying next peer");
                 Ok(SyncProtocol::None)
+            }
+        }
+    }
+
+    /// Compare our DAG heads with peer's DAG heads
+    ///
+    /// Returns Ok(true) if heads match (in sync)
+    /// Returns Ok(false) if heads differ (need to sync)
+    /// Returns Err if communication fails
+    async fn compare_dag_heads_with_peer(
+        &self,
+        context_id: ContextId,
+        peer_id: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+        our_heads: &[[u8; 32]],
+    ) -> eyre::Result<bool> {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+        use std::collections::HashSet;
+
+        // Send DAG heads request
+        let request_msg = StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::DagHeadsRequest { context_id },
+            next_nonce: {
+                use rand::Rng;
+                rand::thread_rng().gen()
+            },
+        };
+
+        self.send(stream, &request_msg, None).await?;
+
+        // Receive response
+        let response = self.recv(stream, None).await?;
+
+        match response {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::DagHeadsResponse {
+                        dag_heads: peer_heads,
+                        root_hash: _,
+                    },
+                ..
+            }) => {
+                // Convert to sets for comparison
+                let our_heads_set: HashSet<_> = our_heads.iter().copied().collect();
+                let peer_heads_set: HashSet<_> = peer_heads.iter().copied().collect();
+
+                // Check if heads match
+                let heads_match = our_heads_set == peer_heads_set;
+
+                if heads_match {
+                    debug!(
+                        %context_id,
+                        %peer_id,
+                        heads_count = our_heads.len(),
+                        "DAG heads match peer"
+                    );
+                } else {
+                    let only_ours: Vec<_> = our_heads_set.difference(&peer_heads_set).collect();
+                    let only_theirs: Vec<_> = peer_heads_set.difference(&our_heads_set).collect();
+
+                    info!(
+                        %context_id,
+                        our_heads_count = our_heads.len(),
+                        peer_heads_count = peer_heads.len(),
+                        unique_to_us = only_ours.len(),
+                        unique_to_peer = only_theirs.len(),
+                        "DAG heads differ - need to sync"
+                    );
+                }
+
+                Ok(heads_match)
+            }
+            _ => {
+                bail!("Unexpected response to DAG heads request during comparison");
             }
         }
     }
