@@ -177,16 +177,22 @@ impl PlanDefaults {
 #[serde(default)]
 pub struct PlanFilters {
     #[serde(default)]
+    /// Exact context IDs (hex strings) a step may touch; empty means any context ID is allowed.
     pub context_ids: Vec<String>,
     #[serde(default)]
+    /// Human-friendly aliases that resolve to context IDs; use when you prefer names over hashes.
     pub context_aliases: Vec<String>,
     #[serde(default)]
+    /// Application state records must have decoded keys beginning with this prefix (State column only).
     pub state_key_prefix: Option<String>,
     #[serde(default)]
+    /// Low-level RocksDB keys must start with this byte prefix; bypasses ABI/key decoding.
     pub raw_key_prefix: Option<String>,
     #[serde(default)]
+    /// Limit alias-column mutations to a single alias entry with this name.
     pub alias_name: Option<String>,
     #[serde(default)]
+    /// Optional lexicographic slice (start/end strings) applied to the column's raw keys.
     pub key_range: Option<KeyRange>,
 }
 
@@ -490,13 +496,18 @@ impl EncodedValue {
     }
 }
 
+/// Represents a `type: verify` step that evaluates assertions against filtered column data.
 #[derive(Debug, Deserialize)]
 pub struct VerifyStep {
     #[serde(default)]
+    /// Optional human-readable label that appears in CLI output and logs.
     pub name: Option<String>,
+    /// Column family to scan when evaluating the assertion.
     pub column: Column,
     #[serde(default)]
+    /// Column/row filters that scope the verification to a subset of keys.
     pub filters: PlanFilters,
+    /// Condition that must hold true for the filtered data; failure aborts the plan.
     pub assertion: VerificationAssertion,
 }
 
@@ -514,10 +525,15 @@ impl VerifyStep {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum VerificationAssertion {
+    /// Expect the filtered row count to be exactly `expected_count`.
     ExpectedCount { expected_count: u64 },
+    /// Require the filtered row count to be at least `min_count`.
     MinCount { min_count: u64 },
+    /// Require the filtered row count to be at most `max_count`.
     MaxCount { max_count: u64 },
+    /// Ensure a specific key exists within the filtered results.
     ContainsKey { contains_key: EncodedValue },
+    /// Ensure a specific key is absent from the filtered results.
     MissingKey { missing_key: EncodedValue },
 }
 
@@ -557,6 +573,128 @@ impl VerificationAssertion {
                 missing_key.preview(16)
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn valid_plan() -> MigrationPlan {
+        MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: PathBuf::from("/tmp/source-db"),
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: None,
+                column: Column::State,
+                filters: PlanFilters::default(),
+                transform: CopyTransform::default(),
+            })],
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_version() {
+        let mut plan = valid_plan();
+        plan.version = PlanVersion::new(42);
+        let error = plan.validate().unwrap_err().to_string();
+        assert!(error.contains("Unsupported migration plan version"));
+    }
+
+    #[test]
+    fn rejects_empty_step_list() {
+        let mut plan = valid_plan();
+        plan.steps.clear();
+        let error = plan.validate().unwrap_err().to_string();
+        assert!(error.contains("Migration plan must define at least one step"));
+    }
+
+    #[test]
+    fn rejects_empty_source_path() {
+        let mut plan = valid_plan();
+        plan.source.db_path = PathBuf::new();
+        let error = plan.validate().unwrap_err().to_string();
+        assert!(error.contains("db_path must not be empty"));
+    }
+
+    #[test]
+    fn rejects_invalid_key_range() {
+        let mut plan = valid_plan();
+        plan.steps = vec![PlanStep::Copy(CopyStep {
+            name: None,
+            column: Column::State,
+            filters: PlanFilters {
+                key_range: Some(KeyRange {
+                    start: None,
+                    end: None,
+                }),
+                ..PlanFilters::default()
+            },
+            transform: CopyTransform::default(),
+        })];
+
+        let error = plan.validate().unwrap_err().to_string();
+        assert!(error.contains("key_range requires at least 'start' or 'end'"));
+    }
+
+    #[test]
+    fn rejects_blank_jq_transform() {
+        let mut plan = valid_plan();
+        plan.steps = vec![PlanStep::Copy(CopyStep {
+            name: None,
+            column: Column::State,
+            filters: PlanFilters::default(),
+            transform: CopyTransform {
+                decode_with_abi: None,
+                jq: Some("   ".into()),
+            },
+        })];
+
+        let error = plan.validate().unwrap_err().to_string();
+        assert!(error.contains("jq transform must not be an empty string"));
+    }
+
+    #[test]
+    fn rejects_upsert_with_no_entries() {
+        let mut plan = valid_plan();
+        plan.steps = vec![PlanStep::Upsert(UpsertStep {
+            name: None,
+            column: Column::Alias,
+            entries: Vec::new(),
+        })];
+
+        let error = plan.validate().unwrap_err().to_string();
+        assert!(error.contains("upsert.entries must contain at least one entry"));
+    }
+
+    #[test]
+    fn accepts_valid_plan() {
+        let plan = valid_plan();
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn plan_filters_is_empty_and_summary() {
+        let default_filters = PlanFilters::default();
+        assert!(default_filters.is_empty());
+
+        let filters = PlanFilters {
+            context_ids: vec!["0xabc".into()],
+            context_aliases: vec!["marketing".into()],
+            ..PlanFilters::default()
+        };
+        assert!(!filters.is_empty());
+        let summary = filters.summary().expect("summary should exist");
+        assert!(summary.contains("context_ids=1"));
+        assert!(summary.contains("context_aliases=marketing"));
     }
 }
 
