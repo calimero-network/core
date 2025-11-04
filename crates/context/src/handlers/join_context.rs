@@ -41,20 +41,36 @@ async fn join_context(
 ) -> eyre::Result<(ContextId, PublicKey)> {
     let (context_id, invitee_id, protocol, network_id, contract_id) = invitation_payload.parts()?;
 
+    tracing::info!(%context_id, %invitee_id, "join_context: starting join flow");
+
     // Check if we already have a fully setup identity for this context
     let already_joined = context_client
         .get_identity(&context_id, &invitee_id)?
         .and_then(|i| i.private_key)
         .is_some();
 
+    tracing::info!(%context_id, %invitee_id, already_joined, "join_context: checked if already joined");
+
     if already_joined {
         // Identity exists, but check if state is initialized
         // DAG heads being empty means no state has been synced yet
         // (even if root_hash != [0;32] from external config sync)
         let context = context_client.get_context(&context_id)?;
-        let needs_sync = context.map(|ctx| ctx.dag_heads.is_empty()).unwrap_or(true); // If context doesn't exist, we definitely need sync
+        let needs_sync = context.map(|ctx| {
+            let empty = ctx.dag_heads.is_empty();
+            tracing::info!(
+                %context_id,
+                %invitee_id,
+                dag_heads_count = ctx.dag_heads.len(),
+                root_hash = %ctx.root_hash,
+                needs_sync = empty,
+                "join_context: identity already exists, checking if sync needed"
+            );
+            empty
+        }).unwrap_or(true); // If context doesn't exist, we definitely need sync
 
         if needs_sync {
+            tracing::info!(%context_id, %invitee_id, "join_context: triggering sync for already-joined context with empty DAG heads");
             // State is uninitialized - subscribe and trigger sync
             node_client.subscribe(&context_id).await?;
             node_client.sync(Some(&context_id), None).await?;
@@ -123,9 +139,11 @@ async fn join_context(
     // because we just assigned that identity to the new context.
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
+    tracing::info!(%context_id, %invitee_id, "join_context: NEW join - calling subscribe and sync");
     node_client.subscribe(&context_id).await?;
 
     node_client.sync(Some(&context_id), None).await?;
+    tracing::info!(%context_id, %invitee_id, "join_context: sync request sent successfully");
 
     Ok((context_id, invitee_id))
 }
