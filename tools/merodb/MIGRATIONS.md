@@ -16,9 +16,9 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
   - [x] Wire `--plan <FILE>` to deserialize the YAML plan and print a summary (steps, columns, filters).
   - [x] Integrate plan parsing into the `migrate` command, failing fast on validation errors.
 
-- [ ] **Set Up Migration Context**
-  - [ ] Open the source RocksDB in read-only mode and lazily load the ABI manifest when `--wasm-file` is supplied.
-  - [ ] Add `--target-db` support; keep the target read-only until mutating mode is enabled.
+- [x] **Set Up Migration Context**
+  - [x] Open the source RocksDB in read-only mode and lazily load the ABI manifest when `--wasm-file` is supplied. ✅ `migration::context::SourceContext` opens the DB and defers ABI extraction via `OnceCell`.
+  - [x] Add `--target-db` support; keep the target read-only until mutating mode is enabled. ✅ CLI overrides resolve into the new context and open the target in read-only mode.
 
 - [ ] **Build Dry-run Engine**
   - [ ] Resolve high-level filters (context IDs, alias names, key prefixes) to RocksDB iterators and collect a structured action preview.
@@ -55,4 +55,4 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
 
 ---
 
-_Last updated: TODO (replace with date when you next edit)._
+_Last updated: 2025-11-04._

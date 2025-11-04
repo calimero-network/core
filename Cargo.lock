@@ -6444,6 +6444,7 @@ dependencies = [
  "clap",
  "eyre",
  "hex",
+ "once_cell",
  "rocksdb",
  "serde",
  "serde_json",

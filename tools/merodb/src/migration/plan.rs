@@ -7,6 +7,7 @@ use serde_json::Value as JsonValue;
 
 use crate::types::Column;
 
+/// Discrete version number attached to migration plans for compatibility gating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlanVersion(u32);
 
@@ -57,6 +58,7 @@ impl<'de> Deserialize<'de> for PlanVersion {
     }
 }
 
+/// Top-level representation of a YAML migration plan document.
 #[derive(Debug, Deserialize)]
 pub struct MigrationPlan {
     pub version: PlanVersion,
@@ -74,18 +76,23 @@ pub struct MigrationPlan {
 }
 
 impl MigrationPlan {
+    /// Ensure version compatibility, non-empty endpoints, and that every step passes its own invariants.
     pub fn validate(&self) -> Result<()> {
+        // Reject plans that target an unsupported schema version.
         self.version.ensure_supported()?;
+        // Source, target, and defaults perform their own path/filter validations.
         self.source.validate("source")?;
         if let Some(target) = &self.target {
             target.validate("target")?;
         }
         self.defaults.validate("defaults")?;
 
+        // Plans must declare at least one step to be meaningful.
         if self.steps.is_empty() {
             bail!("Migration plan must define at least one step");
         }
 
+        // Each step enforces its own shape and required fields.
         for (index, step) in self.steps.iter().enumerate() {
             step.validate(index)?;
         }
@@ -94,6 +101,7 @@ impl MigrationPlan {
     }
 }
 
+/// Location of the source RocksDB and its optional ABI.
 #[derive(Debug, Deserialize)]
 pub struct SourceEndpoint {
     pub db_path: PathBuf,
@@ -102,6 +110,7 @@ pub struct SourceEndpoint {
 }
 
 impl SourceEndpoint {
+    /// Ensure provided paths are not empty strings so downstream checks may trust them.
     fn validate(&self, context: &str) -> Result<()> {
         ensure!(
             !self.db_path.as_os_str().is_empty(),
@@ -117,6 +126,7 @@ impl SourceEndpoint {
     }
 }
 
+/// Location of the target RocksDB and optional backup directory.
 #[derive(Debug, Deserialize)]
 pub struct TargetEndpoint {
     pub db_path: PathBuf,
@@ -125,6 +135,7 @@ pub struct TargetEndpoint {
 }
 
 impl TargetEndpoint {
+    /// Ensure the plan points at usable path strings.
     fn validate(&self, context: &str) -> Result<()> {
         ensure!(
             !self.db_path.as_os_str().is_empty(),
@@ -140,6 +151,7 @@ impl TargetEndpoint {
     }
 }
 
+/// Default columns, filters, and options that individual steps may inherit.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PlanDefaults {
@@ -160,6 +172,7 @@ impl PlanDefaults {
     }
 }
 
+/// Common filters that can be referenced by multiple steps.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PlanFilters {
@@ -227,6 +240,7 @@ impl PlanFilters {
     }
 }
 
+/// Inclusive/exclusive key range filter for byte prefixes.
 #[derive(Debug, Deserialize)]
 pub struct KeyRange {
     pub start: Option<String>,
@@ -250,6 +264,7 @@ impl KeyRange {
     }
 }
 
+/// Supported step kinds within a migration plan.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum PlanStep {
@@ -287,6 +302,7 @@ impl PlanStep {
         }
     }
 
+    /// Column against which the step operates.
     pub const fn column(&self) -> Column {
         match self {
             Self::Copy(step) => step.column,
@@ -296,6 +312,7 @@ impl PlanStep {
         }
     }
 
+    /// Optional column filters that apply to the step.
     pub const fn filters(&self) -> Option<&PlanFilters> {
         match self {
             Self::Copy(step) => Some(&step.filters),
@@ -418,6 +435,7 @@ impl UpsertEntry {
     }
 }
 
+/// How values are provided inline within YAML plan documents.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "encoding", rename_all = "kebab-case")]
 pub enum EncodedValue {
@@ -492,6 +510,7 @@ impl VerifyStep {
     }
 }
 
+/// Declarative assertions checked at the end of a verify step.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum VerificationAssertion {

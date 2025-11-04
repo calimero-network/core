@@ -3,12 +3,13 @@
     reason = "CLI struct with boolean flags is appropriate"
 )]
 
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use eyre::{Result, WrapErr};
-use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
+use rocksdb::{properties, DBWithThreadMode, Options, SingleThreaded};
 
 mod abi;
 mod dag;
@@ -22,6 +23,7 @@ mod validation;
 #[cfg(feature = "gui")]
 mod gui;
 
+use migration::context::{AbiManifestStatus, MigrationContext, MigrationOverrides};
 use migration::loader::load_plan;
 use migration::plan::{MigrationPlan, PlanStep};
 use types::Column;
@@ -130,6 +132,10 @@ struct MigrateArgs {
     #[arg(long, value_name = "PATH")]
     db_path: Option<PathBuf>,
 
+    /// WASM file providing the ABI manifest for the source database
+    #[arg(long, value_name = "WASM_FILE")]
+    wasm_file: Option<PathBuf>,
+
     /// Target RocksDB path
     #[arg(long, value_name = "PATH")]
     target_db: Option<PathBuf>,
@@ -157,7 +163,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn open_database(path: &Path) -> Result<DBWithThreadMode<SingleThreaded>> {
+pub(crate) fn open_database(path: &Path) -> Result<DBWithThreadMode<SingleThreaded>> {
     let options = Options::default();
 
     // Get all column families
@@ -281,22 +287,6 @@ fn run_export_dag(args: &ExportDagArgs) -> Result<()> {
 }
 
 fn run_migrate(args: &MigrateArgs) -> Result<()> {
-    if let Some(db_path) = &args.db_path {
-        eprintln!(
-            "note: --db-path ({}) is acknowledged but not yet used by the migration workflow.",
-            db_path.display()
-        );
-    }
-    if let Some(target_db) = &args.target_db {
-        eprintln!(
-            "note: --target-db ({}) is acknowledged but not yet used by the migration workflow.",
-            target_db.display()
-        );
-    }
-    if args.dry_run {
-        eprintln!("note: --dry-run is implicit while the migrate command only inspects plans.");
-    }
-
     let plan_path = &args.plan;
     if !plan_path.exists() {
         eyre::bail!(
@@ -305,9 +295,89 @@ fn run_migrate(args: &MigrateArgs) -> Result<()> {
         );
     }
 
+    if !args.dry_run {
+        eprintln!("note: mutating migrations are not yet supported; running in dry-run mode only.");
+    }
+
     let plan = load_plan(plan_path)?;
 
-    print_plan_summary(&plan, plan_path);
+    let overrides = MigrationOverrides {
+        source_db: args.db_path.clone(),
+        wasm_file: args.wasm_file.clone(),
+        target_db: args.target_db.clone(),
+    };
+
+    let context = MigrationContext::new(plan, overrides, true)?;
+
+    print_plan_summary(context.plan(), plan_path);
+
+    println!();
+    println!(
+        "Source database opened (read-only): {}",
+        context.source().path().display()
+    );
+    match context.source().abi_status() {
+        AbiManifestStatus::NotConfigured => {
+            println!("  ABI manifest: <not configured>");
+        }
+        AbiManifestStatus::Pending { wasm_path } => {
+            println!(
+                "  ABI manifest configured (lazy load): {}",
+                wasm_path.display()
+            );
+        }
+        AbiManifestStatus::Loaded => {
+            println!("  ABI manifest: loaded (cached)");
+        }
+    }
+
+    if let Ok(Some(estimate)) = context
+        .source()
+        .db()
+        .property_int_value(properties::ESTIMATE_NUM_KEYS)
+    {
+        println!("  Approximate key count: {estimate}");
+    }
+
+    if env::var_os("MERODB_EAGER_ABI").is_some() {
+        match context.source().abi_manifest() {
+            Ok(Some(_)) => println!("  ABI manifest eagerly loaded via MERODB_EAGER_ABI"),
+            Ok(None) => println!("  MERODB_EAGER_ABI set but no WASM manifest configured"),
+            Err(error) => println!("  Failed to load ABI manifest eagerly: {error:?}"),
+        }
+    }
+
+    if let Some(target) = context.target() {
+        println!(
+            "Target database opened ({}): {}",
+            if target.is_read_only() {
+                "read-only"
+            } else {
+                "read-write"
+            },
+            target.path().display()
+        );
+        if let Ok(Some(estimate)) = target
+            .db()
+            .property_int_value(properties::ESTIMATE_NUM_KEYS)
+        {
+            println!("  Approximate key count (target): {estimate}");
+        }
+        if let Some(backup_dir) = target.backup_dir() {
+            println!("  Backup directory: {}", backup_dir.display());
+        }
+    } else {
+        println!("Target database: <not configured>");
+    }
+
+    println!(
+        "Dry run mode: {}",
+        if context.is_dry_run() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     Ok(())
 }
