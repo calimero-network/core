@@ -165,13 +165,43 @@ impl Handler<NetworkEvent> for NodeManager {
                                     "Divergence detected - periodic sync will recover"
                                 );
                             } else if our_context.root_hash != their_root_hash {
-                                debug!(
-                                    %context_id,
-                                    ?source,
-                                    our_heads_count = our_context.dag_heads.len(),
-                                    their_heads_count = their_dag_heads.len(),
-                                    "Different root hash (normal - different DAG heads)"
-                                );
+                                // Different root hash could mean:
+                                // 1. We're behind (peer has more DAG heads than us)
+                                // 2. Peer is behind (we have more DAG heads)
+                                // 3. We forked (different DAG heads, both valid)
+                                
+                                // Check if peer has DAG heads we don't have (we're behind)
+                                let heads_we_dont_have: Vec<_> = their_heads_set
+                                    .difference(&our_heads_set)
+                                    .collect();
+
+                                if !heads_we_dont_have.is_empty() {
+                                    info!(
+                                        %context_id,
+                                        ?source,
+                                        our_heads_count = our_context.dag_heads.len(),
+                                        their_heads_count = their_dag_heads.len(),
+                                        missing_count = heads_we_dont_have.len(),
+                                        "Peer has DAG heads we don't have - triggering sync"
+                                    );
+
+                                    // Trigger immediate sync to catch up
+                                    let node_client = self.clients.node.clone();
+                                    let ctx_spawn = ctx.spawn(async move {
+                                        if let Err(e) = node_client.sync(Some(&context_id), None).await {
+                                            warn!(%context_id, ?e, "Failed to trigger sync from heartbeat");
+                                        }
+                                    }.into_actor(self));
+                                    let _ignored = ctx_spawn;
+                                } else {
+                                    debug!(
+                                        %context_id,
+                                        ?source,
+                                        our_heads_count = our_context.dag_heads.len(),
+                                        their_heads_count = their_dag_heads.len(),
+                                        "Different root hash (peer is behind or concurrent updates)"
+                                    );
+                                }
                             }
                         }
                     }
