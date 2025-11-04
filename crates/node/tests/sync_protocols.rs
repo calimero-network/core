@@ -575,3 +575,126 @@ async fn test_recovery_via_delta_replay() {
     // Now synchronized
     assert_eq!(node_b.get_heads().await, node_a_heads);
 }
+
+// ============================================================
+// Tests for New Features (DAG Heads, Identity Sync, Challenge-Response)
+// ============================================================
+
+#[tokio::test]
+async fn test_dag_heads_comparison_detects_divergence() {
+    // Test that DAG heads comparison detects when nodes have different heads
+    // even if they have the same number of deltas
+    
+    let node_a = SimulatedNode::new("node_a");
+    let node_b = SimulatedNode::new("node_b");
+
+    // Both start from genesis
+    let genesis = CausalDelta::new_test([0; 32], vec![], vec![]);
+    node_a.add_delta(genesis.clone()).await.unwrap();
+    node_b.add_delta(genesis.clone()).await.unwrap();
+
+    // Node A creates delta 2
+    let delta_a2 = CausalDelta::new_test([2; 32], vec![genesis.id], vec![]);
+    node_a.add_delta(delta_a2.clone()).await.unwrap();
+
+    // Node B creates DIFFERENT delta 3 (branching)
+    let delta_b3 = CausalDelta::new_test([3; 32], vec![genesis.id], vec![]);
+    node_b.add_delta(delta_b3.clone()).await.unwrap();
+
+    // Get heads
+    let heads_a = node_a.get_heads().await;
+    let heads_b = node_b.get_heads().await;
+
+    // Heads should differ (diverged state)
+    assert_ne!(heads_a, heads_b, "DAG heads should differ after divergence");
+    assert_eq!(heads_a, vec![[2; 32]], "Node A head should be delta 2");
+    assert_eq!(heads_b, vec![[3; 32]], "Node B head should be delta 3");
+
+    // In production, this would trigger request_dag_heads_and_sync()
+}
+
+#[tokio::test]
+async fn test_dag_heads_match_after_sync() {
+    // Test that DAG heads match after successful synchronization
+    
+    let node_a = SimulatedNode::new("node_a");
+    let node_b = SimulatedNode::new("node_b");
+
+    // Create delta chain on node A
+    let genesis = CausalDelta::new_test([0; 32], vec![], vec![]);
+    let delta_2 = CausalDelta::new_test([2; 32], vec![genesis.id], vec![]);
+    let delta_3 = CausalDelta::new_test([3; 32], vec![delta_2.id], vec![]);
+
+    node_a.add_delta(genesis.clone()).await.unwrap();
+    node_a.add_delta(delta_2.clone()).await.unwrap();
+    node_a.add_delta(delta_3.clone()).await.unwrap();
+
+    // Sync to node B
+    node_b.add_delta(genesis).await.unwrap();
+    node_b.add_delta(delta_2).await.unwrap();
+    node_b.add_delta(delta_3).await.unwrap();
+
+    // Heads should match
+    let heads_a = node_a.get_heads().await;
+    let heads_b = node_b.get_heads().await;
+
+    assert_eq!(heads_a, heads_b, "DAG heads should match after sync");
+    assert_eq!(heads_a, vec![[3; 32]], "Both should have delta 3 as head");
+}
+
+#[tokio::test]
+async fn test_deterministic_tie_breaker() {
+    // Test that the deterministic tie-breaker consistently assigns roles
+    use calimero_primitives::identity::PublicKey;
+
+    let pubkey_a = PublicKey::from([1; 32]);  // Lower value
+    let pubkey_b = PublicKey::from([2; 32]);  // Higher value
+
+    // Node A's perspective
+    let is_initiator_a = pubkey_a.as_ref() > pubkey_b.as_ref();
+    
+    // Node B's perspective (reversed comparison)
+    let is_initiator_b = pubkey_b.as_ref() > pubkey_a.as_ref();
+
+    // Exactly one should be initiator
+    assert!(!is_initiator_a, "Node A (lower pubkey) should be responder");
+    assert!(is_initiator_b, "Node B (higher pubkey) should be initiator");
+    assert_ne!(is_initiator_a, is_initiator_b, "Exactly one should be initiator");
+}
+
+#[tokio::test]
+async fn test_identity_verification_with_signature() {
+    // Test that PublicKey::verify() correctly verifies Ed25519 signatures
+    use calimero_primitives::identity::PrivateKey;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+    let private_key = PrivateKey::random(&mut rng);
+    let public_key = private_key.public_key();
+
+    let message = b"test challenge message";
+
+    // Sign the message
+    let signature = private_key.sign(message).expect("signing should succeed");
+
+    // Verify with correct public key
+    assert!(
+        public_key.verify(message, &signature).is_ok(),
+        "Signature should verify with correct public key"
+    );
+
+    // Verify fails with different message
+    let wrong_message = b"different message";
+    assert!(
+        public_key.verify(wrong_message, &signature).is_err(),
+        "Signature should fail with different message"
+    );
+
+    // Verify fails with different public key
+    let wrong_private_key = PrivateKey::random(&mut rng);
+    let wrong_public_key = wrong_private_key.public_key();
+    assert!(
+        wrong_public_key.verify(message, &signature).is_err(),
+        "Signature should fail with wrong public key"
+    );
+}
