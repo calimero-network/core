@@ -41,11 +41,25 @@ async fn join_context(
 ) -> eyre::Result<(ContextId, PublicKey)> {
     let (context_id, invitee_id, protocol, network_id, contract_id) = invitation_payload.parts()?;
 
-    if context_client
+    // Check if we already have a fully setup identity for this context
+    let already_joined = context_client
         .get_identity(&context_id, &invitee_id)?
         .and_then(|i| i.private_key)
-        .is_some()
-    {
+        .is_some();
+
+    if already_joined {
+        // Identity exists, but check if state is initialized
+        // DAG heads being empty means no state has been synced yet
+        // (even if root_hash != [0;32] from external config sync)
+        let context = context_client.get_context(&context_id)?;
+        let needs_sync = context.map(|ctx| ctx.dag_heads.is_empty()).unwrap_or(true); // If context doesn't exist, we definitely need sync
+
+        if needs_sync {
+            // State is uninitialized - subscribe and trigger sync
+            node_client.subscribe(&context_id).await?;
+            node_client.sync(Some(&context_id), None).await?;
+        }
+
         return Ok((context_id, invitee_id));
     }
 
