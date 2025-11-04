@@ -2134,6 +2134,7 @@ dependencies = [
  "calimero-utils-actix",
  "camino",
  "dashmap 6.1.0",
+ "ed25519-dalek",
  "eyre",
  "futures-util",
  "libp2p",
@@ -2390,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.16"
+version = "0.10.0-rc.17"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",

@@ -24,6 +24,7 @@ Complete guide to Calimero Node runtime documentation.
 - **Handle events:** See [Event Handling Guide](event-handling.md)
 - **Configure sync:** See [Sync Configuration](sync-configuration.md)
 - **Debug sync issues:** See [Troubleshooting](troubleshooting.md)
+- **Understand stale state detection:** See [DAG Heads Verification](sync-protocol.md#dag-heads-verification-stale-state-detection)
 
 ### Troubleshooting
 - **Nodes not syncing:** See [Troubleshooting - Sync Issues](troubleshooting.md#nodes-not-syncing)
@@ -50,6 +51,8 @@ Complete guide to Calimero Node runtime documentation.
 
 ### Synchronization
 - [Sync Protocol](sync-protocol.md) - Complete sync flow
+- [DAG Heads Verification](sync-protocol.md#dag-heads-verification-stale-state-detection) - Stale state detection
+- [Challenge-Response Authentication](sync-protocol.md#security-challenge-response-authentication) - Prevent impersonation
 - [Main README - Dual-Path](../README.md#dual-path-delta-propagation)  
 - [Sync Configuration](sync-configuration.md) - Tuning guide
 - [Troubleshooting - Sync](troubleshooting.md#nodes-not-syncing)

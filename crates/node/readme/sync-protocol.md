@@ -355,6 +355,233 @@ async fn sync_with_peer(
 
 ---
 
+## DAG Heads Verification (Stale State Detection)
+
+### The Problem: Silent Divergence After Reconnect
+
+Nodes that disconnect and reconnect can appear to be in sync while actually having stale state:
+
+```
+Timeline:
+T=0:   Node A online with 100 deltas
+T=10:  Node A crashes
+T=20:  Other nodes create 1000 new deltas
+T=60:  Node A restarts, loads old state from disk
+       - Has: 100 old deltas (internally consistent)
+       - No pending deltas (DAG complete locally)
+       - Old check: "DAG complete? ✅ Must be in sync!"
+       - Reality: ❌ 1000 deltas behind!
+```
+
+**Impact**: Without verification, stale nodes remain behind indefinitely until:
+- A new delta is created (triggers missing parent detection)
+- Manual sync is triggered
+- Or they never catch up 😱
+
+### The Solution: Compare DAG Heads Every Sync
+
+Instead of only checking if the local DAG is complete, we **verify that our DAG heads match the peer's heads**.
+
+#### Why DAG Heads Instead of Root Hash?
+
+| Aspect | DAG Heads | Root Hash |
+|--------|-----------|-----------|
+| **Precision** | Exact - shows what deltas we have | Derived - hash of final state |
+| **Multiple concurrent ops** | ✅ Can have multiple heads (normal) | ⚠️ Single value (less granular) |
+| **Divergence detection** | ✅ Shows exactly what differs | ⚠️ Only shows "different" |
+| **Sync efficiency** | ✅ Directly usable for delta requests | Requires additional head query |
+
+**DAG heads are the source of truth** for what state a node has!
+
+### Implementation
+
+Every periodic sync now includes a heads comparison step:
+
+```rust
+// In: crates/node/src/sync/manager.rs
+async fn initiate_sync(...) -> Result<SyncProtocol> {
+    // 1. Check if uninitialized
+    if is_uninitialized {
+        return request_dag_heads_and_sync().await;
+    }
+    
+    // 2. Check if DAG has pending deltas (incomplete)
+    if has_pending_deltas {
+        return request_dag_heads_and_sync().await;
+    }
+    
+    // 3. NEW: Even if DAG is complete, verify we're in sync
+    let our_heads = delta_store.get_heads().await;
+    
+    match compare_dag_heads_with_peer(peer, &our_heads).await {
+        Ok(true) => {
+            // Heads match - truly in sync ✅
+            Ok(SyncProtocol::None)
+        }
+        Ok(false) => {
+            // Heads differ - need to sync 🔄
+            request_dag_heads_and_sync().await
+        }
+        Err(e) => {
+            // On error, assume in sync (gossipsub will trigger sync later)
+            Ok(SyncProtocol::None)
+        }
+    }
+}
+```
+
+### DAG Heads Comparison
+
+```rust
+async fn compare_dag_heads_with_peer(
+    peer: PeerId,
+    our_heads: &[[u8; 32]],
+) -> Result<bool> {
+    // Request peer's DAG heads
+    let peer_heads = request_dag_heads(peer).await?;
+    
+    // Convert to sets for comparison (order doesn't matter)
+    let our_set: HashSet<_> = our_heads.iter().collect();
+    let peer_set: HashSet<_> = peer_heads.iter().collect();
+    
+    // Check if heads match
+    let match = our_set == peer_set;
+    
+    if !match {
+        // Log what's different for debugging
+        let only_ours = our_set.difference(&peer_set).count();
+        let only_theirs = peer_set.difference(&our_set).count();
+        
+        info!(
+            "DAG heads differ: {} unique to us, {} unique to peer",
+            only_ours, only_theirs
+        );
+    }
+    
+    Ok(match)
+}
+```
+
+### Sync Behavior
+
+```mermaid
+graph TD
+    A[Periodic Sync Triggered] --> B{Uninitialized?}
+    B -->|Yes| C[Request DAG Heads & Sync]
+    B -->|No| D{Pending Deltas?}
+    D -->|Yes| C
+    D -->|No| E[Compare DAG Heads with Peer]
+    E --> F{Heads Match?}
+    F -->|Yes| G[Already in Sync ✅]
+    F -->|No| C
+    F -->|Error| H[Assume in Sync\nGossipsub Fallback]
+    C --> I[Fetch Missing Deltas]
+    I --> J[Apply in Topological Order]
+    J --> K[Verify New Heads Match]
+```
+
+### Scenarios
+
+#### 1. Normal Case: Nodes in Sync
+
+```
+Node A heads: [delta_1000]
+Peer heads:   [delta_1000]
+Match? ✅ Yes
+Action: None (already synced)
+```
+
+#### 2. Node Behind (Stale State)
+
+```
+Node A heads: [delta_100]   ← Stale!
+Peer heads:   [delta_1000]
+Match? ❌ No
+Action: Sync deltas 101-1000
+Result: Catches up within 10-20 seconds ✅
+```
+
+#### 3. Multiple Heads (Concurrent Operations)
+
+```
+Node A heads: [delta_100, delta_101]   ← Branch 1, Branch 2
+Peer heads:   [delta_100, delta_101]
+Match? ✅ Yes (set comparison)
+Action: None (already synced)
+```
+
+#### 4. Diverged Heads (Partial Sync)
+
+```
+Node A heads: [delta_100, delta_102]
+Peer heads:   [delta_100, delta_101, delta_103]
+Match? ❌ No
+Unique to us: 1 (delta_102)
+Unique to peer: 2 (delta_101, delta_103)
+Action: Sync missing deltas
+```
+
+### Network Cost
+
+| Scenario | Cost | Notes |
+|----------|------|-------|
+| **In sync** | +1 RTT (~100ms) | DAG heads request/response |
+| **Out of sync** | +1 + N RTTs | Heads check + delta sync |
+| **Bandwidth** | ~200 bytes/sync | Heads list |
+
+**Cost-Benefit Analysis:**
+- **Cost**: 1 extra RTT every 10 seconds (~100ms)
+- **Benefit**: Detects stale state within 10-20 seconds
+- **Alternative**: Silent divergence (can persist indefinitely)
+
+**Verdict**: The overhead is negligible compared to the correctness guarantee!
+
+### Logs
+
+#### When Heads Match (In Sync)
+```
+INFO DAG complete locally, comparing heads with peer our_heads_count=1
+DEBUG DAG heads match peer heads_count=1
+```
+
+#### When Heads Differ (Need Sync)
+```
+INFO DAG complete locally, comparing heads with peer our_heads_count=1
+INFO DAG heads differ - need to sync 
+     our_heads_count=1 peer_heads_count=1 
+     unique_to_us=0 unique_to_peer=1
+INFO Requesting DAG heads from peer to catch up
+INFO Requesting missing parent deltas initial_missing_count=900
+INFO Received batch of missing deltas batch_size=100
+INFO Completed fetching missing delta ancestors total_fetched=900
+```
+
+#### Network Error (Graceful Degradation)
+```
+INFO DAG complete locally, comparing heads with peer
+WARN Failed to compare DAG heads, assuming in sync 
+     error="connection timeout"
+```
+
+### Edge Cases
+
+**Graceful Error Handling:**
+- Network timeout → assume in sync (gossipsub will trigger sync on next delta)
+- Peer unavailable → try next peer
+- Protocol error → log warning, continue
+
+**Multiple Peers:**
+- Compare with random peer each sync
+- If mismatch detected, sync from that peer
+- Next sync will verify with different peer
+
+**Rapid Changes:**
+- Heads can change between request and response
+- This is fine - next sync will catch it
+- DAG's eventual consistency guarantees convergence
+
+---
+
 ## Out-of-Order Handling
 
 ### Problem
@@ -429,6 +656,53 @@ if our_hash != their_hash {
 - Periodic sync provides recovery
 - DAG buffering handles out-of-order
 - State sync fallback (future)
+
+---
+
+## Security: Challenge-Response Authentication
+
+All KeyShare operations use mutual authentication to prevent identity impersonation.
+
+### Protocol Flow
+
+**Asymmetric handshake to prevent deadlock:**
+
+```
+Initiator                                 Responder
+---------                                 ---------
+1. Generate random challenge_A
+2. Send Challenge { challenge_A } →       Receive challenge_A
+3.                                ←       Sign(challenge_A, private_key_B)
+4. Verify(signature, public_key_B) ✅
+5.                                ←       Send Challenge { challenge_B }
+6. Sign(challenge_B, private_key_A) →     Receive signature
+7.                                        Verify(signature, public_key_A) ✅
+8. Send KeyShare { sender_key_A } →       Receive sender_key_A
+9.                                ←       Send KeyShare { sender_key_B }
+
+Both parties cryptographically proved private key ownership!
+```
+
+### Security Properties
+
+| Property | Implementation |
+|----------|----------------|
+| **Authentication** | Ed25519 signature proves private key ownership |
+| **Mutual** | Both parties challenge and verify each other |
+| **Replay Protection** | Random 32-byte challenges |
+| **Transport Security** | libp2p Noise (ChaCha20-Poly1305 AEAD) |
+| **No Impersonation** | Can't claim identity without private key |
+
+### Network Cost
+
+- **Messages**: 6 round trips
+- **Data**: ~300 bytes (64B challenges + 128B signatures + 64B keys + overhead)
+- **Latency**: ~200-500ms
+
+**When It Runs:**
+- Initial sync on context join
+- Periodic sync (when new peers detected)
+- On-demand when sender_key missing
 
 ---
 

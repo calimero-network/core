@@ -80,6 +80,11 @@ pub enum InitPayload {
     DagHeadsRequest {
         context_id: ContextId,
     },
+    /// Request sender_key for a specific identity (for decrypting deltas from unknown authors)
+    IdentityRequest {
+        context_id: ContextId,
+        identity: PublicKey,
+    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -100,5 +105,18 @@ pub enum MessagePayload<'a> {
     DagHeadsResponse {
         dag_heads: Vec<[u8; 32]>,
         root_hash: Hash,
+    },
+    /// Response to IdentityRequest containing the requested identity's sender_key
+    IdentityResponse {
+        identity: PublicKey,
+        sender_key: Option<PrivateKey>,
+    },
+    /// Challenge to prove ownership of claimed identity
+    Challenge {
+        challenge: [u8; 32],
+    },
+    /// Response to challenge with signature (Ed25519 signature is 64 bytes)
+    ChallengeResponse {
+        signature: [u8; 64],
     },
 }

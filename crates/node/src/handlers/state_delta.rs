@@ -67,47 +67,40 @@ pub async fn handle_state_delta(
         .get_identity(&context_id, &author_id)?
         .ok_or_eyre("author identity not found")?;
 
-    // If we have the identity but missing sender_key, do direct key share with source peer
+    // If we have the identity but missing sender_key, request it from any peer
+    // All context members have all sender_keys (needed for gossip decryption)
     if author_identity.sender_key.is_none() {
         info!(
             %context_id,
             %author_id,
-            source_peer=%source,
-            "Missing sender_key for author - initiating key share with source peer"
+            "Missing sender_key for author - requesting from any available peer"
         );
 
-        match request_key_share_with_peer(
+        match request_sender_key_from_peers(
             &network_client,
             &node_clients.context,
             &context_id,
             &author_id,
-            source,
             sync_timeout,
         )
         .await
         {
-            Ok(()) => {
+            Ok(sender_key) => {
                 info!(
                     %context_id,
                     %author_id,
-                    source_peer=%source,
-                    "Successfully completed key share with source peer"
+                    "Successfully fetched sender_key from peer"
                 );
-                // Reload identity to get the updated sender_key
-                author_identity = node_clients
-                    .context
-                    .get_identity(&context_id, &author_id)?
-                    .ok_or_eyre("author identity disappeared")?;
+                author_identity.sender_key = Some(sender_key);
             }
             Err(e) => {
                 warn!(
                     %context_id,
                     %author_id,
-                    source_peer=%source,
                     ?e,
-                    "Failed to complete key share with source peer - will retry when delta is rebroadcast"
+                    "Failed to fetch sender_key from peers - delta will retry when rebroadcast"
                 );
-                bail!("author sender_key not available (key share requested, will retry)");
+                bail!("author sender_key not available - request failed, will retry");
             }
         }
     }
@@ -705,128 +698,133 @@ async fn request_missing_deltas(
     Ok(())
 }
 
-/// Initiate bidirectional key share with a specific peer for a specific author identity
-/// This performs the same cryptographic key exchange as initial sync, but on-demand
-async fn request_key_share_with_peer(
+/// Request sender_key for a member from any available peer
+/// This is a simple request/response (not bidirectional), avoiding deadlocks
+async fn request_sender_key_from_peers(
     network_client: &calimero_network_primitives::client::NetworkClient,
     context_client: &ContextClient,
     context_id: &ContextId,
-    author_identity: &PublicKey,
-    peer: PeerId,
+    member_id: &PublicKey,
     timeout: std::time::Duration,
-) -> Result<()> {
-    use calimero_crypto::{Nonce, SharedKey};
+) -> Result<calimero_primitives::identity::PrivateKey> {
+    use calimero_network_primitives::messages::TopicHash;
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
     use rand::Rng;
 
-    debug!(
-        %context_id,
-        %author_identity,
-        %peer,
-        "Initiating bidirectional key share with peer"
-    );
+    // Get all peers from the context mesh
+    let peers = network_client
+        .mesh_peers(TopicHash::from_raw(*context_id))
+        .await;
 
-    // Wrap entire key share in single timeout
-    tokio::time::timeout(timeout, async {
-        // Open stream to source peer
-        let mut stream = network_client.open_stream(peer).await?;
+    if peers.is_empty() {
+        bail!("No peers available to request sender_key from");
+    }
 
-        // Get our identity for this context
-        let identities = context_client.get_context_members(context_id, Some(true));
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-            .await
-            .transpose()?
-        else {
-            bail!("no owned identities found for context");
-        };
-
-        let our_nonce = rand::thread_rng().gen::<Nonce>();
-
-        // Initiate key share request
-        crate::sync::stream::send(
-            &mut stream,
-            &StreamMessage::Init {
-                context_id: *context_id,
-                party_id: our_identity,
-                payload: InitPayload::KeyShare,
-                next_nonce: our_nonce,
-            },
-            None,
-        )
-        .await?;
-
-        // Receive ack from peer
-        let Some(ack) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-            bail!("connection closed while awaiting key share handshake");
-        };
-
-        let their_nonce = match ack {
-            StreamMessage::Init {
-                payload: InitPayload::KeyShare,
-                next_nonce,
-                ..
-            } => next_nonce,
-            unexpected => {
-                bail!("unexpected message during key share: {:?}", unexpected)
-            }
-        };
-
-        // Now perform bidirectional key exchange
-        let mut their_identity = context_client
-            .get_identity(context_id, author_identity)?
-            .ok_or_eyre("expected peer identity to exist")?;
-
-        let (private_key, sender_key) = context_client
-            .get_identity(context_id, &our_identity)?
-            .and_then(|i| Some((i.private_key?, i.sender_key?)))
-            .ok_or_eyre("expected own identity to have private & sender keys")?;
-
-        let shared_key = SharedKey::new(&private_key, &their_identity.public_key);
-
-        // Send our sender_key
-        crate::sync::stream::send(
-            &mut stream,
-            &StreamMessage::Message {
-                sequence_id: 0,
-                payload: MessagePayload::KeyShare { sender_key },
-                next_nonce: our_nonce,
-            },
-            Some((shared_key, our_nonce)),
-        )
-        .await?;
-
-        // Receive their sender_key
-        let Some(msg) =
-            crate::sync::stream::recv(&mut stream, Some((shared_key, their_nonce)), timeout)
-                .await?
-        else {
-            bail!("connection closed while awaiting sender_key");
-        };
-
-        let their_sender_key = match msg {
-            StreamMessage::Message {
-                payload: MessagePayload::KeyShare { sender_key },
-                ..
-            } => sender_key,
-            unexpected => {
-                bail!("unexpected message: {:?}", unexpected)
-            }
-        };
-
-        // Store their sender_key
-        their_identity.sender_key = Some(their_sender_key);
-        context_client.update_identity(context_id, &their_identity)?;
-
-        info!(
+    // Try each peer until one responds successfully
+    for peer in peers {
+        debug!(
             %context_id,
-            our_identity=%our_identity,
-            their_identity=%author_identity,
+            %member_id,
             %peer,
-            "Bidirectional key share completed"
+            "Requesting sender_key from peer"
         );
 
-        Ok(())
-    })
-    .await
-    .map_err(|_| eyre::eyre!("Timeout during key share with peer"))?
+        // Wrap entire attempt in single timeout to avoid double-counting
+        let result = tokio::time::timeout(timeout, async {
+            // Open stream
+            let mut stream = network_client.open_stream(peer).await?;
+
+            // Get our identity
+            let identities = context_client.get_context_members(context_id, Some(true));
+            let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+                .await
+                .transpose()?
+            else {
+                bail!("no owned identities found for context");
+            };
+
+            // Send request
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Init {
+                    context_id: *context_id,
+                    party_id: our_identity,
+                    payload: InitPayload::IdentityRequest {
+                        context_id: *context_id,
+                        identity: *member_id,
+                    },
+                    next_nonce: rand::thread_rng().gen(),
+                },
+                None,
+            )
+            .await?;
+
+            // Receive response
+            let response = crate::sync::stream::recv(&mut stream, None, timeout)
+                .await?
+                .ok_or_eyre("peer closed stream without responding")?;
+
+            Ok::<_, eyre::Report>(response)
+        })
+        .await;
+
+        let response = match result {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => {
+                warn!(%peer, ?e, "Failed to request sender_key from peer");
+                continue;
+            }
+            Err(_) => {
+                warn!(%peer, "Timeout requesting sender_key from peer");
+                continue;
+            }
+        };
+
+        // Parse response
+        match response {
+            StreamMessage::Message {
+                payload:
+                    MessagePayload::IdentityResponse {
+                        identity: resp_identity,
+                        sender_key: Some(sender_key),
+                    },
+                ..
+            } if resp_identity == *member_id => {
+                info!(
+                    %context_id,
+                    %member_id,
+                    %peer,
+                    "Received sender_key from peer - updating local identity store"
+                );
+
+                // Update local identity store
+                let mut local_identity = context_client
+                    .get_identity(context_id, member_id)?
+                    .ok_or_eyre("identity disappeared during request")?;
+
+                local_identity.sender_key = Some(sender_key);
+                context_client.update_identity(context_id, &local_identity)?;
+
+                return Ok(local_identity
+                    .sender_key
+                    .ok_or_eyre("sender_key disappeared after update")?);
+            }
+            StreamMessage::Message {
+                payload:
+                    MessagePayload::IdentityResponse {
+                        sender_key: None, ..
+                    },
+                ..
+            } => {
+                warn!(%peer, %member_id, "Peer doesn't have sender_key for this member");
+                continue;
+            }
+            other => {
+                warn!(%peer, ?other, "Unexpected response to sender_key request");
+                continue;
+            }
+        }
+    }
+
+    bail!("No peers could provide sender_key for member {}", member_id);
 }

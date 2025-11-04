@@ -360,4 +360,54 @@ impl SyncManager {
 
         Ok(())
     }
+
+    /// Handle incoming identity request from a peer
+    pub async fn handle_identity_request(
+        &self,
+        context_id: ContextId,
+        identity: PublicKey,
+        stream: &mut Stream,
+        _nonce: Nonce,
+    ) -> Result<()> {
+        info!(
+            %context_id,
+            %identity,
+            "Handling identity request from peer"
+        );
+
+        // Try to get the requested identity's sender_key
+        let sender_key = self
+            .context_client
+            .get_identity(&context_id, &identity)?
+            .and_then(|id| id.sender_key);
+
+        if sender_key.is_some() {
+            debug!(
+                %context_id,
+                %identity,
+                "Sending identity sender_key to peer"
+            );
+        } else {
+            warn!(
+                %context_id,
+                %identity,
+                "Requested identity not found or has no sender_key"
+            );
+        }
+
+        // Send response (None if we don't have the sender_key)
+        let mut sqx = Sequencer::default();
+        let msg = StreamMessage::Message {
+            sequence_id: sqx.next(),
+            payload: MessagePayload::IdentityResponse {
+                identity,
+                sender_key,
+            },
+            next_nonce: super::helpers::generate_nonce(),
+        };
+
+        super::stream::send(stream, &msg, None).await?;
+
+        Ok(())
+    }
 }
