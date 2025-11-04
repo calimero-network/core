@@ -101,4 +101,12 @@ pub enum MessagePayload<'a> {
         dag_heads: Vec<[u8; 32]>,
         root_hash: Hash,
     },
+    /// Challenge to prove ownership of claimed identity
+    Challenge {
+        challenge: [u8; 32],
+    },
+    /// Response to challenge with signature (Ed25519 signature is 64 bytes)
+    ChallengeResponse {
+        signature: [u8; 64],
+    },
 }
