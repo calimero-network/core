@@ -169,11 +169,10 @@ impl Handler<NetworkEvent> for NodeManager {
                                 // 1. We're behind (peer has more DAG heads than us)
                                 // 2. Peer is behind (we have more DAG heads)
                                 // 3. We forked (different DAG heads, both valid)
-                                
+
                                 // Check if peer has DAG heads we don't have (we're behind)
-                                let heads_we_dont_have: Vec<_> = their_heads_set
-                                    .difference(&our_heads_set)
-                                    .collect();
+                                let heads_we_dont_have: Vec<_> =
+                                    their_heads_set.difference(&our_heads_set).collect();
 
                                 if !heads_we_dont_have.is_empty() {
                                     info!(

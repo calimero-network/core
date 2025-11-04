@@ -56,18 +56,20 @@ async fn join_context(
         // DAG heads being empty means no state has been synced yet
         // (even if root_hash != [0;32] from external config sync)
         let context = context_client.get_context(&context_id)?;
-        let needs_sync = context.map(|ctx| {
-            let empty = ctx.dag_heads.is_empty();
-            tracing::info!(
-                %context_id,
-                %invitee_id,
-                dag_heads_count = ctx.dag_heads.len(),
-                root_hash = %ctx.root_hash,
-                needs_sync = empty,
-                "join_context: identity already exists, checking if sync needed"
-            );
-            empty
-        }).unwrap_or(true); // If context doesn't exist, we definitely need sync
+        let needs_sync = context
+            .map(|ctx| {
+                let empty = ctx.dag_heads.is_empty();
+                tracing::info!(
+                    %context_id,
+                    %invitee_id,
+                    dag_heads_count = ctx.dag_heads.len(),
+                    root_hash = %ctx.root_hash,
+                    needs_sync = empty,
+                    "join_context: identity already exists, checking if sync needed"
+                );
+                empty
+            })
+            .unwrap_or(true); // If context doesn't exist, we definitely need sync
 
         if needs_sync {
             tracing::info!(%context_id, %invitee_id, "join_context: triggering sync for already-joined context with empty DAG heads");
