@@ -415,6 +415,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 Some(serialized)
                             };
 
+                            // Add delta to local DAG BEFORE broadcasting
+                            // This ensures it's in our DAG even if broadcast is skipped (no mesh peers)
+                            node_client.add_local_delta(
+                                context.id,
+                                the_delta.id,
+                                the_delta.parents.clone(),
+                                the_delta.actions.clone(),
+                                the_delta.hlc,
+                                the_delta.expected_root_hash,
+                            );
+
                             node_client
                                 .broadcast(
                                     &context,

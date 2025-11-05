@@ -119,7 +119,7 @@ pub async fn handle_key_exchange(
     // Note: sync_context_config is now called in the Subscribed event handler
     // We assume the identity already exists here. If not, the error will be caught below.
 
-    debug!(
+    info!(
         context_id=%context.id,
         %our_identity,
         %their_identity,
@@ -141,7 +141,7 @@ pub async fn handle_key_exchange(
     )
     .await?;
 
-    debug!(
+    info!(
         context_id=%context.id,
         %our_identity,
         %their_identity,

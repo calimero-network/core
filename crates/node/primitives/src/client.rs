@@ -82,15 +82,30 @@ impl NodeClient {
 
         info!(%context_id, "Subscribed to context");
 
-        // Note: We don't wait for mesh to form here because:
-        // 1. Context creators have no peers initially (invitees haven't joined yet)
-        // 2. Early broadcasts will be skipped (logged as warnings) 
-        // 3. Pending delta heartbeat (60s) will trigger retry sync for any missed deltas
-        // 4. Hash heartbeat (30s) will trigger sync if peers detect divergence
-        //
-        // This is the correct behavior - the heartbeat system ensures eventual consistency.
-
         Ok(())
+    }
+
+    /// Add a locally-created delta to the in-memory DAG.
+    ///
+    /// This must be called for deltas created by execute() to ensure they're in the DAG
+    /// even if gossipsub broadcasts are skipped (no mesh peers yet).
+    pub fn add_local_delta(
+        &self,
+        context_id: ContextId,
+        delta_id: [u8; 32],
+        parents: Vec<[u8; 32]>,
+        actions: Vec<calimero_storage::interface::Action>,
+        hlc: calimero_storage::logical_clock::HybridTimestamp,
+        expected_root_hash: [u8; 32],
+    ) {
+        let _ignored = self.node_manager.do_send(NodeMessage::AddLocalDelta {
+            context_id,
+            delta_id,
+            parents,
+            actions,
+            hlc,
+            expected_root_hash,
+        });
     }
 
     pub async fn unsubscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
@@ -133,6 +148,34 @@ impl NodeClient {
             "Sending state delta"
         );
 
+        // CRITICAL: Add delta to local DeltaStore BEFORE broadcasting
+        // This ensures creator has delta in DAG even if broadcast is skipped (no peers)
+        // Deserialize actions from artifact
+        use calimero_storage::delta::StorageDelta;
+        let actions = match borsh::from_slice::<StorageDelta>(&artifact) {
+            Ok(StorageDelta::Actions(actions)) => actions,
+            _ => {
+                warn!(context_id=%context.id, "Failed to deserialize artifact for local delta");
+                vec![]
+            }
+        };
+
+        info!(
+            context_id=%context.id,
+            delta_id=?delta_id,
+            action_count = actions.len(),
+            "Calling add_local_delta to store delta in local DAG"
+        );
+
+        self.add_local_delta(
+            context.id,
+            delta_id,
+            parent_ids.clone(),
+            actions,
+            hlc,
+            *context.root_hash.as_bytes(),
+        );
+
         // Get mesh peers for diagnostics
         let topic = TopicHash::from_raw(context.id);
         let mesh_peers = self.network_client.mesh_peers(topic.clone()).await;
@@ -146,7 +189,7 @@ impl NodeClient {
         );
 
         if peer_count == 0 {
-            warn!(context_id=%context.id, "No mesh peers - broadcast skipped");
+            warn!(context_id=%context.id, "No mesh peers - broadcast skipped (delta already in local DAG)");
             return Ok(());
         }
 

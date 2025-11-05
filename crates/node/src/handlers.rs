@@ -20,7 +20,7 @@ use futures_util::{io, StreamExt, TryStreamExt};
 use libp2p::{PeerId, StreamProtocol};
 use tracing::{debug, error, info, warn};
 
-use crate::NodeManager;
+use crate::{delta_store::DeltaStore, NodeManager};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NodeMessage Handler
@@ -33,6 +33,74 @@ impl Handler<NodeMessage> for NodeManager {
         match msg {
             NodeMessage::GetBlobBytes { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
+            }
+            NodeMessage::AddLocalDelta {
+                context_id,
+                delta_id,
+                parents,
+                actions,
+                hlc,
+                expected_root_hash,
+            } => {
+                info!(
+                    %context_id,
+                    ?delta_id,
+                    "AddLocalDelta message received - adding to local DAG"
+                );
+
+                let delta_stores = self.state.delta_stores.clone();
+                let context_client = self.clients.context.clone();
+
+                let _ignored = ctx.spawn(
+                    async move {
+                        use futures_util::StreamExt;
+                        use std::pin::pin;
+
+                        // Get or create DeltaStore
+                        let is_new = !delta_stores.contains_key(&context_id);
+                        let delta_store = if is_new {
+                            // Create new DeltaStore
+                            let context = context_client.get_context(&context_id).ok().flatten()
+                                .expect("Context must exist to add local delta");
+
+                            // Get our owned identity
+                            let members = context_client.get_context_members(&context_id, Some(true));
+                            let runtime_handle = tokio::runtime::Handle::current();
+                            let our_identity = runtime_handle.block_on(async {
+                                let mut stream = pin!(members);
+                                stream.next().await.and_then(|r| r.ok()).map(|(id, _)| id)
+                            }).expect("Must have owned identity to add local delta");
+
+                            let root = *context.root_hash.as_bytes();
+                            let store = DeltaStore::new(root, context_client.clone(), context_id, our_identity);
+                            
+                            delta_stores.entry(context_id).or_insert(store).clone()
+                        } else {
+                            delta_stores.get(&context_id).expect("just checked").clone()
+                        };
+
+                        if is_new {
+                            // Load persisted deltas from RocksDB
+                            if let Err(e) = delta_store.load_persisted_deltas().await {
+                                warn!(?e, %context_id, "Failed to load persisted deltas");
+                            }
+                        }
+
+                        // Add delta to DAG
+                        let delta = calimero_dag::CausalDelta {
+                            id: delta_id,
+                            parents,
+                            payload: actions,
+                            hlc,
+                            expected_root_hash,
+                        };
+
+                        if let Err(e) = delta_store.add_delta(delta).await {
+                            warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add local delta to DAG");
+                        }
+                    }
+                    .into_actor(self),
+                );
             }
         }
     }
@@ -50,14 +118,8 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
         GetBlobBytesRequest { blob_id }: GetBlobBytesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Check cache first
-        if let Some(data) = self.state.blob_cache.get(&blob_id) {
-            return ActorResponse::reply(Ok(GetBlobBytesResponse { bytes: Some(data) }));
-        }
-
-        // Not in cache, load from blobstore
+        // Load from blobstore (RocksDB has its own cache)
         let blobstore = self.managers.blobstore.clone();
-        let blob_cache = self.state.blob_cache.clone();
 
         let task = async move {
             let Some(blob) = blobstore.get(blob_id)? else {
@@ -69,7 +131,6 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
             let _ignored = io::copy(&mut blob, &mut bytes).await?;
 
             let data: std::sync::Arc<[u8]> = bytes.into();
-            blob_cache.put(blob_id, data.clone());
 
             Ok(GetBlobBytesResponse { bytes: Some(data) })
         };
@@ -266,16 +327,18 @@ fn handle_state_delta_broadcast(
             };
 
             // Get or create DeltaStore
-            let (delta_store, is_new) =
-                node_state.delta_stores.get_or_create_with(&context_id, || {
-                    crate::delta_store::DeltaStore::new(
-                        [0u8; 32],
-                        context_client.clone(),
-                        context_id,
-                        our_identity,
-                    )
-                });
-            let delta_store = delta_store.clone();
+            let is_new = !node_state.delta_stores.contains_key(&context_id);
+            let delta_store = if is_new {
+                let store = crate::delta_store::DeltaStore::new(
+                    [0u8; 32],
+                    context_client.clone(),
+                    context_id,
+                    our_identity,
+                );
+                node_state.delta_stores.entry(context_id).or_insert(store).clone()
+            } else {
+                node_state.delta_stores.get(&context_id).expect("just checked").clone()
+            };
 
             if is_new {
                 if let Err(e) = delta_store.load_persisted_deltas().await {

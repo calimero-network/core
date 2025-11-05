@@ -9,12 +9,15 @@
 )]
 
 use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::context::ContextId;
+use dashmap::DashMap;
 use futures_util::StreamExt;
 use tracing::error;
 
@@ -30,7 +33,7 @@ pub mod services;
 mod utils;
 
 pub use run::{start, NodeConfig};
-pub use services::{BlobCacheService, DeltaStoreService, TimerManager};
+pub use services::TimerManager;
 
 /// Service clients for context and node operations
 #[derive(Debug, Clone)]
@@ -48,27 +51,17 @@ pub(crate) struct NodeManagers {
     pub(crate) sync_timeout: std::time::Duration,
 }
 
-/// Runtime state (caches for blobs and delta stores)
+/// Runtime state (delta stores)
 #[derive(Clone, Debug)]
 pub(crate) struct NodeState {
-    pub(crate) blob_cache: BlobCacheService,
-    pub(crate) delta_stores: DeltaStoreService,
+    pub(crate) delta_stores: Arc<DashMap<ContextId, crate::delta_store::DeltaStore>>,
 }
 
 impl NodeState {
     fn new() -> Self {
         Self {
-            blob_cache: BlobCacheService::new(),
-            delta_stores: DeltaStoreService::new(),
+            delta_stores: Arc::new(DashMap::new()),
         }
-    }
-
-    fn evict_old_blobs(&self) {
-        self.blob_cache.evict_old();
-    }
-
-    async fn cleanup_stale_deltas(&self, max_age: Duration) -> usize {
-        self.delta_stores.cleanup_all_stale(max_age).await
     }
 }
 
@@ -94,7 +87,6 @@ impl NodeManager {
     ) -> Self {
         // Create timer manager
         let timer_manager = TimerManager::new(
-            state.blob_cache.clone(),
             state.delta_stores.clone(),
             context_client.clone(),
             node_client.clone(),
@@ -166,7 +158,7 @@ fn start_sync_listener(
     mut sync_rx: tokio::sync::mpsc::Receiver<calimero_node_primitives::client::SyncRequest>,
     context_client: ContextClient,
     network_client: calimero_network_primitives::client::NetworkClient,
-    delta_stores: crate::services::DeltaStoreService,
+    delta_stores: Arc<DashMap<ContextId, crate::delta_store::DeltaStore>>,
     sync_timeout: std::time::Duration,
 ) {
     use tracing::{error, info};
@@ -222,7 +214,7 @@ async fn perform_sync(
     peer_id: Option<libp2p::PeerId>,
     context_client: &ContextClient,
     network_client: &calimero_network_primitives::client::NetworkClient,
-    delta_stores: &crate::services::DeltaStoreService,
+    delta_stores: &Arc<DashMap<ContextId, crate::delta_store::DeltaStore>>,
     sync_timeout: std::time::Duration,
 ) -> eyre::Result<calimero_node_primitives::client::SyncResult> {
     use calimero_node_primitives::client::SyncResult;
@@ -238,22 +230,32 @@ async fn perform_sync(
         .ok_or_else(|| eyre::eyre!("No owned identity"))?;
 
     // Get or create delta store for this context (needs our_identity)
-    let delta_store = delta_stores
-        .get_or_create_with(context_id, || {
-            let context = context_client.get_context(context_id).ok().flatten();
-            let root = context
-                .as_ref()
-                .map(|c| *c.root_hash.as_bytes())
-                .unwrap_or([0u8; 32]);
+    let is_new = !delta_stores.contains_key(context_id);
+    let delta_store = if is_new {
+        let context = context_client.get_context(context_id).ok().flatten();
+        let root = context
+            .as_ref()
+            .map(|c| *c.root_hash.as_bytes())
+            .unwrap_or([0u8; 32]);
 
-            crate::delta_store::DeltaStore::new(
-                root,
-                context_client.clone(),
-                *context_id,
-                our_identity,
-            )
-        })
-        .0;
+        let store = crate::delta_store::DeltaStore::new(
+            root,
+            context_client.clone(),
+            *context_id,
+            our_identity,
+        );
+
+        delta_stores.entry(*context_id).or_insert(store).clone()
+    } else {
+        delta_stores.get(context_id).expect("just checked").clone()
+    };
+
+    if is_new {
+        // Load persisted deltas from RocksDB
+        if let Err(e) = delta_store.load_persisted_deltas().await {
+            tracing::warn!(?e, %context_id, "Failed to load persisted deltas");
+        }
+    }
 
     // Find peer to sync from
     let target_peer = if let Some(peer) = peer_id {
@@ -290,7 +292,7 @@ async fn perform_sync(
     // Execute DAG catchup
     let strategy = DagCatchup::new(network_client.clone(), context_client.clone(), sync_timeout);
     let sync_result = strategy
-        .execute(context_id, &target_peer, &our_identity, &*delta_store)
+        .execute(context_id, &target_peer, &our_identity, &delta_store as &dyn calimero_protocols::p2p::delta_request::DeltaStore)
         .await?;
 
     // Convert result types

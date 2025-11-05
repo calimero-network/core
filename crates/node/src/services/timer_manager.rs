@@ -1,9 +1,9 @@
 //! Timer Manager - Manages periodic tasks for the node.
 //!
 //! This service handles scheduling and execution of periodic tasks:
-//! - Blob cache eviction (every 5 minutes)
 //! - Delta cleanup (every 60 seconds)
 //! - Hash heartbeat broadcast (every 30 seconds)
+//! - Pending delta check (every 60 seconds)
 //!
 //! # Design
 //!
@@ -11,28 +11,30 @@
 //! a clean way to schedule periodic tasks without cluttering NodeManager.
 
 use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::context::ContextId;
+use dashmap::DashMap;
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
 
-use crate::services::{BlobCacheService, DeltaStoreService};
+use crate::delta_store::DeltaStore;
 
 /// Timer manager for periodic node tasks.
 ///
-/// Coordinates three main periodic tasks:
-/// 1. Blob cache eviction (5 minutes)
-/// 2. Delta cleanup (60 seconds)  
-/// 3. Hash heartbeat broadcast (30 seconds)
+/// Coordinates periodic tasks:
+/// 1. Delta cleanup (60 seconds)  
+/// 2. Hash heartbeat broadcast (30 seconds)
+/// 3. Pending delta check (60 seconds)
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// let timer_manager = TimerManager::new(
-///     blob_cache,
 ///     delta_stores,
 ///     context_client,
 ///     node_client,
@@ -43,8 +45,7 @@ use crate::services::{BlobCacheService, DeltaStoreService};
 /// ```
 #[derive(Clone, Debug)]
 pub struct TimerManager {
-    blob_cache: BlobCacheService,
-    delta_stores: DeltaStoreService,
+    delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
     context_client: ContextClient,
     node_client: NodeClient,
 }
@@ -52,13 +53,11 @@ pub struct TimerManager {
 impl TimerManager {
     /// Create a new timer manager.
     pub fn new(
-        blob_cache: BlobCacheService,
-        delta_stores: DeltaStoreService,
+        delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
         context_client: ContextClient,
         node_client: NodeClient,
     ) -> Self {
         Self {
-            blob_cache,
             delta_stores,
             context_client,
             node_client,
@@ -72,22 +71,9 @@ impl TimerManager {
     where
         A: actix::Actor<Context = actix::Context<A>>,
     {
-        self.start_blob_eviction_timer(ctx);
         self.start_delta_cleanup_timer(ctx);
         self.start_heartbeat_timer(ctx);
         self.start_pending_delta_check_timer(ctx);
-    }
-
-    /// Start the blob cache eviction timer (every 5 minutes).
-    pub fn start_blob_eviction_timer<A>(&self, ctx: &mut actix::Context<A>)
-    where
-        A: actix::Actor<Context = actix::Context<A>>,
-    {
-        let blob_cache = self.blob_cache.clone();
-
-        ctx.run_interval(Duration::from_secs(300), move |_act, _ctx| {
-            blob_cache.evict_old();
-        });
     }
 
     /// Start the delta cleanup timer (every 60 seconds).
@@ -103,12 +89,66 @@ impl TimerManager {
 
             let _ignored = ctx.spawn(
                 async move {
-                    // Delegate cleanup to DeltaStoreService
-                    let _total_evicted = delta_stores.cleanup_all_stale(max_age).await;
+                    // Cleanup stale pending deltas across ALL contexts
+                    Self::cleanup_all_stale(&delta_stores, max_age).await;
                 }
                 .into_actor(_act),
             );
         });
+    }
+
+    /// Cleanup stale pending deltas across ALL contexts.
+    ///
+    /// Iterates over all delta stores and removes deltas older than max_age.
+    /// Also logs statistics for monitoring.
+    async fn cleanup_all_stale(
+        delta_stores: &DashMap<ContextId, DeltaStore>,
+        max_age: Duration,
+    ) -> usize {
+        const SNAPSHOT_THRESHOLD: usize = 100;
+        let mut total_evicted = 0;
+
+        for entry in delta_stores.iter() {
+            let context_id = *entry.key();
+            let delta_store = entry.value();
+
+            // Evict stale deltas
+            let evicted = delta_store.cleanup_stale(max_age).await;
+            total_evicted += evicted;
+
+            if evicted > 0 {
+                warn!(
+                    %context_id,
+                    evicted_count = evicted,
+                    "Evicted stale pending deltas (timed out after {:?})",
+                    max_age
+                );
+            }
+
+            // Log stats for monitoring
+            let stats = delta_store.pending_stats().await;
+            if stats.count > 0 {
+                debug!(
+                    %context_id,
+                    pending_count = stats.count,
+                    oldest_age_secs = stats.oldest_age_secs,
+                    missing_parents = stats.total_missing_parents,
+                    "Pending delta statistics"
+                );
+
+                // Trigger snapshot fallback if too many pending
+                if stats.count > SNAPSHOT_THRESHOLD {
+                    warn!(
+                        %context_id,
+                        pending_count = stats.count,
+                        threshold = SNAPSHOT_THRESHOLD,
+                        "Too many pending deltas - state sync will recover on next periodic sync"
+                    );
+                }
+            }
+        }
+
+        total_evicted
     }
 
     /// Start the hash heartbeat broadcast timer (every 30 seconds).

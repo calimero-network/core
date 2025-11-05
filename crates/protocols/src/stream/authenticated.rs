@@ -138,7 +138,7 @@ impl SecureStream {
         // Step 1: Exchange identities
         let our_nonce = thread_rng().gen::<Nonce>();
 
-        debug!(
+        info!(
             context_id=%context.id,
             %our_identity,
             "CLIENT: Sending Init"
@@ -156,7 +156,7 @@ impl SecureStream {
         )
         .await?;
 
-        debug!(
+        info!(
             context_id=%context.id,
             %our_identity,
             "CLIENT: Init sent, waiting for Init ack"
@@ -178,7 +178,7 @@ impl SecureStream {
             }
         };
 
-        debug!(
+        info!(
             context_id=%context.id,
             %our_identity,
             %their_identity,
