@@ -88,10 +88,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // 64 sync requests: handles burst context joins/syncs
     let (event_sender, _) = broadcast::channel(256);
 
-    // Note: sync_and_wait() is temporarily disabled (returns immediately)
-    // Sync happens via gossipsub broadcasts instead
-    // TODO: Implement proper sync mechanism using calimero-sync
-    let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1); // Minimal channel (unused)
+    // Sync request channel
+    // Capacity: 256 allows burst of sync requests (e.g., multiple contexts joining)
+    let (ctx_sync_tx, mut ctx_sync_rx) = mpsc::channel(256);
 
     let node_client = NodeClient::new(
         datastore.clone(),
@@ -136,6 +135,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         node_state.clone(),
         config.sync.timeout,
+        ctx_sync_rx,
     );
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {

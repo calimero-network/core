@@ -23,6 +23,9 @@ use calimero_node_primitives::client::NodeClient;
 use futures_util::StreamExt;
 use tracing::error;
 
+// For sync implementation
+use calimero_sync::strategies::dag_catchup::DagCatchup;
+
 mod arbiter_pool;
 mod delta_store;
 pub mod gc;
@@ -88,6 +91,7 @@ pub struct NodeManager {
     pub(crate) clients: NodeClients,
     pub(crate) managers: NodeManagers,
     pub(crate) state: NodeState,
+    pub(crate) sync_rx: Option<tokio::sync::mpsc::Receiver<calimero_node_primitives::client::SyncRequest>>,
 }
 
 impl NodeManager {
@@ -98,6 +102,7 @@ impl NodeManager {
         node_client: NodeClient,
         state: NodeState,
         sync_timeout: std::time::Duration,
+        sync_rx: tokio::sync::mpsc::Receiver<calimero_node_primitives::client::SyncRequest>,
     ) -> Self {
         // Create timer manager
         let timer_manager = TimerManager::new(
@@ -119,9 +124,12 @@ impl NodeManager {
                 sync_timeout,
             },
             state,
+            sync_rx: Some(sync_rx),
         }
     }
+
 }
+
 
 impl Actor for NodeManager {
     type Context = actix::Context<Self>;
@@ -151,5 +159,147 @@ impl Actor for NodeManager {
 
         // Start all periodic timers (delegates to TimerManager)
         self.managers.timers.start_all_timers(ctx);
+
+        // Start sync request listener
+        if let Some(sync_rx) = self.sync_rx.take() {
+            start_sync_listener(
+                ctx,
+                sync_rx,
+                self.clients.context.clone(),
+                self.managers.network.clone(),
+                self.state.delta_stores.clone(),
+                self.managers.sync_timeout,
+            );
+        }
     }
+}
+
+/// Start listening for sync requests
+///
+/// Spawns an async task that processes sync requests from the channel
+fn start_sync_listener(
+    _ctx: &mut actix::Context<NodeManager>,
+    mut sync_rx: tokio::sync::mpsc::Receiver<calimero_node_primitives::client::SyncRequest>,
+    context_client: ContextClient,
+    network_client: calimero_network_primitives::client::NetworkClient,
+    delta_stores: crate::services::DeltaStoreService,
+    sync_timeout: std::time::Duration,
+) {
+    use tracing::{error, info};
+
+    info!("Starting sync request listener");
+
+    // Spawn sync listener as background task (local task since it's not Send)
+    actix::spawn(async move {
+        while let Some((context_id, peer_id, result_tx)) = sync_rx.recv().await {
+            let Some(ctx_id) = context_id else {
+                // Global sync not implemented
+                if let Some(tx) = result_tx {
+                    let _ = tx.send(Ok(calimero_node_primitives::client::SyncResult::NoSyncNeeded));
+                }
+                continue;
+            };
+
+            info!(%ctx_id, ?peer_id, "Processing sync request");
+
+            // Perform sync
+            let result = perform_sync(
+                &ctx_id,
+                peer_id,
+                &context_client,
+                &network_client,
+                &delta_stores,
+                sync_timeout,
+            )
+            .await;
+
+            // Send result back
+            if let Some(tx) = result_tx {
+                match &result {
+                    Ok(sync_result) => {
+                        info!(%ctx_id, ?sync_result, "Sync completed successfully");
+                        let _ = tx.send(Ok(*sync_result));
+                    }
+                    Err(e) => {
+                        error!(%ctx_id, error = %e, "Sync failed");
+                        let _ = tx.send(Err(eyre::eyre!("Sync failed: {}", e)));
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Perform DAG catchup sync for a context
+///
+/// Extracted as a free function to avoid lifetime issues in async blocks
+async fn perform_sync(
+    context_id: &calimero_primitives::context::ContextId,
+    peer_id: Option<libp2p::PeerId>,
+    context_client: &ContextClient,
+    network_client: &calimero_network_primitives::client::NetworkClient,
+    delta_stores: &crate::services::DeltaStoreService,
+    sync_timeout: std::time::Duration,
+) -> eyre::Result<calimero_node_primitives::client::SyncResult> {
+    use calimero_node_primitives::client::SyncResult;
+    use tracing::{info, warn};
+
+    // Get delta store
+    let delta_store = delta_stores
+        .get(context_id)
+        .ok_or_else(|| eyre::eyre!("Context {} not found in delta stores", context_id))?;
+
+    // Get our identity (filter for owned=true, take first)
+    let our_identity = {
+        use futures_util::TryStreamExt;
+        use std::pin::pin;
+        
+        let mut members = pin!(context_client.get_context_members(context_id, Some(true)));
+        
+        // get_context_members(Some(true)) filters for owned identities
+        // Just take the first one (there should only be one owned identity per node)
+        let (public_key, _is_owned) = members
+            .try_next()
+            .await?
+            .ok_or_else(|| eyre::eyre!("No owned identity found for context {}", context_id))?;
+        
+        public_key
+    };
+
+    // Find peer
+    let target_peer = if let Some(peer) = peer_id {
+        peer
+    } else {
+        warn!(
+            %context_id,
+            "No peer specified for sync - returning NoSyncNeeded"
+        );
+        return Ok(SyncResult::NoSyncNeeded);
+    };
+
+    info!(%context_id, %target_peer, %our_identity, "Starting DAG catchup");
+
+    // Use calimero-sync DagCatchup strategy
+    let strategy = DagCatchup::new(
+        network_client.clone(),
+        context_client.clone(),
+        sync_timeout,
+    );
+
+    // Execute sync (DeltaStore implements the trait from protocols)
+    use calimero_sync::strategies::SyncStrategy;
+    let sync_result = strategy
+        .execute(context_id, &target_peer, &our_identity, &*delta_store)
+        .await?;
+
+    // Convert calimero_sync::SyncResult to calimero_node_primitives::SyncResult
+    let result = match sync_result {
+        calimero_sync::strategies::SyncResult::NoSyncNeeded => SyncResult::NoSyncNeeded,
+        calimero_sync::strategies::SyncResult::DeltaSync { .. } => SyncResult::DeltaSync,
+        calimero_sync::strategies::SyncResult::FullResync { .. } => SyncResult::FullResync,
+    };
+
+    info!(%context_id, ?result, "Sync completed");
+
+    Ok(result)
 }
