@@ -18,7 +18,7 @@ use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::messages::NodeMessage;
 use crate::sync::BroadcastMessage;
@@ -78,9 +78,41 @@ impl NodeClient {
     pub async fn subscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
         let topic = IdentTopic::new(context_id);
 
-        let _ignored = self.network_client.subscribe(topic).await?;
+        let _ignored = self.network_client.subscribe(topic.clone()).await?;
 
-        info!(%context_id, "Subscribed to context");
+        info!(%context_id, "Subscribed to context - waiting for mesh to form");
+
+        // Wait for gossipsub mesh to form (at least one peer)
+        // This is crucial to avoid dropped broadcasts immediately after context creation
+        let max_attempts = 50; // 5 seconds max wait
+        for attempt in 1..=max_attempts {
+            let topic_hash = TopicHash::from_raw(*context_id);
+            let mesh_peers = self.network_client.mesh_peers(topic_hash).await;
+            
+            info!(
+                %context_id,
+                attempt,
+                mesh_peer_count = mesh_peers.len(),
+                "Polling gossipsub mesh"
+            );
+            
+            if !mesh_peers.is_empty() {
+                info!(
+                    %context_id,
+                    mesh_peer_count = mesh_peers.len(),
+                    attempts = attempt,
+                    "✅ Gossipsub mesh formed successfully"
+                );
+                return Ok(());
+            }
+            
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        warn!(
+            %context_id,
+            "Subscribed but no mesh peers after 5 seconds - broadcasts may be dropped"
+        );
 
         Ok(())
     }
@@ -125,7 +157,20 @@ impl NodeClient {
             "Sending state delta"
         );
 
-        if self.get_peers_count(Some(&context.id)).await == 0 {
+        // Get mesh peers for diagnostics
+        let topic = TopicHash::from_raw(context.id);
+        let mesh_peers = self.network_client.mesh_peers(topic.clone()).await;
+        let peer_count = mesh_peers.len();
+
+        info!(
+            context_id=%context.id,
+            mesh_peer_count = peer_count,
+            mesh_peers = ?mesh_peers,
+            "Gossipsub mesh state before broadcast"
+        );
+
+        if peer_count == 0 {
+            warn!(context_id=%context.id, "No mesh peers - broadcast skipped");
             return Ok(());
         }
 
@@ -150,9 +195,13 @@ impl NodeClient {
 
         let payload = borsh::to_vec(&payload)?;
 
-        let topic = TopicHash::from_raw(context.id);
-
         let _ignored = self.network_client.publish(topic, payload).await?;
+
+        info!(
+            context_id=%context.id,
+            mesh_peer_count = peer_count,
+            "Broadcast published to gossipsub"
+        );
 
         Ok(())
     }
