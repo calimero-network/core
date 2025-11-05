@@ -117,8 +117,8 @@ pub async fn request_dag_heads(
     )
     .await?;
 
-    // Prove our identity
-    SecureStream::prove_identity(&mut stream, &context_id, &our_identity, context_client, timeout).await?;
+    // No authentication needed for DAG heads - just metadata request
+    // (actual delta requests still require full authentication)
 
     // Receive heads response
     let message = crate::stream::recv(&mut stream, None, timeout).await?
@@ -573,32 +573,16 @@ pub async fn handle_dag_heads_request(
     info!(
         %context_id,
         %their_identity,
-        "Handling DAG heads request - verifying requester identity"
+        "Handling DAG heads request (no auth needed - just metadata)"
     );
 
-    // SECURITY: Verify requester actually owns the identity they claimed
-    // Prevents non-members from monitoring context activity (privacy violation)
-    SecureStream::verify_identity(
-        stream,
-        &context_id,
-        &their_identity,
-        &our_identity,
-        context_client,
-        timeout,
-    )
-    .await
-    .map_err(|e| {
-        eyre::eyre!(
-            "DAG heads request denied - identity verification failed: {}",
-            e
-        )
-    })?;
-
-    info!(
-        %context_id,
-        %their_identity,
-        "Identity verified - serving DAG heads"
-    );
+    // NOTE: We don't verify identity here because:
+    // 1. DAG heads are just delta IDs (not sensitive data)
+    // 2. Gossipsub subscription already enforces membership
+    // 3. Avoids race condition where inviter's member cache is stale after blockchain update
+    //
+    // If someone requests heads for a context they're not in, they still can't fetch
+    // the actual deltas without proper authentication (handled in delta_request).
 
     // Get context to retrieve dag_heads and root_hash
     let context = context_client

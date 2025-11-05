@@ -60,37 +60,28 @@ impl SyncStrategy for DagCatchup {
         // Get missing parent IDs from DeltaStore
         let mut missing_result = delta_store.get_missing_parents().await;
 
-        // If no missing parents, check if DAG is empty (initial sync case)
+        // If no missing parents, might be initial sync (empty DAG)
+        // ALWAYS request peer's heads to check if they have state we don't
         if missing_result.missing_ids.is_empty() {
-            // Check if we have ANY deltas at all
-            let has_genesis = delta_store.dag_has_delta_applied(&[0; 32]).await;
+            info!(%context_id, "No pending deltas - requesting peer's heads to check for initial sync");
             
-            if !has_genesis {
-                // Empty DAG - need initial sync!
-                // Request peer's DAG heads to bootstrap
-                debug!(%context_id, "Empty DAG detected - requesting peer's heads for initial sync");
-                
-                let peer_heads = calimero_protocols::p2p::delta_request::request_dag_heads(
-                    &self.network_client,
-                    *context_id,
-                    *peer_id,
-                    *our_identity,
-                    &self.context_client,
-                    self.timeout,
-                )
-                .await?;
-                
-                if peer_heads.is_empty() {
-                    debug!(%context_id, "Peer has no deltas either - both empty");
-                    return Ok(SyncResult::NoSyncNeeded);
-                }
-                
-                info!(%context_id, heads_count = peer_heads.len(), "Got peer heads for initial sync");
-                missing_result.missing_ids = peer_heads;
-            } else {
-                debug!(%context_id, "No missing deltas - sync not needed");
+            let peer_heads = calimero_protocols::p2p::delta_request::request_dag_heads(
+                &self.network_client,
+                *context_id,
+                *peer_id,
+                *our_identity,
+                &self.context_client,
+                self.timeout,
+            )
+            .await?;
+            
+            if peer_heads.is_empty() {
+                debug!(%context_id, "Peer has no deltas - both empty, sync not needed");
                 return Ok(SyncResult::NoSyncNeeded);
             }
+            
+            info!(%context_id, heads_count = peer_heads.len(), "Peer has deltas - starting initial sync");
+            missing_result.missing_ids = peer_heads;
         }
 
         info!(

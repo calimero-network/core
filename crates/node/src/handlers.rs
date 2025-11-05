@@ -532,6 +532,19 @@ async fn handle_sync_stream(
                     .await?;
                 }
 
+                InitPayload::DagHeadsRequest { .. } => {
+                    info!(%context_id, "DagHeadsRequest → calimero_protocols");
+                    calimero_protocols::p2p::delta_request::handle_dag_heads_request(
+                        &mut stream,
+                        context_id,
+                        their_identity,
+                        our_identity,
+                        &context_client,
+                        sync_timeout,
+                    )
+                    .await?;
+                }
+
                 InitPayload::BlobShare { blob_id } => {
                     info!(%context_id, "BlobShare → calimero_protocols");
                     calimero_protocols::p2p::blob_request::handle_blob_request(
