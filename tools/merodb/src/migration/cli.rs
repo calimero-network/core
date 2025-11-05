@@ -2,13 +2,14 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use clap::Args;
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use rocksdb::properties;
 
 use crate::types::Column;
 
 use super::context::{AbiManifestStatus, MigrationContext, MigrationOverrides};
 use super::dry_run::{generate_report as generate_dry_run_report, DryRunReport, StepDetail};
+use super::execute::{execute_migration, ExecutionReport, StepExecutionDetail};
 use super::loader::load_plan;
 use super::plan::{MigrationPlan, PlanStep};
 use super::report::write_json_report;
@@ -32,16 +33,33 @@ pub struct MigrateArgs {
     #[arg(long, value_name = "PATH")]
     pub target_db: Option<PathBuf>,
 
-    /// Perform a dry run without writing to the target
+    /// Perform a dry run without writing to the target (default behavior)
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Write dry-run results as JSON to this path
+    /// Apply the migration plan and write changes to the target database
+    #[arg(long, conflicts_with = "dry_run")]
+    pub apply: bool,
+
+    /// Write results (dry-run or execution) as JSON to this path
     #[arg(long, value_name = "FILE")]
     pub report: Option<PathBuf>,
 }
 
 /// Entrypoint for the `migrate` subcommand.
+///
+/// This function orchestrates the entire migration workflow:
+/// 1. Validates the plan file exists
+/// 2. Determines whether to run in dry-run or apply mode
+/// 3. Loads the plan and builds the migration context
+/// 4. Prints plan summary and database information
+/// 5. Executes either dry-run preview or actual migration
+/// 6. Optionally writes results to JSON report file
+///
+/// # Modes
+///
+/// - **Dry-run mode** (default): Preview what would happen without making changes
+/// - **Apply mode** (`--apply`): Execute the migration and write changes to target
 pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
     let plan_path = &args.plan;
     if !plan_path.exists() {
@@ -51,9 +69,8 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
         );
     }
 
-    if !args.dry_run {
-        eprintln!("note: mutating migrations are not yet supported; running in dry-run mode only.");
-    }
+    // Determine execution mode: dry-run is default, --apply enables mutations
+    let dry_run = !args.apply;
 
     let plan = load_plan(plan_path)?;
 
@@ -63,7 +80,7 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
         target_db: args.target_db.clone(),
     };
 
-    let context = MigrationContext::new(plan, overrides, true)?;
+    let context = MigrationContext::new(plan, overrides, dry_run)?;
 
     print_plan_summary(context.plan(), plan_path);
 
@@ -127,20 +144,42 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
     }
 
     println!(
-        "Dry run mode: {}",
+        "Execution mode: {}",
         if context.is_dry_run() {
-            "enabled"
+            "DRY-RUN (preview only, no changes will be made)"
         } else {
-            "disabled"
+            "APPLY (changes will be written to target database)"
         }
     );
-
-    let dry_run_report = generate_dry_run_report(&context)?;
     println!();
-    print_dry_run_report(&context, &dry_run_report);
 
-    if let Some(report_path) = args.report.as_deref() {
-        write_json_report(report_path, plan_path, &context, &dry_run_report)?;
+    // Execute migration based on mode
+    if context.is_dry_run() {
+        // Dry-run mode: generate preview report
+        let dry_run_report = generate_dry_run_report(&context)?;
+        print_dry_run_report(&context, &dry_run_report);
+
+        if let Some(report_path) = args.report.as_deref() {
+            write_json_report(report_path, plan_path, &context, &dry_run_report)?;
+        }
+
+        println!();
+        println!("Dry-run complete. No changes were made to the target database.");
+        println!("To apply these changes, run with --apply flag.");
+    } else {
+        // Apply mode: execute migration and write changes
+        println!("Starting migration execution...");
+        println!();
+
+        let execution_report = execute_migration(&context)?;
+        print_execution_report(&context, &execution_report);
+
+        if let Some(report_path) = args.report.as_deref() {
+            write_execution_json_report(report_path, plan_path, &context, &execution_report)?;
+        }
+
+        println!();
+        println!("Migration execution complete. Changes have been written to the target database.");
     }
 
     Ok(())
@@ -298,4 +337,108 @@ fn print_dry_run_report(context: &MigrationContext, report: &DryRunReport) {
             println!();
         }
     }
+}
+
+/// Print the execution report to stdout after a migration has been applied.
+///
+/// This function displays detailed statistics about each executed step, including:
+/// - Number of keys processed
+/// - Step-specific metrics (keys copied, bytes copied, entries written, etc.)
+/// - Filter summaries
+/// - Warnings encountered during execution
+fn print_execution_report(context: &MigrationContext, report: &ExecutionReport) {
+    println!("Execution results:");
+    let plan = context.plan();
+
+    for step_report in &report.steps {
+        if step_report.index >= plan.steps.len() {
+            continue;
+        }
+
+        let label = format_plan_step(&plan.steps[step_report.index]);
+        let step_number = step_report.index.saturating_add(1);
+        println!("  {step_number}. {label}");
+        println!("       keys processed: {}", step_report.keys_processed);
+
+        if let Some(summary) = step_report.filters_summary.as_deref() {
+            if !summary.is_empty() {
+                println!("       filters applied: {summary}");
+            }
+        }
+
+        match &step_report.detail {
+            StepExecutionDetail::Copy {
+                keys_copied,
+                bytes_copied,
+            } => {
+                println!("       action: copy");
+                println!("       keys copied: {keys_copied}");
+                println!("       bytes copied: {bytes_copied}");
+            }
+            StepExecutionDetail::Delete { keys_deleted } => {
+                println!("       action: delete");
+                println!("       keys deleted: {keys_deleted}");
+            }
+            StepExecutionDetail::Upsert { entries_written } => {
+                println!("       action: upsert");
+                println!("       entries written: {entries_written}");
+            }
+            StepExecutionDetail::Verify { summary, passed } => {
+                println!("       action: verify");
+                println!("       verify: {summary}");
+                println!(
+                    "       status: {}",
+                    if *passed { "PASSED" } else { "FAILED" }
+                );
+            }
+        }
+
+        for warning in &step_report.warnings {
+            println!("       warning: {warning}");
+        }
+
+        if !step_report.warnings.is_empty() {
+            println!();
+        }
+    }
+}
+
+/// Write the execution report to a JSON file.
+///
+/// This function creates a machine-readable report containing:
+/// - Plan metadata (path, version, name, description)
+/// - Execution mode (always "apply" for this function)
+/// - Per-step execution results with detailed statistics
+fn write_execution_json_report(
+    report_path: &Path,
+    plan_path: &Path,
+    context: &MigrationContext,
+    report: &ExecutionReport,
+) -> Result<()> {
+    use std::fs;
+
+    let plan = context.plan();
+
+    let json_report = serde_json::json!({
+        "plan_path": plan_path.display().to_string(),
+        "plan_version": plan.version.as_u32(),
+        "plan_name": plan.name,
+        "plan_description": plan.description,
+        "execution_mode": "apply",
+        "source_db": context.source().path().display().to_string(),
+        "target_db": context.target().map(|t| t.path().display().to_string()),
+        "steps": report.steps,
+    });
+
+    let json_string = serde_json::to_string_pretty(&json_report)?;
+    fs::write(report_path, json_string).wrap_err_with(|| {
+        format!(
+            "Failed to write execution report to {}",
+            report_path.display()
+        )
+    })?;
+
+    println!("Execution report written to: {}", report_path.display());
+
+    Ok(())
 }

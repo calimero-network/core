@@ -31,6 +31,22 @@ pub struct MigrationContext {
 
 impl MigrationContext {
     /// Build a migration context using plan defaults plus optional overrides.
+    ///
+    /// This method constructs the migration context by:
+    /// 1. Resolving source and target database paths from the plan and CLI overrides
+    /// 2. Opening the source database in read-only mode
+    /// 3. Opening the target database in either read-only (dry-run) or writable (apply) mode
+    /// 4. Setting up optional ABI manifest loading for the source database
+    ///
+    /// # Arguments
+    ///
+    /// * `plan` - Parsed migration plan containing step definitions and endpoints
+    /// * `overrides` - CLI-provided paths that take precedence over plan values
+    /// * `dry_run` - If true, opens target database read-only; if false, opens with write access
+    ///
+    /// # Returns
+    ///
+    /// A fully initialized `MigrationContext` ready for dry-run or mutating execution.
     pub fn new(plan: MigrationPlan, overrides: MigrationOverrides, dry_run: bool) -> Result<Self> {
         let MigrationOverrides {
             source_db,
@@ -46,8 +62,15 @@ impl MigrationContext {
         let target_path = target_db.or_else(|| plan.target.as_ref().map(|t| t.db_path.clone()));
         let target_backup = plan.target.as_ref().and_then(|t| t.backup_dir.clone());
 
+        // Open target database in appropriate mode based on dry_run flag
         let target = match target_path {
-            Some(path) => Some(TargetContext::new_read_only(path, target_backup)?),
+            Some(path) => {
+                if dry_run {
+                    Some(TargetContext::new_read_only(path, target_backup)?)
+                } else {
+                    Some(TargetContext::new_writable(path, target_backup)?)
+                }
+            }
             None => None,
         };
 
@@ -191,6 +214,56 @@ impl TargetContext {
             backup_dir,
             db,
             read_only: true,
+        })
+    }
+
+    /// Open the target database with write access for mutating operations.
+    ///
+    /// This method is used when `--apply` mode is enabled, allowing the migration
+    /// engine to write data to the target database. The database is opened with
+    /// all column families to ensure proper schema alignment with the source.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the target RocksDB database
+    /// * `backup_dir` - Optional directory for storing backups before mutations
+    ///
+    /// # Returns
+    ///
+    /// A `TargetContext` with write access enabled, or an error if the database
+    /// cannot be opened or does not exist.
+    fn new_writable(path: PathBuf, backup_dir: Option<PathBuf>) -> Result<Self> {
+        use crate::types::Column;
+        use rocksdb::Options;
+
+        ensure!(
+            path.exists(),
+            "Target database path does not exist: {}",
+            path.display()
+        );
+
+        // Prepare column family names for opening the database with write access
+        let cf_names: Vec<String> = Column::all()
+            .iter()
+            .map(|c| c.as_str().to_owned())
+            .collect();
+
+        let options = Options::default();
+
+        // Open database in read-write mode for mutating operations
+        let db = DBWithThreadMode::<SingleThreaded>::open_cf(&options, &path, &cf_names)
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to open target database in write mode at {}",
+                    path.display()
+                )
+            })?;
+
+        Ok(Self {
+            path,
+            backup_dir,
+            db,
+            read_only: false,
         })
     }
 

@@ -223,26 +223,112 @@ The test suite covers all step types (copy, delete, upsert, verify), filter reso
 
 ---
 
-## 6. Roadmap (from `tools/merodb/migrations.md`)
+## 6. Execution Engine (`migration/execute.rs`)
+
+### 6.1 Overview
+
+The execution engine implements mutating operations for migration plans when `--apply` mode is enabled. It performs actual write operations to the target database using RocksDB `WriteBatch` for atomicity.
+
+### 6.2 Key Features
+
+- **WriteBatch Operations**: All writes within a step are batched and committed atomically
+- **Progress Logging**: Real-time progress updates during long-running operations
+- **Idempotency**: Steps can be safely re-run if interrupted
+- **Filter Reuse**: Leverages the same filter resolution logic from dry-run mode
+- **Verification Integration**: Verify steps can abort migrations if assertions fail
+
+### 6.3 Execution Flow
+
+1. **Validation**: Ensures context has write access and target database is configured
+2. **Step Execution**: Iterates through each step in the plan:
+   - **Copy**: Reads matching keys from source, writes to target in batches
+   - **Delete**: Identifies matching keys in target, deletes them in batches
+   - **Upsert**: Writes literal key-value entries to target in a single batch
+   - **Verify**: Evaluates assertions against target database (read-only)
+3. **Reporting**: Collects execution statistics and returns detailed report
+
+### 6.4 Safety Mechanisms
+
+- Explicit `--apply` flag required to enable mutations
+- Target database must be opened with write access
+- WriteBatch ensures atomic commits per step (batch size: 1000 keys)
+- Verification steps abort the migration if assertions fail
+- Progress logging for operations processing large key sets
+
+### 6.5 CLI Usage
+
+The migration system operates in two distinct modes. **Each command runs only one mode** - you choose either dry-run (preview) or apply (execute), not both:
+
+#### Dry-Run Mode (Default - No Changes Made)
+
+```bash
+# Preview what the migration will do (read-only, safe to run anytime)
+merodb migrate --plan plan.yaml --target-db /path/to/target
+```
+
+- Opens target database in **read-only** mode
+- Scans and counts matching keys
+- Shows preview with samples of what *would* happen
+- **No changes are written** to the database
+- Generates warnings and statistics
+
+#### Apply Mode (Mutations - Changes Database)
+
+```bash
+# Execute the migration and write changes (requires explicit --apply flag)
+merodb migrate --plan plan.yaml --target-db /path/to/target --apply
+```
+
+- Opens target database in **read-write** mode
+- Actually copies/deletes/upserts keys
+- Writes changes to the target database
+- Shows execution progress and statistics
+
+#### Recommended Two-Step Workflow
+
+```bash
+# Step 1: Preview the migration first (safety check)
+merodb migrate --plan plan.yaml --target-db /path/to/target
+
+# Review the output: verify key counts, check samples, read warnings...
+# If everything looks correct, proceed to Step 2:
+
+# Step 2: Execute the actual migration
+merodb migrate --plan plan.yaml --target-db /path/to/target --apply
+
+# Optional: Generate JSON report of execution results
+merodb migrate --plan plan.yaml --target-db /path/to/target --apply --report results.json
+```
+
+**Important**: The `--apply` flag is what enables mutations. Without it, you're always in safe preview mode.
+
+---
+
+## 7. Roadmap (from `tools/merodb/migrations.md`)
 
 - **Build Dry-run Engine** – ✅ filter resolution, per-step previews, warnings, and JSON export (`--report`).
 - **Develop Test Fixtures & Dry-run Tests** – ✅ dry-run smoke tests; JSON report coverage newly added.
-- **Enable Mutating Execution** – 🔄 upcoming (write batches, idempotency, `--apply`).
+- **Enable Mutating Execution** – ✅ write batches, progress logging, `--apply` flag support.
 - **Add Safety Mechanisms** – 🔄 backups, guard rails, context alias support.
-- **Implement Verification Steps** – 🔄 integrate with existing validator for post-apply checks.
-- **Polish CLI UX + Reporting** – 🚧 `--report` JSON output shipped; exit codes and richer docs outstanding.
+- **Implement Verification Steps** – ✅ integrated into execution engine with fail-fast behavior.
+- **Polish CLI UX + Reporting** – ✅ `--report` JSON output for both dry-run and apply modes.
 - **Finalize Testing & CI** – 🔄 expand coverage, integrate into CI.
 
 ---
 
-## 7. Tips and Best Practices
+## 8. Tips and Best Practices
 
-- **Always dry-run first**: treat the current output as the contract for what would happen in apply mode.
+- **Always dry-run first**: treat the dry-run output as the contract for what would happen in apply mode. Verify the key counts and samples before executing.
+- **Use --apply cautiously**: the `--apply` flag performs actual mutations. Always ensure you have backups before running in apply mode.
 - **Leverage filters**: precise `context_ids`, prefixes, and assertions make plans safer and easier to reason about.
 - **Watch warnings**: the CLI prints warnings whenever decoding fails, filters are ignored, or the ABI is missing.
+- **Monitor progress**: execution mode logs progress every 1000 keys for long-running operations.
+- **Verification steps**: use verify steps to validate the target database state at critical points in the migration.
+- **Idempotency**: design steps to be idempotent where possible, so migrations can be safely re-run if interrupted.
 - **Document plans**: use `name` and `description` fields so future readers (and CLI output) understand intent.
 - **Version control**: plans are code—store them alongside application migrations in Git.
+- **JSON reports**: use `--report` to generate machine-readable reports for both dry-run and apply modes.
 
 ---
 
-With this reference, you should be able to write clear migration plans, reason about the dry-run output, and extend the implementation safely. For day-to-day workflow examples, see `tools/merodb/README.md` which includes CLI quick-starts and GUI usage. 
+With this reference, you should be able to write clear migration plans, reason about the dry-run output, execute migrations safely, and extend the implementation as needed. For day-to-day workflow examples, see `tools/merodb/README.md` which includes CLI quick-starts and GUI usage. 
