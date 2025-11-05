@@ -186,9 +186,6 @@ pub async fn request_missing_deltas(
         "Requesting missing parent deltas from peer"
     );
 
-    // Open stream to peer
-    let mut stream = network_client.open_stream(peer_id).await?;
-
     // Fetch all missing ancestors, then add them in topological order (oldest first)
     let mut to_fetch = missing_ids;
     let mut fetched_deltas: Vec<(
@@ -206,7 +203,11 @@ pub async fn request_missing_deltas(
         let current_batch = to_fetch.clone();
         to_fetch.clear();
         
-        info!(%context_id, iteration, batch_size, "🔃 Starting fetch iteration");
+        info!(%context_id, iteration, batch_size, "🔃 Opening fresh stream for iteration");
+
+        // Open fresh stream for each iteration (server closes stream after handling one request)
+        // NOTE: Can we reuse the stream eventually?
+        let mut stream = network_client.open_stream(peer_id).await?;
 
         for missing_id in current_batch {
             fetch_count += 1;
