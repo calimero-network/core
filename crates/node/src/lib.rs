@@ -258,15 +258,28 @@ async fn perform_sync(
         peer
     } else {
         // No specific peer - get peers from gossipsub mesh
+        // Retry a few times since mesh might not be populated immediately after subscribe
         let topic = libp2p::gossipsub::IdentTopic::new(context_id.to_string());
-        let peers = network_client.mesh_peers(topic.hash()).await;
+        let mut peers = Vec::new();
+        
+        for attempt in 0..5 {
+            peers = network_client.mesh_peers(topic.hash()).await;
+            if !peers.is_empty() {
+                break;
+            }
+            
+            if attempt < 4 {
+                tracing::debug!(%context_id, attempt, "No peers in mesh yet, retrying...");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
         
         if peers.is_empty() {
-            tracing::warn!(%context_id, "No peers in mesh - cannot sync");
+            tracing::warn!(%context_id, "No peers in mesh after retries - cannot sync");
             return Ok(SyncResult::NoSyncNeeded);
         }
         
-        // Pick first peer (TODO: better selection strategy)
+        tracing::info!(%context_id, peer_count = peers.len(), "Found peers in mesh");
         peers[0]
     };
 

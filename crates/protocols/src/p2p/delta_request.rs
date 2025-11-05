@@ -85,6 +85,59 @@ pub trait DeltaStore: Send + Sync {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Client Side: Request DAG Heads
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Request DAG heads from a peer.
+///
+/// Used for initial sync when we have an empty DAG and need to know what to fetch.
+pub async fn request_dag_heads(
+    network_client: &NetworkClient,
+    context_id: ContextId,
+    peer_id: libp2p::PeerId,
+    our_identity: PublicKey,
+    context_client: &ContextClient,
+    timeout: Duration,
+) -> Result<Vec<[u8; 32]>> {
+    info!(%context_id, ?peer_id, "Requesting DAG heads from peer");
+
+    let mut stream = network_client.open_stream(peer_id).await?;
+
+    // Send Init with DagHeadsRequest payload
+    let our_nonce = rand::thread_rng().gen();
+    crate::stream::send(
+        &mut stream,
+        &StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::DagHeadsRequest { context_id },
+            next_nonce: our_nonce,
+        },
+        None,
+    )
+    .await?;
+
+    // Prove our identity
+    SecureStream::prove_identity(&mut stream, &context_id, &our_identity, context_client, timeout).await?;
+
+    // Receive heads response
+    let message = crate::stream::recv(&mut stream, None, timeout).await?
+        .ok_or_eyre("Connection closed while waiting for DAG heads")?;
+
+    let (dag_heads, root_hash) = match message {
+        StreamMessage::Message {
+            payload: MessagePayload::DagHeadsResponse { dag_heads, root_hash },
+            ..
+        } => (dag_heads, root_hash),
+        unexpected => bail!("Expected DagHeadsResponse, got: {:?}", unexpected),
+    };
+
+    info!(%context_id, heads_count = dag_heads.len(), %root_hash, "Received DAG heads from peer");
+
+    Ok(dag_heads)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Client Side: Request Missing Deltas
 // ═══════════════════════════════════════════════════════════════════════════
 
