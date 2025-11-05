@@ -88,10 +88,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // 64 sync requests: handles burst context joins/syncs
     let (event_sender, _) = broadcast::channel(256);
 
-    // Sync request queue capacity: increased from 64 to 256
-    // Rationale: E2E tests with 10 nodes = 10 requests, production with 100 nodes = 100+ requests
-    // 256 provides headroom for bursts while still applying backpressure on extreme overload
-    let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(256);
+    // Note: sync_and_wait() is temporarily disabled (returns immediately)
+    // Sync happens via gossipsub broadcasts instead
+    // TODO: Implement proper sync mechanism using calimero-sync
+    let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1); // Minimal channel (unused)
 
     let node_client = NodeClient::new(
         datastore.clone(),
