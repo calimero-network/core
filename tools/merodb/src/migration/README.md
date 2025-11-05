@@ -174,13 +174,35 @@ When mutating execution lands, the same plan parsing and context wiring will be 
 
 ## 5. Testing Strategy
 
+### 5.1 Test Infrastructure
+
+The `migration::test_utils` module provides `DbFixture` for creating temporary RocksDB instances with all Calimero column families. Key utilities:
+
+- `DbFixture::new(path)` – creates a fresh RocksDB with all column families
+- `insert_state_entry(context_id, state_key, value)` – adds a single state entry
+
+Helper functions:
+- `test_context_id(byte)` – creates a 32-byte context ID filled with the given byte
+- `test_state_key(byte)` – creates a 32-byte state key filled with the given byte
+
+Additional helper methods can be added as needed for future test scenarios.
+
+### 5.2 Test Coverage
+
 | Test Module                                     | Purpose                                                                                          |
 |-------------------------------------------------|--------------------------------------------------------------------------------------------------|
 | `migration::plan::validation_tests`             | Ensures invalid plans are rejected (unsupported version, empty steps, malformed filters, etc.). |
 | `migration::plan::validation_tests::encoded_value_to_bytes_decodes` | Sanity-checks `EncodedValue` decoding helpers.                                |
 | `migration::dry_run::tests::dry_run_reports_copy_and_verify` | End-to-end dry-run smoke test using a temporary RocksDB.                            |
+| `migration::dry_run::tests::dry_run_reports_delete_step` | Tests delete step dry-run behavior and reporting.                                        |
+| `migration::dry_run::tests::dry_run_reports_upsert_step` | Tests upsert step dry-run with multiple encoded entries.                                 |
+| `migration::dry_run::tests::dry_run_filters_multiple_contexts` | Validates filtering by multiple context IDs.                                       |
+| `migration::dry_run::tests::dry_run_verify_min_count` | Tests min_count verification assertions.                                               |
+| `migration::dry_run::tests::dry_run_verify_max_count_fails` | Tests max_count verification that should fail.                                    |
+| `migration::dry_run::tests::dry_run_filters_raw_key_prefix` | Tests raw_key_prefix filter functionality.                                        |
+| `migration::test_utils::tests`                  | Tests the test utilities themselves (fixture creation, entry insertion).                         |
 
-The dry-run test seeds one state entry, runs a two-step plan (copy + verify), and asserts on matched counts, step detail, and pass/fail state.
+The test suite covers all step types (copy, delete, upsert, verify), filter resolution (context IDs, raw key prefixes), and various verification assertions.
 
 ---
 

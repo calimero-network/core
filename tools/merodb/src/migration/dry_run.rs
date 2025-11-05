@@ -591,8 +591,9 @@ mod tests {
     use super::*;
     use crate::migration::context::{MigrationContext, MigrationOverrides};
     use crate::migration::plan::{
-        CopyStep, CopyTransform, MigrationPlan, PlanDefaults, PlanFilters, PlanStep, PlanVersion,
-        SourceEndpoint,
+        CopyStep, CopyTransform, DeleteStep, EncodedValue, MigrationPlan, PlanDefaults,
+        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, UpsertEntry, UpsertStep,
+        VerificationAssertion, VerifyStep,
     };
     use crate::types::Column;
     use eyre::ensure;
@@ -615,9 +616,10 @@ mod tests {
 
         let cf_state = db.cf_handle(Column::State.as_str()).unwrap();
 
+        // Create a single State entry with 64-byte key structure
         let mut state_key = [0_u8; 64];
-        state_key[..32].copy_from_slice(&[0x11; 32]);
-        state_key[32..64].copy_from_slice(&[0x22; 32]);
+        state_key[..32].copy_from_slice(&[0x11; 32]); // Context ID: 0x1111...1111
+        state_key[32..64].copy_from_slice(&[0x22; 32]); // State key: 0x2222...2222
 
         let mut batch = WriteBatch::default();
         batch.put_cf(cf_state, state_key, b"value-1");
@@ -723,6 +725,504 @@ mod tests {
             ),
             other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
         }
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test dry-run behavior for delete steps.
+    fn dry_run_reports_delete_step() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Delete(DeleteStep {
+                name: Some("delete-test".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+
+        let delete = &report.steps[0];
+        ensure!(
+            matches!(delete.detail, StepDetail::Delete),
+            "expected delete detail"
+        );
+        ensure!(
+            delete.matched_keys == 1,
+            "expected 1 matched key, got {}",
+            delete.matched_keys
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test dry-run behavior for upsert steps.
+    fn dry_run_reports_upsert_step() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Upsert(UpsertStep {
+                name: Some("upsert-test".into()),
+                column: Column::Generic,
+                entries: vec![
+                    UpsertEntry {
+                        key: EncodedValue::Hex {
+                            data: "aabbcc".into(),
+                        },
+                        value: EncodedValue::Utf8 {
+                            data: "test-value-1".into(),
+                        },
+                    },
+                    UpsertEntry {
+                        key: EncodedValue::Hex {
+                            data: "ddeeff".into(),
+                        },
+                        value: EncodedValue::Utf8 {
+                            data: "test-value-2".into(),
+                        },
+                    },
+                ],
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+
+        let upsert = &report.steps[0];
+        match &upsert.detail {
+            StepDetail::Upsert { entries } => {
+                ensure!(*entries == 2, "expected 2 entries, got {}", entries);
+            }
+            other => return Err(eyre::eyre!("expected upsert detail, found {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test filter resolution with multiple context IDs.
+    fn dry_run_filters_multiple_contexts() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        // Create DB with entries for two different contexts
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let descriptors: Vec<_> = Column::all()
+            .iter()
+            .map(|column| ColumnFamilyDescriptor::new(column.as_str(), Options::default()))
+            .collect();
+
+        let db = DB::open_cf_descriptors(&opts, &db_path, descriptors)?;
+        let cf_state = db.cf_handle(Column::State.as_str()).unwrap();
+
+        let mut batch = WriteBatch::default();
+
+        // Context 0x11 - 2 entries
+        // State keys are 64 bytes: first 32 bytes = context ID, last 32 bytes = state key
+        let mut key1 = [0_u8; 64];
+        key1[..32].copy_from_slice(&[0x11; 32]); // Context ID: 0x1111...1111
+        key1[32..64].copy_from_slice(&[0x22; 32]); // State key: 0x2222...2222
+        batch.put_cf(cf_state, key1, b"value-1");
+
+        let mut key2 = [0_u8; 64];
+        key2[..32].copy_from_slice(&[0x11; 32]); // Context ID: 0x1111...1111 (same context)
+        key2[32..64].copy_from_slice(&[0x33; 32]); // State key: 0x3333...3333
+        batch.put_cf(cf_state, key2, b"value-2");
+
+        // Context 0xAA - 1 entry
+        let mut key3 = [0_u8; 64];
+        key3[..32].copy_from_slice(&[0xAA; 32]); // Context ID: 0xAAAA...AAAA (different context)
+        key3[32..64].copy_from_slice(&[0xBB; 32]); // State key: 0xBBBB...BBBB
+        batch.put_cf(cf_state, key3, b"value-3");
+
+        db.write(batch)?;
+        drop(db);
+
+        // Plan that only targets context 0x11
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-filtered".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+        ensure!(
+            copy.matched_keys == 2,
+            "expected 2 matched keys for context 0x11, got {}",
+            copy.matched_keys
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test verification with min_count assertion.
+    fn dry_run_verify_min_count() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Verify(VerifyStep {
+                name: Some("min-count-check".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                assertion: VerificationAssertion::MinCount { min_count: 1 },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let verify = &report.steps[0];
+
+        match &verify.detail {
+            StepDetail::Verify { passed, .. } => {
+                ensure!(
+                    passed == &Some(true),
+                    "expected min_count verification to pass"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test verification with max_count assertion that should fail.
+    fn dry_run_verify_max_count_fails() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Verify(VerifyStep {
+                name: Some("max-count-check".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                assertion: VerificationAssertion::MaxCount { max_count: 0 },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let verify = &report.steps[0];
+
+        match &verify.detail {
+            StepDetail::Verify { passed, .. } => {
+                ensure!(
+                    passed == &Some(false),
+                    "expected max_count verification to fail"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test that raw_key_prefix filter works correctly.
+    fn dry_run_filters_raw_key_prefix() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        // Create DB with multiple entries having different key prefixes
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let descriptors: Vec<_> = Column::all()
+            .iter()
+            .map(|column| ColumnFamilyDescriptor::new(column.as_str(), Options::default()))
+            .collect();
+
+        let db = DB::open_cf_descriptors(&opts, &db_path, descriptors)?;
+        let cf_generic = db.cf_handle(Column::Generic.as_str()).unwrap();
+
+        let mut batch = WriteBatch::default();
+        batch.put_cf(cf_generic, b"prefix_aaa", b"value-1");
+        batch.put_cf(cf_generic, b"prefix_bbb", b"value-2");
+        batch.put_cf(cf_generic, b"other_ccc", b"value-3");
+        db.write(batch)?;
+        drop(db);
+
+        // Plan that filters by raw_key_prefix
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-with-prefix".into()),
+                column: Column::Generic,
+                filters: PlanFilters {
+                    raw_key_prefix: Some(hex::encode(b"prefix_")),
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+        ensure!(
+            copy.matched_keys == 2,
+            "expected 2 matched keys with prefix, got {}",
+            copy.matched_keys
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test that requesting ABI decoding without providing an ABI manifest emits a warning.
+    fn dry_run_warns_missing_abi_when_decode_requested() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        // Plan requests decode_with_abi but no wasm_file is provided
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None, // No ABI manifest
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-with-abi".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform {
+                    decode_with_abi: Some(true), // Request ABI decoding
+                    jq: None,
+                },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+
+        // Should emit a warning about missing ABI manifest
+        ensure!(
+            !copy.warnings.is_empty(),
+            "expected warnings about missing ABI"
+        );
+        ensure!(
+            copy.warnings.iter().any(|w| w.contains("ABI manifest")),
+            "expected warning to mention ABI manifest, got: {:?}",
+            copy.warnings
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test that an invalid JQ transform is caught during plan validation.
+    fn plan_validation_rejects_empty_jq_transform() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        // Plan with an empty JQ transform (should fail validation)
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-with-invalid-jq".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                transform: CopyTransform {
+                    decode_with_abi: None,
+                    jq: Some("   ".into()), // Empty/whitespace-only JQ expression
+                },
+            })],
+        };
+
+        // Validation should fail for empty JQ transform
+        let result = plan.validate();
+        ensure!(
+            result.is_err(),
+            "expected validation to fail for empty jq transform"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        ensure!(
+            err_msg.contains("jq") || err_msg.contains("empty"),
+            "expected error message to mention jq or empty, got: {}",
+            err_msg
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test that a JQ transform referencing a non-existent field would be caught.
+    /// Note: JQ validation happens at execution time, not during dry-run, so this test
+    /// documents the current behavior where invalid JQ expressions pass dry-run but would
+    /// fail during actual execution.
+    fn dry_run_accepts_invalid_jq_syntax() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        // Plan with a JQ transform that references a non-existent field
+        // This is syntactically valid JQ, but semantically invalid for the data
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-with-nonexistent-field".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform {
+                    decode_with_abi: Some(false),
+                    jq: Some(".value.parsed.nonexistent_field".into()), // References non-existent field
+                },
+            })],
+        };
+
+        // Validation should pass (JQ syntax is valid)
+        plan.validate()?;
+
+        // Dry-run should also pass (it doesn't execute JQ transforms)
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+        ensure!(
+            copy.matched_keys == 1,
+            "expected dry-run to count matched keys despite invalid JQ"
+        );
+
+        // Note: The actual error would occur during execution (--apply mode)
+        // when the JQ transform is actually applied to the data
 
         Ok(())
     }
