@@ -1,11 +1,6 @@
-//! Calimero node orchestration and coordination.
+//! Node runtime coordinating WASM execution, state sync, and network communication.
 //!
-//! **Purpose**: Main node runtime that coordinates sync, storage, networking, and event handling.
-//! **Key Components**:
-//! - `NodeManager`: Main actor coordinating all services
-//! - `NodeClients`: External service clients (context, node)
-//! - `NodeManagers`: Service managers (blobstore, sync)
-//! - `NodeState`: Runtime state (caches)
+//! Provides `NodeManager` actor and extracted services for managing distributed application state.
 
 #![allow(clippy::print_stdout, reason = "Acceptable for CLI")]
 #![allow(
@@ -37,24 +32,23 @@ mod utils;
 pub use run::{start, NodeConfig};
 pub use services::{BlobCacheService, DeltaStoreService, TimerManager};
 
-/// External service clients (injected dependencies)
+/// Service clients for context and node operations
 #[derive(Debug, Clone)]
 pub(crate) struct NodeClients {
     pub(crate) context: ContextClient,
     pub(crate) node: NodeClient,
 }
 
-/// Service managers (injected dependencies)
+/// Service managers (blobstore, network, timers)
 #[derive(Clone, Debug)]
 pub(crate) struct NodeManagers {
     pub(crate) blobstore: BlobManager,
-    // sync: DELETED - replaced by calimero-sync crate (no actor!)
     pub(crate) network: calimero_network_primitives::client::NetworkClient,
     pub(crate) timers: TimerManager,
     pub(crate) sync_timeout: std::time::Duration,
 }
 
-/// Mutable runtime state
+/// Runtime state (caches for blobs and delta stores)
 #[derive(Clone, Debug)]
 pub(crate) struct NodeState {
     pub(crate) blob_cache: BlobCacheService,
@@ -69,23 +63,16 @@ impl NodeState {
         }
     }
 
-    /// Evict old blobs from cache (delegates to BlobCacheService)
     fn evict_old_blobs(&self) {
         self.blob_cache.evict_old();
     }
 
-    /// Cleanup stale pending deltas (delegates to DeltaStoreService)
     async fn cleanup_stale_deltas(&self, max_age: Duration) -> usize {
         self.delta_stores.cleanup_all_stale(max_age).await
     }
 }
 
-/// Main node orchestrator.
-///
-/// **SRP Applied**: Clear separation of:
-/// - `clients`: External service clients (context, node)
-/// - `managers`: Service managers (blobstore, sync)
-/// - `state`: Mutable runtime state (caches)
+/// Main node coordinator managing services and handling sync requests
 #[derive(Debug)]
 pub struct NodeManager {
     pub(crate) clients: NodeClients,
@@ -174,9 +161,7 @@ impl Actor for NodeManager {
     }
 }
 
-/// Start listening for sync requests
-///
-/// Spawns an async task that processes sync requests from the channel
+/// Listen for sync requests and process them using DAG catchup strategy
 fn start_sync_listener(
     _ctx: &mut actix::Context<NodeManager>,
     mut sync_rx: tokio::sync::mpsc::Receiver<calimero_node_primitives::client::SyncRequest>,
@@ -230,9 +215,7 @@ fn start_sync_listener(
     });
 }
 
-/// Perform DAG catchup sync for a context
-///
-/// Extracted as a free function to avoid lifetime issues in async blocks
+/// Execute DAG catchup sync using calimero-sync strategy
 async fn perform_sync(
     context_id: &calimero_primitives::context::ContextId,
     peer_id: Option<libp2p::PeerId>,
@@ -242,64 +225,38 @@ async fn perform_sync(
     sync_timeout: std::time::Duration,
 ) -> eyre::Result<calimero_node_primitives::client::SyncResult> {
     use calimero_node_primitives::client::SyncResult;
-    use tracing::{info, warn};
+    use calimero_sync::strategies::SyncStrategy;
+    use futures_util::TryStreamExt;
+    use std::pin::pin;
 
-    // Get delta store
     let delta_store = delta_stores
         .get(context_id)
-        .ok_or_else(|| eyre::eyre!("Context {} not found in delta stores", context_id))?;
+        .ok_or_else(|| eyre::eyre!("Context not found"))?;
 
-    // Get our identity (filter for owned=true, take first)
-    let our_identity = {
-        use futures_util::TryStreamExt;
-        use std::pin::pin;
-        
-        let mut members = pin!(context_client.get_context_members(context_id, Some(true)));
-        
-        // get_context_members(Some(true)) filters for owned identities
-        // Just take the first one (there should only be one owned identity per node)
-        let (public_key, _is_owned) = members
-            .try_next()
-            .await?
-            .ok_or_else(|| eyre::eyre!("No owned identity found for context {}", context_id))?;
-        
-        public_key
-    };
+    // Get our owned identity (filtered stream returns only owned)
+    let mut members = pin!(context_client.get_context_members(context_id, Some(true)));
+    let (our_identity, _) = members
+        .try_next()
+        .await?
+        .ok_or_else(|| eyre::eyre!("No owned identity"))?;
 
-    // Find peer
-    let target_peer = if let Some(peer) = peer_id {
-        peer
-    } else {
-        warn!(
-            %context_id,
-            "No peer specified for sync - returning NoSyncNeeded"
-        );
+    // Need peer to sync from
+    let Some(target_peer) = peer_id else {
         return Ok(SyncResult::NoSyncNeeded);
     };
 
-    info!(%context_id, %target_peer, %our_identity, "Starting DAG catchup");
-
-    // Use calimero-sync DagCatchup strategy
-    let strategy = DagCatchup::new(
-        network_client.clone(),
-        context_client.clone(),
-        sync_timeout,
-    );
-
-    // Execute sync (DeltaStore implements the trait from protocols)
-    use calimero_sync::strategies::SyncStrategy;
+    // Execute DAG catchup
+    let strategy = DagCatchup::new(network_client.clone(), context_client.clone(), sync_timeout);
     let sync_result = strategy
         .execute(context_id, &target_peer, &our_identity, &*delta_store)
         .await?;
 
-    // Convert calimero_sync::SyncResult to calimero_node_primitives::SyncResult
+    // Convert result types
     let result = match sync_result {
         calimero_sync::strategies::SyncResult::NoSyncNeeded => SyncResult::NoSyncNeeded,
         calimero_sync::strategies::SyncResult::DeltaSync { .. } => SyncResult::DeltaSync,
         calimero_sync::strategies::SyncResult::FullResync { .. } => SyncResult::FullResync,
     };
-
-    info!(%context_id, ?result, "Sync completed");
 
     Ok(result)
 }

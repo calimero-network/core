@@ -1,7 +1,6 @@
-//! Event handlers for network and node messages
+//! Event handlers dispatching to protocol implementations.
 //!
-//! **CLEAN**: All handlers just dispatch to calimero-protocols!
-//! No logic here - just routing and actor glue.
+//! Handlers receive network events and route them to stateless protocol functions.
 
 use std::sync::Arc;
 use std::time::Duration;

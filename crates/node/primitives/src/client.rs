@@ -270,38 +270,10 @@ impl NodeClient {
         }
     }
 
-    /// Request a sync operation and wait for it to complete.
+    /// Synchronize context state and wait for completion (60s timeout).
     ///
-    /// **Blocking**: Waits for sync to actually finish (up to 60s timeout).
-    /// Use this when you NEED to know if sync succeeded (e.g., after join_context).
-    ///
-    /// **Use Cases**:
-    /// - After `join_context()` - ensure state is synced before returning
-    /// - After critical operations that require synced state
-    /// - When caller needs to know if sync actually worked
-    ///
-    /// **For Fire-and-Forget**: Use `sync()` instead.
-    ///
-    /// # Errors
-    ///
-    /// - `SyncQueueFull`: Too many concurrent sync requests
-    /// - `SyncTimeout`: Sync took longer than 60s
-    /// - `SyncFailed`: Sync operation failed (no peers, network error, etc.)
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Join context
-    /// let (context_id, _) = join_context(invitation).await?;
-    ///
-    /// // Wait for sync to complete
-    /// match node_client.sync_and_wait(Some(&context_id), None).await {
-    ///     Ok(SyncResult::DeltaSync) => info!("Synced via delta protocol"),
-    ///     Ok(SyncResult::FullResync) => info!("Synced via full resync"),
-    ///     Ok(SyncResult::NoSyncNeeded) => info!("Already in sync"),
-    ///     Err(e) => error!("Sync FAILED: {}", e),
-    /// }
-    /// ```
+    /// Triggers DAG catchup to fetch missing deltas from peers.
+    /// Blocks until sync completes or times out.
     pub async fn sync_and_wait(
         &self,
         context_id: Option<&ContextId>,

@@ -5,7 +5,7 @@ use calimero_context_primitives::messages::{JoinContextRequest, JoinContextRespo
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::{ContextConfigParams, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use eyre::eyre;
+use eyre::{eyre, WrapErr};
 
 use crate::ContextManager;
 
@@ -34,24 +34,10 @@ impl Handler<JoinContextRequest> for ContextManager {
     }
 }
 
-/// Join a context using an invitation.
+/// Join a context using an invitation payload.
 ///
-/// **Idempotent**: Safe to call multiple times with same invitation.
-///
-/// **Flow**:
-/// 1. Check if already fully joined (has full identity + state synced)
-/// 2. If not, get private_key from pool (ContextId::zero)
-/// 3. Sync blockchain config (creates ghost identities for all members)
-/// 4. Upgrade our ghost to full identity (add private_key + sender_key)
-/// 5. Subscribe to gossipsub and trigger sync
-///
-/// **Invariants Maintained**:
-/// - Invitee has full identity (private_key + sender_key) after completion
-/// - Sync requested (state will be initialized eventually)
-/// - Pool identity cleaned up (no duplicates)
-///
-/// **Ghost Identities**: sync_context_config() creates ghosts for ALL members.
-/// We immediately upgrade ours to full. Others remain ghosts until key exchange.
+/// Sets up identity, syncs blockchain config, subscribes to gossipsub, and fetches historical state.
+/// Returns when context is fully initialized and ready for execution.
 async fn join_context(
     node_client: NodeClient,
     context_client: ContextClient,
@@ -59,110 +45,44 @@ async fn join_context(
 ) -> eyre::Result<(ContextId, PublicKey)> {
     let (context_id, invitee_id, protocol, network_id, contract_id) = invitation_payload.parts()?;
 
-    tracing::info!(%context_id, %invitee_id, "join_context: Starting join flow");
+    tracing::info!(%context_id, %invitee_id, "Starting join flow");
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 1: Check if already fully joined
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // Check if already joined
     if let Some(identity) = context_client.get_identity(&context_id, &invitee_id)? {
         if identity.private_key.is_some() {
-            // We have full identity - just ensure state is synced
-            tracing::info!(
-                %context_id,
-                %invitee_id,
-                has_sender_key = identity.sender_key.is_some(),
-                "join_context: Already have full identity, checking state sync"
-            );
+            // Already joined - just check if state needs sync
+            tracing::info!(%context_id, %invitee_id, "Already joined, checking state sync");
 
             let context = context_client.get_context(&context_id)?;
-            let needs_sync = context
-                .map(|ctx| {
-                    let is_empty = ctx.dag_heads.is_empty();
-                    tracing::info!(
-                        %context_id,
-                        %invitee_id,
-                        dag_heads_count = ctx.dag_heads.len(),
-                        root_hash = %ctx.root_hash,
-                        needs_sync = is_empty,
-                        "join_context: State check - initialized = has dag_heads"
-                    );
-                    is_empty
-                })
-                .unwrap_or(true); // No context = definitely need sync
+            let needs_sync = context.map(|ctx| ctx.dag_heads.is_empty()).unwrap_or(true);
 
             if needs_sync {
-                tracing::info!(%context_id, %invitee_id, "join_context: State not synced, waiting for sync to complete");
                 node_client.subscribe(&context_id).await?;
-
-                // CRITICAL: Wait for sync to actually complete before returning!
-                // This ensures context is initialized when join_context returns.
-                match node_client.sync_and_wait(Some(&context_id), None).await {
-                    Ok(sync_result) => {
-                        tracing::info!(
-                            %context_id,
-                            %invitee_id,
-                            ?sync_result,
-                            "Sync completed successfully - context is now initialized"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            %context_id,
-                            %invitee_id,
-                            error = %e,
-                            "Sync FAILED - context will remain uninitialized!"
-                        );
-                        return Err(e.wrap_err("Failed to sync context state after join"));
-                    }
-                }
+                node_client
+                    .sync_and_wait(Some(&context_id), None)
+                    .await
+                    .wrap_err("Failed to sync after join")?;
             }
 
             return Ok((context_id, invitee_id));
         }
-
-        // Ghost identity exists (from previous sync_context_config call)
-        // This is expected - we'll upgrade it below
-        tracing::info!(
-            %context_id,
-            %invitee_id,
-            "join_context: Found ghost identity, will upgrade to full identity"
-        );
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 2: Get private_key from pool (ONLY source of private keys!)
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // Get private_key from identity pool
     let stored_identity = context_client
         .get_identity(&ContextId::zero(), &invitee_id)?
-        .ok_or_else(|| {
-            eyre!(
-                "Missing identity in pool (ContextId::zero) for: {}",
-                invitee_id
-            )
-        })?;
+        .ok_or_else(|| eyre!("Missing identity in pool for {}", invitee_id))?;
 
-    let identity_secret = stored_identity.private_key.ok_or_else(|| {
-        eyre!(
-            "Pool identity '{}' missing private_key (invariant violation!)",
-            invitee_id
-        )
-    })?;
+    let identity_secret = stored_identity
+        .private_key
+        .ok_or_else(|| eyre!("Pool identity missing private_key"))?;
 
-    // Sanity check: private_key matches public_key
     if identity_secret.public_key() != invitee_id {
-        eyre::bail!("Identity mismatch: private_key doesn't match public_key");
+        eyre::bail!("Identity mismatch");
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 3: Sync blockchain config (creates ghosts for ALL members, including us)
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // Fetch context config from blockchain if needed
     let config = if !context_client.has_context(&context_id)? {
-        // Build external config from invitation parameters
-        tracing::info!(%context_id, "join_context: Context doesn't exist locally, fetching from blockchain");
-
         let mut external_config = ContextConfigParams {
             protocol: protocol.into(),
             network_id: network_id.into(),
@@ -173,9 +93,7 @@ async fn join_context(
         };
 
         let external_client = context_client.external_client(&context_id, &external_config)?;
-        let config_client = external_client.config();
-        let proxy_contract = config_client.get_proxy_contract().await?;
-
+        let proxy_contract = external_client.config().get_proxy_contract().await?;
         external_config.proxy_contract = proxy_contract.into();
 
         Some(external_config)
@@ -183,32 +101,18 @@ async fn join_context(
         None
     };
 
-    tracing::info!(%context_id, %invitee_id, "join_context: Syncing blockchain config");
-    let _ignored = context_client
+    // Sync blockchain config (creates member identities)
+    context_client
         .sync_context_config(context_id, config)
         .await?;
 
-    // At this point: Our identity might be a ghost (created by sync_context_config)
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 4: Verify membership (we should be in member list from blockchain)
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // Verify membership
     if !context_client.has_member(&context_id, &invitee_id)? {
-        eyre::bail!(
-            "Unable to join context: not in member list on blockchain. Invalid invitation?"
-        );
+        eyre::bail!("Not in member list - invalid invitation");
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 5: Upgrade from ghost to full identity (ATOMIC)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    tracing::info!(%context_id, %invitee_id, "join_context: Upgrading to full identity");
-
-    let mut rng = rand::thread_rng();
-    let sender_key = PrivateKey::random(&mut rng);
-
+    // Upgrade to full identity with sender_key
+    let sender_key = PrivateKey::random(&mut rand::thread_rng());
     context_client.update_identity(
         &context_id,
         &ContextIdentity {
@@ -218,55 +122,18 @@ async fn join_context(
         },
     )?;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 6: Cleanup - remove from pool (no longer needed)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    tracing::info!(%context_id, %invitee_id, "join_context: Removing identity from pool");
+    // Remove from pool
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 7: Subscribe and WAIT for initial sync (CRITICAL!)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    tracing::info!(%context_id, %invitee_id, "join_context: Subscribing and syncing");
+    // Subscribe and sync historical state
+    // Gossipsub only delivers new deltas - must fetch history via P2P
     node_client.subscribe(&context_id).await?;
+    node_client
+        .sync_and_wait(Some(&context_id), None)
+        .await
+        .wrap_err("Failed to sync historical state")?;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 8: Explicit sync to get historical state (CRITICAL!)
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    // Gossipsub ONLY delivers NEW deltas (future transactions).
-    // We MUST explicitly request historical deltas via P2P DAG catchup.
-    //
-    // Without this, joining a context with existing state will result in:
-    // - New member has empty DAG (no historical deltas)
-    // - New member only receives future transactions
-    // - Permanent state divergence (missing all historical state!)
-    //
-    // sync_and_wait() now properly implements DAG catchup using calimero-sync
-
-    match node_client.sync_and_wait(Some(&context_id), None).await {
-        Ok(sync_result) => {
-            tracing::info!(
-                %context_id,
-                %invitee_id,
-                ?sync_result,
-                "Sync completed successfully - context is now initialized"
-            );
-        }
-        Err(e) => {
-            tracing::error!(
-                %context_id,
-                %invitee_id,
-                error = %e,
-                "Sync FAILED - context will remain uninitialized!"
-            );
-            return Err(e.wrap_err("Failed to complete initial sync after joining context"));
-        }
-    }
-
-    tracing::info!(%context_id, %invitee_id, "join_context: Complete - context fully initialized");
+    tracing::info!(%context_id, %invitee_id, "Join complete");
 
     Ok((context_id, invitee_id))
 }
