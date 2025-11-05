@@ -16,7 +16,6 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::{eyre, Result};
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use crate::config::{RetryConfig, SyncConfig};
@@ -252,33 +251,6 @@ impl SyncScheduler {
             "Sync failed after {} retries",
             retry_config.max_retries
         ))
-    }
-
-    /// Start periodic heartbeat (if enabled)
-    ///
-    /// This runs in the background and periodically checks for contexts
-    /// that need syncing.
-    pub fn start_heartbeat(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            if !self.config.enable_heartbeat {
-                return;
-            }
-
-            let mut interval = interval(self.config.heartbeat_interval);
-
-            loop {
-                interval.tick().await;
-
-                debug!("Heartbeat tick - checking for contexts needing sync");
-
-                // TODO: Implement periodic sync check
-                // 1. Get all contexts
-                // 2. Check which ones need syncing
-                // 3. Trigger sync for those contexts
-                //
-                // For now, this is a placeholder
-            }
-        })
     }
 
     /// Get sync events (for observability)

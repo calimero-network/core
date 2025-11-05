@@ -13,12 +13,6 @@ pub struct SyncConfig {
 
     /// Retry configuration
     pub retry_config: RetryConfig,
-
-    /// Enable periodic sync heartbeat
-    pub enable_heartbeat: bool,
-
-    /// Heartbeat interval (periodic sync check)
-    pub heartbeat_interval: Duration,
 }
 
 /// Retry configuration for failed syncs
@@ -43,8 +37,6 @@ impl Default for SyncConfig {
             timeout: Duration::from_secs(30),
             max_concurrent_syncs: 10,
             retry_config: RetryConfig::default(),
-            enable_heartbeat: true,
-            heartbeat_interval: Duration::from_secs(60),
         }
     }
 }
@@ -67,11 +59,5 @@ impl SyncConfig {
             timeout,
             ..Default::default()
         }
-    }
-
-    /// Disable heartbeat (for testing or manual sync)
-    pub fn without_heartbeat(mut self) -> Self {
-        self.enable_heartbeat = false;
-        self
     }
 }

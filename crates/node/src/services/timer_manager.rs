@@ -75,6 +75,7 @@ impl TimerManager {
         self.start_blob_eviction_timer(ctx);
         self.start_delta_cleanup_timer(ctx);
         self.start_heartbeat_timer(ctx);
+        self.start_pending_delta_check_timer(ctx);
     }
 
     /// Start the blob cache eviction timer (every 5 minutes).
@@ -154,6 +155,65 @@ impl TimerManager {
                                 error = %e,
                                 "Failed to broadcast hash heartbeat"
                             );
+                        }
+                    }
+                }
+                .into_actor(_act),
+            );
+        });
+    }
+
+    /// Start the pending delta check timer (every 60 seconds).
+    ///
+    /// Checks for contexts with pending deltas (waiting for parents) and triggers sync.
+    /// This ensures we don't get stuck with orphaned deltas.
+    pub fn start_pending_delta_check_timer<A>(&self, ctx: &mut actix::Context<A>)
+    where
+        A: actix::Actor<Context = actix::Context<A>>,
+    {
+        let context_client = self.context_client.clone();
+        let node_client = self.node_client.clone();
+        let delta_stores = self.delta_stores.clone();
+
+        ctx.run_interval(Duration::from_secs(60), move |_act, ctx| {
+            let context_client = context_client.clone();
+            let node_client = node_client.clone();
+            let delta_stores = delta_stores.clone();
+
+            let _ignored = ctx.spawn(
+                async move {
+                    // Get all context IDs
+                    let contexts = context_client.get_context_ids(None);
+
+                    let mut contexts_stream = pin!(contexts);
+                    while let Some(context_id_result) = contexts_stream.next().await {
+                        let Ok(context_id) = context_id_result else {
+                            continue;
+                        };
+
+                        // Check if this context has a delta store
+                        let Some(delta_store) = delta_stores.get(&context_id) else {
+                            continue;
+                        };
+
+                        // Check for pending deltas
+                        let missing_parents = delta_store.get_missing_parents().await;
+
+                        if !missing_parents.missing_ids.is_empty() {
+                            info!(
+                                %context_id,
+                                pending_count = missing_parents.missing_ids.len(),
+                                "Periodic check detected pending deltas - triggering sync"
+                            );
+
+                            // Trigger sync to fetch missing parents
+                            if let Err(e) = node_client.sync(Some(&context_id), None).await {
+                                warn!(
+                                    %context_id,
+                                    ?e,
+                                    "Failed to trigger sync from pending delta check"
+                                );
+                            }
                         }
                     }
                 }
