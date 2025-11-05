@@ -73,6 +73,31 @@ impl ContextClient {
         self.datastore.handle()
     }
 
+    /// Update both DAG heads and root hash after delta application.
+    /// 
+    /// This is called by DeltaStore after successfully applying deltas
+    /// to ensure the context metadata reflects the current DAG state.
+    pub fn update_dag_heads_and_root(
+        &self,
+        context_id: &ContextId,
+        dag_heads: Vec<[u8; 32]>,
+        root_hash: &Hash,
+    ) -> eyre::Result<()> {
+        use calimero_store::key;
+
+        let mut handle = self.datastore.handle();
+        let mut context = handle
+            .get(&key::ContextMeta::new(*context_id))?
+            .ok_or_else(|| eyre::eyre!("Context not found: {}", context_id))?;
+
+        context.dag_heads = dag_heads;
+        context.root_hash = *root_hash.as_bytes();
+
+        handle.put(&key::ContextMeta::new(*context_id), &context)?;
+
+        Ok(())
+    }
+
     /// Sends a request to create a new context.
     ///
     /// This operation is asynchronous and is handled by the `ContextManager` actor.

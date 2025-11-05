@@ -198,6 +198,35 @@ impl ContextRepository {
         }
     }
 
+    /// Update both DAG heads and root hash atomically (called after delta application)
+    pub fn update_dag_heads_and_root(
+        &mut self,
+        context_id: &ContextId,
+        dag_heads: Vec<[u8; 32]>,
+        root_hash: Hash,
+    ) -> Result<(), eyre::Error> {
+        use calimero_store::key;
+
+        // Update cache if present
+        if let Some(cached) = self.cache.get_mut(context_id) {
+            cached.meta.dag_heads = dag_heads.clone();
+            cached.meta.root_hash = root_hash;
+        }
+
+        // Persist to database
+        let mut handle = self.datastore.handle();
+        let mut context = handle
+            .get(&key::ContextMeta::new(*context_id))?
+            .ok_or_else(|| eyre::eyre!("Context not found: {}", context_id))?;
+
+        context.dag_heads = dag_heads;
+        context.root_hash = *root_hash.as_bytes();
+
+        handle.put(&key::ContextMeta::new(*context_id), &context)?;
+
+        Ok(())
+    }
+
     /// Update the application ID for a cached context.
     ///
     /// If the context is not in cache, this is a no-op.

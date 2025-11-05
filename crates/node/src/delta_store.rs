@@ -241,6 +241,14 @@ impl DeltaStore {
         let actions_for_db = delta.payload.clone();
         let hlc = delta.hlc;
 
+        info!(
+            context_id = %*self.applier.context_id(),
+            delta_id = ?delta_id,
+            has_events = events.is_some(),
+            expected_root = ?expected_root_hash,
+            "🔍 add_delta_internal called"
+        );
+
         // Store the mapping before applying
         {
             let mut head_hashes = self.head_root_hashes.write().await;
@@ -301,6 +309,47 @@ impl DeltaStore {
         };
 
         drop(dag); // Release lock before calling context_client
+
+        // Update context metadata with new DAG heads and root hash
+        if result {
+            // Get the new root hash from our mapping
+            let new_root_hash = {
+                let head_hashes = self.head_root_hashes.read().await;
+                head_hashes.get(&delta_id).copied()
+            };
+
+            if let Some(root_hash) = new_root_hash {
+                let hash_ref: calimero_primitives::hash::Hash = root_hash.into();
+                self.applier
+                    .context_client()
+                    .update_dag_heads_and_root(
+                        &*self.applier.context_id(),
+                        heads.clone(),
+                        &hash_ref,
+                    )
+                    .map_err(|e| eyre::eyre!("Failed to update context metadata: {}", e))?;
+
+                info!(
+                    context_id = %*self.applier.context_id(),
+                    delta_id = ?delta_id,
+                    heads_count = heads.len(),
+                    root_hash = %hash_ref,
+                    "✅ Updated context metadata after applying delta"
+                );
+            } else {
+                warn!(
+                    context_id = %*self.applier.context_id(),
+                    delta_id = ?delta_id,
+                    "❌ No root_hash found in head_root_hashes mapping - metadata not updated!"
+                );
+            }
+        } else {
+            debug!(
+                context_id = %*self.applier.context_id(),
+                delta_id = ?delta_id,
+                "Delta not applied (pending) - skipping metadata update"
+            );
+        }
 
         // Update persistence if delta applied (was pre-persisted with events=Some, now needs events=None)
         if result && events.is_some() {
