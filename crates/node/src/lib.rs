@@ -230,16 +230,28 @@ async fn perform_sync(
     use futures_util::TryStreamExt;
     use std::pin::pin;
 
-    let delta_store = delta_stores
-        .get(context_id)
-        .ok_or_else(|| eyre::eyre!("Context not found"))?;
-
     // Get our owned identity (filtered stream returns only owned)
     let mut members = pin!(context_client.get_context_members(context_id, Some(true)));
     let (our_identity, _) = members
         .try_next()
         .await?
         .ok_or_else(|| eyre::eyre!("No owned identity"))?;
+
+    // Get or create delta store for this context (needs our_identity)
+    let delta_store = delta_stores.get_or_create_with(context_id, || {
+        let context = context_client.get_context(context_id).ok().flatten();
+        let root = context
+            .as_ref()
+            .map(|c| *c.root_hash.as_bytes())
+            .unwrap_or([0u8; 32]);
+        
+        crate::delta_store::DeltaStore::new(
+            root,
+            context_client.clone(),
+            *context_id,
+            our_identity,
+        )
+    }).0;
 
     // Need peer to sync from
     let Some(target_peer) = peer_id else {
