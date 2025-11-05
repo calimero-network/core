@@ -20,13 +20,9 @@
 //! The CLI consumes the `DryRunReport` and prints a human-readable preview. A future iteration can
 //! serialize the same data structure as JSON for `--report` output.
 
-use std::collections::HashSet;
-
-use eyre::{bail, Result, WrapErr};
+use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
 use serde::Serialize;
-
-use core::convert::TryFrom;
 
 use calimero_wasm_abi::schema::Manifest;
 
@@ -34,10 +30,9 @@ use crate::types;
 use crate::types::Column;
 
 use super::context::MigrationContext;
-use super::plan::{
-    CopyStep, DeleteStep, PlanDefaults, PlanFilters, PlanStep, UpsertStep, VerificationAssertion,
-    VerifyStep,
-};
+use super::filters::ResolvedFilters;
+use super::plan::{CopyStep, DeleteStep, PlanDefaults, PlanStep, UpsertStep, VerifyStep};
+use super::verification::evaluate_assertion;
 
 const SAMPLE_LIMIT: usize = 3;
 
@@ -258,342 +253,14 @@ fn sample_from_key(column: Column, key: &[u8]) -> String {
     )
 }
 
-struct VerificationOutcome {
-    summary: String,
-    passed: Option<bool>,
-    warnings: Vec<String>,
-}
-
-/// Execute the verify assertion logic and describe the outcome.
-fn evaluate_assertion(
-    db: &DBWithThreadMode<SingleThreaded>,
-    column: Column,
-    assertion: &VerificationAssertion,
-    matched_count: usize,
-) -> Result<VerificationOutcome> {
-    let cf = db
-        .cf_handle(column.as_str())
-        .ok_or_else(|| eyre::eyre!("Column family '{}' not found", column.as_str()))?;
-
-    let matched_u64 = u64::try_from(matched_count).unwrap_or(u64::MAX);
-
-    match assertion {
-        VerificationAssertion::ExpectedCount { expected_count } => {
-            let passed = matched_u64 == *expected_count;
-            Ok(VerificationOutcome {
-                summary: format!(
-                    "expected count == {expected_count}, actual {matched_count} ({})",
-                    pass_label(passed)
-                ),
-                passed: Some(passed),
-                warnings: Vec::new(),
-            })
-        }
-        VerificationAssertion::MinCount { min_count } => {
-            let passed = matched_u64 >= *min_count;
-            Ok(VerificationOutcome {
-                summary: format!(
-                    "expected count >= {min_count}, actual {matched_count} ({})",
-                    pass_label(passed)
-                ),
-                passed: Some(passed),
-                warnings: Vec::new(),
-            })
-        }
-        VerificationAssertion::MaxCount { max_count } => {
-            let passed = matched_u64 <= *max_count;
-            Ok(VerificationOutcome {
-                summary: format!(
-                    "expected count <= {max_count}, actual {matched_count} ({})",
-                    pass_label(passed)
-                ),
-                passed: Some(passed),
-                warnings: Vec::new(),
-            })
-        }
-        VerificationAssertion::ContainsKey { contains_key } => {
-            let mut warnings = Vec::new();
-            match contains_key.to_bytes() {
-                Ok(bytes) => {
-                    let present = db.get_cf(cf, &bytes)?.is_some();
-                    Ok(VerificationOutcome {
-                        summary: format!(
-                            "expect key present ({}), actual {} ({})",
-                            contains_key.preview(16),
-                            if present { "present" } else { "missing" },
-                            pass_label(present)
-                        ),
-                        passed: Some(present),
-                        warnings,
-                    })
-                }
-                Err(err) => {
-                    warnings.push(format!("unable to decode contains_key value: {err}"));
-                    Ok(VerificationOutcome {
-                        summary: "expect key present, but decoding failed".into(),
-                        passed: None,
-                        warnings,
-                    })
-                }
-            }
-        }
-        VerificationAssertion::MissingKey { missing_key } => {
-            let mut warnings = Vec::new();
-            match missing_key.to_bytes() {
-                Ok(bytes) => {
-                    let present = db.get_cf(cf, &bytes)?.is_some();
-                    let passed = !present;
-                    Ok(VerificationOutcome {
-                        summary: format!(
-                            "expect key missing ({}), actual {} ({})",
-                            missing_key.preview(16),
-                            if present { "present" } else { "missing" },
-                            pass_label(passed)
-                        ),
-                        passed: Some(passed),
-                        warnings,
-                    })
-                }
-                Err(err) => {
-                    warnings.push(format!("unable to decode missing_key value: {err}"));
-                    Ok(VerificationOutcome {
-                        summary: "expect key missing, but decoding failed".into(),
-                        passed: None,
-                        warnings,
-                    })
-                }
-            }
-        }
-    }
-}
-
-/// Helper to map boolean results to human-friendly labels.
-const fn pass_label(passed: bool) -> &'static str {
-    if passed {
-        "PASS"
-    } else {
-        "FAIL"
-    }
-}
-
-/// Concrete filter values (decoded/parsed) used during column scans.
-struct ResolvedFilters {
-    context_ids: Option<HashSet<Vec<u8>>>,
-    state_key_prefix: Option<Vec<u8>>,
-    raw_key_prefix: Option<Vec<u8>>,
-    key_range_start: Option<Vec<u8>>,
-    key_range_end: Option<Vec<u8>>,
-    alias_name: Option<String>,
-    warnings: Vec<String>,
-}
-
-impl ResolvedFilters {
-    /// Decode plan filters into byte-oriented structures, accumulating warnings as needed.
-    fn resolve(column: Column, filters: &PlanFilters) -> Self {
-        let mut warnings = Vec::new();
-
-        let context_ids = if filters.context_ids.is_empty() {
-            None
-        } else {
-            let mut set = HashSet::new();
-            for id in &filters.context_ids {
-                match decode_hex_string(id) {
-                    Ok(bytes) => {
-                        let _ = set.insert(bytes);
-                    }
-                    Err(err) => warnings.push(format!("unable to parse context_id '{id}': {err}")),
-                }
-            }
-            Some(set)
-        };
-
-        if !filters.context_aliases.is_empty() {
-            warnings.push(
-                "context_aliases filter is not yet applied during dry-run (preview may be broader than expected)"
-                    .into(),
-            );
-        }
-
-        let state_key_prefix =
-            filters
-                .state_key_prefix
-                .as_ref()
-                .map(|prefix| match decode_hex_string(prefix) {
-                    Ok(bytes) => bytes,
-                    Err(err) => {
-                        warnings.push(format!(
-                            "unable to interpret state_key_prefix '{prefix}': {err}"
-                        ));
-                        prefix.as_bytes().to_vec()
-                    }
-                });
-
-        let raw_key_prefix =
-            filters
-                .raw_key_prefix
-                .as_ref()
-                .and_then(|prefix| match decode_hex_string(prefix) {
-                    Ok(bytes) => Some(bytes),
-                    Err(err) => {
-                        warnings.push(format!(
-                            "unable to interpret raw_key_prefix '{prefix}': {err}"
-                        ));
-                        None
-                    }
-                });
-
-        let key_range_start = filters.key_range.as_ref().and_then(|range| {
-            range
-                .start
-                .as_ref()
-                .and_then(|start| match decode_hex_string(start) {
-                    Ok(bytes) => Some(bytes),
-                    Err(err) => {
-                        warnings.push(format!(
-                            "unable to interpret key_range start '{start}': {err}"
-                        ));
-                        None
-                    }
-                })
-        });
-
-        let key_range_end = filters.key_range.as_ref().and_then(|range| {
-            range
-                .end
-                .as_ref()
-                .and_then(|end| match decode_hex_string(end) {
-                    Ok(bytes) => Some(bytes),
-                    Err(err) => {
-                        warnings.push(format!("unable to interpret key_range end '{end}': {err}"));
-                        None
-                    }
-                })
-        });
-
-        let alias_name = filters.alias_name.clone();
-        if alias_name.is_some() && column != Column::Alias {
-            warnings.push(
-                "alias_name filter only applies to the Alias column; no rows will match in other columns"
-                    .into(),
-            );
-        }
-
-        Self {
-            context_ids,
-            state_key_prefix,
-            raw_key_prefix,
-            key_range_start,
-            key_range_end,
-            alias_name,
-            warnings,
-        }
-    }
-
-    /// Check if a raw key satisfies every resolved predicate.
-    fn matches(&self, column: Column, key: &[u8]) -> bool {
-        if let Some(set) = &self.context_ids {
-            let Some(context_slice) = extract_context_id(column, key) else {
-                return false;
-            };
-
-            if !set.contains(&context_slice.to_vec()) {
-                return false;
-            }
-        }
-
-        if let Some(prefix) = &self.state_key_prefix {
-            if column != Column::State {
-                return false;
-            }
-            let Some(end) = 32_usize.checked_add(prefix.len()) else {
-                return false;
-            };
-            if key.len() < end || !key[32..end].starts_with(prefix) {
-                return false;
-            }
-        }
-
-        if let Some(prefix) = &self.raw_key_prefix {
-            if !key.starts_with(prefix) {
-                return false;
-            }
-        }
-
-        if let Some(start) = &self.key_range_start {
-            if key < start.as_slice() {
-                return false;
-            }
-        }
-
-        if let Some(end) = &self.key_range_end {
-            if key >= end.as_slice() {
-                return false;
-            }
-        }
-
-        if let Some(alias) = &self.alias_name {
-            if column != Column::Alias {
-                return false;
-            }
-
-            match extract_alias_name(key) {
-                Some(name) => {
-                    if &name != alias {
-                        return false;
-                    }
-                }
-                None => return false,
-            }
-        }
-
-        true
-    }
-}
-
-/// Best-effort hex decoder used by filter resolution.
-fn decode_hex_string(value: &str) -> Result<Vec<u8>> {
-    let trimmed = value.trim().trim_start_matches("0x");
-    if trimmed.len() % 2 != 0 {
-        bail!("hex string has odd length");
-    }
-    Ok(hex::decode(trimmed)?)
-}
-
-/// Extract the context ID portion from a key when the column layout supports it.
-fn extract_context_id(column: Column, key: &[u8]) -> Option<&[u8]> {
-    if key.len() < 32 {
-        return None;
-    }
-
-    match column {
-        Column::Meta | Column::Config | Column::Identity | Column::State | Column::Delta => {
-            Some(&key[0..32])
-        }
-        _ => None,
-    }
-}
-
-/// Pull the alias name out of the canonical 83-byte alias key.
-fn extract_alias_name(key: &[u8]) -> Option<String> {
-    if key.len() != 83 {
-        return None;
-    }
-    let name_bytes = &key[33..83];
-    Some(
-        String::from_utf8_lossy(name_bytes)
-            .trim_end_matches('\0')
-            .to_owned(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::migration::context::{MigrationContext, MigrationOverrides};
     use crate::migration::plan::{
-        CopyStep, CopyTransform, DeleteStep, EncodedValue, MigrationPlan, PlanDefaults,
-        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, UpsertEntry, UpsertStep,
-        VerificationAssertion, VerifyStep,
+        CopyStep, CopyTransform, DeleteStep, EncodedValue, KeyRange, MigrationPlan,
+        PlanDefaults, PlanFilters, PlanStep, PlanVersion, SourceEndpoint, UpsertEntry,
+        UpsertStep, VerificationAssertion, VerifyStep,
     };
     use crate::migration::test_utils::DbFixture;
     use crate::types::Column;
@@ -1835,7 +1502,7 @@ mod tests {
                 name: Some("copy-range-b-to-d".into()),
                 column: Column::Generic,
                 filters: PlanFilters {
-                    key_range: Some(crate::migration::plan::KeyRange {
+                    key_range: Some(KeyRange {
                         start: Some(hex::encode(b"bbb")), // inclusive: >= "bbb"
                         end: Some(hex::encode(b"ddd")),   // exclusive: < "ddd"
                     }),

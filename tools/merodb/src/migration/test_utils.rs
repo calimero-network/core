@@ -3,6 +3,8 @@
 //! This module provides helper functions for setting up temporary RocksDB instances
 //! with sample Calimero data for testing migration plans and dry-run reports.
 
+#![allow(clippy::arithmetic_side_effects, reason = "Test utility calculations for buffer sizes are safe")]
+
 use std::path::{Path, PathBuf};
 
 use eyre::{ensure, Result};
