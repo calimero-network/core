@@ -2,9 +2,13 @@
 //!
 //! Handlers for one-to-one request/response patterns over P2P streams.
 //!
-//! These protocols are PRIVATE (require authentication) and use
-//! authenticated streams to verify peer membership and encrypt data.
+//! Protocols:
+//! - `blob_protocol` - PUBLIC blob download (CALIMERO_BLOB_PROTOCOL)
+//! - `blob_request` - PRIVATE blob sharing (context-authenticated)
+//! - `delta_request` - PRIVATE delta request/response
+//! - `key_exchange` - PRIVATE key exchange
 
+pub mod blob_protocol;
 pub mod blob_request;
 pub mod delta_request;
 pub mod key_exchange;

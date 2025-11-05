@@ -6558,6 +6558,7 @@ dependencies = [
  "calimero-server",
  "calimero-store",
  "calimero-store-rocksdb",
+ "calimero-sync",
  "calimero-utils-actix",
  "calimero-version",
  "camino",

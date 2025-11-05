@@ -27,15 +27,12 @@ mod arbiter_pool;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
-pub mod runtime;
 mod run;
 pub mod services;
-pub mod sync;
 mod utils;
 
 pub use run::{start, NodeConfig};
 pub use services::{BlobCacheService, DeltaStoreService, TimerManager};
-pub use sync::SyncManager;
 
 /// External service clients (injected dependencies)
 #[derive(Debug, Clone)]
@@ -48,8 +45,10 @@ pub(crate) struct NodeClients {
 #[derive(Clone, Debug)]
 pub(crate) struct NodeManagers {
     pub(crate) blobstore: BlobManager,
-    pub(crate) sync: SyncManager,
+    // sync: DELETED - replaced by calimero-sync crate (no actor!)
+    pub(crate) network: calimero_network_primitives::client::NetworkClient,
     pub(crate) timers: TimerManager,
+    pub(crate) sync_timeout: std::time::Duration,
 }
 
 /// Mutable runtime state
@@ -95,10 +94,11 @@ pub struct NodeManager {
 impl NodeManager {
     pub(crate) fn new(
         blobstore: BlobManager,
-        sync_manager: SyncManager,
+        network_client: calimero_network_primitives::client::NetworkClient,
         context_client: ContextClient,
         node_client: NodeClient,
         state: NodeState,
+        sync_timeout: std::time::Duration,
     ) -> Self {
         // Create timer manager
         let timer_manager = TimerManager::new(
@@ -115,8 +115,9 @@ impl NodeManager {
             },
             managers: NodeManagers {
                 blobstore,
-                sync: sync_manager,
+                network: network_client,
                 timers: timer_manager,
+                sync_timeout,
             },
             state,
         }

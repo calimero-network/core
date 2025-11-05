@@ -31,7 +31,6 @@ use tracing::info;
 
 use crate::arbiter_pool::ArbiterPool;
 use crate::gc::GarbageCollector;
-use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
 #[derive(Debug)]
@@ -39,7 +38,7 @@ pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
     pub network: NetworkConfig,
-    pub sync: SyncConfig,
+    pub sync: calimero_sync::SyncConfig,  // Use new sync config!
     pub datastore: StoreConfig,
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
@@ -92,7 +91,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // Sync request queue capacity: increased from 64 to 256
     // Rationale: E2E tests with 10 nodes = 10 requests, production with 100 nodes = 100+ requests
     // 256 provides headroom for bursts while still applying backpressure on extreme overload
-    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(256);
+    let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(256);
 
     let node_client = NodeClient::new(
         datastore.clone(),
@@ -127,21 +126,16 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let node_state = crate::NodeState::new();
 
-    let sync_manager = SyncManager::new(
-        config.sync,
-        node_client.clone(),
-        context_client.clone(),
-        network_client.clone(),
-        node_state.clone(),
-        ctx_sync_rx,
-    );
-
+    // NEW: Use the new runtime (NO ACTORS!)
+    // Old SyncManager deleted - functionality moved to calimero-sync + calimero-protocols
+    
     let node_manager = NodeManager::new(
         blobstore.clone(),
-        sync_manager.clone(),
+        network_client.clone(),
         context_client.clone(),
         node_client.clone(),
         node_state.clone(),
+        config.sync.timeout,
     );
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
@@ -166,14 +160,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
 
-    let mut sync = pin!(sync_manager.start());
+    // NEW: Sync is now handled by calimero-sync crate (no actor!)
+    // Old sync_manager.start() removed
     let mut server = tokio::spawn(server);
 
     info!("Node started successfully");
 
     loop {
         tokio::select! {
-            _ = &mut sync => {},
             res = &mut server => res??,
             res = &mut arbiter_pool.system_handle => break res?,
         }
