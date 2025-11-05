@@ -199,9 +199,14 @@ pub async fn request_missing_deltas(
 
     // Phase 1: Fetch ALL missing deltas recursively
     // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
+    let mut iteration = 0;
     while !to_fetch.is_empty() {
+        iteration += 1;
+        let batch_size = to_fetch.len();
         let current_batch = to_fetch.clone();
         to_fetch.clear();
+        
+        info!(%context_id, iteration, batch_size, "🔃 Starting fetch iteration");
 
         for missing_id in current_batch {
             fetch_count += 1;
@@ -243,12 +248,28 @@ pub async fn request_missing_deltas(
                         if *parent_id == [0; 32] {
                             continue;
                         }
+                        
+                        let has_delta = delta_store.has_delta(parent_id).await;
+                        let in_to_fetch = to_fetch.contains(parent_id);
+                        let in_fetched = fetched_deltas.iter().any(|(d, _)| d.id == *parent_id);
+                        
                         // Skip if we already have it or are about to fetch it
-                        if !delta_store.has_delta(parent_id).await
-                            && !to_fetch.contains(parent_id)
-                            && !fetched_deltas.iter().any(|(d, _)| d.id == *parent_id)
-                        {
+                        if !has_delta && !in_to_fetch && !in_fetched {
+                            info!(
+                                %context_id,
+                                parent_id = ?parent_id,
+                                delta_id = ?missing_id,
+                                "🔄 Queueing parent delta for fetch (child depends on it)"
+                            );
                             to_fetch.push(*parent_id);
+                        } else {
+                            info!(
+                                %context_id,
+                                parent_id = ?parent_id,
+                                delta_id = ?missing_id,
+                                has_delta, in_to_fetch, in_fetched,
+                                "⏭️ Skipping parent (already have it or queued)"
+                            );
                         }
                     }
                 }
@@ -256,30 +277,79 @@ pub async fn request_missing_deltas(
                     warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
                 }
                 Err(e) => {
-                    warn!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
-                    break; // Stop requesting if stream fails
+                    warn!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta - stopping batch");
+                    break; // Stop requesting current batch if stream fails
                 }
             }
         }
+        
+        info!(%context_id, iteration, to_fetch_count = to_fetch.len(), "✅ Iteration complete - will continue" = !to_fetch.is_empty());
     }
 
+    info!(%context_id, total_fetched = fetch_count, fetched_deltas_count = fetched_deltas.len(), total_iterations = iteration, "📦 Phase 1 complete: All deltas fetched");
+
     // Phase 2: Add all fetched deltas to DAG in topological order (oldest first)
-    // We need to add them in reverse order so parents are added before children
+    // We need to sort by dependencies so parents are added before children
     if !fetched_deltas.is_empty() {
         info!(
             %context_id,
             total_fetched = fetched_deltas.len(),
-            "Adding fetched deltas to DAG in topological order"
+            "Sorting fetched deltas in topological order"
         );
 
-        // Reverse the list so we process oldest (deepest ancestors) first
-        fetched_deltas.reverse();
-
-        for (dag_delta, delta_id) in fetched_deltas {
-            if let Err(e) = delta_store.add_delta(dag_delta).await {
-                warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
+        // Topological sort: process deltas whose parents are all already added
+        let mut added: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        added.insert([0; 32]); // Genesis is always "added"
+        
+        let mut remaining = fetched_deltas;
+        let mut added_count = 0;
+        
+        while !remaining.is_empty() {
+            let before_len = remaining.len();
+            let mut next_remaining = Vec::new();
+            
+            // Find deltas whose parents are all added (or genesis)
+            for (dag_delta, delta_id) in remaining {
+                let mut parents_ready = true;
+                for parent in &dag_delta.parents {
+                    if *parent != [0; 32] && !added.contains(parent) && !delta_store.has_delta(parent).await {
+                        parents_ready = false;
+                        break;
+                    }
+                }
+                
+                if parents_ready {
+                    // Add to DAG now
+                    if let Err(e) = delta_store.add_delta(dag_delta).await {
+                        warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
+                    } else {
+                        added.insert(delta_id);
+                        added_count += 1;
+                    }
+                } else {
+                    // Keep for next iteration
+                    next_remaining.push((dag_delta, delta_id));
+                }
+            }
+            
+            remaining = next_remaining;
+            
+            // Detect infinite loop (circular dependency - shouldn't happen in a DAG)
+            if remaining.len() == before_len && !remaining.is_empty() {
+                warn!(
+                    %context_id,
+                    remaining_count = remaining.len(),
+                    "Cannot add remaining deltas - missing parents (DAG corrupted?)"
+                );
+                break;
             }
         }
+        
+        info!(
+            %context_id,
+            added_count,
+            "Completed adding fetched deltas in topological order"
+        );
     }
 
     if fetch_count > 0 {
