@@ -8,34 +8,10 @@ use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
 impl ContextClient {
-    /// Sync context configuration from external source (blockchain).
+    /// Sync context configuration from blockchain.
     ///
-    /// **IMPORTANT - Ghost Identities**:
-    /// This function creates "ghost" identities for ALL members fetched from blockchain:
-    /// ```rust
-    /// ContextIdentity {
-    ///     private_key: None,  // Ghost - we don't have their key!
-    ///     sender_key: None,
-    /// }
-    /// ```
-    ///
-    /// **Caller Responsibility**:
-    /// If the calling node is joining as one of these members, they MUST call
-    /// `update_identity()` afterwards to upgrade from ghost to full identity:
-    /// ```rust
-    /// sync_context_config(context_id, config).await?;
-    /// // Now our identity is a ghost - upgrade it!
-    /// update_identity(context_id, ContextIdentity {
-    ///     public_key: our_id,
-    ///     private_key: Some(secret_from_pool),  // Upgrade!
-    ///     sender_key: Some(random_key),         // Upgrade!
-    /// })?;
-    /// ```
-    ///
-    /// **Why Ghosts Exist**:
-    /// - We need to know ALL context members for sync protocols
-    /// - We don't have other members' private keys (by design!)
-    /// - Ghost identity = "we know they exist, but don't have their keys"
+    /// Creates ghost identities (no private keys) for all members.
+    /// Caller must upgrade their own identity with `update_identity()` afterwards.
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,

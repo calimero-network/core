@@ -78,7 +78,8 @@ pub struct NodeManager {
     pub(crate) clients: NodeClients,
     pub(crate) managers: NodeManagers,
     pub(crate) state: NodeState,
-    pub(crate) sync_rx: Option<tokio::sync::mpsc::Receiver<calimero_node_primitives::client::SyncRequest>>,
+    pub(crate) sync_rx:
+        Option<tokio::sync::mpsc::Receiver<calimero_node_primitives::client::SyncRequest>>,
 }
 
 impl NodeManager {
@@ -114,9 +115,7 @@ impl NodeManager {
             sync_rx: Some(sync_rx),
         }
     }
-
 }
-
 
 impl Actor for NodeManager {
     type Context = actix::Context<Self>;
@@ -180,7 +179,9 @@ fn start_sync_listener(
             let Some(ctx_id) = context_id else {
                 // Global sync not implemented
                 if let Some(tx) = result_tx {
-                    let _ = tx.send(Ok(calimero_node_primitives::client::SyncResult::NoSyncNeeded));
+                    let _ = tx.send(Ok(
+                        calimero_node_primitives::client::SyncResult::NoSyncNeeded,
+                    ));
                 }
                 continue;
             };
