@@ -497,11 +497,15 @@ fn emit_state_mutation_event_parsed(
 /// - Signature verification
 /// - Deadlock prevention
 ///
-/// Old implementation: ~120 lines of insecure key exchange
-/// New implementation: ~15 lines with proper authentication
+/// Request key share from a peer when we're missing the sender_key for an author.
 ///
-/// **Note**: This function requires `our_identity` to be passed in from the caller
-/// since getting identities requires async stream processing that's not portable.
+/// This uses the P2P key exchange protocol to establish shared encryption keys
+/// with the peer, allowing us to decrypt future deltas from that author.
+///
+/// The function:
+/// 1. Gets our owned identity from the context
+/// 2. Opens a P2P stream to the peer
+/// 3. Performs mutual key exchange using the secure key exchange protocol
 async fn request_key_share_with_peer(
     network_client: &NetworkClient,
     context_client: &ContextClient,
@@ -510,18 +514,30 @@ async fn request_key_share_with_peer(
     peer: PeerId,
     timeout: Duration,
 ) -> Result<()> {
-    // IMPORTANT: This is a placeholder!
-    // The real implementation in calimero-node will need to:
-    // 1. Get our owned identity for this context
-    // 2. Call request_key_exchange with that identity
-    //
-    // This stateless handler can't do that without taking our_identity as a parameter
-    // because get_context_members returns an async stream that's not portable.
-    //
-    // For now, we'll bail with a clear error message.
-    // The node crate will override this with the proper implementation.
-    bail!(
-        "request_key_share_with_peer is a placeholder - \
-        caller must provide our_identity or use node-specific implementation"
-    );
+    use futures_util::stream::StreamExt;
+    use std::pin::pin;
+
+    // Get our owned identity for this context
+    let mut members_stream = pin!(context_client.get_context_members(context_id, Some(true))); // owned=true
+    let our_identity = members_stream
+        .next()
+        .await
+        .ok_or_eyre("No owned identity found in context")?? // outer ? for stream error, inner ? for Result
+        .0; // Extract PublicKey from (PublicKey, bool) tuple
+
+    // Get the full context object (needed for key exchange)
+    let context = context_client
+        .get_context(context_id)?
+        .ok_or_eyre("Context not found")?;
+
+    // Use the P2P key exchange protocol
+    crate::p2p::key_exchange::request_key_exchange(
+        network_client,
+        &context,
+        our_identity,
+        peer,
+        context_client,
+        timeout,
+    )
+    .await
 }
