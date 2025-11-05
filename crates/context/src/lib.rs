@@ -1,7 +1,6 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::collections::{btree_map, BTreeMap};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -9,30 +8,24 @@ use actix::Actor;
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::context::ContextId;
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
+use crate::application_manager::ApplicationManager;
 use crate::metrics::Metrics;
+use crate::repository::ContextRepository;
 
+mod application_manager;
 pub mod config;
 pub mod handlers;
 mod metrics;
+mod repository;
 
-/// A metadata container for a single, in-memory context.
-///
-/// It holds the context's core properties and an asynchronous mutex (`lock`).
-/// This lock is crucial for serializing operations on this specific context,
-/// allowing the `ContextManager` to process requests for different contexts in parallel
-/// while ensuring data consistency for any single context.
-#[derive(Debug)]
-struct ContextMeta {
-    meta: Context,
-    lock: Arc<Mutex<ContextId>>,
-}
+// Re-export ContextMeta from repository module
+pub(crate) use repository::ContextMeta;
 
 /// The central actor responsible for managing the lifecycle of all contexts.
 ///
@@ -45,36 +38,21 @@ pub struct ContextManager {
 
     /// Client for interacting with the underlying Calimero node.
     node_client: NodeClient,
-    /// The public-facing client API, also used internally to access convenience methods
-    /// for interacting with the datastore.
-    context_client: ContextClient,
+
+    /// Context repository for storage and caching operations.
+    /// Encapsulates all context CRUD and cache management logic.
+    repository: ContextRepository,
+    
+    /// Application manager for application and module lifecycle.
+    /// Handles application metadata caching and WASM module compilation.
+    app_manager: ApplicationManager,
 
     /// Configuration for interacting with external blockchain contracts (e.g., NEAR).
     external_config: ExternalClientConfig,
 
-    /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
-    /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
-    // todo! potentially make this a dashmap::DashMap
-    // todo! use cached::TimedSizedCache with a gc task
-    contexts: BTreeMap<ContextId, ContextMeta>,
-    /// An in-memory cache of application metadata (`ApplicationId` -> `Application`).
-    /// Caching this prevents repeated fetching and parsing of application details.
-    ///
-    /// # Note
-    /// Even when 2 applications point to the same bytecode,
-    /// the application's metadata may include information
-    /// that might be relevant in the compilation process,
-    /// so we cannot blindly reuse compiled blobs across apps.
-    applications: BTreeMap<ApplicationId, Application>,
-
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
-    //
-    // todo! when runtime let's us compile blobs separate from its
-    // todo! execution, we can introduce a cached::TimedSizedCache
-    // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
-    //
 }
 
 /// Creates a new `ContextManager`.
@@ -95,14 +73,22 @@ impl ContextManager {
         external_config: ExternalClientConfig,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
+        // Create repository with default cache size (1000)
+        let repository = ContextRepository::new(
+            datastore.clone(),
+            context_client,
+            None, // Use default cache size
+        );
+        
+        // Create application manager
+        let app_manager = ApplicationManager::new(node_client.clone());
+        
         Self {
             datastore,
             node_client,
-            context_client,
+            repository,
+            app_manager,
             external_config,
-
-            contexts: BTreeMap::new(),
-            applications: BTreeMap::new(),
 
             metrics: prometheus_registry.map(Metrics::new),
         }
@@ -142,6 +128,13 @@ impl ContextMeta {
 }
 
 impl ContextManager {
+    /// Get access to the context client (via repository).
+    ///
+    /// This provides access to the underlying `ContextClient` for database operations.
+    pub(crate) fn context_client(&self) -> &ContextClient {
+        self.repository.context_client()
+    }
+    
     /// Retrieves context metadata, fetching from the datastore if not present in the cache.
     ///
     /// This function implements the "cache-aside" pattern. It first checks the in-memory
@@ -163,70 +156,38 @@ impl ContextManager {
         &mut self,
         context_id: &ContextId,
     ) -> eyre::Result<Option<&ContextMeta>> {
-        let entry = self.contexts.entry(*context_id);
-
-        match entry {
-            btree_map::Entry::Occupied(mut occupied) => {
-                // CRITICAL FIX: Always reload dag_heads from database to get latest state
-                // The dag_heads can be updated by delta_store when receiving network deltas,
-                // but the cached Context object won't reflect these changes.
-                // This was causing all deltas to use genesis as parent instead of actual dag_heads.
-                let handle = self.datastore.handle();
-                let key = calimero_store::key::ContextMeta::new(*context_id);
-
-                if let Some(meta) = handle.get(&key)? {
-                    let cached = occupied.get_mut();
-
-                    // Update dag_heads if they changed in DB
-                    if cached.meta.dag_heads != meta.dag_heads {
-                        tracing::debug!(
-                            %context_id,
-                            old_heads_count = cached.meta.dag_heads.len(),
-                            new_heads_count = meta.dag_heads.len(),
-                            "Refreshing dag_heads from database (cache was stale)"
-                        );
-                        cached.meta.dag_heads = meta.dag_heads;
-                    }
-
-                    // Also update root_hash in case it changed
-                    cached.meta.root_hash = meta.root_hash.into();
-                }
-
-                Ok(Some(occupied.into_mut()))
-            }
-            btree_map::Entry::Vacant(vacant) => {
-                let Some(context) = self.context_client.get_context(context_id)? else {
-                    return Ok(None);
-                };
-
-                let lock = Arc::new(Mutex::new(*context_id));
-
-                let item = vacant.insert(ContextMeta {
-                    meta: context,
-                    lock,
-                });
-
-                Ok(Some(item))
-            }
-        }
+        // Delegate to repository
+        self.repository.get(context_id)
     }
 }
 
-// objectives:
-//   keep up to N items, refresh entries as they are used
-//   garbage collect entries as they expire, or as needed
-//   share across tasks efficiently, not prolonging locks
-//   managed mutation, so guards aren't held for too long
+// ═══════════════════════════════════════════════════════════════════════════
+// Module Boundaries & Architecture Notes
+// ═══════════════════════════════════════════════════════════════════════════
 //
-// result: this should help us share data between clients
-//         and their actors,
+// As of Nov 2024 refactoring, ContextManager is a COORDINATOR, not a god object.
+// It delegates to specialized services:
 //
-// pub struct SharedCache<K, V> {
-//     cache: DashMap<Key<K>, V>,
-//     index: ArcTimedSizedCache<K, Key<K>>,
-// }
+// 1. ContextRepository (repository.rs)
+//    - Context CRUD operations
+//    - LRU cache management (max 1000 contexts)
+//    - Database synchronization
+//    - DAG heads refresh
 //
-// struct Key<K>(K);
-// struct Cached<V: Copy>(..);
-//        ^- aids read without locking
-//           downside: Copy on every write
+// 2. ApplicationManager (application_manager.rs)
+//    - Application metadata caching
+//    - Application lifecycle management
+//    - Future: Module compilation caching (when Module implements Clone)
+//
+// 3. ContextManager (this file)
+//    - Actor coordination
+//    - Message routing
+//    - External config management
+//    - Thin wrapper delegating to services
+//
+// OLD ARCHITECTURE (removed):
+// - Direct BTreeMap<ContextId, ContextMeta> (now in ContextRepository)
+// - Direct BTreeMap<ApplicationId, Application> (now in ApplicationManager)
+// - ~300 lines of cache management logic (now in services)
+//
+// ═══════════════════════════════════════════════════════════════════════════

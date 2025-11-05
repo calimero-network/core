@@ -95,7 +95,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
         };
 
-        let external_config = match self.context_client.context_config(&context_id) {
+        let external_config = match self.context_client().context_config(&context_id) {
             Ok(Some(external_config)) => external_config,
             Ok(None) => {
                 error!(%context_id, "missing context config for context");
@@ -109,7 +109,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
-        let sender_key = match self.context_client.get_identity(&context_id, &executor) {
+        let sender_key = match self.context_client().get_identity(&context_id, &executor) {
             Ok(Some(ContextIdentity {
                 private_key: Some(_),
                 sender_key: Some(sender_key),
@@ -165,7 +165,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
-            let context_client = act.context_client.clone();
+            let context_client = act.context_client().clone();
 
             async move {
                 let old_root_hash = context.root_hash;
@@ -244,21 +244,22 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let external_task =
             execute_task.and_then(move |(guard, context, outcome, causal_delta), act, _ctx| {
-                if let Some(cached_context) = act.contexts.get_mut(&context_id) {
+                // Update root hash in cache via repository
+                let updated = act.repository.update_root_hash(&context_id, context.root_hash);
+                
+                if updated {
                     debug!(
                         %context_id,
-                        old_root = ?cached_context.meta.root_hash,
                         new_root = ?context.root_hash,
                         is_state_op,
-                        "Updating cached context root_hash"
+                        "Updated cached context root_hash via repository"
                     );
-                    cached_context.meta.root_hash = context.root_hash;
                 } else {
                     debug!(%context_id, is_state_op, "Context not in cache, will be fetched from DB next time");
                 }
 
                 let node_client = act.node_client.clone();
-                let context_client = act.context_client.clone();
+                let context_client = act.context_client().clone();
 
                 async move {
                     if outcome.returns.is_err() {
@@ -499,18 +500,11 @@ impl ContextManager {
         application_id: ApplicationId,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
         let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
-            let blob = match act.applications.entry(application_id) {
-                btree_map::Entry::Vacant(vacant) => {
-                    let Some(app) = act.node_client.get_application(&application_id)? else {
-                        bail!(ExecuteError::ApplicationNotInstalled { application_id });
-                    };
-
-                    vacant.insert(app).blob
-                }
-                btree_map::Entry::Occupied(occupied) => occupied.into_mut().blob,
-            };
-
-            Ok(blob)
+            // Get or fetch application via ApplicationManager
+            let app = act.app_manager.get_application(&application_id)?
+                .ok_or_else(|| ExecuteError::ApplicationNotInstalled { application_id })?;
+            
+            Ok(app.blob)
         });
 
         let module_task = blob_task.and_then(move |mut blob, act, _ctx| {
@@ -561,9 +555,12 @@ impl ContextManager {
 
         module_task
             .map_ok(move |(module, blob), act, _ctx| {
+                // Update application blob if recompiled
                 if let Some(blob) = blob {
-                    if let Some(app) = act.applications.get_mut(&application_id) {
-                        app.blob = blob;
+                    if let Ok(Some(app)) = act.app_manager.get_application(&application_id) {
+                        let mut updated_app = app.clone();
+                        updated_app.blob = blob;
+                        act.app_manager.put_application(application_id, updated_app);
                     }
                 }
 
@@ -623,22 +620,43 @@ async fn internal_execute(
         return Ok((outcome, None));
     }
 
+    // Validate outcome: root_hash + empty artifact is only valid for state sync operations
     'fine: {
         if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
-            debug!(
-                context_id = %context.id,
-                has_root_hash = true,
-                artifact_empty = true,
-                is_state_op,
-                "Outcome has root hash but empty artifact - checking mitigation"
-            );
-
             if is_state_op {
-                // fixme! temp mitigation for a potential state inconsistency
+                // EXPECTED BEHAVIOR for __calimero_sync_next:
+                // 
+                // When syncing deltas from peers, we execute __calimero_sync_next which:
+                // 1. Receives existing actions as input (already in the delta)
+                // 2. Applies actions to WASM storage (modifies state)
+                // 3. Computes new root_hash from modified storage
+                // 4. Calls commit() with empty artifact (no NEW actions generated)
+                //
+                // This is CORRECT because:
+                // - We're catching up to peer state (not creating new state)
+                // - Actions are already in the DAG (the delta we're applying)
+                // - Empty artifact means "no new changes to broadcast"
+                // - Broadcasting would create infinite loop!
+                //
+                // See: crates/storage/src/delta.rs:commit_root() and
+                //      crates/storage/src/collections/root.rs:sync()
+                debug!(
+                    context_id = %context.id,
+                    new_root = ?outcome.root_hash,
+                    "State sync operation completed: root_hash updated, no new actions generated (expected)"
+                );
                 break 'fine;
             }
 
-            eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+            // ACTUAL BUG for regular mutations:
+            // Application code changed state but didn't record any actions.
+            // This breaks replication - peers won't know what changed!
+            eyre::bail!(
+                "Application method '{}' changed state (root_hash modified) but generated no actions. \
+                 This is a bug in the WASM application - all state changes must be recorded as actions \
+                 for proper replication across nodes.",
+                method
+            );
         }
     }
 

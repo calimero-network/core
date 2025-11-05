@@ -20,14 +20,17 @@ impl Handler<DeleteContextRequest> for ContextManager {
         DeleteContextRequest { context_id }: DeleteContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let context = self.contexts.get(&context_id);
+        let context = match self.repository.get(&context_id) {
+            Ok(ctx) => ctx,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
 
         let mut guard = None;
 
         if let Some(context) = context {
             guard = Some(context.lock());
         } else {
-            match self.context_client.has_context(&context_id) {
+            match self.context_client().has_context(&context_id) {
                 Ok(true) => {}
                 Ok(false) => {
                     return ActorResponse::reply(Ok(DeleteContextResponse { deleted: false }))
@@ -52,7 +55,8 @@ impl Handler<DeleteContextRequest> for ContextManager {
         };
 
         ActorResponse::r#async(task.into_actor(self).map_ok(move |res, act, _ctx| {
-            let _ignored = act.contexts.remove(&context_id);
+            // Remove from cache (LRU eviction)
+            let _ignored = act.repository.remove(&context_id);
 
             res
         }))

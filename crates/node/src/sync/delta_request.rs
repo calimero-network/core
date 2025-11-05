@@ -171,6 +171,17 @@ impl SyncManager {
 
         super::stream::send(stream, &msg, None).await?;
 
+        // SECURITY: Prove our identity ownership before peer serves delta
+        crate::sync::SecureStream::prove_identity(
+            stream,
+            context_id,
+            &our_identity,
+            &self.context_client,
+            self.sync_config.timeout,
+        )
+        .await
+        .map_err(|e| eyre::eyre!("Failed to prove identity for delta request: {}", e))?;
+
         // Wait for response
         let timeout_budget = self.sync_config.timeout;
 
@@ -225,12 +236,35 @@ impl SyncManager {
         &self,
         context_id: ContextId,
         delta_id: [u8; 32],
+        their_identity: PublicKey,
+        our_identity: PublicKey,
         stream: &mut Stream,
     ) -> Result<()> {
         info!(
             %context_id,
+            %their_identity,
             delta_id = ?delta_id,
-            "Handling delta request from peer"
+            "Handling delta request - verifying requester identity"
+        );
+
+        // SECURITY: Verify requester actually owns the identity they claimed
+        // Prevents non-members from requesting deltas (metadata leak + privacy violation)
+        crate::sync::SecureStream::verify_identity(
+            stream,
+            &context_id,
+            &their_identity,
+            &our_identity,
+            &self.context_client,
+            self.sync_config.timeout,
+        )
+        .await
+        .map_err(|e| eyre::eyre!("Delta request denied - identity verification failed: {}", e))?;
+
+        info!(
+            %context_id,
+            %their_identity,
+            delta_id = ?delta_id,
+            "Identity verified - serving delta"
         );
 
         // Try RocksDB first (has full CausalDelta with HLC)
@@ -324,12 +358,34 @@ impl SyncManager {
     pub async fn handle_dag_heads_request(
         &self,
         context_id: ContextId,
+        their_identity: PublicKey,
+        our_identity: PublicKey,
         stream: &mut Stream,
         _nonce: Nonce,
     ) -> Result<()> {
         info!(
             %context_id,
-            "Handling DAG heads request from peer"
+            %their_identity,
+            "Handling DAG heads request - verifying requester identity"
+        );
+
+        // SECURITY: Verify requester actually owns the identity they claimed
+        // Prevents non-members from monitoring context activity (privacy violation)
+        crate::sync::SecureStream::verify_identity(
+            stream,
+            &context_id,
+            &their_identity,
+            &our_identity,
+            &self.context_client,
+            self.sync_config.timeout,
+        )
+        .await
+        .map_err(|e| eyre::eyre!("DAG heads request denied - identity verification failed: {}", e))?;
+
+        info!(
+            %context_id,
+            %their_identity,
+            "Identity verified - serving DAG heads"
         );
 
         // Get context to retrieve dag_heads and root_hash

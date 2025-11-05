@@ -38,12 +38,15 @@ impl Handler<CreateContextRequest> for ContextManager {
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // Get context_client reference first to avoid borrow conflicts
+        let context_client = self.context_client().clone();
+        
         let prepared = match Prepared::new(
             &self.node_client,
-            &self.context_client,
+            &context_client,
             &self.external_config,
-            &mut self.contexts,
-            &mut self.applications,
+            &mut self.repository,
+            &mut self.app_manager,
             protocol,
             seed,
             &application_id,
@@ -56,20 +59,21 @@ impl Handler<CreateContextRequest> for ContextManager {
         let Prepared {
             external_config,
             application,
-            context,
+            context_meta,
             context_secret,
             identity,
             identity_secret,
             sender_key,
         } = prepared;
 
-        let guard = context
+        // Insert into cache before starting async work
+        self.repository.put(context_meta.meta.id, context_meta.clone());
+
+        let guard = context_meta
             .lock
             .clone()
             .try_lock_owned()
             .expect("logically exclusive");
-
-        let context_meta = context.meta.clone();
 
         let module_task = self.get_module(application_id);
 
@@ -82,10 +86,10 @@ impl Handler<CreateContextRequest> for ContextManager {
                     create_context(
                         act.datastore.clone(),
                         act.node_client.clone(),
-                        act.context_client.clone(),
+                        act.context_client().clone(),
                         module,
                         external_config,
-                        context_meta,
+                        context_meta.meta,
                         context_secret,
                         application,
                         identity,
@@ -97,21 +101,21 @@ impl Handler<CreateContextRequest> for ContextManager {
                     .into_actor(act)
                 })
                 .map_ok(move |root_hash, act, _ctx| {
-                    if let Some(meta) = act.contexts.get_mut(&context_meta_for_map_ok.id) {
-                        // this should almost always exist, but with an LruCache, it
-                        // may not. And if it's been evicted, the next execution will
-                        // re-create it with data from the store, so it's not a problem
-
-                        meta.meta.root_hash = root_hash;
-                    }
+                    // Update root hash in cache (via repository)
+                    // This may not succeed if evicted, but that's fine - DB has the truth
+                    let _updated = act.repository.update_root_hash(
+                        &context_meta_for_map_ok.meta.id,
+                        root_hash,
+                    );
 
                     CreateContextResponse {
-                        context_id: context_meta_for_map_ok.id,
+                        context_id: context_meta_for_map_ok.meta.id,
                         identity,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
-                    let _ignored = act.contexts.remove(&context_meta_for_map_err.id);
+                    // Remove from cache on error (cleanup)
+                    let _ignored = act.repository.remove(&context_meta_for_map_err.meta.id);
 
                     err
                 }),
@@ -119,23 +123,23 @@ impl Handler<CreateContextRequest> for ContextManager {
     }
 }
 
-struct Prepared<'a> {
+struct Prepared {
     external_config: ContextConfigParams<'static>,
     application: Application,
-    context: &'a ContextMeta,
+    context_meta: ContextMeta,
     context_secret: PrivateKey,
     identity: PublicKey,
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
 }
 
-impl Prepared<'_> {
+impl Prepared {
     fn new(
         node_client: &NodeClient,
         context_client: &ContextClient,
         external_config: &ExternalClientConfig,
-        contexts: &mut BTreeMap<ContextId, ContextMeta>,
-        applications: &mut BTreeMap<ApplicationId, Application>,
+        repository: &mut crate::repository::ContextRepository,
+        app_manager: &mut crate::application_manager::ApplicationManager,
         protocol: String,
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
@@ -166,10 +170,11 @@ impl Prepared<'_> {
 
         let identity_secret = identity_secret.unwrap_or_else(|| PrivateKey::random(&mut rng));
 
-        let mut context = None;
+        let mut result: Option<(ContextId, PrivateKey)> = None;
+        
         for _ in 0..5 {
             let context_secret = if let Some(seed) = seed {
-                if context.is_some() {
+                if result.is_some() {
                     bail!("seed resulted in an already existing context");
                 }
 
@@ -178,59 +183,37 @@ impl Prepared<'_> {
                 PrivateKey::random(&mut rng)
             };
 
-            context = Some(None);
-
             let context_id = ContextId::from(*context_secret.public_key());
 
-            if let btree_map::Entry::Vacant(entry) = contexts.entry(context_id) {
-                if context_client.has_context(&context_id)? {
-                    continue;
-                }
-
-                // safety: the VacantEntry only lives as long as this function
-                //         and the entry within the BTreeMap is constrained to
-                //         the lifetime of the BTreeMap before it is returned
-                let entry = unsafe {
-                    mem::transmute::<_, btree_map::VacantEntry<'static, ContextId, ContextMeta>>(
-                        entry,
-                    )
-                };
-
-                context = Some(Some((entry, context_id, context_secret)));
-
+            // Check if context_id exists in cache or database
+            if !repository.contains(&context_id) && !context_client.has_context(&context_id)? {
+                result = Some((context_id, context_secret));
                 break;
             }
         }
-        let (entry, context_id, context_secret) = context
-            .flatten()
+        
+        let (context_id, context_secret) = result
             .ok_or_eyre("failed to derive a context id after 5 tries")?;
 
-        let application = match applications.entry(*application_id) {
-            btree_map::Entry::Vacant(vacant) => {
-                let application = node_client
-                    .get_application(application_id)?
-                    .ok_or_eyre("application not found")?;
-
-                vacant.insert(application)
-            }
-            btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
-        };
+        // Get or fetch application
+        let application = app_manager
+            .get_application(application_id)?
+            .ok_or_eyre("application not found")?
+            .clone();
 
         let identity = identity_secret.public_key();
 
         let meta = Context::new(context_id, *application_id, Hash::default());
 
-        let context = entry.insert(ContextMeta {
+        let context_meta = ContextMeta {
             meta,
             lock: Arc::new(Mutex::new(context_id)),
-        });
-
-        let application = application.clone();
+        };
 
         Ok(Self {
             external_config,
             application,
-            context,
+            context_meta,
             context_secret,
             identity,
             identity_secret,

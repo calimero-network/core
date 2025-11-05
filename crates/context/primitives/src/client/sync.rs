@@ -8,6 +8,34 @@ use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
 impl ContextClient {
+    /// Sync context configuration from external source (blockchain).
+    ///
+    /// **IMPORTANT - Ghost Identities**:
+    /// This function creates "ghost" identities for ALL members fetched from blockchain:
+    /// ```rust
+    /// ContextIdentity {
+    ///     private_key: None,  // Ghost - we don't have their key!
+    ///     sender_key: None,
+    /// }
+    /// ```
+    ///
+    /// **Caller Responsibility**:
+    /// If the calling node is joining as one of these members, they MUST call
+    /// `update_identity()` afterwards to upgrade from ghost to full identity:
+    /// ```rust
+    /// sync_context_config(context_id, config).await?;
+    /// // Now our identity is a ghost - upgrade it!
+    /// update_identity(context_id, ContextIdentity {
+    ///     public_key: our_id,
+    ///     private_key: Some(secret_from_pool),  // Upgrade!
+    ///     sender_key: Some(random_key),         // Upgrade!
+    /// })?;
+    /// ```
+    ///
+    /// **Why Ghosts Exist**:
+    /// - We need to know ALL context members for sync protocols
+    /// - We don't have other members' private keys (by design!)
+    /// - Ghost identity = "we know they exist, but don't have their keys"
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,
@@ -53,6 +81,7 @@ impl ContextClient {
 
             let config_client = external_client.config();
 
+            // Fetch all members from blockchain and create ghost identities
             for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
                 let members = config_client.members(offset, length).await?;
 
@@ -64,13 +93,21 @@ impl ContextClient {
                     let key = key::ContextIdentity::new(context_id, member);
 
                     if !handle.has(&key)? {
+                        // Create ghost identity: we know they're a member, but we don't have their keys
+                        // CALLER MUST upgrade this to full identity if this is their own identity!
                         handle.put(
                             &key,
                             &types::ContextIdentity {
-                                private_key: None,
-                                sender_key: None,
+                                private_key: None,  // Ghost - don't have their key
+                                sender_key: None,   // Ghost - don't have their key
                             },
                         )?;
+                        
+                        tracing::debug!(
+                            %context_id,
+                            member = %member,
+                            "Created ghost identity for context member (no keys)"
+                        );
                     }
                 }
             }

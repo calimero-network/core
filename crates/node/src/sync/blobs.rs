@@ -44,6 +44,17 @@ impl SyncManager {
         )
         .await?;
 
+        // SECURITY: Prove our identity ownership before peer serves blob
+        crate::sync::SecureStream::prove_identity(
+            stream,
+            &context.id,
+            &our_identity,
+            &self.context_client,
+            self.sync_config.timeout,
+        )
+        .await
+        .map_err(|e| eyre::eyre!("Failed to prove identity for blob request: {}", e))?;
+
         let Some(ack) = self.recv(stream, None).await? else {
             bail!("connection closed while awaiting blob share handshake");
         };
@@ -157,7 +168,27 @@ impl SyncManager {
             our_identity=%our_identity,
             their_identity=%their_identity,
             blob_id=%blob_id,
-            "Received blob share request",
+            "Received blob share request - verifying requester identity",
+        );
+
+        // SECURITY: Verify requester actually owns the identity they claimed
+        // This prevents non-members from requesting blobs (metadata leak prevention)
+        crate::sync::SecureStream::verify_identity(
+            stream,
+            &context.id,
+            &their_identity,
+            &our_identity,
+            &self.context_client,
+            self.sync_config.timeout,
+        )
+        .await
+        .map_err(|e| eyre::eyre!("Blob request denied - identity verification failed: {}", e))?;
+
+        info!(
+            context_id=%context.id,
+            their_identity=%their_identity,
+            blob_id=%blob_id,
+            "Identity verified - serving blob"
         );
 
         let Some(mut blob) = self.node_client.get_blob(&blob_id, None).await? else {

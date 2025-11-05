@@ -14,51 +14,28 @@
 )]
 
 use std::pin::pin;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
-use dashmap::DashMap;
 use futures_util::StreamExt;
-use tracing::{debug, error, warn};
-
-use crate::delta_store::DeltaStore;
+use tracing::error;
 
 mod arbiter_pool;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
+pub mod runtime;
 mod run;
+pub mod services;
 pub mod sync;
 mod utils;
 
 pub use run::{start, NodeConfig};
+pub use services::{BlobCacheService, DeltaStoreService, TimerManager};
 pub use sync::SyncManager;
-
-/// Cached blob with access tracking for eviction
-#[derive(Debug, Clone)]
-pub struct CachedBlob {
-    pub data: Arc<[u8]>,
-    pub last_accessed: Instant,
-}
-
-impl CachedBlob {
-    pub fn new(data: Arc<[u8]>) -> Self {
-        Self {
-            data,
-            last_accessed: Instant::now(),
-        }
-    }
-
-    pub fn touch(&mut self) {
-        self.last_accessed = Instant::now();
-    }
-}
 
 /// External service clients (injected dependencies)
 #[derive(Debug, Clone)]
@@ -72,126 +49,35 @@ pub(crate) struct NodeClients {
 pub(crate) struct NodeManagers {
     pub(crate) blobstore: BlobManager,
     pub(crate) sync: SyncManager,
+    pub(crate) timers: TimerManager,
 }
 
 /// Mutable runtime state
 #[derive(Clone, Debug)]
 pub(crate) struct NodeState {
-    pub(crate) blob_cache: Arc<DashMap<BlobId, CachedBlob>>,
-    pub(crate) delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
+    pub(crate) blob_cache: BlobCacheService,
+    pub(crate) delta_stores: DeltaStoreService,
 }
 
 impl NodeState {
     fn new() -> Self {
         Self {
-            blob_cache: Arc::new(DashMap::new()),
-            delta_stores: Arc::new(DashMap::new()),
+            blob_cache: BlobCacheService::new(),
+            delta_stores: DeltaStoreService::new(),
         }
     }
 
-    /// Evict blobs from cache based on age, count, and memory limits
+    /// Evict old blobs from cache (delegates to BlobCacheService)
     fn evict_old_blobs(&self) {
-        const MAX_BLOB_AGE: Duration = Duration::from_secs(300); // 5 minutes
-        const MAX_CACHE_COUNT: usize = 100; // Max number of blobs
-        const MAX_CACHE_BYTES: usize = 500 * 1024 * 1024; // 500MB total memory
+        self.blob_cache.evict_old();
+    }
 
-        let now = Instant::now();
-        let before_count = self.blob_cache.len();
-
-        // Phase 1: Remove blobs older than MAX_BLOB_AGE
-        self.blob_cache
-            .retain(|_, cached_blob| now.duration_since(cached_blob.last_accessed) < MAX_BLOB_AGE);
-
-        let after_time_eviction = self.blob_cache.len();
-
-        // Phase 2: If still over count limit, remove least recently used
-        if self.blob_cache.len() > MAX_CACHE_COUNT {
-            let mut blobs: Vec<_> = self
-                .blob_cache
-                .iter()
-                .map(|entry| (*entry.key(), entry.value().last_accessed))
-                .collect();
-
-            // Sort by last_accessed (oldest first)
-            blobs.sort_by_key(|(_, accessed)| *accessed);
-
-            // Remove oldest until under count limit
-            let to_remove = self.blob_cache.len() - MAX_CACHE_COUNT;
-            for (blob_id, _) in blobs.iter().take(to_remove) {
-                let _removed = self.blob_cache.remove(&blob_id);
-            }
-        }
-
-        let after_count_eviction = self.blob_cache.len();
-
-        // Phase 3: If still over memory limit, remove by LRU until under budget
-        let total_size: usize = self
-            .blob_cache
-            .iter()
-            .map(|entry| entry.value().data.len())
-            .sum();
-
-        if total_size > MAX_CACHE_BYTES {
-            let mut blobs: Vec<_> = self
-                .blob_cache
-                .iter()
-                .map(|entry| {
-                    (
-                        *entry.key(),
-                        entry.value().last_accessed,
-                        entry.value().data.len(),
-                    )
-                })
-                .collect();
-
-            // Sort by last_accessed (oldest first)
-            blobs.sort_by_key(|(_, accessed, _)| *accessed);
-
-            let mut current_size = total_size;
-            let mut removed_count = 0;
-
-            for (blob_id, _, size) in blobs {
-                if current_size <= MAX_CACHE_BYTES {
-                    break;
-                }
-                let _removed = self.blob_cache.remove(&blob_id);
-                current_size = current_size.saturating_sub(size);
-                removed_count += 1;
-            }
-
-            if removed_count > 0 {
-                #[expect(
-                    clippy::integer_division,
-                    reason = "MB conversion for logging, precision not critical"
-                )]
-                let freed_mb = total_size.saturating_sub(current_size) / 1024 / 1024;
-                #[expect(
-                    clippy::integer_division,
-                    reason = "MB conversion for logging, precision not critical"
-                )]
-                let new_size_mb = current_size / 1024 / 1024;
-                tracing::debug!(
-                    removed_count,
-                    freed_mb,
-                    new_size_mb,
-                    "Evicted blobs to stay under memory limit"
-                );
-            }
-        }
-
-        let total_evicted = before_count.saturating_sub(self.blob_cache.len());
-        if total_evicted > 0 {
-            tracing::debug!(
-                total_evicted,
-                time_evicted = before_count.saturating_sub(after_time_eviction),
-                count_evicted = after_time_eviction.saturating_sub(after_count_eviction),
-                memory_evicted = after_count_eviction.saturating_sub(self.blob_cache.len()),
-                remaining_count = self.blob_cache.len(),
-                "Blob cache eviction completed"
-            );
-        }
+    /// Cleanup stale pending deltas (delegates to DeltaStoreService)
+    async fn cleanup_stale_deltas(&self, max_age: Duration) -> usize {
+        self.delta_stores.cleanup_all_stale(max_age).await
     }
 }
+
 
 /// Main node orchestrator.
 ///
@@ -214,6 +100,14 @@ impl NodeManager {
         node_client: NodeClient,
         state: NodeState,
     ) -> Self {
+        // Create timer manager
+        let timer_manager = TimerManager::new(
+            state.blob_cache.clone(),
+            state.delta_stores.clone(),
+            context_client.clone(),
+            node_client.clone(),
+        );
+
         Self {
             clients: NodeClients {
                 context: context_client,
@@ -222,6 +116,7 @@ impl NodeManager {
             managers: NodeManagers {
                 blobstore,
                 sync: sync_manager,
+                timers: timer_manager,
             },
             state,
         }
@@ -254,102 +149,7 @@ impl Actor for NodeManager {
             .into_actor(self),
         );
 
-        // Periodic blob cache eviction (every 5 minutes)
-        let _handle = ctx.run_interval(Duration::from_secs(300), |act, _ctx| {
-            act.state.evict_old_blobs();
-        });
-
-        // Periodic cleanup of stale pending deltas (every 60 seconds)
-        let _handle = ctx.run_interval(Duration::from_secs(60), |act, ctx| {
-            let max_age = Duration::from_secs(300); // 5 minutes timeout
-            let delta_stores = act.state.delta_stores.clone();
-
-            let _ignored = ctx.spawn(
-                async move {
-                    for entry in delta_stores.iter() {
-                        let context_id = *entry.key();
-                        let delta_store = entry.value();
-
-                        // Evict stale deltas
-                        let evicted = delta_store.cleanup_stale(max_age).await;
-
-                        if evicted > 0 {
-                            warn!(
-                                %context_id,
-                                evicted_count = evicted,
-                                "Evicted stale pending deltas (timed out after 5 min)"
-                            );
-                        }
-
-                        // Log stats for monitoring
-                        let stats = delta_store.pending_stats().await;
-                        if stats.count > 0 {
-                            debug!(
-                                %context_id,
-                                pending_count = stats.count,
-                                oldest_age_secs = stats.oldest_age_secs,
-                                missing_parents = stats.total_missing_parents,
-                                "Pending delta statistics"
-                            );
-
-                            // Trigger snapshot fallback if too many pending
-                            const SNAPSHOT_THRESHOLD: usize = 100;
-                            if stats.count > SNAPSHOT_THRESHOLD {
-                                warn!(
-                                    %context_id,
-                                    pending_count = stats.count,
-                                    threshold = SNAPSHOT_THRESHOLD,
-                                    "Too many pending deltas - state sync will recover on next periodic sync"
-                                );
-                            }
-                        }
-                    }
-                }
-                .into_actor(act),
-            );
-        });
-
-        // Periodic hash heartbeat broadcast (every 30 seconds)
-        // Allows peers to detect silent divergence
-        let _handle = ctx.run_interval(Duration::from_secs(30), |act, ctx| {
-            let context_client = act.clients.context.clone();
-            let node_client = act.clients.node.clone();
-
-            let _ignored = ctx.spawn(
-                async move {
-                    // Get all context IDs
-                    let contexts = context_client.get_context_ids(None);
-
-                    let mut contexts_stream = pin!(contexts);
-                    while let Some(context_id_result) = contexts_stream.next().await {
-                        let Ok(context_id) = context_id_result else {
-                            continue;
-                        };
-
-                        // Get context metadata
-                        let Ok(Some(context)) = context_client.get_context(&context_id) else {
-                            continue;
-                        };
-
-                        // Broadcast hash heartbeat
-                        if let Err(e) = node_client
-                            .broadcast_heartbeat(
-                                &context_id,
-                                context.root_hash,
-                                context.dag_heads.clone(),
-                            )
-                            .await
-                        {
-                            debug!(
-                                %context_id,
-                                error = %e,
-                                "Failed to broadcast hash heartbeat"
-                            );
-                        }
-                    }
-                }
-                .into_actor(act),
-            );
-        });
+        // Start all periodic timers (delegates to TimerManager)
+        self.managers.timers.start_all_timers(ctx);
     }
 }

@@ -17,7 +17,7 @@ use futures_util::Stream;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::info;
 
 use crate::messages::NodeMessage;
@@ -27,6 +27,24 @@ mod alias;
 mod application;
 mod blob;
 
+/// Result of a sync operation
+#[derive(Copy, Clone, Debug)]
+pub enum SyncResult {
+    /// No sync needed (already in sync)
+    NoSyncNeeded,
+    /// Delta sync completed
+    DeltaSync,
+    /// Full resync completed
+    FullResync,
+}
+
+/// Sync request with optional result channel for waiting
+pub type SyncRequest = (
+    Option<ContextId>,
+    Option<PeerId>,
+    Option<oneshot::Sender<eyre::Result<SyncResult>>>,
+);
+
 #[derive(Clone, Debug)]
 pub struct NodeClient {
     datastore: Store,
@@ -34,7 +52,7 @@ pub struct NodeClient {
     network_client: NetworkClient,
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
-    ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+    ctx_sync_tx: mpsc::Sender<SyncRequest>,
 }
 
 impl NodeClient {
@@ -45,7 +63,7 @@ impl NodeClient {
         network_client: NetworkClient,
         node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
-        ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+        ctx_sync_tx: mpsc::Sender<SyncRequest>,
     ) -> Self {
         Self {
             datastore,
@@ -192,15 +210,146 @@ impl NodeClient {
         }
     }
 
+    /// Request a sync operation for a context (fire-and-forget).
+    ///
+    /// **Non-blocking**: Queues sync request and returns immediately.
+    /// Does NOT wait for sync to complete. Use `sync_and_wait()` if you need confirmation.
+    ///
+    /// **Backpressure**: Returns error immediately if sync queue is full (> 256 pending requests).
+    /// This prevents callers from hanging when the system is overloaded.
+    ///
+    /// **Events**: Listen to `NodeEvent::Sync` events to know when sync completes/fails.
+    ///
+    /// # Errors
+    ///
+    /// - `SyncQueueFull`: Too many concurrent sync requests, retry later
+    /// - `SyncManagerClosed`: Sync manager has shut down
     pub async fn sync(
         &self,
         context_id: Option<&ContextId>,
         peer_id: Option<&PeerId>,
     ) -> eyre::Result<()> {
-        self.ctx_sync_tx
-            .send((context_id.copied(), peer_id.copied()))
-            .await?;
+        use tokio::sync::mpsc::error::TrySendError;
 
-        Ok(())
+        match self.ctx_sync_tx.try_send((context_id.copied(), peer_id.copied(), None)) {
+            Ok(()) => {
+                // Instrumentation: Track successful queue operations
+                let queue_depth = self.ctx_sync_tx.max_capacity() - self.ctx_sync_tx.capacity();
+                if let Some(ctx) = context_id {
+                    tracing::debug!(%ctx, queue_depth, "Sync request queued");
+                } else {
+                    tracing::debug!(queue_depth, "Global sync request queued");
+                }
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => {
+                // Instrumentation: Track backpressure events
+                if let Some(ctx) = context_id {
+                    tracing::warn!(
+                        %ctx,
+                        max_capacity = self.ctx_sync_tx.max_capacity(),
+                        "Sync queue full - backpressure applied"
+                    );
+                } else {
+                    tracing::warn!(
+                        max_capacity = self.ctx_sync_tx.max_capacity(),
+                        "Sync queue full for global sync - backpressure applied"
+                    );
+                }
+                eyre::bail!(
+                    "Sync queue full ({} pending requests). System is overloaded, try again later.",
+                    self.ctx_sync_tx.max_capacity()
+                )
+            }
+            Err(TrySendError::Closed(_)) => {
+                eyre::bail!("Sync manager has shut down")
+            }
+        }
+    }
+
+    /// Request a sync operation and wait for it to complete.
+    ///
+    /// **Blocking**: Waits for sync to actually finish (up to 60s timeout).
+    /// Use this when you NEED to know if sync succeeded (e.g., after join_context).
+    ///
+    /// **Use Cases**:
+    /// - After `join_context()` - ensure state is synced before returning
+    /// - After critical operations that require synced state
+    /// - When caller needs to know if sync actually worked
+    ///
+    /// **For Fire-and-Forget**: Use `sync()` instead.
+    ///
+    /// # Errors
+    ///
+    /// - `SyncQueueFull`: Too many concurrent sync requests
+    /// - `SyncTimeout`: Sync took longer than 60s
+    /// - `SyncFailed`: Sync operation failed (no peers, network error, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Join context
+    /// let (context_id, _) = join_context(invitation).await?;
+    ///
+    /// // Wait for sync to complete
+    /// match node_client.sync_and_wait(Some(&context_id), None).await {
+    ///     Ok(SyncResult::DeltaSync) => info!("Synced via delta protocol"),
+    ///     Ok(SyncResult::FullResync) => info!("Synced via full resync"),
+    ///     Ok(SyncResult::NoSyncNeeded) => info!("Already in sync"),
+    ///     Err(e) => error!("Sync FAILED: {}", e),
+    /// }
+    /// ```
+    pub async fn sync_and_wait(
+        &self,
+        context_id: Option<&ContextId>,
+        peer_id: Option<&PeerId>,
+    ) -> eyre::Result<SyncResult> {
+        use tokio::sync::mpsc::error::TrySendError;
+        use tokio::time::{timeout, Duration};
+
+        let (result_tx, result_rx) = oneshot::channel();
+
+        // Queue sync request with result channel
+        match self.ctx_sync_tx.try_send((context_id.copied(), peer_id.copied(), Some(result_tx))) {
+            Ok(()) => {
+                let queue_depth = self.ctx_sync_tx.max_capacity() - self.ctx_sync_tx.capacity();
+                if let Some(ctx) = context_id {
+                    tracing::info!(%ctx, queue_depth, "Sync request queued (will wait for completion)");
+                } else {
+                    tracing::info!(queue_depth, "Global sync request queued (will wait for completion)");
+                }
+            }
+            Err(TrySendError::Full(_)) => {
+                if let Some(ctx) = context_id {
+                    tracing::error!(%ctx, "Sync queue full - cannot wait for sync");
+                }
+                eyre::bail!(
+                    "Sync queue full ({} pending requests). System is overloaded.",
+                    self.ctx_sync_tx.max_capacity()
+                );
+            }
+            Err(TrySendError::Closed(_)) => {
+                eyre::bail!("Sync manager has shut down");
+            }
+        }
+
+        // Wait for sync to complete (with timeout)
+        let result = timeout(Duration::from_secs(60), result_rx)
+            .await
+            .map_err(|_| eyre::eyre!("Sync operation timed out after 60 seconds"))?
+            .map_err(|_| eyre::eyre!("Sync result channel closed (SyncManager stopped?)"))?;
+
+        if let Some(ctx) = context_id {
+            match &result {
+                Ok(sync_result) => {
+                    tracing::info!(%ctx, ?sync_result, "Sync completed successfully");
+                }
+                Err(e) => {
+                    tracing::error!(%ctx, error = %e, "Sync FAILED");
+                }
+            }
+        }
+
+        result
     }
 }

@@ -9,7 +9,7 @@ use calimero_node_primitives::messages::get_blob_bytes::{
 };
 use futures_util::{io, TryStreamExt};
 
-use crate::{CachedBlob, NodeManager};
+use crate::NodeManager;
 
 impl Handler<GetBlobBytesRequest> for NodeManager {
     type Result = ActorResponse<Self, <GetBlobBytesRequest as Message>::Result>;
@@ -19,11 +19,10 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
         GetBlobBytesRequest { blob_id }: GetBlobBytesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Check cache first
-        if let Some(mut cached) = self.state.blob_cache.get_mut(&blob_id) {
-            cached.touch(); // Update last_accessed
+        // Check cache first (get() automatically updates access time)
+        if let Some(data) = self.state.blob_cache.get(&blob_id) {
             return ActorResponse::reply(Ok(GetBlobBytesResponse {
-                bytes: Some(cached.data.clone()),
+                bytes: Some(data),
             }));
         }
 
@@ -44,16 +43,14 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
             let data: std::sync::Arc<[u8]> = bytes.into();
 
             // Cache the blob
-            let _previous = blob_cache.insert(blob_id, CachedBlob::new(data.clone()));
+            blob_cache.put(blob_id, data.clone());
 
             Ok(GetBlobBytesResponse { bytes: Some(data) })
         };
 
-        ActorResponse::r#async(task.into_actor(self).map(move |res, act, _ctx| {
-            if let Err(_) = &res {
-                // On error, remove from cache if it was added
-                let _ignored = act.state.blob_cache.remove(&blob_id);
-            }
+        ActorResponse::r#async(task.into_actor(self).map(move |res, _act, _ctx| {
+            // Note: On error, we don't need to remove from cache since BlobCacheService
+            // handles eviction automatically based on age, count, and memory
             res
         }))
     }

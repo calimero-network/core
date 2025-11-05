@@ -89,7 +89,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // 64 sync requests: handles burst context joins/syncs
     let (event_sender, _) = broadcast::channel(256);
 
-    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
+    // Sync request queue capacity: increased from 64 to 256
+    // Rationale: E2E tests with 10 nodes = 10 requests, production with 100 nodes = 100+ requests
+    // 256 provides headroom for bursts while still applying backpressure on extreme overload
+    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(256);
 
     let node_client = NodeClient::new(
         datastore.clone(),

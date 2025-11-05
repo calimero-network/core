@@ -33,8 +33,10 @@ mod delta_request;
 mod helpers;
 mod key;
 mod manager;
+mod secure_stream;
 pub(crate) mod stream;
 mod tracking;
 
 pub use config::SyncConfig;
 pub use manager::SyncManager;
+pub use secure_stream::SecureStream;

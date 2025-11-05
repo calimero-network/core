@@ -61,7 +61,10 @@ pub async fn handle_node_events(
             NodeEvent::Context(event) if subscriptions.contains(&event.context_id) => {
                 NodeEvent::Context(event)
             }
-            NodeEvent::Context(_) => continue,
+            NodeEvent::Sync(event) if subscriptions.contains(&event.context_id) => {
+                NodeEvent::Sync(event)
+            }
+            NodeEvent::Context(_) | NodeEvent::Sync(_) => continue,
         };
 
         let body = match to_json_value(event) {

@@ -1,0 +1,50 @@
+[package]
+name = "calimero-sync"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/calimero-network/core"
+description = "Sync orchestration for Calimero node (NO ACTORS!)"
+
+[dependencies]
+# Calimero dependencies
+calimero-protocols = { path = "../protocols" }
+calimero-context-primitives = { path = "../context/primitives" }
+calimero-network-primitives = { path = "../network/primitives" }
+calimero-node-primitives = { path = "../node/primitives" }
+calimero-primitives = { path = "../primitives" }
+calimero-crypto = { path = "../crypto" }
+calimero-dag = { path = "../dag" }
+calimero-storage = { path = "../storage" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+async-trait = "0.1"
+
+# Error handling
+eyre = "0.6"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time
+tokio-util = "0.7"
+
+# Network
+libp2p = { version = "0.54", default-features = false }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+
+[lib]
+doctest = false
+

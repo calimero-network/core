@@ -155,20 +155,15 @@ pub async fn handle_state_delta(
     let is_uninitialized = *context.root_hash == [0; 32];
 
     let (delta_store_ref, is_new_store) = {
-        let mut is_new = false;
-        let delta_store = node_state
-            .delta_stores
-            .entry(context_id)
-            .or_insert_with(|| {
-                is_new = true;
-                // Initialize with root (zero hash for now)
-                DeltaStore::new(
-                    [0u8; 32],
-                    node_clients.context.clone(),
-                    context_id,
-                    our_identity,
-                )
-            });
+        let (delta_store, is_new) = node_state.delta_stores.get_or_create_with(&context_id, || {
+            // Initialize with root (zero hash for now)
+            DeltaStore::new(
+                [0u8; 32],
+                node_clients.context.clone(),
+                context_id,
+                our_identity,
+            )
+        });
 
         // Convert to owned DeltaStore for async operations
         let delta_store_ref = delta_store.clone();
@@ -707,126 +702,63 @@ async fn request_missing_deltas(
 
 /// Initiate bidirectional key share with a specific peer for a specific author identity
 /// This performs the same cryptographic key exchange as initial sync, but on-demand
+/// Request key share with a peer (upgraded to use SecureStream with full challenge-response auth).
+///
+/// **Security Upgrade**: Previous implementation just exchanged sender_keys without authentication.
+/// Now uses SecureStream::authenticate_p2p() which includes:
+/// - Bidirectional challenge-response authentication (prevents impersonation)
+/// - Signature verification
+/// - Deadlock prevention
+///
+/// Old implementation: ~120 lines of insecure key exchange
+/// New implementation: ~15 lines with proper authentication
 async fn request_key_share_with_peer(
     network_client: &calimero_network_primitives::client::NetworkClient,
     context_client: &ContextClient,
     context_id: &ContextId,
-    author_identity: &PublicKey,
+    _author_identity: &PublicKey,
     peer: PeerId,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    use calimero_crypto::{Nonce, SharedKey};
-    use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
-    use rand::Rng;
-
     debug!(
         %context_id,
-        %author_identity,
         %peer,
-        "Initiating bidirectional key share with peer"
+        "Initiating secure key share with peer using SecureStream"
     );
 
-    // Wrap entire key share in single timeout
-    tokio::time::timeout(timeout, async {
-        // Open stream to source peer
-        let mut stream = network_client.open_stream(peer).await?;
+    // Open stream to source peer
+    let mut stream = network_client.open_stream(peer).await?;
 
-        // Get our identity for this context
-        let identities = context_client.get_context_members(context_id, Some(true));
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-            .await
-            .transpose()?
-        else {
-            bail!("no owned identities found for context");
-        };
+    // Get our identity for this context
+    let identities = context_client.get_context_members(context_id, Some(true));
+    let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+        .await
+        .transpose()?
+    else {
+        bail!("no owned identities found for context");
+    };
 
-        let our_nonce = rand::thread_rng().gen::<Nonce>();
+    // Get context info for authentication
+    let context = context_client.get_context(context_id)?
+        .ok_or_eyre("context not found")?;
 
-        // Initiate key share request
-        crate::sync::stream::send(
-            &mut stream,
-            &StreamMessage::Init {
-                context_id: *context_id,
-                party_id: our_identity,
-                payload: InitPayload::KeyShare,
-                next_nonce: our_nonce,
-            },
-            None,
-        )
-        .await?;
-
-        // Receive ack from peer
-        let Some(ack) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-            bail!("connection closed while awaiting key share handshake");
-        };
-
-        let their_nonce = match ack {
-            StreamMessage::Init {
-                payload: InitPayload::KeyShare,
-                next_nonce,
-                ..
-            } => next_nonce,
-            unexpected => {
-                bail!("unexpected message during key share: {:?}", unexpected)
-            }
-        };
-
-        // Now perform bidirectional key exchange
-        let mut their_identity = context_client
-            .get_identity(context_id, author_identity)?
-            .ok_or_eyre("expected peer identity to exist")?;
-
-        let (private_key, sender_key) = context_client
-            .get_identity(context_id, &our_identity)?
-            .and_then(|i| Some((i.private_key?, i.sender_key?)))
-            .ok_or_eyre("expected own identity to have private & sender keys")?;
-
-        let shared_key = SharedKey::new(&private_key, &their_identity.public_key);
-
-        // Send our sender_key
-        crate::sync::stream::send(
-            &mut stream,
-            &StreamMessage::Message {
-                sequence_id: 0,
-                payload: MessagePayload::KeyShare { sender_key },
-                next_nonce: our_nonce,
-            },
-            Some((shared_key, our_nonce)),
-        )
-        .await?;
-
-        // Receive their sender_key
-        let Some(msg) =
-            crate::sync::stream::recv(&mut stream, Some((shared_key, their_nonce)), timeout)
-                .await?
-        else {
-            bail!("connection closed while awaiting sender_key");
-        };
-
-        let their_sender_key = match msg {
-            StreamMessage::Message {
-                payload: MessagePayload::KeyShare { sender_key },
-                ..
-            } => sender_key,
-            unexpected => {
-                bail!("unexpected message: {:?}", unexpected)
-            }
-        };
-
-        // Store their sender_key
-        their_identity.sender_key = Some(their_sender_key);
-        context_client.update_identity(context_id, &their_identity)?;
-
-        info!(
-            %context_id,
-            our_identity=%our_identity,
-            their_identity=%author_identity,
-            %peer,
-            "Bidirectional key share completed"
-        );
-
-        Ok(())
-    })
+    // SecureStream handles the entire authentication + key exchange with full security
+    crate::sync::SecureStream::authenticate_p2p(
+        &mut stream,
+        &context,
+        our_identity,
+        context_client,
+        timeout,
+    )
     .await
-    .map_err(|_| eyre::eyre!("Timeout during key share with peer"))?
+    .map_err(|e| eyre::eyre!("Failed to authenticate and exchange keys: {}", e))?;
+
+    info!(
+        %context_id,
+        %our_identity,
+        %peer,
+        "Secure key share completed with challenge-response authentication"
+    );
+
+    Ok(())
 }

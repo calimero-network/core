@@ -9,6 +9,7 @@ description.workspace = true
 publish = true
 
 [dependencies]
+lru = "0.12"
 actix.workspace = true
 borsh.workspace = true
 either.workspace = true

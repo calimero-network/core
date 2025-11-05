@@ -22,20 +22,31 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         }: UpdateApplicationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let context_meta = self.contexts.get(&context_id).map(|c| c.meta.clone());
+        let mut context_meta = self.repository.peek(&context_id).map(|c| c.meta.clone());
 
         if let Some(ref context) = context_meta {
             if application_id == context.application_id {
                 return ActorResponse::reply(Ok(()));
             }
+        } else {
+            let context = match self.context_client().get_context(&context_id) {
+                Ok(Some(ctx)) => ctx,
+                Ok(None) => return ActorResponse::reply(Err(eyre::eyre!("context '{}' does not exist", context_id))),
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+
+            context_meta = Some(context);
         }
 
-        let application = self.applications.get(&application_id).cloned();
+        let application = self.app_manager.get_application(&application_id)
+            .ok()
+            .flatten()
+            .cloned();
 
         let task = update_application_id(
             self.datastore.clone(),
             self.node_client.clone(),
-            self.context_client.clone(),
+            self.context_client().clone(),
             context_id,
             context_meta,
             application_id,
@@ -44,14 +55,11 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         );
 
         ActorResponse::r#async(task.into_actor(self).map_ok(move |application, act, _ctx| {
-            let _ignored = act
-                .applications
-                .entry(application_id)
-                .or_insert(application);
+            // Cache the application
+            act.app_manager.put_application(application_id, application);
 
-            if let Some(context) = act.contexts.get_mut(&context_id) {
-                context.meta.application_id = application_id;
-            }
+            // Update application ID in cache via repository
+            let _updated = act.repository.update_application_id(&context_id, application_id);
         }))
     }
 }

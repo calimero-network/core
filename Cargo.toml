@@ -50,6 +50,7 @@ members = [
     "./crates/node",
     "./crates/node/primitives",
     "./crates/primitives",
+    "./crates/protocols",
     "./crates/runtime",
     "./crates/sdk",
     "./crates/sdk/libs/near",
@@ -60,6 +61,7 @@ members = [
     "./crates/storage-macros",
 
     "./crates/store",
+    "./crates/sync",
     "./crates/store/blobs",
     "./crates/store/impl/rocksdb",
     "./crates/sys",

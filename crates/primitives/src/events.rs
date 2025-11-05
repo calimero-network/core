@@ -7,6 +7,36 @@ use crate::hash::Hash;
 #[serde(untagged)]
 pub enum NodeEvent {
     Context(ContextEvent),
+    Sync(SyncEvent),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncEvent {
+    pub context_id: ContextId,
+    #[serde(flatten)]
+    pub payload: SyncEventPayload,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "PascalCase")]
+pub enum SyncEventPayload {
+    /// Sync operation started for a context
+    SyncStarted,
+    /// Sync operation completed successfully
+    SyncCompleted {
+        /// Which sync protocol was used
+        protocol: String,
+        /// How long the sync took
+        duration_ms: u64,
+    },
+    /// Sync operation failed
+    SyncFailed {
+        /// Error message
+        error: String,
+        /// Whether this was a retry
+        is_retry: bool,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

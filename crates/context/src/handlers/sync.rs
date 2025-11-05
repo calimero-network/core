@@ -14,8 +14,7 @@ impl Handler<SyncRequest> for ContextManager {
         }: SyncRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        if let Some(context) = self.contexts.get_mut(&context_id) {
-            context.meta.application_id = application_id;
-        }
+        // Update application ID in cache via repository
+        let _updated = self.repository.update_application_id(&context_id, application_id);
     }
 }

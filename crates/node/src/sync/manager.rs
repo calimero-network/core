@@ -41,7 +41,7 @@ pub struct SyncManager {
     pub(crate) network_client: NetworkClient,
     pub(super) node_state: crate::NodeState,
 
-    pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+    pub(super) ctx_sync_rx: Option<mpsc::Receiver<calimero_node_primitives::client::SyncRequest>>,
 }
 
 impl Clone for SyncManager {
@@ -64,7 +64,7 @@ impl SyncManager {
         context_client: ContextClient,
         network_client: NetworkClient,
         node_state: crate::NodeState,
-        ctx_sync_rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
+        ctx_sync_rx: mpsc::Receiver<calimero_node_primitives::client::SyncRequest>,
     ) -> Self {
         Self {
             sync_config,
@@ -85,7 +85,7 @@ impl SyncManager {
 
         let mut futs = FuturesUnordered::new();
 
-        let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>| {
+        let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>, pending_results: &mut HashMap<ContextId, Vec<ResultSender>>, node_client: &NodeClient| {
             let (context_id, peer_id, start, result): (
                 ContextId,
                 PeerId,
@@ -96,9 +96,9 @@ impl SyncManager {
             let now = Instant::now();
             let took = Instant::saturating_duration_since(&now, start);
 
-            let _ignored = state.entry(context_id).and_modify(|state| match result {
+            let _ignored = state.entry(context_id).and_modify(|state| match &result {
                 Ok(Ok(protocol)) => {
-                    state.on_success(peer_id, protocol);
+                    state.on_success(peer_id, *protocol);
                     info!(
                         %context_id,
                         ?took,
@@ -106,8 +106,31 @@ impl SyncManager {
                         success_count = state.success_count,
                         "Sync finished successfully"
                     );
+                    
+                    // Send success result to all waiters for this context
+                    if let Some(waiters) = pending_results.remove(&context_id) {
+                        let sync_result = match protocol {
+                            SyncProtocol::None => calimero_node_primitives::client::SyncResult::NoSyncNeeded,
+                            SyncProtocol::DagCatchup => calimero_node_primitives::client::SyncResult::DeltaSync,
+                        };
+                        
+                        for waiter in waiters {
+                            let _ = waiter.send(Ok(sync_result));
+                        }
+                    }
+                    
+                    // Emit success event
+                    use calimero_primitives::events::{NodeEvent, SyncEvent, SyncEventPayload};
+                    let _ignored = node_client.send_event(NodeEvent::Sync(SyncEvent {
+                        context_id,
+                        payload: SyncEventPayload::SyncCompleted {
+                            protocol: format!("{:?}", protocol),
+                            duration_ms: took.as_millis() as u64,
+                        },
+                    }));
                 }
                 Ok(Err(ref err)) => {
+                    let is_retry = state.failure_count() > 0;
                     state.on_failure(err.to_string());
                     warn!(
                         %context_id,
@@ -117,8 +140,26 @@ impl SyncManager {
                         backoff_secs = state.backoff_delay().as_secs(),
                         "Sync failed, applying exponential backoff"
                     );
+                    
+                    // Send error to all waiters for this context
+                    if let Some(waiters) = pending_results.remove(&context_id) {
+                        for waiter in waiters {
+                            let _ = waiter.send(Err(eyre::eyre!("Sync failed: {}", err)));
+                        }
+                    }
+                    
+                    // Emit failure event
+                    use calimero_primitives::events::{NodeEvent, SyncEvent, SyncEventPayload};
+                    let _ignored = self.node_client.send_event(NodeEvent::Sync(SyncEvent {
+                        context_id,
+                        payload: SyncEventPayload::SyncFailed {
+                            error: err.to_string(),
+                            is_retry,
+                        },
+                    }));
                 }
                 Err(ref timeout_err) => {
+                    let is_retry = state.failure_count() > 0;
                     state.on_failure(timeout_err.to_string());
                     warn!(
                         %context_id,
@@ -127,6 +168,23 @@ impl SyncManager {
                         backoff_secs = state.backoff_delay().as_secs(),
                         "Sync timed out, applying exponential backoff"
                     );
+                    
+                    // Send timeout error to all waiters
+                    if let Some(waiters) = pending_results.remove(&context_id) {
+                        for waiter in waiters {
+                            let _ = waiter.send(Err(eyre::eyre!("Sync timed out after {:?}", took)));
+                        }
+                    }
+                    
+                    // Emit timeout event
+                    use calimero_primitives::events::{NodeEvent, SyncEvent, SyncEventPayload};
+                    let _ignored = self.node_client.send_event(NodeEvent::Sync(SyncEvent {
+                        context_id,
+                        payload: SyncEventPayload::SyncFailed {
+                            error: format!("Timeout after {:?}", took),
+                            is_retry,
+                        },
+                    }));
                 }
             });
 
@@ -142,40 +200,99 @@ impl SyncManager {
             return;
         };
 
+        // Track result channels for waiters (per context)
+        type ResultSender = tokio::sync::oneshot::Sender<eyre::Result<calimero_node_primitives::client::SyncResult>>;
+        let mut pending_results: HashMap<ContextId, Vec<ResultSender>> = HashMap::new();
+
         loop {
             tokio::select! {
                 _ = next_sync.tick() => {
                     debug!("Performing interval sync");
                 }
                 Some(()) = async {
-                    loop { advance(&mut futs, &mut state).await? }
+                    loop { advance(&mut futs, &mut state, &mut pending_results, &self.node_client).await? }
                 } => {},
-                Some((ctx, peer)) = ctx_sync_rx.recv() => {
-                    info!(?ctx, ?peer, "Received sync request");
+                Some((ctx, peer, result_tx)) = ctx_sync_rx.recv() => {
+                    // Instrumentation: Track queue depth on receive
+                    let queue_depth_after_recv = ctx_sync_rx.len();
+                    
+                    let has_waiter = result_tx.is_some();
+                    info!(?ctx, ?peer, queue_depth_after_recv, has_waiter, "Received sync request");
 
-                    requested_ctx = ctx;
-                    requested_peer = peer;
-
-                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
+                    // CRITICAL FIX: Smart batching of sync requests
                     // When multiple contexts join rapidly (common in E2E tests), they all
-                    // call sync() which queues requests in ctx_sync_rx. The old code only
-                    // processed ONE request per loop iteration, leaving contexts 2-N queued
-                    // indefinitely. This caused those contexts to never sync and remain
-                    // with dag_heads=[] and Uninitialized errors.
-                    //
-                    // Solution: Use try_recv() to drain all buffered requests immediately,
-                    // then trigger a full sync that will process all contexts.
-                    let mut drained_count = 0;
-                    while ctx_sync_rx.try_recv().is_ok() {
-                        drained_count += 1;
+                    // call sync() which queues requests in ctx_sync_rx. Instead of just
+                    // draining and syncing ALL contexts (wasteful), collect the unique
+                    // context IDs and sync only those.
+                    
+                    use std::collections::HashSet;
+                    
+                    // Collect result channels from waiters (group by context)
+                    if let Some(tx) = result_tx {
+                        if let Some(context_id) = ctx {
+                            pending_results.entry(context_id).or_default().push(tx);
+                        } else {
+                            // Global sync request - hard to know which contexts will sync
+                            // Store in a special "global" key
+                            pending_results.entry(ContextId::zero()).or_default().push(tx);
+                        }
                     }
-
-                    if drained_count > 0 {
-                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
-                        // Clear requested_ctx to force syncing ALL contexts
-                        // This ensures newly-joined contexts get synced even if they weren't first in queue
+                    
+                    let mut batch = vec![(ctx, peer)];
+                    
+                    // Drain all pending sync requests into batch
+                    while let Ok((c, p, res_tx)) = ctx_sync_rx.try_recv() {
+                        if let Some(tx) = res_tx {
+                            if let Some(context_id) = c {
+                                pending_results.entry(context_id).or_default().push(tx);
+                            } else {
+                                pending_results.entry(ContextId::zero()).or_default().push(tx);
+                            }
+                        }
+                        batch.push((c, p));
+                    }
+                    
+                    if batch.len() > 1 {
+                        info!(
+                            batch_size = batch.len(),
+                            waiters_count = pending_results.len(),
+                            queue_depth_before_drain = queue_depth_after_recv,
+                            queue_depth_after_drain = ctx_sync_rx.len(),
+                            "Batching sync requests for efficiency"
+                        );
+                    }
+                    
+                    // Deduplicate: Extract unique context IDs from batch
+                    // - If any request has None context → sync ALL contexts
+                    // - Otherwise, sync only the unique requested contexts
+                    let has_global_sync = batch.iter().any(|(c, _)| c.is_none());
+                    
+                    if has_global_sync {
+                        // At least one request wants to sync all contexts
                         requested_ctx = None;
                         requested_peer = None;
+                    } else {
+                        // Collect unique contexts to sync
+                        let unique_contexts: HashSet<_> = batch.iter()
+                            .filter_map(|(c, _)| *c)
+                            .collect();
+                        
+                        if unique_contexts.len() > 1 {
+                            // Multiple unique contexts requested
+                            // TODO: Ideally we'd sync all of them, but current code structure
+                            // only allows one requested_ctx. For now, sync all contexts.
+                            info!(
+                                unique_count = unique_contexts.len(),
+                                "Multiple unique contexts requested, syncing all for safety"
+                            );
+                            requested_ctx = None;
+                            requested_peer = None;
+                        } else {
+                            // Single unique context (possibly requested multiple times)
+                            requested_ctx = unique_contexts.into_iter().next();
+                            requested_peer = batch.into_iter()
+                                .find_map(|(c, p)| if c == requested_ctx { p } else { None });
+                        }
                     }
                 }
             }
@@ -280,7 +397,7 @@ impl SyncManager {
                 futs.push(fut);
 
                 if futs.len() >= self.sync_config.max_concurrent {
-                    let _ignored = advance(&mut futs, &mut state).await;
+                    let _ignored = advance(&mut futs, &mut state, &mut pending_results, &self.node_client).await;
                 }
             }
         }
@@ -416,6 +533,20 @@ impl SyncManager {
 
             if let Err(e) = self.send(&mut stream, &request_msg, None).await {
                 debug!(%context_id, %peer_id, error = %e, "Failed to send DAG heads request");
+                continue;
+            }
+
+            // SECURITY: Prove our identity ownership before peer serves DAG heads
+            if let Err(e) = crate::sync::SecureStream::prove_identity(
+                &mut stream,
+                &context_id,
+                &our_identity,
+                &self.context_client,
+                self.sync_config.timeout,
+            )
+            .await
+            {
+                debug!(%context_id, %peer_id, error = %e, "Failed to prove identity");
                 continue;
             }
 
@@ -637,6 +768,17 @@ impl SyncManager {
 
         self.send(stream, &request_msg, None).await?;
 
+        // SECURITY: Prove our identity ownership before peer serves DAG heads
+        crate::sync::SecureStream::prove_identity(
+            stream,
+            &context_id,
+            &our_identity,
+            &self.context_client,
+            self.sync_config.timeout,
+        )
+        .await
+        .map_err(|e| eyre::eyre!("Failed to prove identity for DAG heads request: {}", e))?;
+
         // Receive response
         let response = self.recv(stream, None).await?;
 
@@ -680,20 +822,14 @@ impl SyncManager {
 
                 // Get or create DeltaStore for this context (do this once before the loop)
                 let (delta_store_ref, is_new_store) = {
-                    let mut is_new = false;
-                    let delta_store = self
-                        .node_state
-                        .delta_stores
-                        .entry(context_id)
-                        .or_insert_with(|| {
-                            is_new = true;
-                            crate::delta_store::DeltaStore::new(
-                                [0u8; 32],
-                                self.context_client.clone(),
-                                context_id,
-                                our_identity,
-                            )
-                        });
+                    let (delta_store, is_new) = self.node_state.delta_stores.get_or_create_with(&context_id, || {
+                        crate::delta_store::DeltaStore::new(
+                            [0u8; 32],
+                            self.context_client.clone(),
+                            context_id,
+                            our_identity,
+                        )
+                    });
 
                     let delta_store_ref = delta_store.clone();
                     (delta_store_ref, is_new)
@@ -732,6 +868,17 @@ impl SyncManager {
                     };
 
                     self.send(stream, &delta_request, None).await?;
+
+                    // SECURITY: Prove our identity ownership before peer serves delta
+                    crate::sync::SecureStream::prove_identity(
+                        stream,
+                        &context_id,
+                        &our_identity,
+                        &self.context_client,
+                        self.sync_config.timeout,
+                    )
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to prove identity for delta request: {}", e))?;
 
                     let delta_response = self.recv(stream, None).await?;
 
@@ -922,15 +1069,15 @@ impl SyncManager {
                 context_id: requested_context_id,
                 delta_id,
             } => {
-                // Handle delta request from peer
-                self.handle_delta_request(requested_context_id, delta_id, stream)
+                // Handle delta request from peer with identity verification
+                self.handle_delta_request(requested_context_id, delta_id, their_identity, our_identity, stream)
                     .await?
             }
             InitPayload::DagHeadsRequest {
                 context_id: requested_context_id,
             } => {
-                // Handle DAG heads request from peer
-                self.handle_dag_heads_request(requested_context_id, stream, nonce)
+                // Handle DAG heads request from peer with identity verification
+                self.handle_dag_heads_request(requested_context_id, their_identity, our_identity, stream, nonce)
                     .await?
             }
         };
