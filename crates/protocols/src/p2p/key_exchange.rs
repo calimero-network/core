@@ -76,14 +76,8 @@ pub async fn request_key_exchange(
     crate::stream::send(&mut stream, &init_msg, None).await?;
 
     // SecureStream handles authentication + key exchange
-    SecureStream::authenticate_p2p(
-        &mut stream,
-        context,
-        our_identity,
-        context_client,
-        timeout,
-    )
-    .await?;
+    SecureStream::authenticate_p2p(&mut stream, context, our_identity, context_client, timeout)
+        .await?;
 
     info!(
         context_id=%context.id,
@@ -130,10 +124,10 @@ pub async fn handle_key_exchange(
         %their_identity,
         "Handling key exchange request (responding to peer's Init)",
     );
-    
+
     // Send acknowledgment (we received their Init, send ours back)
     let our_nonce = thread_rng().gen::<calimero_crypto::Nonce>();
-    
+
     crate::stream::send(
         stream,
         &StreamMessage::Init {
@@ -145,7 +139,7 @@ pub async fn handle_key_exchange(
         None,
     )
     .await?;
-    
+
     // Perform authentication (both sides past Init phase)
     SecureStream::authenticate_p2p_after_init(
         stream,

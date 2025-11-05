@@ -131,7 +131,11 @@ impl BlobCacheService {
         let after_count_eviction = self.cache.len();
 
         // Phase 3: If still over memory limit, remove by LRU until under budget
-        let total_size: usize = self.cache.iter().map(|entry| entry.value().data.len()).sum();
+        let total_size: usize = self
+            .cache
+            .iter()
+            .map(|entry| entry.value().data.len())
+            .sum();
 
         if total_size > MAX_CACHE_BYTES {
             self.evict_by_memory(MAX_CACHE_BYTES);
@@ -197,7 +201,11 @@ impl BlobCacheService {
     ///
     /// Returns the number of blobs evicted.
     pub fn evict_by_memory(&self, max_bytes: usize) -> usize {
-        let total_size: usize = self.cache.iter().map(|entry| entry.value().data.len()).sum();
+        let total_size: usize = self
+            .cache
+            .iter()
+            .map(|entry| entry.value().data.len())
+            .sum();
 
         if total_size <= max_bytes {
             return 0;
@@ -246,9 +254,7 @@ impl BlobCacheService {
             let new_size_mb = current_size / 1024 / 1024;
             debug!(
                 removed_count,
-                freed_mb,
-                new_size_mb,
-                "Evicted blobs to stay under memory limit"
+                freed_mb, new_size_mb, "Evicted blobs to stay under memory limit"
             );
         }
 
@@ -257,7 +263,10 @@ impl BlobCacheService {
 
     /// Get total memory usage of all cached blobs.
     pub fn total_bytes(&self) -> usize {
-        self.cache.iter().map(|entry| entry.value().data.len()).sum()
+        self.cache
+            .iter()
+            .map(|entry| entry.value().data.len())
+            .sum()
     }
 
     /// Clear all blobs from the cache.

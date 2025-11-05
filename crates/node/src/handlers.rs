@@ -53,9 +53,7 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
     ) -> Self::Result {
         // Check cache first
         if let Some(data) = self.state.blob_cache.get(&blob_id) {
-            return ActorResponse::reply(Ok(GetBlobBytesResponse {
-                bytes: Some(data),
-            }));
+            return ActorResponse::reply(Ok(GetBlobBytesResponse { bytes: Some(data) }));
         }
 
         // Not in cache, load from blobstore
@@ -117,7 +115,10 @@ impl Handler<NetworkEvent> for NodeManager {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
                     return;
                 };
-                info!("Peer '{}' unsubscribed from context '{}'", peer_id, context_id);
+                info!(
+                    "Peer '{}' unsubscribed from context '{}'",
+                    peer_id, context_id
+                );
             }
 
             // BroadcastMessage handling - call protocols directly!
@@ -147,14 +148,24 @@ impl Handler<NetworkEvent> for NodeManager {
                         nonce,
                         events,
                     } => {
-                        handle_state_delta_broadcast(self, ctx, source, context_id, author_id, delta_id, parent_ids, hlc, root_hash, artifact, nonce, events);
+                        handle_state_delta_broadcast(
+                            self, ctx, source, context_id, author_id, delta_id, parent_ids, hlc,
+                            root_hash, artifact, nonce, events,
+                        );
                     }
                     BroadcastMessage::HashHeartbeat {
                         context_id,
                         root_hash: their_root_hash,
                         dag_heads: their_dag_heads,
                     } => {
-                        handle_hash_heartbeat(self, ctx, source, context_id, their_root_hash, their_dag_heads);
+                        handle_hash_heartbeat(
+                            self,
+                            ctx,
+                            source,
+                            context_id,
+                            their_root_hash,
+                            their_dag_heads,
+                        );
                     }
                     _ => {
                         warn!(?message, "Unexpected broadcast message type");
@@ -172,16 +183,34 @@ impl Handler<NetworkEvent> for NodeManager {
             }
 
             // Blob events - just logging
-            NetworkEvent::BlobRequested { blob_id, context_id, requesting_peer } => {
+            NetworkEvent::BlobRequested {
+                blob_id,
+                context_id,
+                requesting_peer,
+            } => {
                 debug!(%blob_id, %context_id, %requesting_peer, "Blob requested by peer");
             }
-            NetworkEvent::BlobProvidersFound { blob_id, context_id, providers } => {
+            NetworkEvent::BlobProvidersFound {
+                blob_id,
+                context_id,
+                providers,
+            } => {
                 debug!(%blob_id, context_id = ?context_id, providers_count = providers.len(), "Blob providers found");
             }
-            NetworkEvent::BlobDownloaded { blob_id, context_id, data, from_peer } => {
+            NetworkEvent::BlobDownloaded {
+                blob_id,
+                context_id,
+                data,
+                from_peer,
+            } => {
                 handle_blob_downloaded(self, ctx, blob_id, context_id, data.into(), from_peer);
             }
-            NetworkEvent::BlobDownloadFailed { blob_id, context_id, from_peer, error } => {
+            NetworkEvent::BlobDownloadFailed {
+                blob_id,
+                context_id,
+                from_peer,
+                error,
+            } => {
                 info!(%blob_id, %context_id, %from_peer, %error, "Blob download failed");
             }
         }
@@ -192,7 +221,10 @@ impl Handler<NetworkEvent> for NodeManager {
 // State Delta Broadcast Handler
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Protocol handler needs all delta fields"
+)]
 fn handle_state_delta_broadcast(
     node_manager: &mut NodeManager,
     ctx: &mut <NodeManager as actix::Actor>::Context,
@@ -223,20 +255,27 @@ fn handle_state_delta_broadcast(
         async move {
             // Get our identity
             let identities = context_client.get_context_members(&context_id, Some(true));
-            let Some((our_identity, _)) = crate::utils::choose_stream(identities, &mut rand::thread_rng())
-                .await
-                .transpose()
-                .ok()
-                .flatten()
+            let Some((our_identity, _)) =
+                crate::utils::choose_stream(identities, &mut rand::thread_rng())
+                    .await
+                    .transpose()
+                    .ok()
+                    .flatten()
             else {
                 warn!(%context_id, "No owned identities for context");
                 return;
             };
 
             // Get or create DeltaStore
-            let (delta_store, is_new) = node_state.delta_stores.get_or_create_with(&context_id, || {
-                crate::delta_store::DeltaStore::new([0u8; 32], context_client.clone(), context_id, our_identity)
-            });
+            let (delta_store, is_new) =
+                node_state.delta_stores.get_or_create_with(&context_id, || {
+                    crate::delta_store::DeltaStore::new(
+                        [0u8; 32],
+                        context_client.clone(),
+                        context_id,
+                        our_identity,
+                    )
+                });
             let delta_store = delta_store.clone();
 
             if is_new {
@@ -373,11 +412,14 @@ fn handle_stream_opened(
         let _ignored = ctx.spawn(
             async move {
                 // Call protocol directly!
-                if let Err(err) = calimero_protocols::p2p::blob_protocol::handle_blob_protocol_stream(
-                    &node_client,
-                    peer_id,
-                    &mut stream,
-                ).await {
+                if let Err(err) =
+                    calimero_protocols::p2p::blob_protocol::handle_blob_protocol_stream(
+                        &node_client,
+                        peer_id,
+                        &mut stream,
+                    )
+                    .await
+                {
                     debug!(%peer_id, error = %err, "Failed to handle blob protocol");
                 }
             }
@@ -445,9 +487,10 @@ async fn handle_sync_stream(
             };
 
             let identities = context_client.get_context_members(&context_id, Some(true));
-            let Some((our_identity, _)) = crate::utils::choose_stream(identities, &mut rand::thread_rng())
-                .await
-                .transpose()?
+            let Some((our_identity, _)) =
+                crate::utils::choose_stream(identities, &mut rand::thread_rng())
+                    .await
+                    .transpose()?
             else {
                 eyre::bail!("No owned identities for context: {}", context_id);
             };
@@ -470,7 +513,8 @@ async fn handle_sync_stream(
 
                 InitPayload::DeltaRequest { delta_id, .. } => {
                     info!(%context_id, "DeltaRequest → calimero_protocols");
-                    let delta_store_opt = node_state.delta_stores.get(&context_id).map(|r| r.clone());
+                    let delta_store_opt =
+                        node_state.delta_stores.get(&context_id).map(|r| r.clone());
                     let handle = context_client.datastore_handle();
 
                     calimero_protocols::p2p::delta_request::handle_delta_request(

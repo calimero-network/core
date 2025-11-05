@@ -31,14 +31,21 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         } else {
             let context = match self.context_client().get_context(&context_id) {
                 Ok(Some(ctx)) => ctx,
-                Ok(None) => return ActorResponse::reply(Err(eyre::eyre!("context '{}' does not exist", context_id))),
+                Ok(None) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "context '{}' does not exist",
+                        context_id
+                    )))
+                }
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
 
             context_meta = Some(context);
         }
 
-        let application = self.app_manager.get_application(&application_id)
+        let application = self
+            .app_manager
+            .get_application(&application_id)
             .ok()
             .flatten()
             .cloned();
@@ -59,7 +66,9 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             act.app_manager.put_application(application_id, application);
 
             // Update application ID in cache via repository
-            let _updated = act.repository.update_application_id(&context_id, application_id);
+            let _updated = act
+                .repository
+                .update_application_id(&context_id, application_id);
         }))
     }
 }

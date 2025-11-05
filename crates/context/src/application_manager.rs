@@ -42,7 +42,7 @@ use eyre::Result;
 pub struct ApplicationManager {
     /// Client for fetching applications from the node
     node_client: NodeClient,
-    
+
     /// Cache of application metadata
     /// TODO: Convert to LRU cache (same pattern as contexts)
     applications: BTreeMap<ApplicationId, Application>,
@@ -59,7 +59,7 @@ impl ApplicationManager {
             applications: BTreeMap::new(),
         }
     }
-    
+
     /// Get application metadata, fetching from node if not cached.
     ///
     /// # Returns
@@ -73,31 +73,30 @@ impl ApplicationManager {
             let Some(app) = self.node_client.get_application(id)? else {
                 return Ok(None);
             };
-            
+
             self.applications.insert(*id, app);
         }
-        
+
         Ok(self.applications.get(id))
     }
-    
+
     /// Insert an application into the cache.
     ///
     /// Useful for pre-populating cache or updating metadata.
     pub fn put_application(&mut self, id: ApplicationId, app: Application) {
         self.applications.insert(id, app);
     }
-    
+
     /// Get the number of applications currently cached.
     pub fn cached_application_count(&self) -> usize {
         self.applications.len()
     }
-    
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_manager_structure() {
         // Basic structural test
@@ -109,4 +108,3 @@ mod tests {
         // - Compiles successfully
     }
 }
-

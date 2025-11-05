@@ -172,4 +172,3 @@ mod tests {
         // Actual usage tested in integration tests.
     }
 }
-

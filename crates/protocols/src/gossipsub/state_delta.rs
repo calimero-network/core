@@ -180,7 +180,9 @@ pub async fn handle_state_delta(
     };
 
     // Add delta with event data (for cascade handler execution)
-    let add_result = delta_store.add_delta_with_events(delta, events.clone()).await?;
+    let add_result = delta_store
+        .add_delta_with_events(delta, events.clone())
+        .await?;
     let mut applied = add_result.applied;
 
     // Track if we executed handlers for the current delta during cascade
@@ -319,13 +321,8 @@ pub async fn handle_state_delta(
                     %our_identity,
                     "Executing event handlers (delta applied, we are a receiving node)"
                 );
-                execute_event_handlers_parsed(
-                    context_client,
-                    &context_id,
-                    &our_identity,
-                    payload,
-                )
-                .await?;
+                execute_event_handlers_parsed(context_client, &context_id, &our_identity, payload)
+                    .await?;
             } else {
                 info!(
                     %context_id,

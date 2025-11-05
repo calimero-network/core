@@ -56,30 +56,37 @@ impl DeltaStoreService {
     /// that vary by caller. Use this to check existence, and handle creation explicitly where needed.
     ///
     /// For async handlers that need get-or-create semantics, see the pattern in state_delta.rs.
-    pub fn get_or_create_with<F>(&self, context_id: &ContextId, create_fn: F) -> (dashmap::mapref::one::Ref<'_, ContextId, DeltaStore>, bool)
+    pub fn get_or_create_with<F>(
+        &self,
+        context_id: &ContextId,
+        create_fn: F,
+    ) -> (dashmap::mapref::one::Ref<'_, ContextId, DeltaStore>, bool)
     where
         F: FnOnce() -> DeltaStore,
     {
         let mut is_new = false;
-        
+
         // Try to get existing first
         if let Some(store) = self.stores.get(context_id) {
             return (store, false);
         }
-        
+
         // Need to create - use entry API to ensure atomic insert
         self.stores.entry(*context_id).or_insert_with(|| {
             is_new = true;
             create_fn()
         });
-        
+
         (self.stores.get(context_id).expect("just inserted"), is_new)
     }
 
     /// Get an existing delta store for a context without creating one.
     ///
     /// Returns None if no store exists for this context.
-    pub fn get(&self, context_id: &ContextId) -> Option<dashmap::mapref::one::Ref<'_, ContextId, DeltaStore>> {
+    pub fn get(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<dashmap::mapref::one::Ref<'_, ContextId, DeltaStore>> {
         self.stores.get(context_id)
     }
 
@@ -270,7 +277,9 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
 
         // Cleanup for non-existent context should return 0
-        let evicted = service.cleanup_stale(&context_id, Duration::from_secs(300)).await;
+        let evicted = service
+            .cleanup_stale(&context_id, Duration::from_secs(300))
+            .await;
         assert_eq!(evicted, 0);
     }
 
@@ -292,4 +301,3 @@ mod tests {
         assert_eq!(all_stats.len(), 0);
     }
 }
-

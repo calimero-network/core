@@ -87,4 +87,3 @@ pub use config::{RetryConfig, SyncConfig};
 pub use events::{SyncEvent, SyncStatus};
 pub use scheduler::SyncScheduler;
 pub use strategies::{SyncResult, SyncStrategy};
-

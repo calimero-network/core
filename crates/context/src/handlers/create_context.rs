@@ -40,7 +40,7 @@ impl Handler<CreateContextRequest> for ContextManager {
     ) -> Self::Result {
         // Get context_client reference first to avoid borrow conflicts
         let context_client = self.context_client().clone();
-        
+
         let prepared = match Prepared::new(
             &self.node_client,
             &context_client,
@@ -67,7 +67,8 @@ impl Handler<CreateContextRequest> for ContextManager {
         } = prepared;
 
         // Insert into cache before starting async work
-        self.repository.put(context_meta.meta.id, context_meta.clone());
+        self.repository
+            .put(context_meta.meta.id, context_meta.clone());
 
         let guard = context_meta
             .lock
@@ -103,10 +104,9 @@ impl Handler<CreateContextRequest> for ContextManager {
                 .map_ok(move |root_hash, act, _ctx| {
                     // Update root hash in cache (via repository)
                     // This may not succeed if evicted, but that's fine - DB has the truth
-                    let _updated = act.repository.update_root_hash(
-                        &context_meta_for_map_ok.meta.id,
-                        root_hash,
-                    );
+                    let _updated = act
+                        .repository
+                        .update_root_hash(&context_meta_for_map_ok.meta.id, root_hash);
 
                     CreateContextResponse {
                         context_id: context_meta_for_map_ok.meta.id,
@@ -171,7 +171,7 @@ impl Prepared {
         let identity_secret = identity_secret.unwrap_or_else(|| PrivateKey::random(&mut rng));
 
         let mut result: Option<(ContextId, PrivateKey)> = None;
-        
+
         for _ in 0..5 {
             let context_secret = if let Some(seed) = seed {
                 if result.is_some() {
@@ -191,9 +191,9 @@ impl Prepared {
                 break;
             }
         }
-        
-        let (context_id, context_secret) = result
-            .ok_or_eyre("failed to derive a context id after 5 tries")?;
+
+        let (context_id, context_secret) =
+            result.ok_or_eyre("failed to derive a context id after 5 tries")?;
 
         // Get or fetch application
         let application = app_manager

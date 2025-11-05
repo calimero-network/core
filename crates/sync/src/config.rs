@@ -7,16 +7,16 @@ use std::time::Duration;
 pub struct SyncConfig {
     /// Timeout for individual sync operations
     pub timeout: Duration,
-    
+
     /// Maximum number of concurrent syncs
     pub max_concurrent_syncs: usize,
-    
+
     /// Retry configuration
     pub retry_config: RetryConfig,
-    
+
     /// Enable periodic sync heartbeat
     pub enable_heartbeat: bool,
-    
+
     /// Heartbeat interval (periodic sync check)
     pub heartbeat_interval: Duration,
 }
@@ -26,13 +26,13 @@ pub struct SyncConfig {
 pub struct RetryConfig {
     /// Maximum number of retry attempts
     pub max_retries: usize,
-    
+
     /// Initial backoff duration
     pub initial_backoff: Duration,
-    
+
     /// Maximum backoff duration
     pub max_backoff: Duration,
-    
+
     /// Backoff multiplier
     pub backoff_multiplier: f64,
 }
@@ -68,11 +68,10 @@ impl SyncConfig {
             ..Default::default()
         }
     }
-    
+
     /// Disable heartbeat (for testing or manual sync)
     pub fn without_heartbeat(mut self) -> Self {
         self.enable_heartbeat = false;
         self
     }
 }
-

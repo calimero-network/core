@@ -38,7 +38,7 @@ pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
     pub network: NetworkConfig,
-    pub sync: calimero_sync::SyncConfig,  // Use new sync config!
+    pub sync: calimero_sync::SyncConfig, // Use new sync config!
     pub datastore: StoreConfig,
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
@@ -128,7 +128,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     // NEW: Use the new runtime (NO ACTORS!)
     // Old SyncManager deleted - functionality moved to calimero-sync + calimero-protocols
-    
+
     let node_manager = NodeManager::new(
         blobstore.clone(),
         network_client.clone(),

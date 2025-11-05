@@ -231,7 +231,10 @@ impl NodeClient {
     ) -> eyre::Result<()> {
         use tokio::sync::mpsc::error::TrySendError;
 
-        match self.ctx_sync_tx.try_send((context_id.copied(), peer_id.copied(), None)) {
+        match self
+            .ctx_sync_tx
+            .try_send((context_id.copied(), peer_id.copied(), None))
+        {
             Ok(()) => {
                 // Instrumentation: Track successful queue operations
                 let queue_depth = self.ctx_sync_tx.max_capacity() - self.ctx_sync_tx.capacity();
@@ -310,13 +313,19 @@ impl NodeClient {
         let (result_tx, result_rx) = oneshot::channel();
 
         // Queue sync request with result channel
-        match self.ctx_sync_tx.try_send((context_id.copied(), peer_id.copied(), Some(result_tx))) {
+        match self
+            .ctx_sync_tx
+            .try_send((context_id.copied(), peer_id.copied(), Some(result_tx)))
+        {
             Ok(()) => {
                 let queue_depth = self.ctx_sync_tx.max_capacity() - self.ctx_sync_tx.capacity();
                 if let Some(ctx) = context_id {
                     tracing::info!(%ctx, queue_depth, "Sync request queued (will wait for completion)");
                 } else {
-                    tracing::info!(queue_depth, "Global sync request queued (will wait for completion)");
+                    tracing::info!(
+                        queue_depth,
+                        "Global sync request queued (will wait for completion)"
+                    );
                 }
             }
             Err(TrySendError::Full(_)) => {

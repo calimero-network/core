@@ -46,7 +46,7 @@ impl SyncStrategy for StateResync {
             %peer_id,
             "Executing state resync strategy (stub)"
         );
-        
+
         // TODO: Implement full state resync
         // 1. Request state snapshot from peer
         // 2. Verify state integrity
@@ -55,14 +55,13 @@ impl SyncStrategy for StateResync {
         //
         // For now, this is a placeholder
         // The full implementation will be added when needed
-        
+
         Ok(SyncResult::FullResync {
             root_hash: [0; 32], // Placeholder
         })
     }
-    
+
     fn name(&self) -> &'static str {
         "state_resync"
     }
 }
-

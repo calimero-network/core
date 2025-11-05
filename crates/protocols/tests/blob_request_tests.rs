@@ -10,7 +10,7 @@ fn test_blob_request_protocol_exists() {
     let _context_id = create_test_context_id();
     let _identity = create_test_identity();
     let _blob_id = calimero_primitives::blobs::BlobId::from([1; 32]);
-    
+
     // If this compiles, the protocol structure is correct!
 }
 
@@ -18,7 +18,7 @@ fn test_blob_request_protocol_exists() {
 fn test_blob_request_functions_exist() {
     // Validate that the protocol functions exist
     use calimero_protocols::p2p::blob_request::{handle_blob_request, request_blob};
-    
+
     // Functions exist - compilation success means signatures are correct
     let _ = request_blob as usize;
     let _ = handle_blob_request as usize;
@@ -30,7 +30,7 @@ fn test_blob_id_creation() {
     let blob_data = [42u8; 32];
     let blob_id1 = calimero_primitives::blobs::BlobId::from(blob_data);
     let blob_id2 = calimero_primitives::blobs::BlobId::from(blob_data);
-    
+
     assert_eq!(blob_id1, blob_id2);
 }
 
@@ -38,12 +38,12 @@ fn test_blob_id_creation() {
 fn test_blob_sizes() {
     // Test various blob sizes that the protocol should handle
     let sizes = vec![
-        0u64,           // Empty blob
-        1024,           // 1 KB
-        1024 * 1024,    // 1 MB
+        0u64,             // Empty blob
+        1024,             // 1 KB
+        1024 * 1024,      // 1 MB
         10 * 1024 * 1024, // 10 MB
     ];
-    
+
     for size in sizes {
         // Protocol should handle all these sizes
         // (actual streaming tested in integration tests)
@@ -62,4 +62,3 @@ fn test_blob_sizes() {
 // - Mock NodeClient (for blob storage)
 // - Mock ContextClient (for identity operations)
 // - Mock Stream (for message passing)
-

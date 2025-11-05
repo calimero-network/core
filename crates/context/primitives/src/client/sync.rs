@@ -98,11 +98,11 @@ impl ContextClient {
                         handle.put(
                             &key,
                             &types::ContextIdentity {
-                                private_key: None,  // Ghost - don't have their key
-                                sender_key: None,   // Ghost - don't have their key
+                                private_key: None, // Ghost - don't have their key
+                                sender_key: None,  // Ghost - don't have their key
                             },
                         )?;
-                        
+
                         tracing::debug!(
                             %context_id,
                             member = %member,

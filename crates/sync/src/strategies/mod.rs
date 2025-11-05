@@ -14,13 +14,13 @@ use eyre::Result;
 pub enum SyncResult {
     /// No sync needed - already in sync
     NoSyncNeeded,
-    
+
     /// Delta sync performed (DAG catchup)
     DeltaSync {
         /// Number of deltas applied
         deltas_applied: usize,
     },
-    
+
     /// Full state resync performed
     FullResync {
         /// New root hash after resync
@@ -55,8 +55,7 @@ pub trait SyncStrategy: Send + Sync {
         our_identity: &calimero_primitives::identity::PublicKey,
         delta_store: &dyn calimero_protocols::p2p::delta_request::DeltaStore,
     ) -> Result<SyncResult>;
-    
+
     /// Get strategy name (for logging/metrics)
     fn name(&self) -> &'static str;
 }
-

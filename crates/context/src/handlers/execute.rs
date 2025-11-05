@@ -246,7 +246,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             execute_task.and_then(move |(guard, context, outcome, causal_delta), act, _ctx| {
                 // Update root hash in cache via repository
                 let updated = act.repository.update_root_hash(&context_id, context.root_hash);
-                
+
                 if updated {
                     debug!(
                         %context_id,
@@ -501,9 +501,11 @@ impl ContextManager {
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
         let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
             // Get or fetch application via ApplicationManager
-            let app = act.app_manager.get_application(&application_id)?
+            let app = act
+                .app_manager
+                .get_application(&application_id)?
                 .ok_or_else(|| ExecuteError::ApplicationNotInstalled { application_id })?;
-            
+
             Ok(app.blob)
         });
 
@@ -625,7 +627,7 @@ async fn internal_execute(
         if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
             if is_state_op {
                 // EXPECTED BEHAVIOR for __calimero_sync_next:
-                // 
+                //
                 // When syncing deltas from peers, we execute __calimero_sync_next which:
                 // 1. Receives existing actions as input (already in the delta)
                 // 2. Applies actions to WASM storage (modifies state)

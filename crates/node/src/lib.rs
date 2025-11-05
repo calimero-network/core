@@ -77,7 +77,6 @@ impl NodeState {
     }
 }
 
-
 /// Main node orchestrator.
 ///
 /// **SRP Applied**: Clear separation of:

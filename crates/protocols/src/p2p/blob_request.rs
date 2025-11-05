@@ -88,10 +88,9 @@ pub async fn request_blob(
     let (their_identity, mut their_nonce) = match ack {
         StreamMessage::Init {
             party_id,
-            payload:
-                InitPayload::BlobShare {
-                    blob_id: ack_blob_id,
-                },
+            payload: InitPayload::BlobShare {
+                blob_id: ack_blob_id,
+            },
             next_nonce,
             ..
         } => {
@@ -130,7 +129,9 @@ pub async fn request_blob(
     let read_task = async {
         let mut sequencer = Sequencer::default();
 
-        while let Some(msg) = crate::stream::recv(stream, Some((shared_key, their_nonce)), timeout).await? {
+        while let Some(msg) =
+            crate::stream::recv(stream, Some((shared_key, their_nonce)), timeout).await?
+        {
             let (sequence_id, chunk, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {

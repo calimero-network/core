@@ -46,8 +46,8 @@
 //! secure.send(&request_message).await?;
 //! ```
 
-use calimero_crypto::{Nonce, SharedKey};
 use calimero_context_primitives::client::ContextClient;
+use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::context::{Context, ContextId};
@@ -57,8 +57,8 @@ use rand::{thread_rng, Rng};
 use tokio::time::Duration;
 use tracing::{debug, info};
 
-use super::tracking::Sequencer;
 use super::helpers;
+use super::tracking::Sequencer;
 
 /// Type-safe secure stream with enforced authentication and encryption.
 ///
@@ -71,7 +71,10 @@ pub enum SecureStream {
     /// - Key sharing
     /// - Sensitive data transfers
     /// - Operations requiring identity verification
-    #[expect(private_interfaces, reason = "Sequencer is an internal implementation detail")]
+    #[expect(
+        private_interfaces,
+        reason = "Sequencer is an internal implementation detail"
+    )]
     Authenticated {
         stream: Stream,
         context_id: ContextId,
@@ -183,7 +186,7 @@ impl SecureStream {
         )
         .await
     }
-    
+
     /// Authenticate after Init messages have been exchanged.
     ///
     /// **Use when responding**: Call this from a handler that already consumed the Init message.
@@ -222,7 +225,7 @@ impl SecureStream {
         let private_key = our_identity_record
             .private_key
             .ok_or_eyre("expected own identity to have private key")?;
-        
+
         let sender_key = our_identity_record
             .sender_key
             .ok_or_eyre("expected own identity to have sender key")?;
@@ -443,7 +446,12 @@ impl SecureStream {
         let signature = Signature::from_bytes(&signature_bytes);
         claimed_identity
             .verify(&challenge, &signature)
-            .map_err(|e| eyre::eyre!("Identity verification failed - peer could not prove ownership: {}", e))?;
+            .map_err(|e| {
+                eyre::eyre!(
+                    "Identity verification failed - peer could not prove ownership: {}",
+                    e
+                )
+            })?;
 
         info!(
             %context_id,
@@ -491,7 +499,10 @@ impl SecureStream {
     ///
     /// - Authenticated streams: Automatically decrypts with shared_key
     /// - Protocol streams: Receives unencrypted
-    pub async fn recv(&mut self, timeout: Duration) -> eyre::Result<Option<StreamMessage<'static>>> {
+    pub async fn recv(
+        &mut self,
+        timeout: Duration,
+    ) -> eyre::Result<Option<StreamMessage<'static>>> {
         match self {
             SecureStream::Authenticated {
                 stream,
@@ -499,7 +510,8 @@ impl SecureStream {
                 their_nonce,
                 ..
             } => {
-                let msg = super::helpers::recv(stream, Some((*shared_key, *their_nonce)), timeout).await?;
+                let msg = super::helpers::recv(stream, Some((*shared_key, *their_nonce)), timeout)
+                    .await?;
                 if msg.is_some() {
                     *their_nonce = thread_rng().gen(); // Rotate nonce after each recv
                 }
@@ -514,9 +526,7 @@ impl SecureStream {
     /// Get the peer's identity (only available for authenticated streams).
     pub fn peer_identity(&self) -> Option<&PublicKey> {
         match self {
-            SecureStream::Authenticated {
-                their_identity, ..
-            } => Some(their_identity),
+            SecureStream::Authenticated { their_identity, .. } => Some(their_identity),
             SecureStream::Protocol { .. } => None,
         }
     }
@@ -682,7 +692,7 @@ impl SecureStream {
         Ok(their_sender_key)
     }
 
-    // Private helper: Responder side of challenge-response  
+    // Private helper: Responder side of challenge-response
     async fn authenticate_as_responder(
         stream_ref: &mut Stream,
         context_id: &ContextId,
@@ -853,4 +863,3 @@ mod tests {
     // - Nonce rotation
     // - Message encryption/decryption
 }
-

@@ -41,10 +41,10 @@ pub struct ContextMeta {
 pub struct ContextRepository {
     /// Direct access to RocksDB
     datastore: Store,
-    
+
     /// Client for context-related database operations
     context_client: ContextClient,
-    
+
     /// LRU cache of active contexts (max 1000 to prevent memory leaks)
     /// When full, least recently used context is evicted (safe - data persists in DB)
     cache: LruCache<ContextId, ContextMeta>,
@@ -61,14 +61,14 @@ impl ContextRepository {
         let capacity = max_size.unwrap_or(1000);
         let cache_size = NonZeroUsize::new(capacity)
             .unwrap_or_else(|| NonZeroUsize::new(1000).expect("1000 > 0"));
-        
+
         Self {
             datastore,
             context_client,
             cache: LruCache::new(cache_size),
         }
     }
-    
+
     /// Get a context by ID, using cache or fetching from database.
     ///
     /// **CRITICAL**: Always refreshes DAG heads from database to ensure cache coherency.
@@ -92,14 +92,19 @@ impl ContextRepository {
             let lock = Arc::new(Mutex::new(*context_id));
 
             // Insert into cache
-            self.cache.put(*context_id, ContextMeta {
-                meta: context,
-                lock,
-            });
+            self.cache.put(
+                *context_id,
+                ContextMeta {
+                    meta: context,
+                    lock,
+                },
+            );
         }
 
         // Get from cache (guaranteed to exist now)
-        let cached = self.cache.get_mut(context_id)
+        let cached = self
+            .cache
+            .get_mut(context_id)
             .expect("just inserted or already existed");
 
         // CRITICAL FIX: Always reload dag_heads from database to get latest state
@@ -127,7 +132,7 @@ impl ContextRepository {
 
         Ok(Some(&*cached))
     }
-    
+
     /// Insert or update a context in the cache.
     ///
     /// This updates the cache immediately but does NOT persist to database.
@@ -140,7 +145,7 @@ impl ContextRepository {
         let _evicted = self.cache.put(context_id, context_meta);
         // Note: If _evicted is Some, an LRU context was evicted (data still in DB)
     }
-    
+
     /// Remove a context from the cache.
     ///
     /// This does NOT delete from database - only evicts from cache.
@@ -151,14 +156,14 @@ impl ContextRepository {
     pub fn remove(&mut self, context_id: &ContextId) -> Option<ContextMeta> {
         self.cache.pop(context_id)
     }
-    
+
     /// Check if a context exists in the cache.
     ///
     /// Note: This only checks the cache, not the database.
     pub fn contains(&self, context_id: &ContextId) -> bool {
         self.cache.contains(context_id)
     }
-    
+
     /// Peek at a cached context without refreshing from database.
     ///
     /// Returns `None` if context is not in cache.
@@ -166,17 +171,17 @@ impl ContextRepository {
     pub fn peek(&mut self, context_id: &ContextId) -> Option<&ContextMeta> {
         self.cache.get(context_id)
     }
-    
+
     /// Get the number of contexts currently cached.
     pub fn cached_count(&self) -> usize {
         self.cache.len()
     }
-    
+
     /// Get the maximum cache capacity.
     pub fn max_capacity(&self) -> usize {
         self.cache.cap().get()
     }
-    
+
     /// Update the root hash for a cached context.
     ///
     /// If the context is not in cache, this is a no-op.
@@ -192,7 +197,7 @@ impl ContextRepository {
             false
         }
     }
-    
+
     /// Update the application ID for a cached context.
     ///
     /// If the context is not in cache, this is a no-op.
@@ -212,7 +217,7 @@ impl ContextRepository {
             false
         }
     }
-    
+
     /// Get mutable access to the context client.
     ///
     /// Useful for operations that require direct database access.
@@ -225,19 +230,18 @@ impl ContextRepository {
 mod tests {
     use super::*;
     use calimero_primitives::application::ApplicationId;
-    
+
     // Note: These are basic structural tests.
     // Full integration tests would require setting up Store and ContextClient mocks.
-    
+
     #[test]
     fn test_repository_creation() {
         // This test would need proper Store and ContextClient setup
         // For now, just verify the struct can be constructed with the right types
     }
-    
+
     #[test]
     fn test_cache_capacity() {
         // Verify cache is bounded and evicts LRU entries when full
     }
 }
-

@@ -33,9 +33,9 @@ pub fn create_test_delta(
     parents: Vec<[u8; 32]>,
 ) -> calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>> {
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-    
+
     let delta_id = thread_rng().gen::<[u8; 32]>();
-    
+
     // Create a simple timestamp for testing
     let ntp64 = NTP64(0);
     // ID requires NonZero<u128>
@@ -43,7 +43,7 @@ pub fn create_test_delta(
     let id = ID::from(NonZeroU128::new(id_value).unwrap());
     let timestamp = Timestamp::new(ntp64, id);
     let hlc = HybridTimestamp::new(timestamp);
-    
+
     calimero_dag::CausalDelta {
         id: delta_id,
         parents,
@@ -52,4 +52,3 @@ pub fn create_test_delta(
         expected_root_hash: [0; 32],
     }
 }
-

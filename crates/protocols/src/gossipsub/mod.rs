@@ -6,4 +6,3 @@
 //! encryption to protect content (sender_key encryption).
 
 pub mod state_delta;
-

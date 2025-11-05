@@ -64,7 +64,7 @@ async fn join_context(
     // ═══════════════════════════════════════════════════════════════════════════
     // STEP 1: Check if already fully joined
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     if let Some(identity) = context_client.get_identity(&context_id, &invitee_id)? {
         if identity.private_key.is_some() {
             // We have full identity - just ensure state is synced
@@ -94,7 +94,7 @@ async fn join_context(
             if needs_sync {
                 tracing::info!(%context_id, %invitee_id, "join_context: State not synced, waiting for sync to complete");
                 node_client.subscribe(&context_id).await?;
-                
+
                 // CRITICAL: Wait for sync to actually complete before returning!
                 // This ensures context is initialized when join_context returns.
                 match node_client.sync_and_wait(Some(&context_id), None).await {
@@ -120,7 +120,7 @@ async fn join_context(
 
             return Ok((context_id, invitee_id));
         }
-        
+
         // Ghost identity exists (from previous sync_context_config call)
         // This is expected - we'll upgrade it below
         tracing::info!(
@@ -133,14 +133,22 @@ async fn join_context(
     // ═══════════════════════════════════════════════════════════════════════════
     // STEP 2: Get private_key from pool (ONLY source of private keys!)
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     let stored_identity = context_client
         .get_identity(&ContextId::zero(), &invitee_id)?
-        .ok_or_else(|| eyre!("Missing identity in pool (ContextId::zero) for: {}", invitee_id))?;
+        .ok_or_else(|| {
+            eyre!(
+                "Missing identity in pool (ContextId::zero) for: {}",
+                invitee_id
+            )
+        })?;
 
-    let identity_secret = stored_identity
-        .private_key
-        .ok_or_else(|| eyre!("Pool identity '{}' missing private_key (invariant violation!)", invitee_id))?;
+    let identity_secret = stored_identity.private_key.ok_or_else(|| {
+        eyre!(
+            "Pool identity '{}' missing private_key (invariant violation!)",
+            invitee_id
+        )
+    })?;
 
     // Sanity check: private_key matches public_key
     if identity_secret.public_key() != invitee_id {
@@ -150,11 +158,11 @@ async fn join_context(
     // ═══════════════════════════════════════════════════════════════════════════
     // STEP 3: Sync blockchain config (creates ghosts for ALL members, including us)
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     let config = if !context_client.has_context(&context_id)? {
         // Build external config from invitation parameters
         tracing::info!(%context_id, "join_context: Context doesn't exist locally, fetching from blockchain");
-        
+
         let mut external_config = ContextConfigParams {
             protocol: protocol.into(),
             network_id: network_id.into(),
@@ -169,7 +177,7 @@ async fn join_context(
         let proxy_contract = config_client.get_proxy_contract().await?;
 
         external_config.proxy_contract = proxy_contract.into();
-        
+
         Some(external_config)
     } else {
         None
@@ -185,17 +193,19 @@ async fn join_context(
     // ═══════════════════════════════════════════════════════════════════════════
     // STEP 4: Verify membership (we should be in member list from blockchain)
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     if !context_client.has_member(&context_id, &invitee_id)? {
-        eyre::bail!("Unable to join context: not in member list on blockchain. Invalid invitation?");
+        eyre::bail!(
+            "Unable to join context: not in member list on blockchain. Invalid invitation?"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STEP 5: Upgrade from ghost to full identity (ATOMIC)
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     tracing::info!(%context_id, %invitee_id, "join_context: Upgrading to full identity");
-    
+
     let mut rng = rand::thread_rng();
     let sender_key = PrivateKey::random(&mut rng);
 
@@ -211,17 +221,17 @@ async fn join_context(
     // ═══════════════════════════════════════════════════════════════════════════
     // STEP 6: Cleanup - remove from pool (no longer needed)
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     tracing::info!(%context_id, %invitee_id, "join_context: Removing identity from pool");
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STEP 7: Subscribe and WAIT for initial sync (CRITICAL!)
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     tracing::info!(%context_id, %invitee_id, "join_context: Subscribing and waiting for initial sync");
     node_client.subscribe(&context_id).await?;
-    
+
     // CRITICAL: Wait for sync to complete before returning!
     // This ensures context is fully initialized when join_context returns.
     // Old behavior: Fire-and-forget sync → context appeared joined but couldn't execute.
@@ -245,7 +255,7 @@ async fn join_context(
             return Err(e.wrap_err("Failed to complete initial sync after joining context"));
         }
     }
-    
+
     tracing::info!(%context_id, %invitee_id, "join_context: Complete - context fully initialized");
 
     Ok((context_id, invitee_id))

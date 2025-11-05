@@ -42,7 +42,7 @@ pub struct ContextManager {
     /// Context repository for storage and caching operations.
     /// Encapsulates all context CRUD and cache management logic.
     repository: ContextRepository,
-    
+
     /// Application manager for application and module lifecycle.
     /// Handles application metadata caching and WASM module compilation.
     app_manager: ApplicationManager,
@@ -79,10 +79,10 @@ impl ContextManager {
             context_client,
             None, // Use default cache size
         );
-        
+
         // Create application manager
         let app_manager = ApplicationManager::new(node_client.clone());
-        
+
         Self {
             datastore,
             node_client,
@@ -134,7 +134,7 @@ impl ContextManager {
     pub(crate) fn context_client(&self) -> &ContextClient {
         self.repository.context_client()
     }
-    
+
     /// Retrieves context metadata, fetching from the datastore if not present in the cache.
     ///
     /// This function implements the "cache-aside" pattern. It first checks the in-memory

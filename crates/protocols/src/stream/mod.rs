@@ -20,8 +20,7 @@ mod helpers;
 mod tracking;
 
 pub use authenticated::SecureStream;
-pub use tracking::{Sequencer, SyncState, SyncProtocol};
+pub use tracking::{Sequencer, SyncProtocol, SyncState};
 
 // Re-export helpers for use within protocols crate only
-pub(crate) use helpers::{send, recv};
-
+pub(crate) use helpers::{recv, send};

@@ -8,17 +8,20 @@ use serde::{Deserialize, Serialize};
 pub struct SyncEvent {
     /// Context being synced
     pub context_id: ContextId,
-    
+
     /// Peer being synced with (serialized as string)
-    #[serde(serialize_with = "serialize_peer_id", deserialize_with = "deserialize_peer_id")]
+    #[serde(
+        serialize_with = "serialize_peer_id",
+        deserialize_with = "deserialize_peer_id"
+    )]
     pub peer_id: libp2p::PeerId,
-    
+
     /// Sync status
     pub status: SyncStatus,
-    
+
     /// Duration (for completed syncs)
     pub duration_ms: Option<u64>,
-    
+
     /// Error message (for failed syncs)
     pub error: Option<String>,
 }
@@ -45,21 +48,21 @@ where
 pub enum SyncStatus {
     /// Sync started
     Started,
-    
+
     /// Sync completed successfully
     Completed {
         /// Strategy used
         strategy: String,
-        
+
         /// Number of deltas synced (for delta sync)
         deltas_synced: Option<usize>,
     },
-    
+
     /// Sync failed
     Failed {
         /// Retry attempt number
         retry_attempt: usize,
-        
+
         /// Will retry?
         will_retry: bool,
     },
@@ -76,7 +79,7 @@ impl SyncEvent {
             error: None,
         }
     }
-    
+
     /// Create a "completed" event
     pub fn completed(
         context_id: ContextId,
@@ -96,7 +99,7 @@ impl SyncEvent {
             error: None,
         }
     }
-    
+
     /// Create a "failed" event
     pub fn failed(
         context_id: ContextId,
@@ -117,4 +120,3 @@ impl SyncEvent {
         }
     }
 }
-

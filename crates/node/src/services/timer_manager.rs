@@ -177,4 +177,3 @@ mod tests {
         // Real timer behavior is tested in integration tests with full node setup.
     }
 }
-

@@ -256,7 +256,10 @@ impl DeltaStore {
 
             handle
                 .put(
-                    &calimero_store::key::ContextDagDelta::new(*self.applier.context_id(), delta_id),
+                    &calimero_store::key::ContextDagDelta::new(
+                        *self.applier.context_id(),
+                        delta_id,
+                    ),
                     &calimero_store::types::ContextDagDelta {
                         delta_id,
                         parents: parents.clone(),
@@ -307,7 +310,10 @@ impl DeltaStore {
 
             handle
                 .put(
-                    &calimero_store::key::ContextDagDelta::new(*self.applier.context_id(), delta_id),
+                    &calimero_store::key::ContextDagDelta::new(
+                        *self.applier.context_id(),
+                        delta_id,
+                    ),
                     &calimero_store::types::ContextDagDelta {
                         delta_id,
                         parents,
@@ -333,7 +339,10 @@ impl DeltaStore {
 
             handle
                 .put(
-                    &calimero_store::key::ContextDagDelta::new(*self.applier.context_id(), delta_id),
+                    &calimero_store::key::ContextDagDelta::new(
+                        *self.applier.context_id(),
+                        delta_id,
+                    ),
                     &calimero_store::types::ContextDagDelta {
                         delta_id,
                         parents,
@@ -618,18 +627,20 @@ impl DeltaStore {
                                     all_cascaded_events.push((*cascaded_id, events_data));
                                 }
 
-                                if let Err(e) = self.applier.context_client().datastore_handle().put(
-                                    &cascaded_db_key,
-                                    &calimero_store::types::ContextDagDelta {
-                                        delta_id: *cascaded_id,
-                                        parents: cascaded_delta.parents.clone(),
-                                        actions: serialized_actions,
-                                        hlc: cascaded_delta.hlc,
-                                        applied: true,
-                                        expected_root_hash: cascaded_delta.expected_root_hash,
-                                        events: None, // Clear events after cascading
-                                    },
-                                ) {
+                                if let Err(e) =
+                                    self.applier.context_client().datastore_handle().put(
+                                        &cascaded_db_key,
+                                        &calimero_store::types::ContextDagDelta {
+                                            delta_id: *cascaded_id,
+                                            parents: cascaded_delta.parents.clone(),
+                                            actions: serialized_actions,
+                                            hlc: cascaded_delta.hlc,
+                                            applied: true,
+                                            expected_root_hash: cascaded_delta.expected_root_hash,
+                                            events: None, // Clear events after cascading
+                                        },
+                                    )
+                                {
                                     warn!(?e, context_id = %*self.applier.context_id(), delta_id = ?cascaded_id, "Failed to persist cascaded delta");
                                 }
                             }
@@ -717,7 +728,7 @@ impl calimero_protocols::p2p::delta_request::DeltaStore for DeltaStore {
     async fn has_delta(&self, delta_id: &[u8; 32]) -> bool {
         self.has_delta(delta_id).await
     }
-    
+
     async fn add_delta(
         &self,
         delta: calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>>,
@@ -726,7 +737,7 @@ impl calimero_protocols::p2p::delta_request::DeltaStore for DeltaStore {
         self.add_delta(delta).await?;
         Ok(())
     }
-    
+
     async fn add_delta_with_events(
         &self,
         delta: calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>>,
@@ -734,31 +745,33 @@ impl calimero_protocols::p2p::delta_request::DeltaStore for DeltaStore {
     ) -> Result<calimero_protocols::p2p::delta_request::AddDeltaResult> {
         // Use the full add_delta_with_events
         let result = self.add_delta_with_events(delta, events).await?;
-        
+
         // Convert our AddDeltaResult to protocol's AddDeltaResult
         Ok(calimero_protocols::p2p::delta_request::AddDeltaResult {
             applied: result.applied,
             cascaded_events: result.cascaded_events,
         })
     }
-    
+
     async fn get_delta(
         &self,
         delta_id: &[u8; 32],
     ) -> Option<calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>>> {
         self.get_delta(delta_id).await
     }
-    
-    async fn get_missing_parents(&self) -> calimero_protocols::p2p::delta_request::MissingParentsResult {
+
+    async fn get_missing_parents(
+        &self,
+    ) -> calimero_protocols::p2p::delta_request::MissingParentsResult {
         let result = self.get_missing_parents().await;
-        
+
         // Convert our MissingParentsResult to protocol's MissingParentsResult
         calimero_protocols::p2p::delta_request::MissingParentsResult {
             missing_ids: result.missing_ids,
             cascaded_events: result.cascaded_events,
         }
     }
-    
+
     async fn dag_has_delta_applied(&self, delta_id: &[u8; 32]) -> bool {
         self.dag_has_delta_applied(delta_id).await
     }

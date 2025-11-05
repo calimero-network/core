@@ -6,10 +6,10 @@
 use eyre::bail;
 
 // Re-export for public use
-pub use SyncProtocol as Protocol;
-pub use SyncState as State;
 use libp2p::PeerId;
 use tokio::time::{self, Instant};
+pub use SyncProtocol as Protocol;
+pub use SyncState as State;
 
 /// Sync protocol type for tracking which protocol was used.
 ///
