@@ -73,7 +73,7 @@ pub enum StepDetail {
 
 impl StepDetail {}
 
-/// Generate a dry-run report for the supplied migration context.
+/// Walk every plan step, producing a read-only preview without mutating RocksDB.
 pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     let plan = context.plan();
     let db = context.source().db();
@@ -97,6 +97,7 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     Ok(DryRunReport { steps })
 }
 
+/// Preview a `copy` plan step by applying filters, counting matches, and capturing sample keys.
 fn preview_copy_step(
     index: usize,
     step: &CopyStep,
@@ -128,6 +129,7 @@ fn preview_copy_step(
     })
 }
 
+/// Preview a `delete` plan step using the same scan routine as copy.
 fn preview_delete_step(
     index: usize,
     step: &DeleteStep,
@@ -148,6 +150,7 @@ fn preview_delete_step(
     })
 }
 
+/// Summarise an `upsert` plan step; iterates literal entries to build previews.
 fn preview_upsert_step(index: usize, step: &UpsertStep, _defaults: &PlanDefaults) -> StepReport {
     let mut samples = Vec::new();
 
@@ -171,6 +174,7 @@ fn preview_upsert_step(index: usize, step: &UpsertStep, _defaults: &PlanDefaults
     }
 }
 
+/// Inspect a `verify` plan step by scanning matches and evaluating the assertion immediately.
 fn preview_verify_step(
     index: usize,
     step: &VerifyStep,
@@ -197,11 +201,14 @@ fn preview_verify_step(
     })
 }
 
+/// Lightweight summary of a column scan.
 struct ScanResult {
     matched: usize,
     samples: Vec<String>,
 }
 
+/// Iterate a column family, applying resolved filters to count matches and capture samples.
+/// Capture samples are used as sanity checks
 fn scan_column(
     db: &DBWithThreadMode<SingleThreaded>,
     column: Column,
@@ -234,6 +241,7 @@ fn scan_column(
     Ok(ScanResult { matched, samples })
 }
 
+/// Render a key either via structured parsing or as a raw hex fallback.
 fn sample_from_key(column: Column, key: &[u8]) -> String {
     types::parse_key(column, key).map_or_else(
         |_| format!("raw_hex={}", hex::encode(key)),
@@ -250,6 +258,7 @@ struct VerificationOutcome {
     warnings: Vec<String>,
 }
 
+/// Execute the verify assertion logic and describe the outcome.
 fn evaluate_assertion(
     db: &DBWithThreadMode<SingleThreaded>,
     column: Column,
@@ -352,6 +361,7 @@ fn evaluate_assertion(
     }
 }
 
+/// Helper to map boolean results to human-friendly labels.
 const fn pass_label(passed: bool) -> &'static str {
     if passed {
         "PASS"
@@ -360,6 +370,7 @@ const fn pass_label(passed: bool) -> &'static str {
     }
 }
 
+/// Concrete filter values (decoded/parsed) used during column scans.
 struct ResolvedFilters {
     context_ids: Option<HashSet<Vec<u8>>>,
     state_key_prefix: Option<Vec<u8>>,
@@ -371,6 +382,7 @@ struct ResolvedFilters {
 }
 
 impl ResolvedFilters {
+    /// Decode plan filters into byte-oriented structures, accumulating warnings as needed.
     fn resolve(column: Column, filters: &PlanFilters) -> Self {
         let mut warnings = Vec::new();
 
@@ -471,6 +483,7 @@ impl ResolvedFilters {
         }
     }
 
+    /// Check if a raw key satisfies every resolved predicate.
     fn matches(&self, column: Column, key: &[u8]) -> bool {
         if let Some(set) = &self.context_ids {
             let Some(context_slice) = extract_context_id(column, key) else {
@@ -531,6 +544,7 @@ impl ResolvedFilters {
     }
 }
 
+/// Best-effort hex decoder used by filter resolution.
 fn decode_hex_string(value: &str) -> Result<Vec<u8>> {
     let trimmed = value.trim().trim_start_matches("0x");
     if trimmed.len() % 2 != 0 {
@@ -539,6 +553,7 @@ fn decode_hex_string(value: &str) -> Result<Vec<u8>> {
     Ok(hex::decode(trimmed)?)
 }
 
+/// Extract the context ID portion from a key when the column layout supports it.
 fn extract_context_id(column: Column, key: &[u8]) -> Option<&[u8]> {
     if key.len() < 32 {
         return None;
@@ -552,6 +567,7 @@ fn extract_context_id(column: Column, key: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// Pull the alias name out of the canonical 83-byte alias key.
 fn extract_alias_name(key: &[u8]) -> Option<String> {
     if key.len() != 83 {
         return None;
@@ -577,6 +593,7 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
+    /// Create a RocksDB instance with all column families and insert a single state row.
     fn setup_db(path: &Path) -> Result<()> {
         let mut opts = Options::default();
         opts.create_if_missing(true);

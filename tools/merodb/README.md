@@ -128,6 +128,9 @@ The GUI automatically exports and processes the database server-side, eliminatin
 - `.data.State.entries | map(.key)` - Extract all state keys
 - `.data | to_entries | map({column: .key, count: .value.count})` - Get entry counts per column
 
+## Migration Workflow (`merodb migrate`)
+
+A full walkthrough (plan schema, dry-run engine, roadmap, and YAML reference) now lives in [`src/migration/README.md`](src/migration/README.md). Refer to that document when authoring plans or extending the migration implementation.
 ## Column Families
 
 The tool supports all Calimero RocksDB column families:
