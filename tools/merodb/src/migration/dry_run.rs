@@ -24,6 +24,7 @@ use std::collections::HashSet;
 
 use eyre::{bail, Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
+use serde::Serialize;
 
 use core::convert::TryFrom;
 
@@ -41,22 +42,27 @@ use super::plan::{
 const SAMPLE_LIMIT: usize = 3;
 
 /// Aggregated dry-run information for each step in the migration plan.
+#[derive(Debug, Serialize)]
 pub struct DryRunReport {
     pub steps: Vec<StepReport>,
 }
 
 /// Per-step dry-run preview including key counts, sample data, and warnings.
+#[derive(Debug, Serialize)]
 pub struct StepReport {
     pub index: usize,
     pub matched_keys: usize,
     pub filters_summary: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub samples: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     pub detail: StepDetail,
 }
 
 /// Additional information that depends on the step type.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StepDetail {
     Copy {
         decode_with_abi: bool,
@@ -585,7 +591,8 @@ mod tests {
     use super::*;
     use crate::migration::context::{MigrationContext, MigrationOverrides};
     use crate::migration::plan::{
-        CopyStep, MigrationPlan, PlanDefaults, PlanFilters, PlanStep, PlanVersion, SourceEndpoint,
+        CopyStep, CopyTransform, MigrationPlan, PlanDefaults, PlanFilters, PlanStep, PlanVersion,
+        SourceEndpoint,
     };
     use crate::types::Column;
     use eyre::ensure;
@@ -645,7 +652,7 @@ mod tests {
                         context_ids: vec![hex::encode([0x11; 32])],
                         ..PlanFilters::default()
                     },
-                    transform: Default::default(),
+                    transform: CopyTransform::default(),
                 }),
                 PlanStep::Verify(VerifyStep {
                     name: Some("expect-one".into()),

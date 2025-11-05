@@ -22,11 +22,11 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
 
 - [ ] **Build Dry-run Engine**
   - [x] Resolve high-level filters (context IDs, alias names, key prefixes) to RocksDB iterators and collect a structured action preview. ✅ `migration::dry_run::generate_report` scans the RocksDB column families, applies merged filters, and captures per-step key counts plus samples.
-  - [ ] Output dry-run results to stdout/JSON with per-step key counts and examples; guarantee no writes occur. 🚧 CLI preview is live; JSON export still pending.
+  - [x] Output dry-run results to stdout/JSON with per-step key counts and examples; guarantee no writes occur. ✅ `--report <FILE>` writes the structured preview as JSON while CLI output remains read-only.
 
 - [ ] **Develop Test Fixtures & Dry-run Tests**
   - [ ] Introduce utilities for creating temporary RocksDB instances populated with sample Calimero data.
-  - [ ] Write unit/integration tests covering plan parsing, filter resolution, and dry-run summaries.
+  - [ ] Write unit/integration tests covering plan parsing, filter resolution, and dry-run summaries. 🚧 JSON report smoke test added to guard end-to-end output.
 
 - [ ] **Enable Mutating Execution**
   - [ ] Allow opening the target database with write access when `--apply` (or `--dry-run=false`) is specified.

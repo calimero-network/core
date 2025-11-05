@@ -131,6 +131,14 @@ The GUI automatically exports and processes the database server-side, eliminatin
 ## Migration Workflow (`merodb migrate`)
 
 A full walkthrough (plan schema, dry-run engine, roadmap, and YAML reference) now lives in [`src/migration/README.md`](src/migration/README.md). Refer to that document when authoring plans or extending the migration implementation.
+
+During dry runs the CLI prints a human-readable preview and can also persist machine-readable output using:
+
+```bash
+merodb migrate --plan ./plan.yaml --report ./dry-run.json
+```
+
+The `--report` file contains the step-by-step summary emitted by the dry-run engine, including counts, samples, and warnings.
 ## Column Families
 
 The tool supports all Calimero RocksDB column families:

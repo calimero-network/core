@@ -165,7 +165,8 @@ The first three operate on counts; the last two decode the provided key (via `En
 3. Build a `MigrationContext` (opens RocksDB handles read-only, lazily loads ABI).
 4. Print plan metadata and context data (paths, ABI status, key counts).
 5. Generate dry-run report (`generate_report`) and print the rich preview.
-6. Remind the user that dry-run mode is currently enforced.
+6. If `--report <FILE>` is supplied, serialize the same data as JSON for machine consumption.
+7. Remind the user that dry-run mode is currently enforced.
 
 When mutating execution lands, the same plan parsing and context wiring will be reused; we will simply branch on `--apply` to run the future execution engine.
 
@@ -185,12 +186,12 @@ The dry-run test seeds one state entry, runs a two-step plan (copy + verify), an
 
 ## 6. Roadmap (from `tools/merodb/migrations.md`)
 
-- **Build Dry-run Engine** – ✅ filter resolution, per-step previews, warnings. JSON output still pending.
-- **Develop Test Fixtures & Dry-run Tests** – ✅ initial smoke test, more fixtures planned.
+- **Build Dry-run Engine** – ✅ filter resolution, per-step previews, warnings, and JSON export (`--report`).
+- **Develop Test Fixtures & Dry-run Tests** – ✅ dry-run smoke tests; JSON report coverage newly added.
 - **Enable Mutating Execution** – 🔄 upcoming (write batches, idempotency, `--apply`).
 - **Add Safety Mechanisms** – 🔄 backups, guard rails, context alias support.
 - **Implement Verification Steps** – 🔄 integrate with existing validator for post-apply checks.
-- **Polish CLI UX + Reporting** – 🔄 add `--report` JSON output, document exit codes, richer docs.
+- **Polish CLI UX + Reporting** – 🚧 `--report` JSON output shipped; exit codes and richer docs outstanding.
 - **Finalize Testing & CI** – 🔄 expand coverage, integrate into CI.
 
 ---

@@ -27,6 +27,7 @@ use migration::context::{AbiManifestStatus, MigrationContext, MigrationOverrides
 use migration::dry_run::{generate_report as generate_dry_run_report, DryRunReport, StepDetail};
 use migration::loader::load_plan;
 use migration::plan::{MigrationPlan, PlanStep};
+use migration::report::write_json_report;
 use types::Column;
 
 #[derive(Parser, Debug)]
@@ -144,6 +145,10 @@ struct MigrateArgs {
     /// Perform a dry run without writing to the target
     #[arg(long)]
     dry_run: bool,
+
+    /// Write dry-run results as JSON to this path
+    #[arg(long, value_name = "FILE")]
+    report: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -383,6 +388,10 @@ fn run_migrate(args: &MigrateArgs) -> Result<()> {
     let dry_run_report = generate_dry_run_report(&context)?;
     println!();
     print_dry_run_report(&context, &dry_run_report);
+
+    if let Some(report_path) = args.report.as_deref() {
+        write_json_report(report_path, plan_path, &context, &dry_run_report)?;
+    }
 
     Ok(())
 }
