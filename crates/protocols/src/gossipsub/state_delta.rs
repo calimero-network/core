@@ -108,15 +108,29 @@ pub async fn handle_state_delta(
         .ok_or_eyre("author identity not found")?;
 
     // If we have the identity but missing sender_key, do direct key share with source peer
+    // Note: We check again here to avoid concurrent key exchanges for the same author
     if author_identity.sender_key.is_none() {
-        info!(
-            %context_id,
-            %author_id,
-            source_peer=%source,
-            "Missing sender_key for author - initiating key share with source peer"
-        );
+        // Re-check identity in case another concurrent delta handler just completed key exchange
+        author_identity = context_client
+            .get_identity(&context_id, &author_id)?
+            .ok_or_eyre("author identity not found")?;
+            
+        // Skip if key was just added by concurrent handler
+        if author_identity.sender_key.is_some() {
+            debug!(
+                %context_id,
+                %author_id,
+                "sender_key now available (concurrent handler completed key exchange)"
+            );
+        } else {
+            info!(
+                %context_id,
+                %author_id,
+                source_peer=%source,
+                "Missing sender_key for author - initiating key share with source peer"
+            );
 
-        match request_key_share_with_peer(
+            match request_key_share_with_peer(
             network_client,
             context_client,
             &context_id,
@@ -147,6 +161,7 @@ pub async fn handle_state_delta(
                     "Failed to complete key share with source peer - will retry when delta is rebroadcast"
                 );
                 bail!("author sender_key not available (key share requested, will retry)");
+            }
             }
         }
     }

@@ -138,6 +138,12 @@ impl SecureStream {
         // Step 1: Exchange identities
         let our_nonce = thread_rng().gen::<Nonce>();
 
+        debug!(
+            context_id=%context.id,
+            %our_identity,
+            "CLIENT: Sending Init"
+        );
+
         helpers::send(
             stream,
             &StreamMessage::Init {
@@ -149,6 +155,12 @@ impl SecureStream {
             None,
         )
         .await?;
+
+        debug!(
+            context_id=%context.id,
+            %our_identity,
+            "CLIENT: Init sent, waiting for Init ack"
+        );
 
         let Some(ack) = super::helpers::recv(stream, None, timeout_budget).await? else {
             bail!("connection closed during authentication handshake");
@@ -170,7 +182,7 @@ impl SecureStream {
             context_id=%context.id,
             %our_identity,
             %their_identity,
-            "Identities exchanged, starting challenge-response authentication"
+            "CLIENT: Identities exchanged, starting challenge-response"
         );
 
         // Proceed with authentication (both sides past Init phase)

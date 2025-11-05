@@ -116,25 +116,15 @@ pub async fn handle_key_exchange(
         "Handling key exchange request (responding to peer's Init)",
     );
 
-    // Sync context config from blockchain ONLY if we don't have their identity yet
-    // This is crucial for context creators who haven't synced since the peer joined
-    if context_client.get_identity(&context.id, &their_identity).ok().flatten().is_none() {
-        debug!(
-            context_id=%context.id,
-            %their_identity,
-            "Missing peer identity - syncing context config from blockchain"
-        );
-        
-        if let Err(e) = context_client.sync_context_config(context.id, None).await {
-            warn!(
-                context_id=%context.id,
-                %their_identity,
-                error = %e,
-                "Failed to sync context config before key exchange"
-            );
-            // Don't bail - maybe the identity exists now due to concurrent sync
-        }
-    }
+    // Note: sync_context_config is now called in the Subscribed event handler
+    // We assume the identity already exists here. If not, the error will be caught below.
+
+    debug!(
+        context_id=%context.id,
+        %our_identity,
+        %their_identity,
+        "SERVER: Sending Init ack"
+    );
 
     // Send acknowledgment (we received their Init, send ours back)
     let our_nonce = thread_rng().gen::<calimero_crypto::Nonce>();
@@ -150,6 +140,13 @@ pub async fn handle_key_exchange(
         None,
     )
     .await?;
+
+    debug!(
+        context_id=%context.id,
+        %our_identity,
+        %their_identity,
+        "SERVER: Init ack sent, calling authenticate_p2p_after_init"
+    );
 
     // Perform authentication (both sides past Init phase)
     SecureStream::authenticate_p2p_after_init(
