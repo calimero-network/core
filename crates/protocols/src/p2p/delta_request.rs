@@ -121,12 +121,17 @@ pub async fn request_dag_heads(
     // (actual delta requests still require full authentication)
 
     // Receive heads response
-    let message = crate::stream::recv(&mut stream, None, timeout).await?
+    let message = crate::stream::recv(&mut stream, None, timeout)
+        .await?
         .ok_or_eyre("Connection closed while waiting for DAG heads")?;
 
     let (dag_heads, root_hash) = match message {
         StreamMessage::Message {
-            payload: MessagePayload::DagHeadsResponse { dag_heads, root_hash },
+            payload:
+                MessagePayload::DagHeadsResponse {
+                    dag_heads,
+                    root_hash,
+                },
             ..
         } => (dag_heads, root_hash),
         unexpected => bail!("Expected DagHeadsResponse, got: {:?}", unexpected),
@@ -202,7 +207,7 @@ pub async fn request_missing_deltas(
         let batch_size = to_fetch.len();
         let current_batch = to_fetch.clone();
         to_fetch.clear();
-        
+
         info!(%context_id, iteration, batch_size, "🔃 Opening fresh stream for iteration");
 
         // Open fresh stream for each iteration (server closes stream after handling one request)
@@ -249,11 +254,11 @@ pub async fn request_missing_deltas(
                         if *parent_id == [0; 32] {
                             continue;
                         }
-                        
+
                         let has_delta = delta_store.has_delta(parent_id).await;
                         let in_to_fetch = to_fetch.contains(parent_id);
                         let in_fetched = fetched_deltas.iter().any(|(d, _)| d.id == *parent_id);
-                        
+
                         // Skip if we already have it or are about to fetch it
                         if !has_delta && !in_to_fetch && !in_fetched {
                             info!(
@@ -283,7 +288,7 @@ pub async fn request_missing_deltas(
                 }
             }
         }
-        
+
         info!(%context_id, iteration, to_fetch_count = to_fetch.len(), "✅ Iteration complete - will continue" = !to_fetch.is_empty());
     }
 
@@ -301,24 +306,27 @@ pub async fn request_missing_deltas(
         // Topological sort: process deltas whose parents are all already added
         let mut added: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
         added.insert([0; 32]); // Genesis is always "added"
-        
+
         let mut remaining = fetched_deltas;
         let mut added_count = 0;
-        
+
         while !remaining.is_empty() {
             let before_len = remaining.len();
             let mut next_remaining = Vec::new();
-            
+
             // Find deltas whose parents are all added (or genesis)
             for (dag_delta, delta_id) in remaining {
                 let mut parents_ready = true;
                 for parent in &dag_delta.parents {
-                    if *parent != [0; 32] && !added.contains(parent) && !delta_store.has_delta(parent).await {
+                    if *parent != [0; 32]
+                        && !added.contains(parent)
+                        && !delta_store.has_delta(parent).await
+                    {
                         parents_ready = false;
                         break;
                     }
                 }
-                
+
                 if parents_ready {
                     // Add to DAG now
                     if let Err(e) = delta_store.add_delta(dag_delta).await {
@@ -332,9 +340,9 @@ pub async fn request_missing_deltas(
                     next_remaining.push((dag_delta, delta_id));
                 }
             }
-            
+
             remaining = next_remaining;
-            
+
             // Detect infinite loop (circular dependency - shouldn't happen in a DAG)
             if remaining.len() == before_len && !remaining.is_empty() {
                 warn!(
@@ -345,7 +353,7 @@ pub async fn request_missing_deltas(
                 break;
             }
         }
-        
+
         info!(
             %context_id,
             added_count,
@@ -420,7 +428,7 @@ async fn request_delta(
     crate::stream::send(stream, &msg, None).await?;
 
     // No authentication needed - membership already enforced by gossipsub
-    
+
     // Wait for response
     match crate::stream::recv(stream, None, timeout).await? {
         Some(StreamMessage::Message {

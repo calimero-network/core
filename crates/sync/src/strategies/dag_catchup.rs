@@ -64,7 +64,7 @@ impl SyncStrategy for DagCatchup {
         // ALWAYS request peer's heads to check if they have state we don't
         if missing_result.missing_ids.is_empty() {
             info!(%context_id, "No pending deltas - requesting peer's heads to check for initial sync");
-            
+
             let peer_heads = calimero_protocols::p2p::delta_request::request_dag_heads(
                 &self.network_client,
                 *context_id,
@@ -74,12 +74,12 @@ impl SyncStrategy for DagCatchup {
                 self.timeout,
             )
             .await?;
-            
+
             if peer_heads.is_empty() {
                 debug!(%context_id, "Peer has no deltas - both empty, sync not needed");
                 return Ok(SyncResult::NoSyncNeeded);
             }
-            
+
             info!(%context_id, heads_count = peer_heads.len(), "Peer has deltas - starting initial sync");
             missing_result.missing_ids = peer_heads;
         }

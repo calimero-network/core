@@ -74,7 +74,7 @@ impl ContextClient {
     }
 
     /// Update both DAG heads and root hash after delta application.
-    /// 
+    ///
     /// This is called by DeltaStore after successfully applying deltas
     /// to ensure the context metadata reflects the current DAG state.
     pub fn update_dag_heads_and_root(
@@ -96,9 +96,11 @@ impl ContextClient {
         handle.put(&key::ContextMeta::new(*context_id), &context)?;
 
         // Invalidate ContextManager's cache (force reload from DB on next access)
-        let _ignored = self.context_manager.send(ContextMessage::RefreshContextMetadata {
-            context_id: *context_id,
-        });
+        let _ignored = self
+            .context_manager
+            .send(ContextMessage::RefreshContextMetadata {
+                context_id: *context_id,
+            });
 
         Ok(())
     }

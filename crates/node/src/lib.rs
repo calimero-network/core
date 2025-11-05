@@ -238,20 +238,22 @@ async fn perform_sync(
         .ok_or_else(|| eyre::eyre!("No owned identity"))?;
 
     // Get or create delta store for this context (needs our_identity)
-    let delta_store = delta_stores.get_or_create_with(context_id, || {
-        let context = context_client.get_context(context_id).ok().flatten();
-        let root = context
-            .as_ref()
-            .map(|c| *c.root_hash.as_bytes())
-            .unwrap_or([0u8; 32]);
-        
-        crate::delta_store::DeltaStore::new(
-            root,
-            context_client.clone(),
-            *context_id,
-            our_identity,
-        )
-    }).0;
+    let delta_store = delta_stores
+        .get_or_create_with(context_id, || {
+            let context = context_client.get_context(context_id).ok().flatten();
+            let root = context
+                .as_ref()
+                .map(|c| *c.root_hash.as_bytes())
+                .unwrap_or([0u8; 32]);
+
+            crate::delta_store::DeltaStore::new(
+                root,
+                context_client.clone(),
+                *context_id,
+                our_identity,
+            )
+        })
+        .0;
 
     // Find peer to sync from
     let target_peer = if let Some(peer) = peer_id {
@@ -261,26 +263,26 @@ async fn perform_sync(
         // Retry with backoff since mesh takes time to populate after subscribe
         let topic = libp2p::gossipsub::IdentTopic::new(context_id.to_string());
         let mut peers = Vec::new();
-        
+
         for attempt in 0..10 {
             peers = network_client.mesh_peers(topic.hash()).await;
             if !peers.is_empty() {
                 tracing::info!(%context_id, attempt, peer_count = peers.len(), "Found peers in mesh");
                 break;
             }
-            
+
             if attempt < 9 {
                 let delay_ms = 200 + (attempt * 50); // Increasing backoff: 200ms, 250ms, 300ms...
                 tracing::debug!(%context_id, attempt, delay_ms, "No peers in mesh yet, retrying...");
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
         }
-        
+
         if peers.is_empty() {
             tracing::warn!(%context_id, "No peers in mesh after retries - cannot sync");
             return Ok(SyncResult::NoSyncNeeded);
         }
-        
+
         tracing::info!(%context_id, peer_count = peers.len(), "Found peers in mesh");
         peers[0]
     };

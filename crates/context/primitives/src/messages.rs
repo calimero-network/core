@@ -173,7 +173,5 @@ pub enum ContextMessage {
         outcome: oneshot::Sender<<SyncRequest as Message>::Result>,
     },
     /// Invalidate the cache for a context (forces reload from DB on next access)
-    RefreshContextMetadata {
-        context_id: ContextId,
-    },
+    RefreshContextMetadata { context_id: ContextId },
 }

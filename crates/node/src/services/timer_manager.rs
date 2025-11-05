@@ -17,7 +17,7 @@ use actix::{AsyncContext, WrapFuture};
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use futures_util::StreamExt;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::services::{BlobCacheService, DeltaStoreService};
 

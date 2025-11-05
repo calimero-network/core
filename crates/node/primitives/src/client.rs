@@ -88,14 +88,14 @@ impl NodeClient {
         for attempt in 1..=max_attempts {
             let topic_hash = TopicHash::from_raw(*context_id);
             let mesh_peers = self.network_client.mesh_peers(topic_hash).await;
-            
+
             info!(
                 %context_id,
                 attempt,
                 mesh_peer_count = mesh_peers.len(),
                 "Polling gossipsub mesh"
             );
-            
+
             if !mesh_peers.is_empty() {
                 info!(
                     %context_id,
@@ -105,7 +105,7 @@ impl NodeClient {
                 );
                 return Ok(());
             }
-            
+
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
