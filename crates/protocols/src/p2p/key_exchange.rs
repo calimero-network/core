@@ -15,7 +15,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::Result;
 use rand::{thread_rng, Rng};
 use tokio::time::Duration;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::stream::SecureStream;
 
@@ -65,17 +65,8 @@ pub async fn request_key_exchange(
 
     let mut stream = network_client.open_stream(peer_id).await?;
 
-    // Send Init message
-    let init_msg = StreamMessage::Init {
-        context_id: context.id,
-        party_id: our_identity,
-        payload: InitPayload::KeyShare,
-        next_nonce: thread_rng().gen(),
-    };
-
-    crate::stream::send(&mut stream, &init_msg, None).await?;
-
-    // SecureStream handles authentication + key exchange
+    // SecureStream handles Init exchange + authentication + key exchange
+    // (It will send the Init message internally)
     SecureStream::authenticate_p2p(&mut stream, context, our_identity, context_client, timeout)
         .await?;
 
@@ -124,6 +115,26 @@ pub async fn handle_key_exchange(
         %their_identity,
         "Handling key exchange request (responding to peer's Init)",
     );
+
+    // Sync context config from blockchain ONLY if we don't have their identity yet
+    // This is crucial for context creators who haven't synced since the peer joined
+    if context_client.get_identity(&context.id, &their_identity).ok().flatten().is_none() {
+        debug!(
+            context_id=%context.id,
+            %their_identity,
+            "Missing peer identity - syncing context config from blockchain"
+        );
+        
+        if let Err(e) = context_client.sync_context_config(context.id, None).await {
+            warn!(
+                context_id=%context.id,
+                %their_identity,
+                error = %e,
+                "Failed to sync context config before key exchange"
+            );
+            // Don't bail - maybe the identity exists now due to concurrent sync
+        }
+    }
 
     // Send acknowledgment (we received their Init, send ours back)
     let our_nonce = thread_rng().gen::<calimero_crypto::Nonce>();

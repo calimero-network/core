@@ -80,39 +80,15 @@ impl NodeClient {
 
         let _ignored = self.network_client.subscribe(topic.clone()).await?;
 
-        info!(%context_id, "Subscribed to context - waiting for mesh to form");
+        info!(%context_id, "Subscribed to context");
 
-        // Wait for gossipsub mesh to form (at least one peer)
-        // This is crucial to avoid dropped broadcasts immediately after context creation
-        let max_attempts = 50; // 5 seconds max wait
-        for attempt in 1..=max_attempts {
-            let topic_hash = TopicHash::from_raw(*context_id);
-            let mesh_peers = self.network_client.mesh_peers(topic_hash).await;
-
-            info!(
-                %context_id,
-                attempt,
-                mesh_peer_count = mesh_peers.len(),
-                "Polling gossipsub mesh"
-            );
-
-            if !mesh_peers.is_empty() {
-                info!(
-                    %context_id,
-                    mesh_peer_count = mesh_peers.len(),
-                    attempts = attempt,
-                    "✅ Gossipsub mesh formed successfully"
-                );
-                return Ok(());
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
-
-        warn!(
-            %context_id,
-            "Subscribed but no mesh peers after 5 seconds - broadcasts may be dropped"
-        );
+        // Note: We don't wait for mesh to form here because:
+        // 1. Context creators have no peers initially (invitees haven't joined yet)
+        // 2. Early broadcasts will be skipped (logged as warnings) 
+        // 3. Pending delta heartbeat (60s) will trigger retry sync for any missed deltas
+        // 4. Hash heartbeat (30s) will trigger sync if peers detect divergence
+        //
+        // This is the correct behavior - the heartbeat system ensures eventual consistency.
 
         Ok(())
     }
