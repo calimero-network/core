@@ -253,9 +253,21 @@ async fn perform_sync(
         )
     }).0;
 
-    // Need peer to sync from
-    let Some(target_peer) = peer_id else {
-        return Ok(SyncResult::NoSyncNeeded);
+    // Find peer to sync from
+    let target_peer = if let Some(peer) = peer_id {
+        peer
+    } else {
+        // No specific peer - get peers from gossipsub mesh
+        let topic = libp2p::gossipsub::IdentTopic::new(context_id.to_string());
+        let peers = network_client.mesh_peers(topic.hash()).await;
+        
+        if peers.is_empty() {
+            tracing::warn!(%context_id, "No peers in mesh - cannot sync");
+            return Ok(SyncResult::NoSyncNeeded);
+        }
+        
+        // Pick first peer (TODO: better selection strategy)
+        peers[0]
     };
 
     // Execute DAG catchup
