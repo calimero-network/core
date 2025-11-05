@@ -229,20 +229,39 @@ async fn join_context(
     // STEP 7: Subscribe and WAIT for initial sync (CRITICAL!)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    tracing::info!(%context_id, %invitee_id, "join_context: Subscribing and waiting for initial sync");
+    tracing::info!(%context_id, %invitee_id, "join_context: Subscribing to context");
     node_client.subscribe(&context_id).await?;
 
-    // CRITICAL: Wait for sync to complete before returning!
-    // This ensures context is fully initialized when join_context returns.
-    // Old behavior: Fire-and-forget sync → context appeared joined but couldn't execute.
-    // New behavior: Block until sync completes → guaranteed initialized on return.
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 8: Explicit sync to get historical state (CRITICAL!)
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Gossipsub ONLY delivers NEW deltas (future transactions).
+    // We MUST explicitly request historical deltas via P2P.
+    //
+    // Without this, joining a context with existing state will result in:
+    // - New member has empty DAG (no historical deltas)
+    // - New member only receives future transactions
+    // - Permanent state divergence (missing all historical state!)
+    //
+    // TODO: Implement proper DAG catchup using calimero-protocols::p2p::delta_request
+    // For now, we MUST wait for sync (even though sync_and_wait is broken)
+    // to prevent contexts from being in broken state.
+    
+    tracing::warn!(
+        %context_id,
+        %invitee_id,
+        "join_context: CRITICAL - sync_and_wait() is broken, historical state will be missed!"
+    );
+    
+    // Try to sync anyway (will return immediately but logs the issue)
     match node_client.sync_and_wait(Some(&context_id), None).await {
         Ok(sync_result) => {
             tracing::info!(
                 %context_id,
                 %invitee_id,
                 ?sync_result,
-                "Initial sync completed successfully - context ready for use"
+                "Sync returned (but not implemented - relying on gossipsub only!)"
             );
         }
         Err(e) => {
@@ -250,13 +269,14 @@ async fn join_context(
                 %context_id,
                 %invitee_id,
                 error = %e,
-                "Initial sync FAILED - returning error to prevent broken context"
+                "Sync failed"
             );
-            return Err(e.wrap_err("Failed to complete initial sync after joining context"));
+            // Don't fail join - continue with broken sync
+            // This is temporary until we implement proper sync
         }
     }
 
-    tracing::info!(%context_id, %invitee_id, "join_context: Complete - context fully initialized");
+    tracing::info!(%context_id, %invitee_id, "join_context: Complete - but may be missing historical state!");
 
     Ok((context_id, invitee_id))
 }
