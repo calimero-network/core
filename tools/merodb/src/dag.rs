@@ -1,3 +1,5 @@
+pub mod cli;
+
 use borsh::BorshDeserialize;
 use calimero_store::types::{
     ContextDagDelta as StoreContextDagDelta, ContextMeta as StoreContextMeta,

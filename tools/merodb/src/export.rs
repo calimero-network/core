@@ -1,3 +1,5 @@
+pub mod cli;
+
 use borsh::BorshDeserialize;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{CollectionType, Field, Manifest, TypeDef, TypeRef};

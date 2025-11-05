@@ -1,3 +1,5 @@
+pub mod cli;
+
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
 use serde_json::{json, Value};
