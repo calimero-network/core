@@ -74,7 +74,34 @@ pub enum StepDetail {
 
 impl StepDetail {}
 
-/// Walk every plan step, producing a read-only preview without mutating RocksDB.
+/// Generate a comprehensive dry-run report for all migration steps without modifying the database.
+///
+/// This function orchestrates the preview process by:
+/// 1. Extracting the migration plan, source database, and optional ABI manifest from context
+/// 2. Iterating through each step in the plan sequentially
+/// 3. Dispatching each step to its type-specific preview handler
+/// 4. Aggregating individual step reports into a complete migration preview
+///
+/// The dry-run report allows users to:
+/// - Verify filter logic and scope before applying destructive changes
+/// - Review sample keys that will be affected by each operation
+/// - Check verification assertions to predict migration success
+/// - Identify potential issues through accumulated warnings
+///
+/// # Arguments
+///
+/// * `context` - Migration context containing the plan, source database, and ABI manifest
+///
+/// # Returns
+///
+/// A `DryRunReport` containing preview information for all steps in execution order.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Database column families cannot be accessed during scanning
+/// - Key iteration fails due to I/O or corruption issues
+/// - Verification assertion evaluation encounters database errors
 pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     let plan = context.plan();
     let db = context.source().db();
@@ -82,6 +109,7 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
 
     let mut steps = Vec::with_capacity(plan.steps.len());
 
+    // Process each step in order, building preview reports
     for (index, step) in plan.steps.iter().enumerate() {
         let report = match step {
             PlanStep::Copy(copy) => {
@@ -98,7 +126,36 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     Ok(DryRunReport { steps })
 }
 
-/// Preview a `copy` plan step by applying filters, counting matches, and capturing sample keys.
+/// Preview a copy operation by scanning the source column and reporting matched keys.
+///
+/// This function simulates a copy step without performing any writes. It:
+/// 1. Merges plan defaults with step-specific filters to determine the final filter set
+/// 2. Resolves filters into byte-oriented predicates (context IDs, prefixes, ranges, etc.)
+/// 3. Validates ABI decoding configuration and warns if the manifest is missing
+/// 4. Scans the source column to count matching keys and capture representative samples
+/// 5. Assembles a detailed report including match counts, samples, and any warnings
+///
+/// The preview helps users verify:
+/// - Filter logic correctly targets the intended key subset
+/// - Sample keys represent the expected data
+/// - ABI decoding requirements are satisfied
+/// - No unexpected warnings indicate configuration issues
+///
+/// # Arguments
+///
+/// * `index` - Zero-based position of this step in the migration plan
+/// * `step` - The copy step configuration from the plan
+/// * `defaults` - Plan-level defaults that may override step settings
+/// * `db` - Source database handle for reading keys
+/// * `abi_manifest` - Optional ABI manifest for validating decode_with_abi requests
+///
+/// # Returns
+///
+/// A `StepReport` containing match counts, sample keys, filter summary, and warnings.
+///
+/// # Errors
+///
+/// Returns an error if the column family doesn't exist or key iteration fails.
 fn preview_copy_step(
     index: usize,
     step: &CopyStep,
@@ -106,9 +163,11 @@ fn preview_copy_step(
     db: &DBWithThreadMode<SingleThreaded>,
     abi_manifest: Option<&Manifest>,
 ) -> Result<StepReport> {
+    // Merge plan-level and step-level filters to get the effective filter set
     let filters = defaults.merge_filters(&step.filters);
     let mut resolved = ResolvedFilters::resolve(step.column, &filters);
 
+    // Check if ABI decoding is requested and validate manifest availability
     let decode_with_abi = defaults.effective_decode_with_abi(step.transform.decode_with_abi);
     if decode_with_abi && abi_manifest.is_none() {
         resolved
@@ -116,6 +175,7 @@ fn preview_copy_step(
             .push("decode_with_abi requested but source ABI manifest is unavailable".into());
     }
 
+    // Scan the source column to count matches and collect sample keys
     let scan = scan_column(db, step.column, &resolved)?;
 
     let detail = StepDetail::Copy { decode_with_abi };
@@ -130,15 +190,46 @@ fn preview_copy_step(
     })
 }
 
-/// Preview a `delete` plan step using the same scan routine as copy.
+/// Preview a delete operation by identifying which keys would be removed.
+///
+/// This function simulates a delete step without performing any removals. The preview
+/// process is similar to copy steps but without ABI validation since delete operations
+/// only need to identify keys, not decode their values. It:
+/// 1. Merges plan defaults with step-specific filters
+/// 2. Resolves filters into concrete byte predicates
+/// 3. Scans the target column to count and sample keys that match deletion criteria
+/// 4. Reports the scope of deletion with warnings about any filter resolution issues
+///
+/// Users can use this preview to:
+/// - Verify deletion scope matches expectations before applying destructive changes
+/// - Review sample keys to ensure no unintended data would be deleted
+/// - Catch filter configuration errors early
+///
+/// # Arguments
+///
+/// * `index` - Zero-based position of this step in the migration plan
+/// * `step` - The delete step configuration from the plan
+/// * `defaults` - Plan-level defaults that may override step settings
+/// * `db` - Database handle for scanning keys (source or target depending on context)
+///
+/// # Returns
+///
+/// A `StepReport` containing the count of keys to delete, sample keys, and warnings.
+///
+/// # Errors
+///
+/// Returns an error if the column family doesn't exist or key iteration fails.
 fn preview_delete_step(
     index: usize,
     step: &DeleteStep,
     defaults: &PlanDefaults,
     db: &DBWithThreadMode<SingleThreaded>,
 ) -> Result<StepReport> {
+    // Merge and resolve filters to determine deletion scope
     let filters = defaults.merge_filters(&step.filters);
     let resolved = ResolvedFilters::resolve(step.column, &filters);
+
+    // Scan the column to identify keys that would be deleted
     let scan = scan_column(db, step.column, &resolved)?;
 
     Ok(StepReport {
@@ -151,10 +242,33 @@ fn preview_delete_step(
     })
 }
 
-/// Summarise an `upsert` plan step; iterates literal entries to build previews.
+/// Preview an upsert operation by summarizing the literal key-value entries to be written.
+///
+/// Unlike copy and delete steps which scan the database, upsert steps contain explicit
+/// key-value pairs defined in the migration plan. This function simply summarizes those
+/// entries without any database access. It:
+/// 1. Counts the total number of entries to be inserted/updated
+/// 2. Generates preview strings for up to SAMPLE_LIMIT entries showing keys and values
+/// 3. Returns a report with no filter summary or warnings (since no scanning occurs)
+///
+/// The preview helps users:
+/// - Verify the exact keys and values that will be written
+/// - Confirm the number of entries matches expectations
+/// - Spot any encoding or formatting issues in the plan data
+///
+/// # Arguments
+///
+/// * `index` - Zero-based position of this step in the migration plan
+/// * `step` - The upsert step configuration containing literal entries
+/// * `_defaults` - Plan-level defaults (unused for upsert but kept for consistency)
+///
+/// # Returns
+///
+/// A `StepReport` with entry count, sample previews, and no warnings or filter summary.
 fn preview_upsert_step(index: usize, step: &UpsertStep, _defaults: &PlanDefaults) -> StepReport {
     let mut samples = Vec::new();
 
+    // Collect sample previews for the first few entries
     for entry in step.entries.iter().take(SAMPLE_LIMIT) {
         samples.push(format!(
             "key={} value={}",
@@ -175,17 +289,53 @@ fn preview_upsert_step(index: usize, step: &UpsertStep, _defaults: &PlanDefaults
     }
 }
 
-/// Inspect a `verify` plan step by scanning matches and evaluating the assertion immediately.
+/// Preview a verification step by evaluating its assertion against the current database state.
+///
+/// Verification steps allow migration plans to assert preconditions or postconditions
+/// about database state. During dry-run, these assertions are evaluated immediately to
+/// predict whether the migration would succeed. This function:
+/// 1. Merges and resolves filters to identify the key set for verification
+/// 2. Scans the database to count matching keys and collect samples
+/// 3. Evaluates the assertion (expected count, min/max count, key presence/absence)
+/// 4. Reports pass/fail status with a human-readable summary
+/// 5. Accumulates warnings from both filter resolution and assertion evaluation
+///
+/// This preview is crucial for:
+/// - Identifying verification failures before applying any changes
+/// - Understanding why an assertion might fail based on current data
+/// - Validating that filters correctly scope the verification check
+///
+/// # Arguments
+///
+/// * `index` - Zero-based position of this step in the migration plan
+/// * `step` - The verify step configuration with assertion and filters
+/// * `defaults` - Plan-level defaults that may override step settings
+/// * `db` - Database handle for counting keys and checking assertions
+///
+/// # Returns
+///
+/// A `StepReport` with match counts, assertion summary, pass/fail status, and warnings.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The column family doesn't exist
+/// - Key iteration fails during scanning
+/// - Assertion evaluation encounters database access errors
 fn preview_verify_step(
     index: usize,
     step: &VerifyStep,
     defaults: &PlanDefaults,
     db: &DBWithThreadMode<SingleThreaded>,
 ) -> Result<StepReport> {
+    // Merge and resolve filters to determine verification scope
     let filters = defaults.merge_filters(&step.filters);
     let mut resolved = ResolvedFilters::resolve(step.column, &filters);
+
+    // Scan the column to count matching keys for assertion evaluation
     let scan = scan_column(db, step.column, &resolved)?;
 
+    // Evaluate the assertion against the actual match count
     let outcome = evaluate_assertion(db, step.column, &step.assertion, scan.matched)?;
     resolved.warnings.extend(outcome.warnings);
 
@@ -202,19 +352,59 @@ fn preview_verify_step(
     })
 }
 
-/// Lightweight summary of a column scan.
+/// Compact scan result containing match count and representative sample keys.
+///
+/// This struct provides a lightweight summary of a column scan operation without
+/// storing all matched keys in memory. It's designed for dry-run previews where
+/// users need:
+/// - An accurate count of how many keys match the filter criteria
+/// - A small set of sample keys to verify the filter logic is correct
 struct ScanResult {
+    /// Total number of keys that matched the filter predicates
     matched: usize,
+    /// Up to SAMPLE_LIMIT representative keys, formatted for display
     samples: Vec<String>,
 }
 
-/// Iterate a column family, applying resolved filters to count matches and capture samples.
-/// Capture samples are used as sanity checks
+/// Scan a database column family and count/sample keys matching the resolved filters.
+///
+/// This is the core scanning function used by all dry-run step previews. It iterates
+/// through an entire column family from start to finish, applying filter predicates
+/// to each key. The function:
+/// 1. Obtains a handle to the specified column family
+/// 2. Creates a forward iterator starting from the first key
+/// 3. Tests each key against all resolved filter predicates (AND logic)
+/// 4. Increments the match counter for passing keys (with saturating arithmetic)
+/// 5. Captures up to SAMPLE_LIMIT sample keys for preview display
+/// 6. Formats sample keys using structured parsing or hex fallback
+///
+/// # Performance Considerations
+///
+/// This function performs a full table scan, which may be slow for large column families.
+/// However, it's necessary to provide accurate match counts and representative samples.
+/// The SAMPLE_LIMIT prevents unbounded memory growth during sampling.
+///
+/// # Arguments
+///
+/// * `db` - Database handle with access to all column families
+/// * `column` - The specific column family to scan
+/// * `filters` - Resolved filter predicates to apply to each key
+///
+/// # Returns
+///
+/// A `ScanResult` with the total match count and sample keys for display.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The specified column family doesn't exist in the database
+/// - Key iteration fails due to I/O errors or database corruption
 fn scan_column(
     db: &DBWithThreadMode<SingleThreaded>,
     column: Column,
     filters: &ResolvedFilters,
 ) -> Result<ScanResult> {
+    // Obtain a handle to the target column family
     let cf = db
         .cf_handle(column.as_str())
         .ok_or_else(|| eyre::eyre!("Column family '{}' not found", column.as_str()))?;
@@ -222,6 +412,7 @@ fn scan_column(
     let mut matched: usize = 0;
     let mut samples = Vec::new();
 
+    // Iterate through all keys in the column family from the beginning
     let iter = db.iterator_cf(cf, IteratorMode::Start);
     for item in iter {
         let (key, _value) = item.wrap_err_with(|| {
@@ -231,8 +422,12 @@ fn scan_column(
             )
         })?;
 
+        // Apply all filter predicates (AND logic) to determine if this key matches
         if filters.matches(column, &key) {
+            // Use saturating addition to prevent overflow on large datasets
             matched = matched.saturating_add(1);
+
+            // Collect sample keys up to the limit for preview display
             if samples.len() < SAMPLE_LIMIT {
                 samples.push(sample_from_key(column, &key));
             }
@@ -242,7 +437,33 @@ fn scan_column(
     Ok(ScanResult { matched, samples })
 }
 
-/// Render a key either via structured parsing or as a raw hex fallback.
+/// Format a database key for human-readable display in dry-run previews.
+///
+/// This function attempts to parse keys using the column-specific structured format
+/// (e.g., extracting context IDs, state keys, alias names) and serializes the result
+/// as JSON for readability. If parsing fails (malformed keys, short keys, etc.), it
+/// falls back to displaying the raw hex representation.
+///
+/// # Key Parsing Strategy
+///
+/// 1. **First attempt**: Use `types::parse_key()` to decode the key structure
+///    - Success: Serialize the parsed structure as JSON
+///    - JSON serialization failure: Fall back to hex
+/// 2. **Parse failure**: Display as `raw_hex=<hex_string>`
+///
+/// This dual approach ensures that:
+/// - Well-formed keys are displayed in a structured, understandable format
+/// - Malformed or unexpected keys are still visible for debugging
+/// - All keys have a displayable representation (no data loss)
+///
+/// # Arguments
+///
+/// * `column` - The column family context for parsing key structure
+/// * `key` - Raw key bytes to format
+///
+/// # Returns
+///
+/// A human-readable string representation, either as JSON or hex-encoded bytes.
 fn sample_from_key(column: Column, key: &[u8]) -> String {
     types::parse_key(column, key).map_or_else(
         |_| format!("raw_hex={}", hex::encode(key)),

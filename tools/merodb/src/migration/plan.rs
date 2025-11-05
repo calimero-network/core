@@ -26,6 +26,21 @@ impl PlanVersion {
         self.0
     }
 
+    /// Validate that this plan version is supported by the current migration engine.
+    ///
+    /// Migration plans include a version number to enable compatibility checks and allow
+    /// graceful evolution of the plan schema over time. This method ensures the plan version
+    /// matches the current engine's supported version, preventing issues from running plans
+    /// with incompatible features or semantics.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the version matches the latest supported version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error with a descriptive message if the plan version is not supported,
+    /// indicating both the plan's version and the currently supported version.
     pub fn ensure_supported(self) -> Result<()> {
         if self == Self::latest() {
             return Ok(());
@@ -78,10 +93,37 @@ pub struct MigrationPlan {
 }
 
 impl MigrationPlan {
-    /// Ensure version compatibility, non-empty endpoints, and that every step passes its own invariants.
+    /// Perform comprehensive validation of the entire migration plan structure.
+    ///
+    /// This method orchestrates validation across all components of a migration plan to
+    /// ensure it's well-formed and safe to execute. The validation process:
+    /// 1. **Version check**: Ensures the plan version is supported by this engine
+    /// 2. **Endpoint validation**: Verifies source and target database paths are non-empty
+    /// 3. **Defaults validation**: Checks plan-level defaults for consistency
+    /// 4. **Non-empty steps**: Requires at least one migration step
+    /// 5. **Step validation**: Recursively validates each step's configuration
+    ///
+    /// Validation catches common errors early:
+    /// - Empty or missing database paths
+    /// - Malformed filter configurations
+    /// - Invalid key ranges (start >= end)
+    /// - Empty upsert entry lists
+    /// - Blank jq transformation expressions
+    /// - Unsupported plan versions
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the plan is valid and ready for execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns a detailed error describing the first validation failure encountered,
+    /// including context about which part of the plan failed validation (e.g., step index,
+    /// field name).
     pub fn validate(&self) -> Result<()> {
         // Reject plans that target an unsupported schema version.
         self.version.ensure_supported()?;
+
         // Source, target, and defaults perform their own path/filter validations.
         self.source.validate("source")?;
         if let Some(target) = &self.target {
@@ -112,7 +154,27 @@ pub struct SourceEndpoint {
 }
 
 impl SourceEndpoint {
-    /// Ensure provided paths are not empty strings so downstream checks may trust them.
+    /// Validate that the source database path is non-empty and properly configured.
+    ///
+    /// This method performs early validation on the source endpoint configuration to
+    /// ensure that:
+    /// 1. The database path is not an empty string
+    /// 2. If a WASM ABI file is specified, its path is not empty
+    ///
+    /// This prevents downstream errors during database opening and ensures that path
+    /// strings are usable for filesystem operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages (e.g., "source")
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if all paths are valid and non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the db_path is empty or if wasm_file is Some but empty.
     fn validate(&self, context: &str) -> Result<()> {
         ensure!(
             !self.db_path.as_os_str().is_empty(),
@@ -137,7 +199,27 @@ pub struct TargetEndpoint {
 }
 
 impl TargetEndpoint {
-    /// Ensure the plan points at usable path strings.
+    /// Validate that the target database path and optional backup directory are non-empty.
+    ///
+    /// This method performs early validation on the target endpoint configuration to
+    /// ensure that:
+    /// 1. The database path is not an empty string
+    /// 2. If a backup directory is specified, its path is not empty
+    ///
+    /// This prevents downstream errors during database opening and backup operations,
+    /// ensuring that path strings are usable for filesystem operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages (e.g., "target")
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if all paths are valid and non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the db_path is empty or if backup_dir is Some but empty.
     fn validate(&self, context: &str) -> Result<()> {
         ensure!(
             !self.db_path.as_os_str().is_empty(),
@@ -168,17 +250,63 @@ pub struct PlanDefaults {
 }
 
 impl PlanDefaults {
+    /// Validate that the default filters are well-formed.
+    ///
+    /// This method delegates to the filter validation logic to ensure that plan-level
+    /// default filters are properly configured. Since defaults can be inherited by
+    /// multiple steps, early validation prevents propagating invalid filter configurations
+    /// throughout the migration.
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages (e.g., "defaults")
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the default filters are valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the default filters are invalid (e.g., invalid key range bounds).
     fn validate(&self, context: &str) -> Result<()> {
         self.filters.validate(&format!("{context}.filters"))?;
         Ok(())
     }
 
-    /// Combine default filters with step-specific filters, preferring step overrides when present.
+    /// Merge plan-level default filters with step-specific filter overrides.
+    ///
+    /// This method implements the filter inheritance mechanism where steps can override
+    /// plan-level defaults while keeping unspecified filters from defaults. The merging
+    /// strategy ensures that:
+    /// - Step-specific filters take precedence over plan defaults
+    /// - Unspecified step filters inherit from plan defaults
+    /// - Empty filter collections replace defaults (explicit override, not inheritance)
+    ///
+    /// # Arguments
+    ///
+    /// * `overrides` - Step-specific filters that may override plan defaults
+    ///
+    /// # Returns
+    ///
+    /// A new `PlanFilters` instance with the merged configuration.
     pub fn merge_filters(&self, overrides: &PlanFilters) -> PlanFilters {
         self.filters.merged_with(overrides)
     }
 
-    /// Resolve the effective `decode_with_abi` flag, allowing step overrides to take precedence.
+    /// Determine the effective decode_with_abi flag considering both defaults and overrides.
+    ///
+    /// This method implements a three-level priority system for the `decode_with_abi` setting:
+    /// 1. **Step override** (highest priority): If the step explicitly sets this flag, use it
+    /// 2. **Plan default**: If the plan defaults specify this flag, use it
+    /// 3. **Engine default** (lowest priority): Fall back to `false` if neither is specified
+    ///
+    /// # Arguments
+    ///
+    /// * `override_flag` - Optional step-level override for decode_with_abi
+    ///
+    /// # Returns
+    ///
+    /// The effective boolean value to use for ABI decoding in this step.
     pub fn effective_decode_with_abi(&self, override_flag: Option<bool>) -> bool {
         override_flag.or(self.decode_with_abi).unwrap_or(false)
     }
@@ -209,6 +337,23 @@ pub struct PlanFilters {
 }
 
 impl PlanFilters {
+    /// Validate that all filter fields are well-formed and usable.
+    ///
+    /// This method checks filter configuration for common errors:
+    /// - **Key ranges**: Must have at least one bound (start or end) specified
+    /// - Other filters are validated during resolution (hex decoding, etc.)
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if all filters are valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key_range is Some but has both start and end empty.
     fn validate(&self, context: &str) -> Result<()> {
         if let Some(range) = &self.key_range {
             range.validate(&format!("{context}.key_range"))?;
@@ -216,6 +361,15 @@ impl PlanFilters {
         Ok(())
     }
 
+    /// Check whether any filters are configured in this filter set.
+    ///
+    /// This method determines if the filter set is completely empty (no filters specified)
+    /// or if at least one filter is configured. Empty filter sets match all keys in the
+    /// column, while non-empty sets apply filtering logic.
+    ///
+    /// # Returns
+    ///
+    /// `true` if no filters are configured (matches all keys), `false` if any filter is set.
     pub const fn is_empty(&self) -> bool {
         self.context_ids.is_empty()
             && self.context_aliases.is_empty()
@@ -225,6 +379,24 @@ impl PlanFilters {
             && self.key_range.is_none()
     }
 
+    /// Generate a human-readable summary of active filters for display in reports.
+    ///
+    /// This method creates a concise, comma-separated representation of all non-empty
+    /// filters configured in this filter set. It's used in dry-run reports and execution
+    /// logs to help users understand which filters are being applied to each step.
+    ///
+    /// The summary includes:
+    /// - **context_ids**: Count of specified context IDs (not the IDs themselves)
+    /// - **context_aliases**: Pipe-separated list of alias names
+    /// - **state_key_prefix**: The prefix string for State column filtering
+    /// - **raw_key_prefix**: The raw byte prefix for low-level filtering
+    /// - **alias_name**: The specific alias name filter
+    /// - **key_range**: Lexicographic range bounds in abbreviated form
+    ///
+    /// # Returns
+    ///
+    /// `Some(String)` with a formatted summary if any filters are active,
+    /// `None` if no filters are configured (matches all keys).
     pub fn summary(&self) -> Option<String> {
         let mut parts = Vec::new();
 
@@ -257,7 +429,32 @@ impl PlanFilters {
         }
     }
 
-    /// Merge two filter sets, where empty/`None` fields in `overrides` inherit from `self`.
+    /// Merge two filter sets with override semantics for step-level customization.
+    ///
+    /// This method implements the core filter inheritance mechanism used throughout the
+    /// migration system. It combines plan-level default filters with step-specific overrides,
+    /// using the following rules for each filter type:
+    ///
+    /// **For collection filters** (context_ids, context_aliases):
+    /// - If override is **empty**: Inherit from base
+    /// - If override is **non-empty**: Use override (replaces base entirely)
+    ///
+    /// **For optional filters** (state_key_prefix, raw_key_prefix, alias_name, key_range):
+    /// - If override is **None**: Inherit from base
+    /// - If override is **Some**: Use override value
+    ///
+    /// This allows steps to:
+    /// - Inherit default filters by leaving fields unspecified
+    /// - Override specific filters while keeping others from defaults
+    /// - Explicitly clear inherited filters (e.g., empty vec, None)
+    ///
+    /// # Arguments
+    ///
+    /// * `overrides` - Step-specific filter configuration that may override base filters
+    ///
+    /// # Returns
+    ///
+    /// A new `PlanFilters` instance with the merged configuration.
     pub fn merged_with(&self, overrides: &Self) -> Self {
         Self {
             context_ids: if overrides.context_ids.is_empty() {
@@ -298,6 +495,24 @@ pub struct KeyRange {
 }
 
 impl KeyRange {
+    /// Validate that the key range has at least one non-empty bound.
+    ///
+    /// This method ensures that a KeyRange filter is meaningful by requiring at least
+    /// one of `start` or `end` to be specified and non-empty. A key range with both
+    /// bounds missing or empty would match all keys, which should be expressed by
+    /// omitting the key_range filter entirely.
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if at least one bound is specified and non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if both start and end are None or empty strings.
     fn validate(&self, context: &str) -> Result<()> {
         if self.start.as_deref().is_none_or(str::is_empty)
             && self.end.as_deref().is_none_or(str::is_empty)
@@ -307,6 +522,15 @@ impl KeyRange {
         Ok(())
     }
 
+    /// Generate a compact string representation of the key range for display.
+    ///
+    /// This method creates a human-readable summary using Rust's range syntax
+    /// (e.g., "aaa..zzz") for use in logs, reports, and error messages. Empty
+    /// bounds are shown as empty strings.
+    ///
+    /// # Returns
+    ///
+    /// A string in the format "start..end" where either bound may be empty if unspecified.
     pub fn summary(&self) -> String {
         let start = self.start.as_deref().unwrap_or("");
         let end = self.end.as_deref().unwrap_or("");
@@ -325,6 +549,29 @@ pub enum PlanStep {
 }
 
 impl PlanStep {
+    /// Delegate validation to the specific step type implementation.
+    ///
+    /// This method performs comprehensive validation for the specific step type,
+    /// ensuring that all required fields are present and properly configured. Each
+    /// step type has its own validation requirements:
+    ///
+    /// - **Copy**: Validates filters and transformations (jq expression non-empty)
+    /// - **Delete**: Validates filters for proper configuration
+    /// - **Upsert**: Ensures at least one entry is present and validates each entry
+    /// - **Verify**: Validates filters and assertion configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The step's position in the migration plan (0-based), used for error context
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the step is valid and ready for execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns a detailed error describing the validation failure, including the step
+    /// index and specific field that failed validation.
     fn validate(&self, index: usize) -> Result<()> {
         match self {
             Self::Copy(step) => step.validate(index),
@@ -334,6 +581,14 @@ impl PlanStep {
         }
     }
 
+    /// Return the kebab-case kind string for this step type.
+    ///
+    /// This method provides the canonical string representation of each step type,
+    /// matching the YAML tag names used in migration plan documents.
+    ///
+    /// # Returns
+    ///
+    /// One of: "copy", "delete", "upsert", or "verify".
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Copy(_) => "copy",
@@ -343,6 +598,15 @@ impl PlanStep {
         }
     }
 
+    /// Extract the optional human-readable name from any step type.
+    ///
+    /// This method retrieves the user-specified name field (if present) from a step.
+    /// Step names are optional and appear in CLI output, logs, and error messages to
+    /// help users identify specific steps in multi-step migrations.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&str)` if the step has a name, `None` otherwise.
     pub fn name(&self) -> Option<&str> {
         match self {
             Self::Copy(step) => step.name.as_deref(),
@@ -352,7 +616,15 @@ impl PlanStep {
         }
     }
 
-    /// Column against which the step operates.
+    /// Extract the column family that this step operates on.
+    ///
+    /// Every migration step targets a specific RocksDB column family (State, Meta,
+    /// Config, Identity, Delta, Alias, Application, or Generic). This method provides
+    /// uniform access to the column field across all step types.
+    ///
+    /// # Returns
+    ///
+    /// The `Column` that this step will read from or write to.
     pub const fn column(&self) -> Column {
         match self {
             Self::Copy(step) => step.column,
@@ -362,7 +634,18 @@ impl PlanStep {
         }
     }
 
-    /// Optional column filters that apply to the step.
+    /// Extract the filter configuration from steps that support filtering.
+    ///
+    /// This method provides access to the filter configuration for steps that scan
+    /// database contents (Copy, Delete, Verify). Upsert steps don't have filters
+    /// because they write literal key-value entries without scanning.
+    ///
+    /// The returned filters may be merged with plan-level defaults before being
+    /// applied during execution.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&PlanFilters)` for Copy, Delete, and Verify steps, `None` for Upsert.
     pub const fn filters(&self) -> Option<&PlanFilters> {
         match self {
             Self::Copy(step) => Some(&step.filters),
@@ -385,6 +668,24 @@ pub struct CopyStep {
 }
 
 impl CopyStep {
+    /// Validate that filters and transformation configuration are well-formed.
+    ///
+    /// This method ensures that the copy step's configuration is valid by:
+    /// 1. Validating the filters (key ranges, context IDs, prefixes)
+    /// 2. Validating the transformation (jq expression must be non-empty if specified)
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The step's position in the migration plan (0-based), used for error context
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the copy step is valid and ready for execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if filters or transformations are invalid (e.g., empty jq expression,
+    /// invalid key range bounds).
     fn validate(&self, index: usize) -> Result<()> {
         self.filters
             .validate(&format!("steps[{index}].copy.filters"))?;
@@ -404,6 +705,23 @@ pub struct CopyTransform {
 }
 
 impl CopyTransform {
+    /// Validate that the transformation configuration is well-formed.
+    ///
+    /// This method ensures that if a jq transformation expression is specified, it
+    /// contains actual content and is not just whitespace. Empty jq expressions would
+    /// cause runtime errors during transformation, so they're rejected early.
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the transformation is valid or not specified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the jq field is Some but contains only whitespace.
     fn validate(&self, context: &str) -> Result<()> {
         if let Some(jq) = &self.jq {
             ensure!(
@@ -414,6 +732,16 @@ impl CopyTransform {
         Ok(())
     }
 
+    /// Generate a human-readable summary of active transformations for display.
+    ///
+    /// This method creates a concise representation of the copy transformation
+    /// configuration, showing which transformations are enabled. It's used in
+    /// dry-run reports and execution logs.
+    ///
+    /// # Returns
+    ///
+    /// `Some(String)` with transformation details if any are configured,
+    /// `None` if no transformations are active (straight copy).
     pub fn summary(&self) -> Option<String> {
         let mut parts = Vec::new();
         if let Some(flag) = self.decode_with_abi {
@@ -440,6 +768,23 @@ pub struct DeleteStep {
 }
 
 impl DeleteStep {
+    /// Validate that the delete step's filter configuration is well-formed.
+    ///
+    /// This method ensures that the delete step's filters are valid by checking:
+    /// 1. Key range bounds are properly specified (at least start or end)
+    /// 2. All filter fields are consistent and non-empty where required
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The step's position in the migration plan (0-based), used for error context
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the delete step is valid and ready for execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if filters are invalid (e.g., invalid key range configuration).
     fn validate(&self, index: usize) -> Result<()> {
         self.filters
             .validate(&format!("steps[{index}].delete.filters"))?;
@@ -456,6 +801,24 @@ pub struct UpsertStep {
 }
 
 impl UpsertStep {
+    /// Validate that the upsert step has at least one entry and all entries are well-formed.
+    ///
+    /// This method ensures that the upsert step's configuration is valid by:
+    /// 1. Requiring at least one key-value entry (empty upserts are meaningless)
+    /// 2. Validating each entry's key and value encoding (hex, base64, utf8, json)
+    /// 3. Ensuring encoded values are non-empty where required
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The step's position in the migration plan (0-based), used for error context
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the upsert step has valid entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entries list is empty or if any entry has invalid encoding.
     fn validate(&self, index: usize) -> Result<()> {
         if self.entries.is_empty() {
             bail!("steps[{index}].upsert.entries must contain at least one entry");
@@ -474,6 +837,25 @@ pub struct UpsertEntry {
 }
 
 impl UpsertEntry {
+    /// Validate that both the key and value are properly encoded and non-empty.
+    ///
+    /// This method ensures that an upsert entry's key-value pair is well-formed by
+    /// validating both the key and value encodings. For hex, base64, and utf8 encodings,
+    /// this checks that the data is non-empty after trimming whitespace.
+    ///
+    /// # Arguments
+    ///
+    /// * `step_index` - The parent step's position in the migration plan (0-based)
+    /// * `entry_index` - This entry's position within the upsert entries list (0-based)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if both key and value are valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error with detailed context if either the key or value is invalid
+    /// (e.g., empty string for hex/base64/utf8 encoding).
     fn validate(&self, step_index: usize, entry_index: usize) -> Result<()> {
         self.key.validate(&format!(
             "steps[{step_index}].upsert.entries[{entry_index}].key"
@@ -496,6 +878,23 @@ pub enum EncodedValue {
 }
 
 impl EncodedValue {
+    /// Validate that the encoded value contains actual data.
+    ///
+    /// This method ensures that encoded values are meaningful and not just whitespace.
+    /// For hex, base64, and utf8 encodings, it checks that the data string is non-empty
+    /// after trimming. JSON values are always considered valid as they're structured data.
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the value contains actual data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a hex/base64/utf8 data field is empty or contains only whitespace.
     fn validate(&self, context: &str) -> Result<()> {
         match self {
             Self::Hex { data } | Self::Base64 { data } | Self::Utf8 { data } => {
@@ -509,7 +908,27 @@ impl EncodedValue {
         Ok(())
     }
 
-    /// Decode the encoded value into raw bytes for key comparison.
+    /// Decode the encoded value into raw bytes for database operations.
+    ///
+    /// This method converts the encoded representation (hex, base64, utf8, or json)
+    /// into the raw byte sequence that will be used as a database key or value.
+    ///
+    /// **Encoding rules**:
+    /// - **Hex**: Decodes hex string (with or without "0x" prefix) to bytes
+    /// - **Base64**: Decodes standard base64 string to bytes
+    /// - **Utf8**: Converts string to UTF-8 bytes
+    /// - **Json**: Serializes JSON value to string, then converts to bytes
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` containing the decoded bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Hex string contains invalid hex characters
+    /// - Base64 string is malformed
+    /// - (Utf8 and Json encodings always succeed)
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         match self {
             Self::Hex { data } => {
@@ -522,6 +941,14 @@ impl EncodedValue {
         }
     }
 
+    /// Return the kebab-case encoding type name for this value.
+    ///
+    /// This method provides the canonical string representation of the encoding type,
+    /// matching the YAML tag names used in migration plan documents.
+    ///
+    /// # Returns
+    ///
+    /// One of: "hex", "base64", "utf8", or "json".
     pub const fn encoding_label(&self) -> &'static str {
         match self {
             Self::Hex { .. } => "hex",
@@ -531,6 +958,25 @@ impl EncodedValue {
         }
     }
 
+    /// Generate a truncated preview of the encoded value for display in logs and reports.
+    ///
+    /// This method creates a human-readable preview of the value by truncating it to
+    /// the specified maximum character length. If the value exceeds the limit, it's
+    /// truncated and an ellipsis (…) is appended. This is useful for displaying keys
+    /// and values in verification summaries without overwhelming the output.
+    ///
+    /// **Character counting**:
+    /// - Counts Unicode characters, not bytes
+    /// - Truncates at character boundaries (won't split grapheme clusters incorrectly)
+    /// - Uses Unicode ellipsis (…) for truncation indicator
+    ///
+    /// # Arguments
+    ///
+    /// * `max_len` - Maximum number of characters to include before truncation
+    ///
+    /// # Returns
+    ///
+    /// A string representation of the value, truncated if longer than `max_len`.
     pub fn preview(&self, max_len: usize) -> String {
         fn truncate(value: &str, max_len: usize) -> String {
             let mut truncated = String::new();
@@ -569,6 +1015,27 @@ pub struct VerifyStep {
 }
 
 impl VerifyStep {
+    /// Validate that filters and assertion configuration are well-formed.
+    ///
+    /// This method ensures that the verify step's configuration is valid by:
+    /// 1. Validating the filters (key ranges, context IDs, prefixes)
+    /// 2. Validating the assertion (encoded keys must be decodable)
+    ///
+    /// Verification steps are critical for ensuring database state integrity, so
+    /// early validation prevents runtime failures during migration execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The step's position in the migration plan (0-based), used for error context
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the verify step is valid and ready for execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if filters or assertions are invalid (e.g., empty key encoding,
+    /// invalid key range bounds).
     fn validate(&self, index: usize) -> Result<()> {
         self.filters
             .validate(&format!("steps[{index}].verify.filters"))?;
@@ -595,6 +1062,23 @@ pub enum VerificationAssertion {
 }
 
 impl VerificationAssertion {
+    /// Validate that the assertion is well-formed and can be evaluated.
+    ///
+    /// This method ensures that assertion parameters are valid:
+    /// - **Count assertions** (ExpectedCount, MinCount, MaxCount): Always valid (numeric checks)
+    /// - **Key assertions** (ContainsKey, MissingKey): Validates that encoded keys are non-empty
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - Error context string for detailed failure messages
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the assertion can be evaluated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a ContainsKey or MissingKey assertion has an empty key encoding.
     fn validate(&self, context: &str) -> Result<()> {
         match self {
             Self::ExpectedCount { .. } | Self::MinCount { .. } | Self::MaxCount { .. } => {}
@@ -608,6 +1092,22 @@ impl VerificationAssertion {
         Ok(())
     }
 
+    /// Generate a human-readable summary of the assertion for display in reports.
+    ///
+    /// This method creates a concise, descriptive string explaining what the assertion
+    /// checks. It's used in dry-run previews and verification step output to help users
+    /// understand what conditions will be verified.
+    ///
+    /// **Summary formats**:
+    /// - **ExpectedCount**: "expect count == N"
+    /// - **MinCount**: "expect count >= N"
+    /// - **MaxCount**: "expect count <= N"
+    /// - **ContainsKey**: "expect key present (encoding, preview: ...)"
+    /// - **MissingKey**: "expect key missing (encoding, preview: ...)"
+    ///
+    /// # Returns
+    ///
+    /// A human-readable assertion summary string.
     pub fn summary(&self) -> String {
         match self {
             Self::ExpectedCount { expected_count } => {
