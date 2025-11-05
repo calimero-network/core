@@ -159,6 +159,11 @@ impl ContextManager {
         // Delegate to repository
         self.repository.get(context_id)
     }
+
+    /// Invalidate a context's cache entry (called after external metadata updates).
+    pub(crate) fn invalidate_context_cache(&mut self, context_id: &ContextId) {
+        self.repository.invalidate(context_id);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

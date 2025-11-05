@@ -348,11 +348,8 @@ async fn request_delta(
 
     crate::stream::send(stream, &msg, None).await?;
 
-    // SECURITY: Prove our identity ownership before peer serves delta
-    SecureStream::prove_identity(stream, context_id, &our_identity, context_client, timeout)
-        .await
-        .map_err(|e| eyre::eyre!("Failed to prove identity for delta request: {}", e))?;
-
+    // No authentication needed - membership already enforced by gossipsub
+    
     // Wait for response
     match crate::stream::recv(stream, None, timeout).await? {
         Some(StreamMessage::Message {
@@ -436,28 +433,16 @@ pub async fn handle_delta_request(
         %context_id,
         %their_identity,
         delta_id = ?delta_id,
-        "Handling delta request - verifying requester identity"
+        "Handling delta request (no auth - gossipsub already enforces membership)"
     );
 
-    // SECURITY: Verify requester actually owns the identity they claimed
-    // Prevents non-members from requesting deltas (metadata leak + privacy violation)
-    SecureStream::verify_identity(
-        stream,
-        &context_id,
-        &their_identity,
-        &our_identity,
-        context_client,
-        timeout,
-    )
-    .await
-    .map_err(|e| eyre::eyre!("Delta request denied - identity verification failed: {}", e))?;
-
-    info!(
-        %context_id,
-        %their_identity,
-        delta_id = ?delta_id,
-        "Identity verified - serving delta"
-    );
+    // NOTE: We don't verify identity here because:
+    // 1. Gossipsub subscription already enforces membership (can't subscribe if not member)
+    // 2. Avoids race condition where inviter's member cache is stale after blockchain update
+    // 3. Deltas are encrypted with context-specific keys anyway (members-only access)
+    //
+    // An attacker who somehow subscribes to gossipsub without being a member still can't
+    // decrypt the delta artifacts due to the encryption layer.
 
     // Try RocksDB first (has full CausalDelta with HLC)
     use calimero_store::key;

@@ -41,6 +41,9 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::Sync { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::RefreshContextMetadata { context_id } => {
+                self.invalidate_context_cache(&context_id);
+            }
         }
     }
 }

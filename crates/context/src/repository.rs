@@ -227,6 +227,13 @@ impl ContextRepository {
         Ok(())
     }
 
+    /// Invalidate a context's cache entry (forces reload from DB on next access).
+    ///
+    /// Used after external updates to context metadata (e.g., delta application).
+    pub fn invalidate(&mut self, context_id: &ContextId) {
+        self.cache.pop(context_id);
+    }
+
     /// Update the application ID for a cached context.
     ///
     /// If the context is not in cache, this is a no-op.

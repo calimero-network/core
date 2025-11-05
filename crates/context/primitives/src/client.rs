@@ -95,6 +95,11 @@ impl ContextClient {
 
         handle.put(&key::ContextMeta::new(*context_id), &context)?;
 
+        // Invalidate ContextManager's cache (force reload from DB on next access)
+        let _ignored = self.context_manager.send(ContextMessage::RefreshContextMetadata {
+            context_id: *context_id,
+        });
+
         Ok(())
     }
 
