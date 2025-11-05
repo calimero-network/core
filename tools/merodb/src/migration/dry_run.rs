@@ -595,6 +595,7 @@ mod tests {
         PlanFilters, PlanStep, PlanVersion, SourceEndpoint, UpsertEntry, UpsertStep,
         VerificationAssertion, VerifyStep,
     };
+    use crate::migration::test_utils::DbFixture;
     use crate::types::Column;
     use eyre::ensure;
     use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
@@ -1223,6 +1224,765 @@ mod tests {
 
         // Note: The actual error would occur during execution (--apply mode)
         // when the JQ transform is actually applied to the data
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test that scanning an empty database (no keys) returns zero matches.
+    ///
+    /// This test ensures the dry-run engine handles databases with no data gracefully,
+    /// which is important for:
+    /// - New/empty target databases
+    /// - Filters that match nothing
+    /// - Verification steps that should detect missing data
+    ///
+    /// Expected behavior: matched_keys should be 0, no samples, no errors.
+    fn dry_run_empty_database_returns_zero_matches() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        // Create an empty database with all column families but no data
+        let _fixture = DbFixture::new(&db_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-from-empty".into()),
+                column: Column::State,
+                filters: PlanFilters::default(), // No filters, scan everything
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+
+        ensure!(
+            copy.matched_keys == 0,
+            "expected 0 matched keys in empty database, got {}",
+            copy.matched_keys
+        );
+        ensure!(
+            copy.samples.is_empty(),
+            "expected no samples from empty database"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test filters that match zero keys even in a populated database.
+    ///
+    /// This test verifies that when filters are too restrictive and match nothing,
+    /// the dry-run engine:
+    /// - Returns 0 matches without errors
+    /// - Doesn't generate spurious samples
+    /// - Properly reports the filter summary
+    ///
+    /// Real-world scenario: Typo in context_id, or filtering for data that doesn't exist.
+    fn dry_run_filters_matching_nothing() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        // Use a context ID that doesn't exist in the database
+        // setup_db creates entries with context_id 0x11..11
+        let nonexistent_context = hex::encode([0xAA; 32]);
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-nonexistent-context".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![nonexistent_context],
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+
+        ensure!(
+            copy.matched_keys == 0,
+            "expected 0 matches for nonexistent context, got {}",
+            copy.matched_keys
+        );
+        ensure!(
+            copy.samples.is_empty(),
+            "expected no samples when no keys match"
+        );
+        ensure!(
+            copy.filters_summary.is_some(),
+            "expected filters summary to be present"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test behavior with malformed keys shorter than expected context ID size.
+    ///
+    /// This test verifies the engine's resilience when encountering keys that don't
+    /// conform to expected layouts. Specifically:
+    /// - State column keys should be 64 bytes (32 context_id + 32 state_key)
+    /// - Other context-based columns need at least 32 bytes for context_id
+    /// - Keys shorter than this cannot be parsed for context ID extraction
+    ///
+    /// Expected behavior: Short keys should not match context_id filters since the
+    /// extract_context_id function returns None for keys < 32 bytes, causing the
+    /// filter to reject them (see matches() implementation line 495-501).
+    fn dry_run_handles_malformed_short_keys() -> Result<()> {
+        use super::super::test_utils::short_key;
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        // Create database and insert both valid and invalid keys
+        let fixture = DbFixture::new(&db_path)?;
+
+        // Insert a valid State entry
+        fixture.insert_state_entry(&[0x11; 32], &[0x22; 32], b"valid-value")?;
+
+        // Insert a malformed Generic entry (too short to have a context ID)
+        fixture.insert_generic_entry(&short_key(16), b"malformed-value")?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![
+                // This should match the valid State entry
+                PlanStep::Copy(CopyStep {
+                    name: Some("copy-state".into()),
+                    column: Column::State,
+                    filters: PlanFilters {
+                        context_ids: vec![hex::encode([0x11; 32])],
+                        ..PlanFilters::default()
+                    },
+                    transform: CopyTransform::default(),
+                }),
+                // This should match the malformed Generic entry (no context filter)
+                PlanStep::Copy(CopyStep {
+                    name: Some("copy-generic-unfiltered".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    transform: CopyTransform::default(),
+                }),
+            ],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 2, "expected two steps");
+
+        // Step 1: Valid State entry should match
+        let state_step = &report.steps[0];
+        ensure!(
+            state_step.matched_keys == 1,
+            "expected 1 match for valid State entry, got {}",
+            state_step.matched_keys
+        );
+
+        // Step 2: Generic short key should be found when no filters applied
+        let generic_step = &report.steps[1];
+        ensure!(
+            generic_step.matched_keys == 1,
+            "expected 1 match for unfiltered Generic scan, got {}",
+            generic_step.matched_keys
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test that verification with ExpectedCount assertion works correctly.
+    ///
+    /// This test covers the ExpectedCount verification assertion path which was not
+    /// tested before. ExpectedCount requires an exact match of the filtered row count.
+    ///
+    /// Test strategy:
+    /// - Insert known number of entries (2)
+    /// - Run ExpectedCount verification with matching count (should pass)
+    /// - Run ExpectedCount verification with wrong count (should fail)
+    ///
+    /// This exercises evaluate_assertion() lines 281-290.
+    fn dry_run_verify_expected_count() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        // Create database with exactly 2 entries for the same context
+        let fixture = DbFixture::new(&db_path)?;
+        fixture.insert_state_entry(&[0x11; 32], &[0x22; 32], b"value-1")?;
+        fixture.insert_state_entry(&[0x11; 32], &[0x33; 32], b"value-2")?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![
+                // Should pass: exact count matches
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-exact-count-pass".into()),
+                    column: Column::State,
+                    filters: PlanFilters {
+                        context_ids: vec![hex::encode([0x11; 32])],
+                        ..PlanFilters::default()
+                    },
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 2 },
+                }),
+                // Should fail: count doesn't match
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-exact-count-fail".into()),
+                    column: Column::State,
+                    filters: PlanFilters {
+                        context_ids: vec![hex::encode([0x11; 32])],
+                        ..PlanFilters::default()
+                    },
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 3 },
+                }),
+            ],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 2, "expected two steps");
+
+        // First verification should pass
+        let verify_pass = &report.steps[0];
+        match &verify_pass.detail {
+            StepDetail::Verify { passed, summary } => {
+                ensure!(
+                    passed == &Some(true),
+                    "expected ExpectedCount(2) to pass with 2 entries"
+                );
+                ensure!(
+                    summary.contains("PASS"),
+                    "expected PASS in summary, got: {summary}"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        // Second verification should fail
+        let verify_fail = &report.steps[1];
+        match &verify_fail.detail {
+            StepDetail::Verify { passed, summary } => {
+                ensure!(
+                    passed == &Some(false),
+                    "expected ExpectedCount(3) to fail with 2 entries"
+                );
+                ensure!(
+                    summary.contains("FAIL"),
+                    "expected FAIL in summary, got: {summary}"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test ContainsKey verification assertion with existing and missing keys.
+    ///
+    /// This test covers the ContainsKey verification path (evaluate_assertion lines 314-338).
+    /// ContainsKey checks if a specific key exists in the database using a direct RocksDB
+    /// get operation (not filtering).
+    ///
+    /// Test cases:
+    /// - Key that exists in the database (should pass)
+    /// - Key that doesn't exist (should fail)
+    ///
+    /// This is useful for verifying that critical keys exist after a migration.
+    fn dry_run_verify_contains_key() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        let fixture = DbFixture::new(&db_path)?;
+        // Insert a known Generic entry with a specific key
+        fixture.insert_generic_entry(b"known-key", b"known-value")?;
+
+        // Encode the keys we'll check for
+        let existing_key = EncodedValue::Utf8 {
+            data: "known-key".into(),
+        };
+        let missing_key = EncodedValue::Utf8 {
+            data: "nonexistent-key".into(),
+        };
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![
+                // Should pass: key exists
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-key-exists".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ContainsKey {
+                        contains_key: existing_key,
+                    },
+                }),
+                // Should fail: key doesn't exist
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-key-missing".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ContainsKey {
+                        contains_key: missing_key,
+                    },
+                }),
+            ],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 2, "expected two steps");
+
+        // First verification should pass (key exists)
+        let verify_exists = &report.steps[0];
+        match &verify_exists.detail {
+            StepDetail::Verify { passed, summary } => {
+                ensure!(
+                    passed == &Some(true),
+                    "expected ContainsKey to pass for existing key"
+                );
+                ensure!(
+                    summary.contains("present") && summary.contains("PASS"),
+                    "expected 'present' and 'PASS' in summary, got: {summary}"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        // Second verification should fail (key missing)
+        let verify_missing = &report.steps[1];
+        match &verify_missing.detail {
+            StepDetail::Verify { passed, summary } => {
+                ensure!(
+                    passed == &Some(false),
+                    "expected ContainsKey to fail for missing key"
+                );
+                ensure!(
+                    summary.contains("missing") && summary.contains("FAIL"),
+                    "expected 'missing' and 'FAIL' in summary, got: {summary}"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test MissingKey verification assertion.
+    ///
+    /// This test covers the MissingKey verification path (evaluate_assertion lines 340-365).
+    /// MissingKey is the inverse of ContainsKey - it passes when a key does NOT exist.
+    ///
+    /// Use case: Verify that certain keys were successfully deleted or never existed
+    /// in the target database.
+    ///
+    /// Test cases:
+    /// - Key that doesn't exist (should pass)
+    /// - Key that exists (should fail)
+    fn dry_run_verify_missing_key() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        let fixture = DbFixture::new(&db_path)?;
+        fixture.insert_generic_entry(b"existing-key", b"some-value")?;
+
+        let existing_key = EncodedValue::Utf8 {
+            data: "existing-key".into(),
+        };
+        let truly_missing_key = EncodedValue::Utf8 {
+            data: "this-key-does-not-exist".into(),
+        };
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![
+                // Should pass: key is indeed missing
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-key-absent".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::MissingKey {
+                        missing_key: truly_missing_key,
+                    },
+                }),
+                // Should fail: key actually exists
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-key-should-be-missing-but-exists".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::MissingKey {
+                        missing_key: existing_key,
+                    },
+                }),
+            ],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 2, "expected two steps");
+
+        // First verification should pass (key is missing)
+        let verify_absent = &report.steps[0];
+        match &verify_absent.detail {
+            StepDetail::Verify { passed, summary } => {
+                ensure!(
+                    passed == &Some(true),
+                    "expected MissingKey to pass when key doesn't exist"
+                );
+                ensure!(
+                    summary.contains("missing") && summary.contains("PASS"),
+                    "expected 'missing' and 'PASS' in summary, got: {summary}"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        // Second verification should fail (key exists when it shouldn't)
+        let verify_exists = &report.steps[1];
+        match &verify_exists.detail {
+            StepDetail::Verify { passed, summary } => {
+                ensure!(
+                    passed == &Some(false),
+                    "expected MissingKey to fail when key exists"
+                );
+                ensure!(
+                    summary.contains("present") && summary.contains("FAIL"),
+                    "expected 'present' and 'FAIL' in summary, got: {summary}"
+                );
+            }
+            other => return Err(eyre::eyre!("expected verify detail, found {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test state_key_prefix filter for State column.
+    ///
+    /// The state_key_prefix filter operates on the second half of State column keys.
+    /// State keys are 64 bytes: [context_id: 32 bytes][state_key: 32 bytes]
+    /// state_key_prefix matches keys where bytes [32..] start with the prefix.
+    ///
+    /// This is different from raw_key_prefix which matches from byte 0.
+    ///
+    /// Test validates:
+    /// - Keys with matching state_key prefix are included
+    /// - Keys with non-matching state_key prefix are excluded
+    /// - Filter only works on State column (implementation lines 504-514)
+    fn dry_run_filters_state_key_prefix() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        let fixture = DbFixture::new(&db_path)?;
+        let ctx_id = [0x11; 32];
+
+        // Insert entries with different state key prefixes
+        // State key starting with "user_"
+        let mut user_key = [0_u8; 32];
+        user_key[..5].copy_from_slice(b"user_");
+        fixture.insert_state_entry(&ctx_id, &user_key, b"user-data")?;
+
+        // State key starting with "config_"
+        let mut config_key = [0_u8; 32];
+        config_key[..7].copy_from_slice(b"config_");
+        fixture.insert_state_entry(&ctx_id, &config_key, b"config-data")?;
+
+        // State key starting with "user_admin"
+        let mut user_admin_key = [0_u8; 32];
+        user_admin_key[..11].copy_from_slice(b"user_admin_");
+        fixture.insert_state_entry(&ctx_id, &user_admin_key, b"admin-data")?;
+
+        // Filter for state keys starting with "user_"
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-user-state".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode(ctx_id)],
+                    state_key_prefix: Some("user_".into()),
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+
+        // Should match 2 entries: "user_" and "user_admin_", but not "config_"
+        ensure!(
+            copy.matched_keys == 2,
+            "expected 2 matches for state_key_prefix 'user_', got {}",
+            copy.matched_keys
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test key_range filter with start and end bounds.
+    ///
+    /// The key_range filter applies lexicographic bounds to keys:
+    /// - key_range.start: inclusive lower bound (key >= start)
+    /// - key_range.end: exclusive upper bound (key < end)
+    ///
+    /// This is useful for:
+    /// - Partitioning large datasets
+    /// - Migrating specific ranges of keys
+    /// - Testing specific subsets of data
+    ///
+    /// Implementation: ResolvedFilters::matches() lines 522-532
+    fn dry_run_filters_key_range() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        let fixture = DbFixture::new(&db_path)?;
+
+        // Insert Generic entries with keys in known lexicographic order
+        fixture.insert_generic_entry(b"aaa", b"value-1")?;
+        fixture.insert_generic_entry(b"bbb", b"value-2")?;
+        fixture.insert_generic_entry(b"ccc", b"value-3")?;
+        fixture.insert_generic_entry(b"ddd", b"value-4")?;
+        fixture.insert_generic_entry(b"eee", b"value-5")?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-range-b-to-d".into()),
+                column: Column::Generic,
+                filters: PlanFilters {
+                    key_range: Some(crate::migration::plan::KeyRange {
+                        start: Some(hex::encode(b"bbb")), // inclusive: >= "bbb"
+                        end: Some(hex::encode(b"ddd")),   // exclusive: < "ddd"
+                    }),
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+
+        // Should match "bbb" and "ccc" but not "aaa", "ddd", or "eee"
+        ensure!(
+            copy.matched_keys == 2,
+            "expected 2 matches in range [bbb, ddd), got {}",
+            copy.matched_keys
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test combining multiple filters (context_id + raw_key_prefix).
+    ///
+    /// When multiple filters are specified, they are ANDed together - a key must
+    /// satisfy ALL filters to match. This test verifies that behavior.
+    ///
+    /// Test scenario:
+    /// - Two contexts with different data
+    /// - Apply both context_id AND raw_key_prefix filters
+    /// - Only keys matching BOTH conditions should be included
+    ///
+    /// This exercises the ResolvedFilters::matches() AND logic where each filter
+    /// returns false if it doesn't match (lines 494-549).
+    fn dry_run_filters_combined_context_and_prefix() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        let fixture = DbFixture::new(&db_path)?;
+
+        // Context 0x11 with various state keys
+        fixture.insert_state_entry(&[0x11; 32], &[0xAA; 32], b"value-11-aa")?;
+        fixture.insert_state_entry(&[0x11; 32], &[0xBB; 32], b"value-11-bb")?;
+
+        // Context 0x22 with similar state keys
+        fixture.insert_state_entry(&[0x22; 32], &[0xAA; 32], b"value-22-aa")?;
+        fixture.insert_state_entry(&[0x22; 32], &[0xBB; 32], b"value-22-bb")?;
+
+        // Filter for context 0x11 AND keys starting with 0x11 (the context ID bytes)
+        // This will match context 0x11 entries because State keys are [context_id][state_key]
+        // and raw_key_prefix applies to the full key from byte 0
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-context-11-with-prefix".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    raw_key_prefix: Some(hex::encode([0x11; 32])), // Same as context ID
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+
+        // Should match both entries from context 0x11 (both start with 0x11)
+        // Should NOT match context 0x22 entries (different context_id)
+        ensure!(
+            copy.matched_keys == 2,
+            "expected 2 matches for combined filters, got {}",
+            copy.matched_keys
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Edge case: Test that non-State columns (like Meta) work with context_id filters.
+    ///
+    /// Context ID filtering works across multiple column types:
+    /// - State, Meta, Config, Identity, Delta all store context_id in first 32 bytes
+    /// - Generic and Alias columns have different layouts
+    ///
+    /// This test verifies the extract_context_id function (lines 563-574) works
+    /// correctly for Meta column, which has structure: [context_id: 32][meta_key: variable]
+    fn dry_run_filters_context_id_on_meta_column() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        let fixture = DbFixture::new(&db_path)?;
+
+        // Insert Meta entries for two different contexts
+        fixture.insert_meta_entry(&[0x11; 32], b"metadata_key_1", b"meta-value-1")?;
+        fixture.insert_meta_entry(&[0x11; 32], b"metadata_key_2", b"meta-value-2")?;
+        fixture.insert_meta_entry(&[0x22; 32], b"metadata_key_3", b"meta-value-3")?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-meta-context-11".into()),
+                column: Column::Meta,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let report = generate_report(&context)?;
+
+        ensure!(report.steps.len() == 1, "expected one step");
+        let copy = &report.steps[0];
+
+        // Should match 2 Meta entries from context 0x11
+        ensure!(
+            copy.matched_keys == 2,
+            "expected 2 Meta entries for context 0x11, got {}",
+            copy.matched_keys
+        );
 
         Ok(())
     }

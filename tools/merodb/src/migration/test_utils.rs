@@ -60,6 +60,45 @@ impl DbFixture {
         Ok(())
     }
 
+    /// Insert a generic column entry (simple key-value pair).
+    pub fn insert_generic_entry(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let db =
+            DB::open_cf_descriptors(&Self::default_opts(), &self.path, Self::cf_descriptors())?;
+        let cf_generic = db
+            .cf_handle(Column::Generic.as_str())
+            .ok_or_else(|| eyre::eyre!("Generic column family not found"))?;
+
+        let mut batch = WriteBatch::default();
+        batch.put_cf(cf_generic, key, value);
+        db.write(batch)?;
+
+        Ok(())
+    }
+
+    /// Insert a Meta column entry (context_id + metadata_key structure).
+    pub fn insert_meta_entry(
+        &self,
+        context_id: &[u8; 32],
+        meta_key: &[u8],
+        value: &[u8],
+    ) -> Result<()> {
+        let db =
+            DB::open_cf_descriptors(&Self::default_opts(), &self.path, Self::cf_descriptors())?;
+        let cf_meta = db
+            .cf_handle(Column::Meta.as_str())
+            .ok_or_else(|| eyre::eyre!("Meta column family not found"))?;
+
+        let mut full_key = Vec::with_capacity(32 + meta_key.len());
+        full_key.extend_from_slice(context_id);
+        full_key.extend_from_slice(meta_key);
+
+        let mut batch = WriteBatch::default();
+        batch.put_cf(cf_meta, full_key, value);
+        db.write(batch)?;
+
+        Ok(())
+    }
+
     fn default_opts() -> Options {
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -83,6 +122,11 @@ pub fn test_context_id(byte: u8) -> [u8; 32] {
 /// Helper to create test state keys from simple byte patterns.
 pub fn test_state_key(byte: u8) -> [u8; 32] {
     [byte; 32]
+}
+
+/// Helper to create a short (malformed) key for testing edge cases.
+pub fn short_key(len: usize) -> Vec<u8> {
+    vec![0xFF; len]
 }
 
 #[cfg(test)]

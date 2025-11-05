@@ -189,6 +189,8 @@ Additional helper methods can be added as needed for future test scenarios.
 
 ### 5.2 Test Coverage
 
+#### Core Functionality Tests
+
 | Test Module                                     | Purpose                                                                                          |
 |-------------------------------------------------|--------------------------------------------------------------------------------------------------|
 | `migration::plan::validation_tests`             | Ensures invalid plans are rejected (unsupported version, empty steps, malformed filters, etc.). |
@@ -202,7 +204,22 @@ Additional helper methods can be added as needed for future test scenarios.
 | `migration::dry_run::tests::dry_run_filters_raw_key_prefix` | Tests raw_key_prefix filter functionality.                                        |
 | `migration::test_utils::tests`                  | Tests the test utilities themselves (fixture creation, entry insertion).                         |
 
-The test suite covers all step types (copy, delete, upsert, verify), filter resolution (context IDs, raw key prefixes), and various verification assertions.
+#### Edge Case Tests
+
+| Test Module                                     | Purpose                                                                                          |
+|-------------------------------------------------|--------------------------------------------------------------------------------------------------|
+| `dry_run_empty_database_returns_zero_matches`   | Verifies graceful handling of empty databases (no keys to match).                                |
+| `dry_run_filters_matching_nothing`              | Tests filters that are too restrictive and match zero keys in a populated database.              |
+| `dry_run_handles_malformed_short_keys`          | Tests resilience against keys shorter than expected (< 32 bytes for context ID).                 |
+| `dry_run_verify_expected_count`                 | Tests ExpectedCount assertion with both passing and failing scenarios.                           |
+| `dry_run_verify_contains_key`                   | Tests ContainsKey assertion for verifying key existence.                                         |
+| `dry_run_verify_missing_key`                    | Tests MissingKey assertion for verifying key absence.                                            |
+| `dry_run_filters_state_key_prefix`              | Tests state_key_prefix filter which operates on bytes [32..] of State keys.                     |
+| `dry_run_filters_key_range`                     | Tests lexicographic key_range filtering with start (inclusive) and end (exclusive) bounds.       |
+| `dry_run_filters_combined_context_and_prefix`   | Tests combining multiple filters (context_id AND raw_key_prefix) using AND logic.               |
+| `dry_run_filters_context_id_on_meta_column`     | Tests that context_id filtering works on non-State columns (Meta, Config, Identity, Delta).     |
+
+The test suite covers all step types (copy, delete, upsert, verify), filter resolution (context IDs, state key prefixes, raw key prefixes, key ranges), all verification assertions (ExpectedCount, MinCount, MaxCount, ContainsKey, MissingKey), and comprehensive edge cases including empty databases, malformed keys, filter combinations, and different column types.
 
 ---
 
