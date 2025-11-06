@@ -52,10 +52,11 @@ pub fn create_security_headers(
     // Add CSP if enabled
     if config.csp.enabled {
         let csp_value = format!(
-            "default-src {}; script-src {}; style-src {};",
+            "default-src {}; script-src {}; style-src {}; connect-src {};",
             config.csp.default_src.join(" "),
             config.csp.script_src.join(" "),
             config.csp.style_src.join(" "),
+            config.csp.connect_src.join(" "),
         );
         if let Ok(value) = HeaderValue::from_str(&csp_value) {
             headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(

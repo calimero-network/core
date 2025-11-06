@@ -155,6 +155,28 @@ impl SyncManager {
 
                     requested_ctx = ctx;
                     requested_peer = peer;
+
+                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
+                    // When multiple contexts join rapidly (common in E2E tests), they all
+                    // call sync() which queues requests in ctx_sync_rx. The old code only
+                    // processed ONE request per loop iteration, leaving contexts 2-N queued
+                    // indefinitely. This caused those contexts to never sync and remain
+                    // with dag_heads=[] and Uninitialized errors.
+                    //
+                    // Solution: Use try_recv() to drain all buffered requests immediately,
+                    // then trigger a full sync that will process all contexts.
+                    let mut drained_count = 0;
+                    while ctx_sync_rx.try_recv().is_ok() {
+                        drained_count += 1;
+                    }
+
+                    if drained_count > 0 {
+                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
+                        // Clear requested_ctx to force syncing ALL contexts
+                        // This ensures newly-joined contexts get synced even if they weren't first in queue
+                        requested_ctx = None;
+                        requested_peer = None;
+                    }
                 }
             }
 
