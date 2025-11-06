@@ -35,7 +35,9 @@ mod helpers;
 mod key;
 mod manager;
 mod peer_selector;
+mod request_queue;
 pub(crate) mod stream;
+mod stream_responder;
 mod tracking;
 
 pub use config::SyncConfig;

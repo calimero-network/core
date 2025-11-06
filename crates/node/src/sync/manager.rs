@@ -27,6 +27,8 @@ use crate::utils::choose_stream;
 use super::config::SyncConfig;
 use super::dag_bootstrapper::DagBootstrapper;
 use super::peer_selector::PeerSelector;
+use super::request_queue::RequestQueue;
+use super::stream_responder::StreamResponder;
 use super::tracking::{SyncProtocol, SyncState};
 
 /// Network synchronization manager.
@@ -41,9 +43,10 @@ pub struct SyncManager {
     pub(crate) network_client: NetworkClient,
     pub(super) node_state: crate::NodeState,
 
-    pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+    request_queue: Option<RequestQueue>,
     peer_selector: PeerSelector,
     dag_bootstrapper: DagBootstrapper,
+    stream_responder: StreamResponder,
 }
 
 impl Clone for SyncManager {
@@ -54,7 +57,7 @@ impl Clone for SyncManager {
             context_client: self.context_client.clone(),
             network_client: self.network_client.clone(),
             node_state: self.node_state.clone(),
-            ctx_sync_rx: None, // Receiver can't be cloned
+            request_queue: None,
             peer_selector: PeerSelector::new(
                 self.sync_config.clone(),
                 self.network_client.clone(),
@@ -64,6 +67,12 @@ impl Clone for SyncManager {
                 self.sync_config.clone(),
                 self.context_client.clone(),
                 self.network_client.clone(),
+                self.node_state.clone(),
+            ),
+            stream_responder: super::stream_responder::StreamResponder::new(
+                self.sync_config.clone(),
+                self.node_client.clone(),
+                self.context_client.clone(),
                 self.node_state.clone(),
             ),
         }
@@ -92,15 +101,25 @@ impl SyncManager {
             node_state.clone(),
         );
 
+        let stream_responder = StreamResponder::new(
+            sync_config.clone(),
+            node_client.clone(),
+            context_client.clone(),
+            node_state.clone(),
+        );
+
+        let request_queue = RequestQueue::new(ctx_sync_rx);
+
         Self {
             sync_config,
             node_client,
             context_client,
             network_client,
             node_state,
-            ctx_sync_rx: Some(ctx_sync_rx),
+            request_queue: Some(request_queue),
             peer_selector,
             dag_bootstrapper,
+            stream_responder,
         }
     }
 
@@ -164,7 +183,7 @@ impl SyncManager {
         let mut requested_ctx = None;
         let mut requested_peer = None;
 
-        let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
+        let Some(mut request_queue) = self.request_queue.take() else {
             error!("SyncManager can only be run once");
 
             return;
@@ -178,33 +197,15 @@ impl SyncManager {
                 Some(()) = async {
                     loop { advance(&mut futs, &mut state).await? }
                 } => {},
-                Some((ctx, peer)) = ctx_sync_rx.recv() => {
-                    info!(?ctx, ?peer, "Received sync request");
+                Some(event) = request_queue.next() => {
+                    info!(ctx=?event.original_ctx, peer=?event.original_peer, "Received sync request");
 
-                    requested_ctx = ctx;
-                    requested_peer = peer;
-
-                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
-                    // When multiple contexts join rapidly (common in E2E tests), they all
-                    // call sync() which queues requests in ctx_sync_rx. The old code only
-                    // processed ONE request per loop iteration, leaving contexts 2-N queued
-                    // indefinitely. This caused those contexts to never sync and remain
-                    // with dag_heads=[] and Uninitialized errors.
-                    //
-                    // Solution: Use try_recv() to drain all buffered requests immediately,
-                    // then trigger a full sync that will process all contexts.
-                    let mut drained_count = 0;
-                    while ctx_sync_rx.try_recv().is_ok() {
-                        drained_count += 1;
+                    if event.drained_count > 0 {
+                        info!(drained_count = event.drained_count, "Drained additional sync requests from queue, will sync all contexts");
                     }
 
-                    if drained_count > 0 {
-                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
-                        // Clear requested_ctx to force syncing ALL contexts
-                        // This ensures newly-joined contexts get synced even if they weren't first in queue
-                        requested_ctx = None;
-                        requested_peer = None;
-                    }
+                    requested_ctx = event.requested_ctx;
+                    requested_peer = event.requested_peer;
                 }
             }
 
@@ -477,120 +478,7 @@ impl SyncManager {
         Ok(SyncProtocol::None)
     }
 
-    pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
-        loop {
-            match self.internal_handle_opened_stream(&mut stream).await {
-                Ok(None) => break,
-                Ok(Some(())) => {}
-                Err(err) => {
-                    error!(%err, "Failed to handle stream message");
-
-                    if let Err(err) = self
-                        .send(&mut stream, &StreamMessage::OpaqueError, None)
-                        .await
-                    {
-                        error!(%err, "Failed to send error message");
-                    }
-                }
-            }
-        }
-    }
-
-    async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> eyre::Result<Option<()>> {
-        let Some(message) = self.recv(stream, None).await? else {
-            return Ok(None);
-        };
-
-        let (context_id, their_identity, payload, nonce) = match message {
-            StreamMessage::Init {
-                context_id,
-                party_id,
-                payload,
-                next_nonce,
-                ..
-            } => (context_id, party_id, payload, next_nonce),
-            unexpected @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError) => {
-                bail!("expected initialization handshake, got {:?}", unexpected)
-            }
-        };
-
-        let Some(context) = self.context_client.get_context(&context_id)? else {
-            bail!("context not found: {}", context_id);
-        };
-
-        let mut _updated = None;
-
-        if !self
-            .context_client
-            .has_member(&context_id, &their_identity)?
-        {
-            _updated = Some(
-                self.context_client
-                    .sync_context_config(context_id, None)
-                    .await?,
-            );
-
-            if !self
-                .context_client
-                .has_member(&context_id, &their_identity)?
-            {
-                bail!(
-                    "unknown context member {} in context {}",
-                    their_identity,
-                    context_id
-                );
-            }
-        }
-
-        // Note: Concurrent syncs are already prevented by SyncState tracking
-        // in the start() loop. When sync starts, last_sync is set to None.
-        // When complete, it's set to Some(now).
-
-        let identities = self
-            .context_client
-            .get_context_members(&context.id, Some(true));
-
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-            .await
-            .transpose()?
-        else {
-            bail!("no owned identities found for context: {}", context.id);
-        };
-
-        match payload {
-            InitPayload::KeyShare => {
-                self.handle_key_share_request(&context, our_identity, their_identity, stream, nonce)
-                    .await?
-            }
-            InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(
-                    &context,
-                    our_identity,
-                    their_identity,
-                    blob_id,
-                    stream,
-                )
-                .await?
-            }
-            // Old sync protocols removed - DAG uses gossipsub broadcast instead
-            // Streams are only used for: KeyShare, BlobShare, DeltaRequest, DagHeadsRequest
-            InitPayload::DeltaRequest {
-                context_id: requested_context_id,
-                delta_id,
-            } => {
-                // Handle delta request from peer
-                self.handle_delta_request(requested_context_id, delta_id, stream)
-                    .await?
-            }
-            InitPayload::DagHeadsRequest {
-                context_id: requested_context_id,
-            } => {
-                // Handle DAG heads request from peer
-                self.handle_dag_heads_request(requested_context_id, stream, nonce)
-                    .await?
-            }
-        };
-
-        Ok(Some(()))
+    pub async fn handle_opened_stream(&self, stream: Box<Stream>) {
+        self.stream_responder.handle_opened_stream(stream).await;
     }
 }
