@@ -7,9 +7,11 @@ use calimero_primitives::context::ContextId;
 use eyre::{bail, Result};
 use tracing::{error, info};
 
-use super::config::SyncConfig;
-use super::stream::{recv, send};
-use super::tracking::Sequencer;
+use crate::sync::blobs;
+use crate::sync::config::SyncConfig;
+use crate::sync::key;
+use crate::sync::stream::{recv, send};
+use crate::sync::tracking::Sequencer;
 
 #[derive(Clone, Debug)]
 pub(crate) struct StreamResponder {
@@ -72,17 +74,13 @@ impl StreamResponder {
             bail!("context not found: {}", context_id);
         };
 
-        let mut _updated = None;
-
         if !self
             .context_client
             .has_member(&context_id, &their_identity)?
         {
-            _updated = Some(
-                self.context_client
-                    .sync_context_config(context_id, None)
-                    .await?,
-            );
+            self.context_client
+                .sync_context_config(context_id, None)
+                .await?;
 
             if !self
                 .context_client
@@ -149,7 +147,7 @@ impl StreamResponder {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> Result<()> {
-        super::key::handle_key_share_request(
+        key::handle_key_share_request(
             &self.node_client,
             &self.context_client,
             context,
@@ -169,7 +167,7 @@ impl StreamResponder {
         blob_id: calimero_primitives::blobs::BlobId,
         stream: &mut Stream,
     ) -> Result<()> {
-        super::blobs::handle_blob_share_request(
+        blobs::handle_blob_share_request(
             &self.node_client,
             &self.context_client,
             context,
@@ -187,7 +185,7 @@ impl StreamResponder {
         delta_id: [u8; 32],
         stream: &mut Stream,
     ) -> Result<()> {
-        super::delta_request::handle_delta_request(
+        crate::sync::direct::delta_request::handle_delta_request(
             &self.context_client,
             &self.node_state,
             context_id,
@@ -202,7 +200,11 @@ impl StreamResponder {
         context_id: ContextId,
         stream: &mut Stream,
     ) -> Result<()> {
-        super::delta_request::handle_dag_heads_request(&self.context_client, context_id, stream)
-            .await
+        crate::sync::direct::delta_request::handle_dag_heads_request(
+            &self.context_client,
+            context_id,
+            stream,
+        )
+        .await
     }
 }

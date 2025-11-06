@@ -4,6 +4,7 @@
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::Nonce;
+use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::{
@@ -31,10 +32,11 @@ use crate::utils::choose_stream;
 /// 4. Requests missing parents if needed
 /// 5. Executes event handlers
 /// 6. Re-emits events to WebSocket clients
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_state_delta(
     node_clients: crate::NodeClients,
     node_state: crate::NodeState,
-    network_client: calimero_network_primitives::client::NetworkClient,
+    network_client: NetworkClient,
     sync_timeout: std::time::Duration,
     source: PeerId,
     context_id: ContextId,
@@ -135,7 +137,7 @@ pub async fn handle_state_delta(
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
         parents: parent_ids,
-        payload: actions, // Note: renamed from 'actions' to 'payload'
+        payload: actions,
         hlc,
         expected_root_hash: *root_hash,
     };
@@ -161,7 +163,6 @@ pub async fn handle_state_delta(
             .entry(context_id)
             .or_insert_with(|| {
                 is_new = true;
-                // Initialize with root (zero hash for now)
                 DeltaStore::new(
                     [0u8; 32],
                     node_clients.context.clone(),
@@ -170,12 +171,10 @@ pub async fn handle_state_delta(
                 )
             });
 
-        // Convert to owned DeltaStore for async operations
         let delta_store_ref = delta_store.clone();
         (delta_store_ref, is_new)
     };
 
-    // Load persisted deltas on first access to restore DAG topology
     if is_new_store {
         if let Err(e) = delta_store_ref.load_persisted_deltas().await {
             warn!(
@@ -185,7 +184,6 @@ pub async fn handle_state_delta(
             );
         }
 
-        // After loading, check for missing parents and handle any cascaded events
         let missing_result = delta_store_ref.get_missing_parents().await;
         if !missing_result.missing_ids.is_empty() {
             warn!(
@@ -193,12 +191,8 @@ pub async fn handle_state_delta(
                 missing_count = missing_result.missing_ids.len(),
                 "Missing parents after loading persisted deltas - will request from network"
             );
-
-            // Note: We don't request here synchronously because we don't have the source peer
-            // These will be requested when the next delta arrives or via periodic sync
         }
 
-        // Execute handlers for any cascaded deltas from initial load
         if !missing_result.cascaded_events.is_empty() {
             info!(
                 %context_id,
@@ -225,20 +219,15 @@ pub async fn handle_state_delta(
         }
     }
 
-    // Add delta with event data (for cascade handler execution)
     let add_result = delta_store_ref
         .add_delta_with_events(delta, events.clone())
         .await?;
     let mut applied = add_result.applied;
-
-    // Track if we executed handlers for the current delta during cascade
     let mut handlers_already_executed = false;
 
     if !applied {
-        // Delta is pending - check for missing parents
         let missing_result = delta_store_ref.get_missing_parents().await;
 
-        // Execute handlers for cascaded deltas from DB load (including this delta if it cascaded)
         if !missing_result.cascaded_events.is_empty() {
             info!(
                 %context_id,
@@ -247,7 +236,6 @@ pub async fn handle_state_delta(
             );
 
             for (cascaded_id, events_data) in &missing_result.cascaded_events {
-                // Check if this is the current delta that cascaded
                 let is_current_delta = *cascaded_id == delta_id;
                 if is_current_delta {
                     info!(
@@ -274,7 +262,6 @@ pub async fn handle_state_delta(
                         )
                         .await?;
 
-                        // Mark that we executed handlers for the current delta
                         if is_current_delta {
                             handlers_already_executed = true;
                         }
@@ -295,7 +282,6 @@ pub async fn handle_state_delta(
                 "Delta pending due to missing parents - requesting them from peer"
             );
 
-            // Request missing deltas (blocking this handler until complete)
             if let Err(e) = request_missing_deltas(
                 network_client,
                 sync_timeout,
@@ -310,9 +296,6 @@ pub async fn handle_state_delta(
                 warn!(?e, %context_id, ?source, "Failed to request missing deltas");
             }
         } else {
-            // No missing parents - the parent deltas exist but may not be applied yet
-            // This can happen when deltas arrive out of order via gossipsub
-            // The delta will cascade and apply when its parents finish applying
             warn!(
                 %context_id,
                 delta_id = ?delta_id,
@@ -321,7 +304,6 @@ pub async fn handle_state_delta(
             );
         }
 
-        // Always re-check if delta was applied via cascade (can happen during request_missing_deltas OR gossipsub)
         let was_cascaded = delta_store_ref.dag_has_delta_applied(&delta_id).await;
         if was_cascaded {
             info!(
@@ -331,9 +313,6 @@ pub async fn handle_state_delta(
             );
             applied = true;
 
-            // Important: If delta cascaded but we haven't executed handlers yet,
-            // and we have events, we need to execute them now.
-            // This can happen if the cascade occurred via another concurrent handler.
             if !handlers_already_executed && events.is_some() {
                 info!(
                     %context_id,
@@ -344,7 +323,6 @@ pub async fn handle_state_delta(
         }
     }
 
-    // Deserialize events ONCE if present (optimization: avoid double parse)
     let events_payload = if let Some(ref events_data) = events {
         match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
             Ok(payload) => Some(payload),
@@ -361,9 +339,6 @@ pub async fn handle_state_delta(
         None
     };
 
-    // Execute event handlers only if the delta was applied AND we haven't already executed them
-    // Note: Handlers are only executed on receiving nodes, not on the author node,
-    // to avoid infinite loops and ensure proper distributed execution.
     if applied && !handlers_already_executed {
         if let Some(ref payload) = events_payload {
             if author_id != our_identity {
@@ -396,13 +371,10 @@ pub async fn handle_state_delta(
         );
     }
 
-    // Emit state mutation to WebSocket clients (frontends)
-    // Use already-parsed events (no re-deserialization!)
     if let Some(payload) = events_payload {
         emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
     }
 
-    // Execute handlers for any cascaded deltas that had stored events
     if !add_result.cascaded_events.is_empty() {
         info!(
             %context_id,
@@ -442,47 +414,6 @@ pub async fn handle_state_delta(
     Ok(())
 }
 
-/// Execute event handlers for received events (from already-parsed payload)
-///
-/// # Handler Execution Model
-///
-/// **IMPORTANTMenuHandlers currently execute **sequentially** in the order they appear
-/// in the events array. Future optimization may execute handlers in **parallel**.
-///
-/// ## Requirements for Application Handlers
-///
-/// Event handlers **MUST** satisfy these properties to be correct:
-///
-/// 1. **CommutativeMenuHandler order must not affect final state
-///    - ✅ SAFE: CRDT operations (Counter::increment, UnorderedMap::insert)
-///    - ❌ UNSAFE: Dependent operations (create → update → delete chains)
-///
-/// 2. **Independent**: Handlers must not share mutable state
-///    - ✅ SAFE: Each handler modifies different CRDT keys
-///    - ❌ UNSAFE: Multiple handlers modifying same entity
-///
-/// 3. **Idempotent**: Re-execution must be safe
-///    - ✅ SAFE: CRDT operations (naturally idempotent)
-///    - ❌ UNSAFE: External API calls (charge_payment, send_email)
-///
-/// 4. **No side effectsMenuHandlers should only modify CRDT state
-///    - ✅ SAFE: Pure state updates
-///    - ❌ UNSAFE: HTTP requests, file I/O, blockchain transactions
-///
-/// ## Current Handler Implementations (Audited 2025-10-27)
-///
-/// All handlers in the codebase are **CRDT-only** operations:
-/// - `kv-store-with-handlers`: All handlers just call `Counter::increment()`
-/// - Other apps: No handlers defined
-///
-/// **VerdictMenuCurrent handlers are **100% safe** for parallel execution.
-///
-/// ## Future Developers
-///
-/// If you're adding handlers that violate these assumptions:
-/// 1. Document why parallelization is unsafe
-/// 2. Consider refactoring to use CRDTs
-/// 3. Or disable parallelization if absolutely necessary
 async fn execute_event_handlers_parsed(
     context_client: &ContextClient,
     context_id: &ContextId,
@@ -529,13 +460,6 @@ async fn execute_event_handlers_parsed(
     Ok(())
 }
 
-/// Emit state mutation event to WebSocket clients (frontends)
-///
-/// Note: This is separate from node-to-node DAG synchronization.
-/// - DAG broadcast (BroadcastMessage::StateDelta) = node-to-node sync
-/// - WebSocket events (NodeEvent::Context) = node-to-frontend updates
-///
-/// Takes already-parsed events to avoid redundant deserialization
 fn emit_state_mutation_event_parsed(
     node_client: &NodeClient,
     context_id: &ContextId,
@@ -561,12 +485,8 @@ fn emit_state_mutation_event_parsed(
     Ok(())
 }
 
-/// Requests missing parent deltas from a peer
-///
-/// Opens a stream to the peer and requests each missing delta sequentially.
-/// Adds successfully retrieved deltas back to the DAG for processing.
 async fn request_missing_deltas(
-    network_client: calimero_network_primitives::client::NetworkClient,
+    network_client: NetworkClient,
     sync_timeout: std::time::Duration,
     context_id: ContextId,
     missing_ids: Vec<[u8; 32]>,
@@ -576,16 +496,12 @@ async fn request_missing_deltas(
 ) -> Result<()> {
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
-    // Open stream to peer
     let mut stream = network_client.open_stream(source).await?;
 
-    // Fetch all missing ancestors, then add them in topological order (oldest first)
     let mut to_fetch = missing_ids;
     let mut fetched_deltas: Vec<(calimero_dag::CausalDelta<Vec<Action>>, [u8; 32])> = Vec::new();
     let mut fetch_count = 0;
 
-    // Phase 1: Fetch ALL missing deltas recursively
-    // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
     while !to_fetch.is_empty() {
         let current_batch = to_fetch.clone();
         to_fetch.clear();
@@ -600,7 +516,6 @@ async fn request_missing_deltas(
                 "Requesting missing parent delta from peer"
             );
 
-            // Send request
             let request_msg = StreamMessage::Init {
                 context_id,
                 party_id: our_identity,
@@ -616,14 +531,12 @@ async fn request_missing_deltas(
 
             crate::sync::stream::send(&mut stream, &request_msg, None).await?;
 
-            // Wait for response
             let timeout_budget = sync_timeout / 3;
             match crate::sync::stream::recv(&mut stream, None, timeout_budget).await? {
                 Some(StreamMessage::Message {
                     payload: MessagePayload::DeltaResponse { delta },
                     ..
                 }) => {
-                    // Deserialize storage delta
                     let storage_delta: calimero_storage::delta::CausalDelta =
                         borsh::from_slice(&delta)?;
 
@@ -634,7 +547,6 @@ async fn request_missing_deltas(
                         "Received missing parent delta"
                     );
 
-                    // Convert to DAG delta
                     let dag_delta = calimero_dag::CausalDelta {
                         id: storage_delta.id,
                         parents: storage_delta.parents.clone(),
@@ -643,16 +555,12 @@ async fn request_missing_deltas(
                         expected_root_hash: storage_delta.expected_root_hash,
                     };
 
-                    // Store for later (don't add to DAG yet!)
                     fetched_deltas.push((dag_delta, missing_id));
 
-                    // Check what parents THIS delta needs
                     for parent_id in &storage_delta.parents {
-                        // Skip genesis
                         if *parent_id == [0; 32] {
                             continue;
                         }
-                        // Skip if we already have it or are about to fetch it
                         if !delta_store.has_delta(parent_id).await
                             && !to_fetch.contains(parent_id)
                             && !fetched_deltas.iter().any(|(d, _)| d.id == *parent_id)
@@ -674,8 +582,6 @@ async fn request_missing_deltas(
         }
     }
 
-    // Phase 2: Add all fetched deltas to DAG in topological order (oldest first)
-    // We fetched breadth-first, so reversing gives us depth-first (ancestors before descendants)
     if !fetched_deltas.is_empty() {
         info!(
             %context_id,
@@ -683,7 +589,6 @@ async fn request_missing_deltas(
             "Adding fetched deltas to DAG in topological order"
         );
 
-        // Reverse so oldest ancestors are added first
         fetched_deltas.reverse();
 
         for (dag_delta, delta_id) in fetched_deltas {
@@ -692,7 +597,6 @@ async fn request_missing_deltas(
             }
         }
 
-        // Log warning for very large syncs (informational, not a hard limit)
         if fetch_count > 1000 {
             warn!(
                 %context_id,
@@ -705,10 +609,8 @@ async fn request_missing_deltas(
     Ok(())
 }
 
-/// Initiate bidirectional key share with a specific peer for a specific author identity
-/// This performs the same cryptographic key exchange as initial sync, but on-demand
 async fn request_key_share_with_peer(
-    network_client: &calimero_network_primitives::client::NetworkClient,
+    network_client: &NetworkClient,
     context_client: &ContextClient,
     context_id: &ContextId,
     author_identity: &PublicKey,
@@ -726,12 +628,9 @@ async fn request_key_share_with_peer(
         "Initiating bidirectional key share with peer"
     );
 
-    // Wrap entire key share in single timeout
     tokio::time::timeout(timeout, async {
-        // Open stream to source peer
         let mut stream = network_client.open_stream(peer).await?;
 
-        // Get our identity for this context
         let identities = context_client.get_context_members(context_id, Some(true));
         let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
             .await
@@ -742,7 +641,6 @@ async fn request_key_share_with_peer(
 
         let our_nonce = rand::thread_rng().gen::<Nonce>();
 
-        // Initiate key share request
         crate::sync::stream::send(
             &mut stream,
             &StreamMessage::Init {
@@ -755,7 +653,6 @@ async fn request_key_share_with_peer(
         )
         .await?;
 
-        // Receive ack from peer
         let Some(ack) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
             bail!("connection closed while awaiting key share handshake");
         };
@@ -771,7 +668,6 @@ async fn request_key_share_with_peer(
             }
         };
 
-        // Now perform bidirectional key exchange
         let mut their_identity = context_client
             .get_identity(context_id, author_identity)?
             .ok_or_eyre("expected peer identity to exist")?;
@@ -783,7 +679,6 @@ async fn request_key_share_with_peer(
 
         let shared_key = SharedKey::new(&private_key, &their_identity.public_key);
 
-        // Send our sender_key
         crate::sync::stream::send(
             &mut stream,
             &StreamMessage::Message {
@@ -795,7 +690,6 @@ async fn request_key_share_with_peer(
         )
         .await?;
 
-        // Receive their sender_key
         let Some(msg) =
             crate::sync::stream::recv(&mut stream, Some((shared_key, their_nonce)), timeout)
                 .await?
@@ -813,7 +707,6 @@ async fn request_key_share_with_peer(
             }
         };
 
-        // Store their sender_key
         their_identity.sender_key = Some(their_sender_key);
         context_client.update_identity(context_id, &their_identity)?;
 
@@ -828,5 +721,5 @@ async fn request_key_share_with_peer(
         Ok(())
     })
     .await
-    .map_err(|_| eyre::eyre!("Timeout during key share with peer"))?
+    .map_err(|_| eyre::eyre!("Timeout during key share with peer"))??
 }

@@ -25,10 +25,10 @@ use tracing::{debug, error, info, warn};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
-use super::dag_bootstrapper::DagBootstrapper;
-use super::peer_selector::PeerSelector;
-use super::request_queue::RequestQueue;
-use super::stream_responder::StreamResponder;
+use super::direct::dag_bootstrapper::DagBootstrapper;
+use super::direct::peer_selector::PeerSelector;
+use super::direct::request_queue::RequestQueue;
+use super::direct::stream_responder::StreamResponder;
 use super::tracking::{SyncProtocol, SyncState};
 
 /// Network synchronization manager.
@@ -69,7 +69,7 @@ impl Clone for SyncManager {
                 self.network_client.clone(),
                 self.node_state.clone(),
             ),
-            stream_responder: super::stream_responder::StreamResponder::new(
+            stream_responder: StreamResponder::new(
                 self.sync_config.clone(),
                 self.node_client.clone(),
                 self.context_client.clone(),

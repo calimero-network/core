@@ -10,10 +10,10 @@ use rand::Rng;
 use tracing::{debug, error, info, warn};
 
 use crate::delta_store::DeltaStore;
-
-use super::config::SyncConfig;
-use super::stream::{recv, send};
-use super::tracking::SyncProtocol;
+use crate::sync::config::SyncConfig;
+use crate::sync::direct::helpers::generate_nonce;
+use crate::sync::stream::{recv, send};
+use crate::sync::tracking::SyncProtocol;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DagBootstrapper {
@@ -345,7 +345,7 @@ impl DagBootstrapper {
                 context_id: *context_id,
                 delta_id,
             },
-            next_nonce: super::helpers::generate_nonce(),
+            next_nonce: generate_nonce(),
         };
 
         send(stream, &msg, None).await?;

@@ -1,12 +1,11 @@
 //! Network event handlers
 //!
-//! **SRP Applied**: Each event type is handled in its own focused module:
-//! - `state_delta.rs` - BroadcastMessage::StateDelta processing
-//! - `stream_opened.rs` - Stream routing (blob vs sync)
-//! - `blob_protocol.rs` - Blob protocol implementation
-//! - This file - Simple event handlers (subscriptions, blobs, listening)
+//! **SRP Applied**: Delegates events to the dedicated broadcast/direct modules:
+//! - `sync::broadcast` handles gossipsub state deltas
+//! - `sync::direct` handles point-to-point stream protocols
 
-use crate::handlers::{state_delta, stream_opened};
+use crate::sync::broadcast::state_delta;
+use crate::sync::direct::ingress;
 
 use actix::{AsyncContext, Handler, WrapFuture};
 use calimero_network_primitives::messages::NetworkEvent;
@@ -216,7 +215,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 stream,
                 protocol,
             } => {
-                stream_opened::handle_stream_opened(self, ctx, peer_id, stream, protocol);
+                ingress::handle_stream_opened(self, ctx, peer_id, stream, protocol);
             }
 
             // Blob events - simple logging (applications can listen to these)

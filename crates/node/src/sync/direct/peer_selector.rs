@@ -10,10 +10,9 @@ use rand::Rng;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info, warn};
 
+use crate::sync::config::SyncConfig;
+use crate::sync::stream::{recv, send};
 use crate::utils::choose_stream;
-
-use super::config::SyncConfig;
-use super::stream::{recv, send};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PeerSelector {

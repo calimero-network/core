@@ -1,5 +1,3 @@
-//! Delta request protocol helpers.
-
 use calimero_context_primitives::client::ContextClient;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{MessagePayload, StreamMessage};
@@ -8,13 +6,11 @@ use calimero_storage::delta::CausalDelta;
 use eyre::{OptionExt, Result};
 use tracing::{debug, info, warn};
 
+use crate::sync::direct::helpers::generate_nonce;
+use crate::sync::stream::send;
+use crate::sync::tracking::Sequencer;
 use crate::NodeState;
 
-use super::helpers::generate_nonce;
-use super::stream::send;
-use super::tracking::Sequencer;
-
-/// Handle incoming delta request from a peer.
 pub(crate) async fn handle_delta_request(
     context_client: &ContextClient,
     node_state: &NodeState,
@@ -110,7 +106,6 @@ pub(crate) async fn handle_delta_request(
     Ok(())
 }
 
-/// Handle incoming DAG heads request from a peer.
 pub(crate) async fn handle_dag_heads_request(
     context_client: &ContextClient,
     context_id: ContextId,

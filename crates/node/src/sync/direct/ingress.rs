@@ -1,20 +1,12 @@
-//! StreamOpened event handling
-//!
-//! **SRP**: This module has ONE job - route incoming streams to the correct handler
-
 use actix::{AsyncContext, WrapFuture};
 use calimero_network_primitives::stream::Stream;
 use libp2p::{PeerId, StreamProtocol};
 use tracing::{debug, info};
 
-use crate::handlers::blob_protocol::handle_blob_protocol_stream;
 use crate::NodeManager;
 
-/// Handles StreamOpened event by routing to blob or sync protocol
-///
-/// Protocol routing:
-/// - `CALIMERO_BLOB_PROTOCOL` → blob_protocol::handle_blob_protocol_stream
-/// - All other protocols → SyncManager::handle_opened_stream
+use super::blob_protocol::handle_blob_protocol_stream;
+
 pub fn handle_stream_opened(
     node_manager: &mut NodeManager,
     ctx: &mut <NodeManager as actix::Actor>::Context,
@@ -22,7 +14,6 @@ pub fn handle_stream_opened(
     stream: Box<Stream>,
     protocol: StreamProtocol,
 ) {
-    // Route streams based on protocol
     if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
         info!(%peer_id, "Routing to blob protocol handler");
         let node_client = node_manager.clients.node.clone();

@@ -2,8 +2,6 @@ use calimero_primitives::context::ContextId;
 use libp2p::PeerId;
 use tokio::sync::mpsc;
 
-/// Event returned from `RequestQueue::next`, describing the queued request and
-/// how many additional requests were drained from the channel.
 #[derive(Debug)]
 pub(crate) struct QueueEvent {
     pub original_ctx: Option<ContextId>,
@@ -13,8 +11,6 @@ pub(crate) struct QueueEvent {
     pub drained_count: usize,
 }
 
-/// Wrapper around the sync request receiver that handles draining bursty
-/// traffic and provides structured events to the `SyncManager`.
 #[derive(Debug)]
 pub(crate) struct RequestQueue {
     rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
@@ -29,7 +25,7 @@ impl RequestQueue {
         let (ctx, peer) = self.rx.recv().await?;
 
         let mut drained = 0usize;
-        while let Ok((_, _)) = self.rx.try_recv() {
+        while let Ok((_ctx, _peer)) = self.rx.try_recv() {
             drained += 1;
         }
 
