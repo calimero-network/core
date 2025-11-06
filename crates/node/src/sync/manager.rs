@@ -17,7 +17,6 @@ use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
-use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
@@ -27,6 +26,7 @@ use tracing::{debug, error, info, warn};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
+use super::peer_selector::PeerSelector;
 use super::tracking::{SyncProtocol, SyncState};
 
 /// Network synchronization manager.
@@ -42,6 +42,7 @@ pub struct SyncManager {
     pub(super) node_state: crate::NodeState,
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+    peer_selector: PeerSelector,
 }
 
 impl Clone for SyncManager {
@@ -53,6 +54,11 @@ impl Clone for SyncManager {
             network_client: self.network_client.clone(),
             node_state: self.node_state.clone(),
             ctx_sync_rx: None, // Receiver can't be cloned
+            peer_selector: PeerSelector::new(
+                self.sync_config.clone(),
+                self.network_client.clone(),
+                self.context_client.clone(),
+            ),
         }
     }
 }
@@ -66,6 +72,12 @@ impl SyncManager {
         node_state: crate::NodeState,
         ctx_sync_rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
     ) -> Self {
+        let peer_selector = PeerSelector::new(
+            sync_config.clone(),
+            network_client.clone(),
+            context_client.clone(),
+        );
+
         Self {
             sync_config,
             node_client,
@@ -73,6 +85,7 @@ impl SyncManager {
             network_client,
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
+            peer_selector,
         }
     }
 
@@ -291,185 +304,18 @@ impl SyncManager {
         context_id: ContextId,
         peer_id: Option<PeerId>,
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
-        if let Some(peer_id) = peer_id {
-            return self.initiate_sync(context_id, peer_id).await;
-        }
+        let candidate_peers = self
+            .peer_selector
+            .candidate_peers(context_id, peer_id)
+            .await?;
 
-        // CRITICAL FIX: Retry peer discovery if mesh is still forming
-        // After subscribing to a context, gossipsub needs time to form the mesh.
-        // We retry a few times with short delays to handle this gracefully.
-        let mut peers = Vec::new();
-        for attempt in 1..=3 {
-            peers = self
-                .network_client
-                .mesh_peers(TopicHash::from_raw(context_id))
-                .await;
-
-            if !peers.is_empty() {
-                break;
-            }
-
-            if attempt < 3 {
-                debug!(
-                    %context_id,
-                    attempt,
-                    "No peers found yet, mesh may still be forming, retrying..."
-                );
-                time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        }
-
-        if peers.is_empty() {
-            bail!("No peers to sync with for context {}", context_id);
-        }
-
-        // Check if we're uninitialized
-        let context = self
-            .context_client
-            .get_context(&context_id)?
-            .ok_or_else(|| eyre::eyre!("Context not found: {}", context_id))?;
-
-        let is_uninitialized = *context.root_hash == [0; 32];
-
-        if is_uninitialized {
-            // When uninitialized, we need to bootstrap from a peer that HAS data
-            // Trying random peers can result in querying other uninitialized nodes
-            info!(
-                %context_id,
-                peer_count = peers.len(),
-                "Node is uninitialized, selecting peer with state for bootstrapping"
-            );
-
-            // Try to find a peer with actual state
-            match self.find_peer_with_state(context_id, &peers).await {
-                Ok(peer_id) => {
-                    info!(%context_id, %peer_id, "Found peer with state, syncing from them");
-                    return self.initiate_sync(context_id, peer_id).await;
-                }
-                Err(e) => {
-                    warn!(%context_id, error = %e, "Failed to find peer with state, falling back to random selection");
-                    // Fall through to random selection
-                }
-            }
-        }
-
-        // Normal sync: try all peers until we find one that works
-        // (for initialized nodes or fallback when we can't find a peer with state)
-        debug!(%context_id, "Using random peer selection for sync");
-        for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
-            if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
+        for peer_id in candidate_peers {
+            if let Ok(result) = self.initiate_sync(context_id, peer_id).await {
                 return Ok(result);
             }
         }
 
         bail!("Failed to sync with any peer for context {}", context_id)
-    }
-
-    /// Find a peer that has state (non-zero root_hash and non-empty DAG heads)
-    ///
-    /// This is critical for bootstrapping newly joined nodes. Without this,
-    /// uninitialized nodes may query other uninitialized nodes, resulting in
-    /// all nodes remaining uninitialized.
-    async fn find_peer_with_state(
-        &self,
-        context_id: ContextId,
-        peers: &[PeerId],
-    ) -> eyre::Result<PeerId> {
-        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
-
-        // Get our identity for handshake
-        let identities = self
-            .context_client
-            .get_context_members(&context_id, Some(true));
-
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-            .await
-            .transpose()?
-        else {
-            bail!("no owned identities found for context: {}", context_id);
-        };
-
-        // Query peers to find one with state
-        for peer_id in peers {
-            debug!(%context_id, %peer_id, "Querying peer for state");
-
-            // Try to open stream and request DAG heads
-            let stream_result = self.network_client.open_stream(*peer_id).await;
-            let mut stream = match stream_result {
-                Ok(s) => s,
-                Err(e) => {
-                    debug!(%context_id, %peer_id, error = %e, "Failed to open stream to peer");
-                    continue;
-                }
-            };
-
-            // Send DAG heads request
-            let request_msg = StreamMessage::Init {
-                context_id,
-                party_id: our_identity,
-                payload: InitPayload::DagHeadsRequest { context_id },
-                next_nonce: {
-                    use rand::Rng;
-                    rand::thread_rng().gen()
-                },
-            };
-
-            if let Err(e) = self.send(&mut stream, &request_msg, None).await {
-                debug!(%context_id, %peer_id, error = %e, "Failed to send DAG heads request");
-                continue;
-            }
-
-            // Receive response with short timeout
-            let timeout_budget = self.sync_config.timeout / 6;
-            let response = match super::stream::recv(&mut stream, None, timeout_budget).await {
-                Ok(Some(resp)) => resp,
-                Ok(None) => {
-                    debug!(%context_id, %peer_id, "No response from peer");
-                    continue;
-                }
-                Err(e) => {
-                    debug!(%context_id, %peer_id, error = %e, "Failed to receive response");
-                    continue;
-                }
-            };
-
-            // Check if peer has state
-            if let StreamMessage::Message {
-                payload:
-                    MessagePayload::DagHeadsResponse {
-                        dag_heads,
-                        root_hash,
-                    },
-                ..
-            } = response
-            {
-                // Peer has state if root_hash is not zeros
-                // (even if dag_heads is empty due to migration/legacy contexts)
-                let has_state = *root_hash != [0; 32];
-
-                debug!(
-                    %context_id,
-                    %peer_id,
-                    heads_count = dag_heads.len(),
-                    %root_hash,
-                    has_state,
-                    "Received DAG heads from peer"
-                );
-
-                if has_state {
-                    info!(
-                        %context_id,
-                        %peer_id,
-                        heads_count = dag_heads.len(),
-                        %root_hash,
-                        "Found peer with state for bootstrapping"
-                    );
-                    return Ok(*peer_id);
-                }
-            }
-        }
-
-        bail!("No peers with state found for context {}", context_id)
     }
 
     async fn initiate_sync(

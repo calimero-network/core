@@ -33,6 +33,7 @@ mod delta_request;
 mod helpers;
 mod key;
 mod manager;
+mod peer_selector;
 pub(crate) mod stream;
 mod tracking;
 
