@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod cli;
 pub mod context;
 pub mod dry_run;

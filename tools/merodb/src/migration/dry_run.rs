@@ -480,7 +480,7 @@ mod tests {
     use crate::migration::context::{MigrationContext, MigrationOverrides};
     use crate::migration::plan::{
         CopyStep, CopyTransform, DeleteStep, EncodedValue, KeyRange, MigrationPlan, PlanDefaults,
-        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, UpsertEntry, UpsertStep,
+        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, StepGuards, UpsertEntry, UpsertStep,
         VerificationAssertion, VerifyStep,
     };
     use crate::migration::test_utils::{test_context_id, test_context_meta, DbFixture};
@@ -534,6 +534,7 @@ mod tests {
                 filters: PlanFilters::default(),
                 decode_with_abi: Some(false),
                 write_if_missing: Some(false),
+                batch_size: None,
             },
             steps: vec![
                 PlanStep::Copy(CopyStep {
@@ -544,6 +545,8 @@ mod tests {
                         ..PlanFilters::default()
                     },
                     transform: CopyTransform::default(),
+                    guards: StepGuards::default(),
+                    batch_size: None,
                 }),
                 PlanStep::Verify(VerifyStep {
                     name: Some("expect-one".into()),
@@ -553,6 +556,7 @@ mod tests {
                         ..PlanFilters::default()
                     },
                     assertion: VerificationAssertion::ExpectedCount { expected_count: 1 },
+                    guards: StepGuards::default(),
                 }),
             ],
         }
@@ -643,6 +647,8 @@ mod tests {
                     context_ids: vec![hex::encode([0x11; 32])],
                     ..PlanFilters::default()
                 },
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -704,6 +710,7 @@ mod tests {
                         },
                     },
                 ],
+                guards: StepGuards::default(),
             })],
         };
 
@@ -784,6 +791,8 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -827,6 +836,7 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 assertion: VerificationAssertion::MinCount { min_count: 1 },
+                guards: StepGuards::default(),
             })],
         };
 
@@ -875,6 +885,7 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 assertion: VerificationAssertion::MaxCount { max_count: 0 },
+                guards: StepGuards::default(),
             })],
         };
 
@@ -942,6 +953,8 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -989,6 +1002,8 @@ mod tests {
                     decode_with_abi: Some(true), // Request ABI decoding
                     jq: None,
                 },
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1039,6 +1054,8 @@ mod tests {
                     decode_with_abi: None,
                     jq: Some("   ".into()), // Empty/whitespace-only JQ expression
                 },
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1093,6 +1110,8 @@ mod tests {
                     decode_with_abi: Some(false),
                     jq: Some(".value.parsed.nonexistent_field".into()), // References non-existent field
                 },
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1148,6 +1167,8 @@ mod tests {
                 column: Column::State,
                 filters: PlanFilters::default(), // No filters, scan everything
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1208,6 +1229,8 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1280,6 +1303,8 @@ mod tests {
                         ..PlanFilters::default()
                     },
                     transform: CopyTransform::default(),
+                    guards: StepGuards::default(),
+                    batch_size: None,
                 }),
                 // This should match the malformed Generic entry (no context filter)
                 PlanStep::Copy(CopyStep {
@@ -1287,6 +1312,8 @@ mod tests {
                     column: Column::Generic,
                     filters: PlanFilters::default(),
                     transform: CopyTransform::default(),
+                    guards: StepGuards::default(),
+                    batch_size: None,
                 }),
             ],
         };
@@ -1356,6 +1383,7 @@ mod tests {
                         ..PlanFilters::default()
                     },
                     assertion: VerificationAssertion::ExpectedCount { expected_count: 2 },
+                    guards: StepGuards::default(),
                 }),
                 // Should fail: count doesn't match
                 PlanStep::Verify(VerifyStep {
@@ -1366,6 +1394,7 @@ mod tests {
                         ..PlanFilters::default()
                     },
                     assertion: VerificationAssertion::ExpectedCount { expected_count: 3 },
+                    guards: StepGuards::default(),
                 }),
             ],
         };
@@ -1457,6 +1486,7 @@ mod tests {
                     assertion: VerificationAssertion::ContainsKey {
                         contains_key: existing_key,
                     },
+                    guards: StepGuards::default(),
                 }),
                 // Should fail: key doesn't exist
                 PlanStep::Verify(VerifyStep {
@@ -1466,6 +1496,7 @@ mod tests {
                     assertion: VerificationAssertion::ContainsKey {
                         contains_key: missing_key,
                     },
+                    guards: StepGuards::default(),
                 }),
             ],
         };
@@ -1555,6 +1586,7 @@ mod tests {
                     assertion: VerificationAssertion::MissingKey {
                         missing_key: truly_missing_key,
                     },
+                    guards: StepGuards::default(),
                 }),
                 // Should fail: key actually exists
                 PlanStep::Verify(VerifyStep {
@@ -1564,6 +1596,7 @@ mod tests {
                     assertion: VerificationAssertion::MissingKey {
                         missing_key: existing_key,
                     },
+                    guards: StepGuards::default(),
                 }),
             ],
         };
@@ -1664,6 +1697,8 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1730,6 +1765,8 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1798,6 +1835,8 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 
@@ -1856,6 +1895,8 @@ mod tests {
                     ..PlanFilters::default()
                 },
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         };
 

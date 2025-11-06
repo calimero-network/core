@@ -141,7 +141,7 @@ mod tests {
     use crate::migration::dry_run::generate_report;
     use crate::migration::plan::{
         CopyStep, CopyTransform, MigrationPlan, PlanDefaults, PlanFilters, PlanStep, PlanVersion,
-        SourceEndpoint, VerificationAssertion, VerifyStep,
+        SourceEndpoint, StepGuards, VerificationAssertion, VerifyStep,
     };
     use eyre::{ensure, eyre, Result};
     use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
@@ -188,6 +188,7 @@ mod tests {
                 filters: PlanFilters::default(),
                 decode_with_abi: Some(false),
                 write_if_missing: Some(false),
+                batch_size: None,
             },
             steps: vec![
                 PlanStep::Copy(CopyStep {
@@ -198,6 +199,8 @@ mod tests {
                         ..PlanFilters::default()
                     },
                     transform: CopyTransform::default(),
+                    guards: StepGuards::default(),
+                    batch_size: None,
                 }),
                 PlanStep::Verify(VerifyStep {
                     name: Some("expect-one".into()),
@@ -207,6 +210,7 @@ mod tests {
                         ..PlanFilters::default()
                     },
                     assertion: VerificationAssertion::ExpectedCount { expected_count: 1 },
+                    guards: StepGuards::default(),
                 }),
             ],
         }

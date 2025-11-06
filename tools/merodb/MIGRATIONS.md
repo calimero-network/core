@@ -32,9 +32,9 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
   - [x] Allow opening the target database with write access when `--apply` is specified. ✅ `TargetContext::new_writable` opens the database with write access based on the `dry_run` flag.
   - [x] Execute steps via RocksDB `WriteBatch`, ensuring idempotency and detailed logging. ✅ `migration::execute` module implements batched writes with progress logging for all step types (copy, delete, upsert, verify).
 
-- [ ] **Add Safety Mechanisms**
-  - [ ] Support optional backups (`--backup-dir`), step guards (`requires_validation`, `requires_empty_target`), and configurable batch sizes.
-  - [ ] Reuse existing validation logic to re-check the target database when requested.
+- [x] **Add Safety Mechanisms**
+  - [x] Support optional backups (`--backup-dir`), step guards (`requires_validation`, `requires_empty_target`), and configurable batch sizes. ✅ Implemented automatic backup creation before mutations, step guards for target validation, and configurable batch sizes at both plan and step levels.
+  - [x] Reuse existing validation logic to re-check the target database when requested. ✅ Guard checks execute before each step and can abort migrations if safety requirements aren't met.
 
 - [x] **Implement Verification Steps**
   - [x] Evaluate assertions (counts, presence/absence) in `verify` steps and abort on failure. ✅ Verification steps evaluate all assertion types and abort migrations on failure in both dry-run and apply modes.

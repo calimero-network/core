@@ -247,6 +247,8 @@ pub struct PlanDefaults {
     pub decode_with_abi: Option<bool>,
     #[serde(default)]
     pub write_if_missing: Option<bool>,
+    #[serde(default)]
+    pub batch_size: Option<usize>,
 }
 
 impl PlanDefaults {
@@ -654,6 +656,25 @@ impl PlanStep {
             Self::Upsert(_) => None,
         }
     }
+
+    /// Extract the safety guards configuration from any step type.
+    ///
+    /// This method provides uniform access to the guards field across all step types.
+    /// Guards control when a step can execute, enforcing safety requirements like:
+    /// - Target database must pass validation checks
+    /// - Target database must be empty
+    ///
+    /// # Returns
+    ///
+    /// A reference to the step's `StepGuards` configuration.
+    pub const fn guards(&self) -> &StepGuards {
+        match self {
+            Self::Copy(step) => &step.guards,
+            Self::Delete(step) => &step.guards,
+            Self::Upsert(step) => &step.guards,
+            Self::Verify(step) => &step.guards,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -665,6 +686,10 @@ pub struct CopyStep {
     pub filters: PlanFilters,
     #[serde(default)]
     pub transform: CopyTransform,
+    #[serde(default)]
+    pub guards: StepGuards,
+    #[serde(default)]
+    pub batch_size: Option<usize>,
 }
 
 impl CopyStep {
@@ -765,6 +790,10 @@ pub struct DeleteStep {
     pub column: Column,
     #[serde(default)]
     pub filters: PlanFilters,
+    #[serde(default)]
+    pub guards: StepGuards,
+    #[serde(default)]
+    pub batch_size: Option<usize>,
 }
 
 impl DeleteStep {
@@ -798,6 +827,8 @@ pub struct UpsertStep {
     pub name: Option<String>,
     pub column: Column,
     pub entries: Vec<UpsertEntry>,
+    #[serde(default)]
+    pub guards: StepGuards,
 }
 
 impl UpsertStep {
@@ -864,6 +895,25 @@ impl UpsertEntry {
             "steps[{step_index}].upsert.entries[{entry_index}].value"
         ))?;
         Ok(())
+    }
+}
+
+/// Safety guards that control when a step can execute.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct StepGuards {
+    /// Require the target database to pass existing validation logic before executing this step.
+    #[serde(default)]
+    pub requires_validation: bool,
+    /// Require the target database to be empty before executing this step.
+    #[serde(default)]
+    pub requires_empty_target: bool,
+}
+
+impl StepGuards {
+    /// Check if any guards are configured.
+    pub const fn has_guards(&self) -> bool {
+        self.requires_validation || self.requires_empty_target
     }
 }
 
@@ -1012,6 +1062,9 @@ pub struct VerifyStep {
     pub filters: PlanFilters,
     /// Condition that must hold true for the filtered data; failure aborts the plan.
     pub assertion: VerificationAssertion,
+    #[serde(default)]
+    /// Safety guards that control when this verification step can execute.
+    pub guards: StepGuards,
 }
 
 impl VerifyStep {
@@ -1154,6 +1207,8 @@ mod validation_tests {
                 column: Column::State,
                 filters: PlanFilters::default(),
                 transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
             })],
         }
     }
@@ -1196,6 +1251,8 @@ mod validation_tests {
                 ..PlanFilters::default()
             },
             transform: CopyTransform::default(),
+            guards: StepGuards::default(),
+            batch_size: None,
         })];
 
         let error = plan.validate().unwrap_err().to_string();
@@ -1213,6 +1270,8 @@ mod validation_tests {
                 decode_with_abi: None,
                 jq: Some("   ".into()),
             },
+            guards: StepGuards::default(),
+            batch_size: None,
         })];
 
         let error = plan.validate().unwrap_err().to_string();
@@ -1226,6 +1285,7 @@ mod validation_tests {
             name: None,
             column: Column::Alias,
             entries: Vec::new(),
+            guards: StepGuards::default(),
         })];
 
         let error = plan.validate().unwrap_err().to_string();
