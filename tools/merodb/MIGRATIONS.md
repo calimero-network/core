@@ -50,7 +50,6 @@ This plan captures the step-by-step work required to extend `merodb` with a YAML
 
 ## Related Work
 
-- Testing strategy lives in `tools/merodb/migration_testing.md`.
 - Sample plans and fixtures should be added under `tools/merodb/examples/` once available.
 
 ---

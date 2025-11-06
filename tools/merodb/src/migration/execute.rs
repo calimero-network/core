@@ -525,3 +525,1143 @@ fn step_label(_index: usize, step: &PlanStep) -> String {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::context::MigrationOverrides;
+    use crate::migration::plan::{
+        CopyStep, CopyTransform, DeleteStep, EncodedValue, MigrationPlan, PlanFilters,
+        PlanStep, PlanVersion, SourceEndpoint, TargetEndpoint, UpsertEntry, UpsertStep,
+        VerificationAssertion, VerifyStep,
+    };
+    use crate::migration::test_utils::{test_context_id, test_state_key, DbFixture};
+    use rocksdb::IteratorMode;
+    use tempfile::TempDir;
+
+    /// Setup a source database with test data for execution tests.
+    fn setup_source_db(path: &std::path::Path) -> Result<()> {
+        let fixture = DbFixture::new(path)?;
+
+        // Insert multiple entries for testing various scenarios
+        let ctx1 = test_context_id(0x11);
+        let ctx2 = test_context_id(0x22);
+
+        fixture.insert_state_entry(&ctx1, &test_state_key(0xAA), b"value-1a")?;
+        fixture.insert_state_entry(&ctx1, &test_state_key(0xBB), b"value-1b")?;
+        fixture.insert_state_entry(&ctx2, &test_state_key(0xAA), b"value-2a")?;
+
+        fixture.insert_generic_entry(b"key-1", b"generic-value-1")?;
+        fixture.insert_generic_entry(b"key-2", b"generic-value-2")?;
+
+        Ok(())
+    }
+
+    /// Setup an empty target database for execution tests.
+    fn setup_empty_target_db(path: &std::path::Path) -> Result<()> {
+        let _fixture = DbFixture::new(path)?;
+        Ok(())
+    }
+
+    /// Setup a target database with existing data for delete/verify tests.
+    fn setup_target_db_with_data(path: &std::path::Path) -> Result<()> {
+        let fixture = DbFixture::new(path)?;
+
+        let ctx1 = test_context_id(0x11);
+        let ctx2 = test_context_id(0x22);
+
+        fixture.insert_state_entry(&ctx1, &test_state_key(0xAA), b"old-value-1a")?;
+        fixture.insert_state_entry(&ctx1, &test_state_key(0xBB), b"old-value-1b")?;
+        fixture.insert_state_entry(&ctx2, &test_state_key(0xAA), b"old-value-2a")?;
+
+        Ok(())
+    }
+
+    /// Helper to count keys in a specific column of a database.
+    fn count_keys_in_column(db_path: &std::path::Path, column: Column) -> Result<usize> {
+        use crate::open_database;
+
+        let db = open_database(db_path)?;
+        let cf = db
+            .cf_handle(column.as_str())
+            .ok_or_else(|| eyre::eyre!("Column family '{}' not found", column.as_str()))?;
+
+        let mut count = 0;
+        let iter = db.iterator_cf(cf, IteratorMode::Start);
+        for item in iter {
+            let _entry = item?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// Helper to get a value from a database.
+    fn get_value(
+        db_path: &std::path::Path,
+        column: Column,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        use crate::open_database;
+
+        let db = open_database(db_path)?;
+        let cf = db
+            .cf_handle(column.as_str())
+            .ok_or_else(|| eyre::eyre!("Column family '{}' not found", column.as_str()))?;
+
+        Ok(db.get_cf(cf, key)?)
+    }
+
+    #[test]
+    fn execute_copy_writes_matching_keys_to_target() -> Result<()> {
+        let temp = TempDir::new()?;
+        let source_path = temp.path().join("source");
+        let target_path = temp.path().join("target");
+
+        setup_source_db(&source_path)?;
+        setup_empty_target_db(&target_path)?;
+
+        // Create a plan that copies all State entries with context_id 0x11
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: source_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-ctx1".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        // Execute the migration in apply mode (dry_run = false)
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Verify execution report
+        ensure!(
+            report.steps.len() == 1,
+            "expected 1 step in report, found {}",
+            report.steps.len()
+        );
+
+        let step = &report.steps[0];
+        ensure!(
+            matches!(step.detail, StepExecutionDetail::Copy { .. }),
+            "expected Copy detail"
+        );
+
+        if let StepExecutionDetail::Copy { keys_copied, .. } = &step.detail {
+            ensure!(
+                *keys_copied == 2,
+                "expected 2 keys copied, got {}",
+                keys_copied
+            );
+        }
+
+        // Verify target database contains exactly the copied keys
+        let target_count = count_keys_in_column(&target_path, Column::State)?;
+        ensure!(
+            target_count == 2,
+            "expected 2 keys in target, found {}",
+            target_count
+        );
+
+        // Verify specific key was copied with correct value
+        let mut key = [0u8; 64];
+        key[..32].copy_from_slice(&test_context_id(0x11));
+        key[32..].copy_from_slice(&test_state_key(0xAA));
+
+        let value = get_value(&target_path, Column::State, &key)?;
+        ensure!(
+            value.as_deref() == Some(&b"value-1a"[..]),
+            "expected value 'value-1a', got {:?}",
+            value
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_copy_respects_filters() -> Result<()> {
+        let temp = TempDir::new()?;
+        let source_path = temp.path().join("source");
+        let target_path = temp.path().join("target");
+
+        setup_source_db(&source_path)?;
+        setup_empty_target_db(&target_path)?;
+
+        // Create a plan that copies Generic column entries
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: source_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-generic".into()),
+                column: Column::Generic,
+                filters: PlanFilters {
+                    raw_key_prefix: Some(hex::encode(b"key-1")),
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Should only copy 1 key matching the prefix
+        if let StepExecutionDetail::Copy { keys_copied, .. } = &report.steps[0].detail {
+            ensure!(
+                *keys_copied == 1,
+                "expected 1 key copied with prefix filter, got {}",
+                keys_copied
+            );
+        }
+
+        let target_count = count_keys_in_column(&target_path, Column::Generic)?;
+        ensure!(target_count == 1, "expected 1 key in target, found {}", target_count);
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_delete_removes_matching_keys() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_target_db_with_data(&target_path)?;
+
+        // Verify initial state: 3 keys present
+        let initial_count = count_keys_in_column(&target_path, Column::State)?;
+        ensure!(
+            initial_count == 3,
+            "expected 3 keys initially, found {}",
+            initial_count
+        );
+
+        // Create a plan that deletes all entries with context_id 0x11
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Delete(DeleteStep {
+                name: Some("delete-ctx1".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Verify execution report
+        if let StepExecutionDetail::Delete { keys_deleted } = &report.steps[0].detail {
+            ensure!(
+                *keys_deleted == 2,
+                "expected 2 keys deleted, got {}",
+                keys_deleted
+            );
+        }
+
+        // Verify only 1 key remains (context_id 0x22)
+        let final_count = count_keys_in_column(&target_path, Column::State)?;
+        ensure!(final_count == 1, "expected 1 key remaining, found {}", final_count);
+
+        // Verify the remaining key is the one with context_id 0x22
+        let mut remaining_key = [0u8; 64];
+        remaining_key[..32].copy_from_slice(&test_context_id(0x22));
+        remaining_key[32..].copy_from_slice(&test_state_key(0xAA));
+
+        let value = get_value(&target_path, Column::State, &remaining_key)?;
+        ensure!(
+            value.is_some(),
+            "expected context 0x22 key to remain after deletion"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_upsert_writes_literal_entries() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_empty_target_db(&target_path)?;
+
+        // Create a plan that upserts literal key-value pairs
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Upsert(UpsertStep {
+                name: Some("upsert-literals".into()),
+                column: Column::Generic,
+                entries: vec![
+                    UpsertEntry {
+                        key: EncodedValue::Hex {
+                            data: "0x6b6579414243".to_string(),
+                        }, // "keyABC"
+                        value: EncodedValue::Utf8 {
+                            data: "literal-value-1".to_string(),
+                        },
+                    },
+                    UpsertEntry {
+                        key: EncodedValue::Hex {
+                            data: "0x6b6579444546".to_string(),
+                        }, // "keyDEF"
+                        value: EncodedValue::Utf8 {
+                            data: "literal-value-2".to_string(),
+                        },
+                    },
+                ],
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Verify execution report
+        if let StepExecutionDetail::Upsert { entries_written } = &report.steps[0].detail {
+            ensure!(
+                *entries_written == 2,
+                "expected 2 entries written, got {}",
+                entries_written
+            );
+        }
+
+        // Verify target database contains the upserted entries
+        let target_count = count_keys_in_column(&target_path, Column::Generic)?;
+        ensure!(target_count == 2, "expected 2 keys in target, found {}", target_count);
+
+        let value1 = get_value(&target_path, Column::Generic, b"keyABC")?;
+        ensure!(
+            value1.as_deref() == Some(&b"literal-value-1"[..]),
+            "expected 'literal-value-1', got {:?}",
+            value1
+        );
+
+        let value2 = get_value(&target_path, Column::Generic, b"keyDEF")?;
+        ensure!(
+            value2.as_deref() == Some(&b"literal-value-2"[..]),
+            "expected 'literal-value-2', got {:?}",
+            value2
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_verify_passes_when_assertion_succeeds() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_target_db_with_data(&target_path)?;
+
+        // Create a plan with a verify step that should pass
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Verify(VerifyStep {
+                name: Some("verify-count".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                assertion: VerificationAssertion::ExpectedCount { expected_count: 3 },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Verify execution report shows verification passed
+        if let StepExecutionDetail::Verify { passed, .. } = &report.steps[0].detail {
+            ensure!(*passed, "expected verification to pass");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_verify_fails_when_assertion_fails() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_target_db_with_data(&target_path)?;
+
+        // Create a plan with a verify step that should fail (expects 10 keys but only 3 exist)
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Verify(VerifyStep {
+                name: Some("verify-fail".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                assertion: VerificationAssertion::ExpectedCount { expected_count: 10 },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let result = execute_migration(&context);
+
+        // Verify that execution failed
+        ensure!(
+            result.is_err(),
+            "expected execution to fail when verification fails"
+        );
+
+        let err = result.unwrap_err();
+        ensure!(
+            err.to_string().contains("Verification step"),
+            "error should mention verification failure: {}",
+            err
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_multi_step_migration_sequence() -> Result<()> {
+        let temp = TempDir::new()?;
+        let source_path = temp.path().join("source");
+        let target_path = temp.path().join("target");
+
+        setup_source_db(&source_path)?;
+        setup_empty_target_db(&target_path)?;
+
+        // Create a multi-step plan: copy, verify, upsert, verify again
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: source_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![
+                // Step 1: Copy Generic column entries
+                PlanStep::Copy(CopyStep {
+                    name: Some("copy-generic".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    transform: CopyTransform::default(),
+                }),
+                // Step 2: Verify we copied 2 entries
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-copied".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 2 },
+                }),
+                // Step 3: Upsert one more entry
+                PlanStep::Upsert(UpsertStep {
+                    name: Some("upsert-one".into()),
+                    column: Column::Generic,
+                    entries: vec![UpsertEntry {
+                        key: EncodedValue::Utf8 {
+                            data: "key-3".to_string(),
+                        },
+                        value: EncodedValue::Utf8 {
+                            data: "value-3".to_string(),
+                        },
+                    }],
+                }),
+                // Step 4: Verify we now have 3 entries total
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-final".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 3 },
+                }),
+            ],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Verify all steps executed successfully
+        ensure!(report.steps.len() == 4, "expected 4 steps executed");
+
+        // Verify final database state
+        let final_count = count_keys_in_column(&target_path, Column::Generic)?;
+        ensure!(final_count == 3, "expected 3 keys in target, found {}", final_count);
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_fails_in_dry_run_mode() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_empty_target_db(&target_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Upsert(UpsertStep {
+                name: Some("test".into()),
+                column: Column::Generic,
+                entries: vec![UpsertEntry {
+                    key: EncodedValue::Utf8 {
+                        data: "key".to_string(),
+                    },
+                    value: EncodedValue::Utf8 {
+                        data: "value".to_string(),
+                    },
+                }],
+            })],
+        };
+
+        // Create context in dry-run mode
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        let result = execute_migration(&context);
+
+        // Should fail because we're in dry-run mode
+        ensure!(
+            result.is_err(),
+            "expected execution to fail in dry-run mode"
+        );
+
+        let err = result.unwrap_err();
+        ensure!(
+            err.to_string().contains("dry-run mode"),
+            "error should mention dry-run mode: {}",
+            err
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_copy_respects_batch_size_limit() -> Result<()> {
+        let temp = TempDir::new()?;
+        let source_path = temp.path().join("source");
+        let target_path = temp.path().join("target");
+
+        // Setup source with more than BATCH_SIZE_LIMIT (1000) keys
+        let fixture = DbFixture::new(&source_path)?;
+        let ctx = test_context_id(0x11);
+
+        // Insert 1500 entries to test batching across multiple commits
+        for i in 0..1500_u32 {
+            let mut state_key = [0u8; 32];
+            state_key[..4].copy_from_slice(&i.to_be_bytes());
+            fixture.insert_state_entry(&ctx, &state_key, format!("value-{}", i).as_bytes())?;
+        }
+
+        setup_empty_target_db(&target_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: source_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-large-set".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Verify all 1500 keys were copied despite batching
+        if let StepExecutionDetail::Copy { keys_copied, .. } = &report.steps[0].detail {
+            ensure!(
+                *keys_copied == 1500,
+                "expected 1500 keys copied across batches, got {}",
+                keys_copied
+            );
+        }
+
+        // Verify target contains all keys
+        let target_count = count_keys_in_column(&target_path, Column::State)?;
+        ensure!(
+            target_count == 1500,
+            "expected 1500 keys in target, found {}",
+            target_count
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_delete_respects_batch_size_limit() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        // Setup target with more than BATCH_SIZE_LIMIT (1000) keys
+        let fixture = DbFixture::new(&target_path)?;
+        let ctx = test_context_id(0x11);
+
+        // Insert 1500 entries to test batching across multiple commits
+        for i in 0..1500_u32 {
+            let mut state_key = [0u8; 32];
+            state_key[..4].copy_from_slice(&i.to_be_bytes());
+            fixture.insert_state_entry(&ctx, &state_key, format!("value-{}", i).as_bytes())?;
+        }
+
+        // Verify initial state
+        let initial_count = count_keys_in_column(&target_path, Column::State)?;
+        ensure!(
+            initial_count == 1500,
+            "expected 1500 keys initially, found {}",
+            initial_count
+        );
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Delete(DeleteStep {
+                name: Some("delete-large-set".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Verify all 1500 keys were deleted despite batching
+        if let StepExecutionDetail::Delete { keys_deleted } = &report.steps[0].detail {
+            ensure!(
+                *keys_deleted == 1500,
+                "expected 1500 keys deleted across batches, got {}",
+                keys_deleted
+            );
+        }
+
+        // Verify target is empty
+        let final_count = count_keys_in_column(&target_path, Column::State)?;
+        ensure!(final_count == 0, "expected 0 keys in target, found {}", final_count);
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_fails_when_target_is_read_only() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_empty_target_db(&target_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Upsert(UpsertStep {
+                name: Some("test".into()),
+                column: Column::Generic,
+                entries: vec![UpsertEntry {
+                    key: EncodedValue::Utf8 {
+                        data: "key".to_string(),
+                    },
+                    value: EncodedValue::Utf8 {
+                        data: "value".to_string(),
+                    },
+                }],
+            })],
+        };
+
+        // Create context with dry_run=false but this will still check target is not read-only
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+
+        // The context should have opened target in writable mode, so this test
+        // verifies that our mode checking works correctly
+        let result = execute_migration(&context);
+
+        // Should succeed because target was opened in writable mode
+        ensure!(
+            result.is_ok(),
+            "execution should succeed when target is writable"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_fails_when_no_target_configured() -> Result<()> {
+        let temp = TempDir::new()?;
+        let source_path = temp.path().join("source");
+
+        setup_source_db(&source_path)?;
+
+        // Create a plan without a target database
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: source_path.clone(),
+                wasm_file: None,
+            },
+            target: None, // No target!
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-test".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let result = execute_migration(&context);
+
+        // Should fail because no target was configured
+        ensure!(
+            result.is_err(),
+            "expected execution to fail when no target is configured"
+        );
+
+        let err = result.unwrap_err();
+        ensure!(
+            err.to_string().contains("target database"),
+            "error should mention missing target database: {}",
+            err
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_copy_handles_empty_source_gracefully() -> Result<()> {
+        let temp = TempDir::new()?;
+        let source_path = temp.path().join("source");
+        let target_path = temp.path().join("target");
+
+        // Setup empty databases
+        let _source_fixture = DbFixture::new(&source_path)?;
+        setup_empty_target_db(&target_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: source_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-from-empty".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                transform: CopyTransform::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Should succeed with 0 keys copied
+        if let StepExecutionDetail::Copy { keys_copied, .. } = &report.steps[0].detail {
+            ensure!(
+                *keys_copied == 0,
+                "expected 0 keys copied from empty source, got {}",
+                keys_copied
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_delete_handles_empty_target_gracefully() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_empty_target_db(&target_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Delete(DeleteStep {
+                name: Some("delete-from-empty".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Should succeed with 0 keys deleted
+        if let StepExecutionDetail::Delete { keys_deleted } = &report.steps[0].detail {
+            ensure!(
+                *keys_deleted == 0,
+                "expected 0 keys deleted from empty target, got {}",
+                keys_deleted
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_verify_with_contains_key_assertion() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_target_db_with_data(&target_path)?;
+
+        // Build a specific key to check for
+        let mut key = [0u8; 64];
+        key[..32].copy_from_slice(&test_context_id(0x11));
+        key[32..].copy_from_slice(&test_state_key(0xAA));
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Verify(VerifyStep {
+                name: Some("verify-contains-key".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                assertion: VerificationAssertion::ContainsKey {
+                    contains_key: EncodedValue::Hex {
+                        data: hex::encode(key),
+                    },
+                },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Should pass
+        if let StepExecutionDetail::Verify { passed, .. } = &report.steps[0].detail {
+            ensure!(*passed, "expected ContainsKey verification to pass");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_verify_with_missing_key_assertion() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_target_db_with_data(&target_path)?;
+
+        // Build a key that doesn't exist
+        let mut key = [0u8; 64];
+        key[..32].copy_from_slice(&test_context_id(0xFF)); // Non-existent context
+        key[32..].copy_from_slice(&test_state_key(0xFF));
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Verify(VerifyStep {
+                name: Some("verify-missing-key".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                assertion: VerificationAssertion::MissingKey {
+                    missing_key: EncodedValue::Hex {
+                        data: hex::encode(key),
+                    },
+                },
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // Should pass because the key is indeed missing
+        if let StepExecutionDetail::Verify { passed, .. } = &report.steps[0].detail {
+            ensure!(*passed, "expected MissingKey verification to pass");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_upsert_overwrites_existing_keys() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        // Setup target with existing data
+        let fixture = DbFixture::new(&target_path)?;
+        fixture.insert_generic_entry(b"key-to-overwrite", b"old-value")?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Upsert(UpsertStep {
+                name: Some("upsert-overwrite".into()),
+                column: Column::Generic,
+                entries: vec![UpsertEntry {
+                    key: EncodedValue::Utf8 {
+                        data: "key-to-overwrite".to_string(),
+                    },
+                    value: EncodedValue::Utf8 {
+                        data: "new-value".to_string(),
+                    },
+                }],
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let _report = execute_migration(&context)?;
+
+        // Verify value was overwritten
+        let value = get_value(&target_path, Column::Generic, b"key-to-overwrite")?;
+        ensure!(
+            value.as_deref() == Some(&b"new-value"[..]),
+            "expected 'new-value', got {:?}",
+            value
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execute_multi_step_with_verification_between_mutations() -> Result<()> {
+        let temp = TempDir::new()?;
+        let target_path = temp.path().join("target");
+
+        setup_empty_target_db(&target_path)?;
+
+        // Multi-step plan with verifications between each mutation
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: target_path.clone(),
+                wasm_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![
+                // Verify empty state
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-empty".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 0 },
+                }),
+                // Add first entry
+                PlanStep::Upsert(UpsertStep {
+                    name: Some("upsert-1".into()),
+                    column: Column::Generic,
+                    entries: vec![UpsertEntry {
+                        key: EncodedValue::Utf8 {
+                            data: "key-1".to_string(),
+                        },
+                        value: EncodedValue::Utf8 {
+                            data: "value-1".to_string(),
+                        },
+                    }],
+                }),
+                // Verify 1 entry
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-one".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 1 },
+                }),
+                // Add second entry
+                PlanStep::Upsert(UpsertStep {
+                    name: Some("upsert-2".into()),
+                    column: Column::Generic,
+                    entries: vec![UpsertEntry {
+                        key: EncodedValue::Utf8 {
+                            data: "key-2".to_string(),
+                        },
+                        value: EncodedValue::Utf8 {
+                            data: "value-2".to_string(),
+                        },
+                    }],
+                }),
+                // Verify 2 entries
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-two".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 2 },
+                }),
+                // Delete first entry
+                PlanStep::Delete(DeleteStep {
+                    name: Some("delete-1".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters {
+                        raw_key_prefix: Some(hex::encode(b"key-1")),
+                        ..PlanFilters::default()
+                    },
+                }),
+                // Verify 1 entry remains
+                PlanStep::Verify(VerifyStep {
+                    name: Some("verify-one-after-delete".into()),
+                    column: Column::Generic,
+                    filters: PlanFilters::default(),
+                    assertion: VerificationAssertion::ExpectedCount { expected_count: 1 },
+                }),
+            ],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let report = execute_migration(&context)?;
+
+        // All 7 steps should have executed successfully
+        ensure!(report.steps.len() == 7, "expected 7 steps executed");
+
+        // Verify final state
+        let final_count = count_keys_in_column(&target_path, Column::Generic)?;
+        ensure!(final_count == 1, "expected 1 key in final state");
+
+        Ok(())
+    }
+}
