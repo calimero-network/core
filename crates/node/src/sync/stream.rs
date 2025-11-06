@@ -9,7 +9,7 @@
 
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::stream::{Message, Stream};
-use calimero_node_primitives::sync::StreamMessage;
+use calimero_node_primitives::sync::direct::StreamMessage;
 use eyre::{OptionExt, WrapErr};
 use futures_util::{SinkExt, TryStreamExt};
 use tokio::time::{timeout, Duration};

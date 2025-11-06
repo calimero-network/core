@@ -11,9 +11,9 @@ use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::NodeClient;
-use calimero_node_primitives::sync::{InitPayload, StreamMessage};
+use calimero_node_primitives::sync::StreamMessage;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+
 use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
@@ -25,11 +25,15 @@ use tracing::{debug, error, info, warn};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
-use super::direct::dag_bootstrapper::DagBootstrapper;
-use super::direct::peer_selector::PeerSelector;
-use super::direct::request_queue::RequestQueue;
-use super::direct::stream_responder::StreamResponder;
 use super::tracking::{SyncProtocol, SyncState};
+use crate::comms::direct::{
+    blob_share,
+    dag_bootstrapper::DagBootstrapper,
+    key_exchange,
+    peer_selector::PeerSelector,
+    request_queue::RequestQueue,
+    streams::{BlobResponder, SyncResponder},
+};
 
 /// Network synchronization manager.
 ///
@@ -46,7 +50,7 @@ pub struct SyncManager {
     request_queue: Option<RequestQueue>,
     peer_selector: PeerSelector,
     dag_bootstrapper: DagBootstrapper,
-    stream_responder: StreamResponder,
+    sync_responder: SyncResponder,
 }
 
 impl Clone for SyncManager {
@@ -69,11 +73,11 @@ impl Clone for SyncManager {
                 self.network_client.clone(),
                 self.node_state.clone(),
             ),
-            stream_responder: StreamResponder::new(
+            sync_responder: SyncResponder::new(
                 self.sync_config.clone(),
-                self.node_client.clone(),
                 self.context_client.clone(),
                 self.node_state.clone(),
+                BlobResponder::new(self.node_client.clone(), self.context_client.clone()),
             ),
         }
     }
@@ -101,11 +105,13 @@ impl SyncManager {
             node_state.clone(),
         );
 
-        let stream_responder = StreamResponder::new(
+        let blob_responder = BlobResponder::new(node_client.clone(), context_client.clone());
+
+        let sync_responder = SyncResponder::new(
             sync_config.clone(),
-            node_client.clone(),
             context_client.clone(),
             node_state.clone(),
+            blob_responder,
         );
 
         let request_queue = RequestQueue::new(ctx_sync_rx);
@@ -119,7 +125,7 @@ impl SyncManager {
             request_queue: Some(request_queue),
             peer_selector,
             dag_bootstrapper,
-            stream_responder,
+            sync_responder,
         }
     }
 
@@ -399,16 +405,25 @@ impl SyncManager {
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
-        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
-            .await?;
+        key_exchange::initiate_key_share_process(
+            &self.context_client,
+            &mut context,
+            our_identity,
+            &mut stream,
+            self.sync_config.timeout,
+        )
+        .await?;
 
         if !self.node_client.has_blob(&application.blob.bytecode)? {
-            self.initiate_blob_share_process(
+            blob_share::initiate_blob_share_process(
+                &self.node_client,
+                &self.context_client,
                 &context,
                 our_identity,
                 application.blob.bytecode,
                 application.size,
                 &mut stream,
+                self.sync_config.timeout,
             )
             .await?;
         }
@@ -479,6 +494,6 @@ impl SyncManager {
     }
 
     pub async fn handle_opened_stream(&self, stream: Box<Stream>) {
-        self.stream_responder.handle_opened_stream(stream).await;
+        self.sync_responder.handle_opened_stream(stream).await;
     }
 }

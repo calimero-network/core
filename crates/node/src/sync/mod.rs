@@ -3,20 +3,16 @@
     reason = "sync module has multiple submodules"
 )]
 
-//! Peer synchronization protocols and coordination.
+//! Peer synchronization orchestration.
 //!
-//! This module routes events into two flows:
-//! - `broadcast` — gossipsub-driven DAG updates and state delta handling.
-//! - `direct` — point-to-point stream protocols (sync, blob share, key share).
+//! Protocol implementations live under `crate::comms`; this module keeps the
+//! higher-level scheduling and state tracking.
 
-mod blobs;
-pub mod broadcast;
 mod config;
-pub mod direct;
-mod key;
 mod manager;
 pub(crate) mod stream;
 mod tracking;
 
 pub use config::SyncConfig;
 pub use manager::SyncManager;
+pub(crate) use tracking::{Sequencer, SyncProtocol};

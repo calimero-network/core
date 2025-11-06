@@ -1,6 +1,6 @@
 use calimero_context_primitives::client::ContextClient;
 use calimero_network_primitives::client::NetworkClient;
-use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_node_primitives::sync::direct::{InitPayload, StreamMessage};
 use calimero_primitives::context::ContextId;
 use eyre::{bail, Result};
 use libp2p::gossipsub::TopicHash;
@@ -10,8 +10,8 @@ use rand::Rng;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info, warn};
 
-use crate::sync::config::SyncConfig;
 use crate::sync::stream::{recv, send};
+use crate::sync::SyncConfig;
 use crate::utils::choose_stream;
 
 #[derive(Clone, Debug)]

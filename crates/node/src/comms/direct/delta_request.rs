@@ -6,9 +6,9 @@ use calimero_storage::delta::CausalDelta;
 use eyre::{OptionExt, Result};
 use tracing::{debug, info, warn};
 
-use crate::sync::direct::helpers::generate_nonce;
+use super::helpers::generate_nonce;
 use crate::sync::stream::send;
-use crate::sync::tracking::Sequencer;
+use crate::sync::Sequencer;
 use crate::NodeState;
 
 pub(crate) async fn handle_delta_request(

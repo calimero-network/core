@@ -30,6 +30,7 @@ use tracing::{debug, error, warn};
 use crate::delta_store::DeltaStore;
 
 mod arbiter_pool;
+pub mod comms;
 mod delta_store;
 pub mod gc;
 pub mod handlers;

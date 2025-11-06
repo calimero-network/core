@@ -7,13 +7,12 @@ use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result};
 use libp2p::PeerId;
 use rand::Rng;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
+use super::helpers::generate_nonce;
 use crate::delta_store::DeltaStore;
-use crate::sync::config::SyncConfig;
-use crate::sync::direct::helpers::generate_nonce;
 use crate::sync::stream::{recv, send};
-use crate::sync::tracking::SyncProtocol;
+use crate::sync::{SyncConfig, SyncProtocol};
 
 #[derive(Clone, Debug)]
 pub(crate) struct DagBootstrapper {
