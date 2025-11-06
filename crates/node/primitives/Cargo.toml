@@ -9,7 +9,6 @@ license.workspace = true
 publish = true
 
 [dependencies]
-actix.workspace = true
 async-stream.workspace = true
 borsh.workspace = true
 camino.workspace = true
@@ -29,7 +28,6 @@ calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
 calimero-storage.workspace = true
 calimero-store.workspace = true
-calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true

@@ -58,7 +58,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let blobstore = BlobManager::new(datastore.clone(), FileSystem::new(&config.blobstore).await?);
 
-    let node_recipient = LazyRecipient::new();
     let network_recipient = LazyRecipient::new();
     let context_recipient = LazyRecipient::new();
     let network_event_recipient = LazyRecipient::new();
@@ -95,7 +94,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
         blobstore.clone(),
         network_client.clone(),
-        node_recipient.clone(),
         event_sender,
         ctx_sync_tx,
     );
@@ -142,7 +140,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     );
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
-        assert!(node_recipient.init(ctx), "failed to initialize");
         assert!(network_event_recipient.init(ctx), "failed to initialize");
         node_manager
     });

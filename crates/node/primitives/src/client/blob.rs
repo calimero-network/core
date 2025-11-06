@@ -11,14 +11,7 @@ use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
 
 use super::NodeClient;
-use crate::messages::get_blob_bytes::GetBlobBytesRequest;
-use crate::messages::NodeMessage::GetBlobBytes;
-
 impl NodeClient {
-    // todo! maybe this should be an actor method?
-    // todo! so we can cache the blob in case it's
-    // todo! to be immediately used? might require
-    // todo! refactoring the blobstore API
     pub async fn add_blob<S: AsyncRead>(
         &self,
         stream: S,
@@ -158,7 +151,6 @@ impl NodeClient {
                                 continue;
                             }
 
-                            // Return the newly stored blob as a stream
                             return self.blobstore.get(*blob_id);
                         }
                         Ok(None) => {
@@ -215,28 +207,14 @@ impl NodeClient {
             return Ok(None);
         }
 
-        // First try to get from NodeManager's cache (for locally stored blobs)
-        let request = GetBlobBytesRequest { blob_id: *blob_id };
-
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        if let Ok(()) = self
-            .node_manager
-            .send(GetBlobBytes {
-                request,
-                outcome: tx,
-            })
-            .await
-        {
-            if let Ok(response) = rx.await {
-                if let Ok(response) = response {
-                    if response.bytes.is_some() {
-                        return Ok(response.bytes);
-                    }
-                }
+        // Attempt to read directly from local blobstore
+        if let Some(mut blob) = self.blobstore.get(*blob_id)? {
+            let mut data = Vec::new();
+            while let Some(chunk) = blob.next().await {
+                data.extend_from_slice(&chunk?);
             }
-        } else {
-            // NodeManager not available, fallback to direct access
+            let data: Arc<[u8]> = data.into();
+            return Ok(Some(data));
         }
 
         if let Some(context_id) = context_id {
@@ -249,7 +227,8 @@ impl NodeClient {
                 data.extend_from_slice(&chunk?);
             }
 
-            Ok(Some(data.into()))
+            let data: Arc<[u8]> = data.into();
+            Ok(Some(data))
         } else {
             // No context_id provided and not in local cache
             Ok(None)

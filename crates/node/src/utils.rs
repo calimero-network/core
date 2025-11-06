@@ -4,8 +4,11 @@
 
 use std::pin::pin;
 
+use calimero_crypto::Nonce;
+use calimero_primitives::application::ApplicationId;
+use eyre::{bail, Result as EyreResult};
 use futures_util::{Stream, StreamExt};
-use rand::Rng;
+use rand::{thread_rng, Rng};
 
 /// Reservoir sampling: choose one random item from a stream.
 ///
@@ -38,4 +41,9 @@ pub(crate) async fn choose_stream<T>(
     }
 
     item
+}
+
+/// Generate a fresh random Nonce.
+pub(crate) fn generate_nonce() -> Nonce {
+    thread_rng().gen::<Nonce>()
 }

@@ -187,7 +187,7 @@ mod tests {
         Client as ExternalClient,
     };
     use calimero_network_primitives::client::NetworkClient;
-    use calimero_node_primitives::{client::NodeClient, messages::NodeMessage};
+    use calimero_node_primitives::client::NodeClient;
     use calimero_primitives::common::DIGEST_SIZE;
     use calimero_store::{db::InMemoryDB, key, types, Store};
     use calimero_utils_actix::LazyRecipient;
@@ -213,14 +213,11 @@ mod tests {
         let network_client = NetworkClient::new(LazyRecipient::new());
         let (event_sender, _) = broadcast::channel(16);
         let (ctx_sync_tx, _) = mpsc::channel(16);
-        let node_manager = LazyRecipient::<NodeMessage>::new();
-
         // 4. Construct the real NodeClient.
         let node_client = NodeClient::new(
             store.clone(),
             blob_manager,
             network_client,
-            node_manager,
             event_sender,
             ctx_sync_tx,
         );

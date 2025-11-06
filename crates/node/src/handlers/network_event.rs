@@ -2,14 +2,14 @@
 //!
 //! **SRP Applied**: Each event type is handled in its own focused module:
 //! - `state_delta.rs` - BroadcastMessage::StateDelta processing
-//! - `stream_opened.rs` - Stream routing (blob vs sync)
 //! - `blob_protocol.rs` - Blob protocol implementation
 //! - This file - Simple event handlers (subscriptions, blobs, listening)
 
-use crate::handlers::{state_delta, stream_opened};
+use crate::handlers::{blob_protocol, state_delta};
 
 use actix::{AsyncContext, Handler, WrapFuture};
 use calimero_network_primitives::messages::NetworkEvent;
+use calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use tracing::{debug, error, info, warn};
@@ -210,13 +210,36 @@ impl Handler<NetworkEvent> for NodeManager {
                 }
             }
 
-            // Stream routing - delegate to stream_opened module
+            // Stream routing - handle blob vs sync protocols
             NetworkEvent::StreamOpened {
                 peer_id,
                 stream,
                 protocol,
             } => {
-                stream_opened::handle_stream_opened(self, ctx, peer_id, stream, protocol);
+                if protocol == CALIMERO_BLOB_PROTOCOL {
+                    info!(%peer_id, "Routing to blob protocol handler");
+                    let node_client = self.clients.node.clone();
+                    let _ignored = ctx.spawn(
+                        async move {
+                            if let Err(err) =
+                                blob_protocol::handle_blob_protocol_stream(node_client, peer_id, stream)
+                                    .await
+                            {
+                                debug!(%peer_id, error = %err, "Failed to handle blob protocol stream");
+                            }
+                        }
+                        .into_actor(self),
+                    );
+                } else {
+                    debug!(%peer_id, "Routing to sync protocol handler");
+                    let sync_manager = self.managers.sync.clone();
+                    let _ignored = ctx.spawn(
+                        async move {
+                            sync_manager.handle_opened_stream(stream).await;
+                        }
+                        .into_actor(self),
+                    );
+                }
             }
 
             // Blob events - simple logging (applications can listen to these)
