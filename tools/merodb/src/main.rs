@@ -1,11 +1,7 @@
-#![allow(
-    clippy::struct_excessive_bools,
-    reason = "CLI struct with boolean flags is appropriate"
-)]
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use calimero_primitives as _;
 use clap::{Parser, Subcommand};
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};

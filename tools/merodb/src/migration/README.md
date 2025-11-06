@@ -179,11 +179,14 @@ When mutating execution lands, the same plan parsing and context wiring will be 
 The `migration::test_utils` module provides `DbFixture` for creating temporary RocksDB instances with all Calimero column families. Key utilities:
 
 - `DbFixture::new(path)` – creates a fresh RocksDB with all column families
-- `insert_state_entry(context_id, state_key, value)` – adds a single state entry
+- `insert_state_entry(context_id, state_key, value)` – adds a single state entry (uses `calimero_primitives::context::ContextId`)
+- `insert_meta_entry(context_id, meta_value)` – adds a meta entry with serialized `ContextMeta` value
 
 Helper functions:
-- `test_context_id(byte)` – creates a 32-byte context ID filled with the given byte
+- `test_context_id(byte)` – creates a `ContextId` filled with the given byte (returns actual Calimero type)
 - `test_state_key(byte)` – creates a 32-byte state key filled with the given byte
+
+**Note:** The test utilities now use actual Calimero types (`ContextId`, `ContextStateKey`, etc.) to ensure that tests will fail if the underlying storage types change, preventing silent breakage of migration logic.
 
 Additional helper methods can be added as needed for future test scenarios.
 

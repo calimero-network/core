@@ -479,11 +479,11 @@ mod tests {
     use super::*;
     use crate::migration::context::{MigrationContext, MigrationOverrides};
     use crate::migration::plan::{
-        CopyStep, CopyTransform, DeleteStep, EncodedValue, KeyRange, MigrationPlan,
-        PlanDefaults, PlanFilters, PlanStep, PlanVersion, SourceEndpoint, UpsertEntry,
-        UpsertStep, VerificationAssertion, VerifyStep,
+        CopyStep, CopyTransform, DeleteStep, EncodedValue, KeyRange, MigrationPlan, PlanDefaults,
+        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, UpsertEntry, UpsertStep,
+        VerificationAssertion, VerifyStep,
     };
-    use crate::migration::test_utils::DbFixture;
+    use crate::migration::test_utils::{test_context_id, test_context_meta, DbFixture};
     use crate::types::Column;
     use eyre::ensure;
     use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
@@ -1255,7 +1255,7 @@ mod tests {
         let fixture = DbFixture::new(&db_path)?;
 
         // Insert a valid State entry
-        fixture.insert_state_entry(&[0x11; 32], &[0x22; 32], b"valid-value")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0x22; 32], b"valid-value")?;
 
         // Insert a malformed Generic entry (too short to have a context ID)
         fixture.insert_generic_entry(&short_key(16), b"malformed-value")?;
@@ -1333,8 +1333,8 @@ mod tests {
 
         // Create database with exactly 2 entries for the same context
         let fixture = DbFixture::new(&db_path)?;
-        fixture.insert_state_entry(&[0x11; 32], &[0x22; 32], b"value-1")?;
-        fixture.insert_state_entry(&[0x11; 32], &[0x33; 32], b"value-2")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0x22; 32], b"value-1")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0x33; 32], b"value-2")?;
 
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
@@ -1626,7 +1626,7 @@ mod tests {
         let db_path = temp.path().join("db");
 
         let fixture = DbFixture::new(&db_path)?;
-        let ctx_id = [0x11; 32];
+        let ctx_id = test_context_id(0x11);
 
         // Insert entries with different state key prefixes
         // State key starting with "user_"
@@ -1659,7 +1659,7 @@ mod tests {
                 name: Some("copy-user-state".into()),
                 column: Column::State,
                 filters: PlanFilters {
-                    context_ids: vec![hex::encode(ctx_id)],
+                    context_ids: vec![hex::encode(*ctx_id)],
                     state_key_prefix: Some("user_".into()),
                     ..PlanFilters::default()
                 },
@@ -1769,12 +1769,12 @@ mod tests {
         let fixture = DbFixture::new(&db_path)?;
 
         // Context 0x11 with various state keys
-        fixture.insert_state_entry(&[0x11; 32], &[0xAA; 32], b"value-11-aa")?;
-        fixture.insert_state_entry(&[0x11; 32], &[0xBB; 32], b"value-11-bb")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0xAA; 32], b"value-11-aa")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0xBB; 32], b"value-11-bb")?;
 
         // Context 0x22 with similar state keys
-        fixture.insert_state_entry(&[0x22; 32], &[0xAA; 32], b"value-22-aa")?;
-        fixture.insert_state_entry(&[0x22; 32], &[0xBB; 32], b"value-22-bb")?;
+        fixture.insert_state_entry(&test_context_id(0x22), &[0xAA; 32], b"value-22-aa")?;
+        fixture.insert_state_entry(&test_context_id(0x22), &[0xBB; 32], b"value-22-bb")?;
 
         // Filter for context 0x11 AND keys starting with 0x11 (the context ID bytes)
         // This will match context 0x11 entries because State keys are [context_id][state_key]
@@ -1834,9 +1834,9 @@ mod tests {
         let fixture = DbFixture::new(&db_path)?;
 
         // Insert Meta entries for two different contexts
-        fixture.insert_meta_entry(&[0x11; 32], b"metadata_key_1", b"meta-value-1")?;
-        fixture.insert_meta_entry(&[0x11; 32], b"metadata_key_2", b"meta-value-2")?;
-        fixture.insert_meta_entry(&[0x22; 32], b"metadata_key_3", b"meta-value-3")?;
+        // Note: Meta column has one entry per context (context_id is the key)
+        fixture.insert_meta_entry(&test_context_id(0x11), &test_context_meta(0xAA))?;
+        fixture.insert_meta_entry(&test_context_id(0x22), &test_context_meta(0xBB))?;
 
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
@@ -1865,10 +1865,10 @@ mod tests {
         ensure!(report.steps.len() == 1, "expected one step");
         let copy = &report.steps[0];
 
-        // Should match 2 Meta entries from context 0x11
+        // Should match 1 Meta entry from context 0x11 (Meta column has one entry per context)
         ensure!(
-            copy.matched_keys == 2,
-            "expected 2 Meta entries for context 0x11, got {}",
+            copy.matched_keys == 1,
+            "expected 1 Meta entry for context 0x11, got {}",
             copy.matched_keys
         );
 

@@ -60,6 +60,10 @@ pub struct MigrateArgs {
 ///
 /// - **Dry-run mode** (default): Preview what would happen without making changes
 /// - **Apply mode** (`--apply`): Execute the migration and write changes to target
+#[expect(
+    clippy::too_many_lines,
+    reason = "CLI function with extensive user feedback"
+)]
 pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
     let plan_path = &args.plan;
     if !plan_path.exists() {

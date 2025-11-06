@@ -3,11 +3,11 @@
 //!
 //! This module implements mutating operations for migration plans when `--apply` mode is enabled.
 //! It builds on top of the dry-run engine's filter resolution and scanning logic, but performs
-//! actual write operations to the target database using RocksDB `WriteBatch` for atomicity.
+//! actual write operations to the target database using `RocksDB` `WriteBatch` for atomicity.
 //!
 //! ## Key Features
 //!
-//! - **WriteBatch Operations**: All writes within a step are batched and committed atomically
+//! - **`WriteBatch` Operations**: All writes within a step are batched and committed atomically
 //! - **Idempotency**: Steps can be safely re-run if interrupted (future enhancement)
 //! - **Detailed Logging**: Progress and key operations are logged for observability
 //! - **Filter Reuse**: Leverages the same filter resolution logic from dry-run mode
@@ -16,19 +16,22 @@
 //!
 //! Each migration step type is executed as follows:
 //!
-//! - **Copy**: Reads matching keys from source, writes to target using WriteBatch
-//! - **Delete**: Identifies matching keys in target, deletes them using WriteBatch
-//! - **Upsert**: Writes literal key-value entries to target using WriteBatch
+//! - **Copy**: Reads matching keys from source, writes to target using `WriteBatch`
+//! - **Delete**: Identifies matching keys in target, deletes them using `WriteBatch`
+//! - **Upsert**: Writes literal key-value entries to target using `WriteBatch`
 //! - **Verify**: Evaluates assertions against the target database (read-only)
 //!
 //! ## Safety Mechanisms
 //!
 //! - All operations require an explicit target database with write access
-//! - WriteBatch ensures atomic commits per step
+//! - `WriteBatch` ensures atomic commits per step
 //! - Verification steps can abort the migration if assertions fail
 //!
 
-#![allow(clippy::arithmetic_side_effects, reason = "Counter increments and index calculations are safe in migration context")]
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "Counter increments and index calculations are safe in migration context"
+)]
 
 use eyre::{bail, ensure, Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded, WriteBatch};
@@ -41,7 +44,7 @@ use super::filters::ResolvedFilters;
 use super::plan::{CopyStep, DeleteStep, PlanDefaults, PlanStep, UpsertStep, VerifyStep};
 use super::verification::evaluate_assertion;
 
-/// Maximum number of keys to process per WriteBatch for memory efficiency
+/// Maximum number of keys to process per `WriteBatch` for memory efficiency
 const BATCH_SIZE_LIMIT: usize = 1000;
 
 /// Aggregated execution report containing results for all steps in the migration.
@@ -528,19 +531,22 @@ fn step_label(_index: usize, step: &PlanStep) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::migration::context::MigrationOverrides;
     use crate::migration::plan::{
-        CopyStep, CopyTransform, DeleteStep, EncodedValue, MigrationPlan, PlanFilters,
-        PlanStep, PlanVersion, SourceEndpoint, TargetEndpoint, UpsertEntry, UpsertStep,
+        CopyStep, CopyTransform, DeleteStep, EncodedValue, MigrationPlan, PlanFilters, PlanStep,
+        PlanVersion, SourceEndpoint, TargetEndpoint, UpsertEntry, UpsertStep,
         VerificationAssertion, VerifyStep,
     };
     use crate::migration::test_utils::{test_context_id, test_state_key, DbFixture};
+    use calimero_store::key::{AsKeyParts, ContextState as ContextStateKey};
     use rocksdb::IteratorMode;
     use tempfile::TempDir;
 
     /// Setup a source database with test data for execution tests.
-    fn setup_source_db(path: &std::path::Path) -> Result<()> {
+    fn setup_source_db(path: &Path) -> Result<()> {
         let fixture = DbFixture::new(path)?;
 
         // Insert multiple entries for testing various scenarios
@@ -558,13 +564,13 @@ mod tests {
     }
 
     /// Setup an empty target database for execution tests.
-    fn setup_empty_target_db(path: &std::path::Path) -> Result<()> {
+    fn setup_empty_target_db(path: &Path) -> Result<()> {
         let _fixture = DbFixture::new(path)?;
         Ok(())
     }
 
     /// Setup a target database with existing data for delete/verify tests.
-    fn setup_target_db_with_data(path: &std::path::Path) -> Result<()> {
+    fn setup_target_db_with_data(path: &Path) -> Result<()> {
         let fixture = DbFixture::new(path)?;
 
         let ctx1 = test_context_id(0x11);
@@ -578,7 +584,7 @@ mod tests {
     }
 
     /// Helper to count keys in a specific column of a database.
-    fn count_keys_in_column(db_path: &std::path::Path, column: Column) -> Result<usize> {
+    fn count_keys_in_column(db_path: &Path, column: Column) -> Result<usize> {
         use crate::open_database;
 
         let db = open_database(db_path)?;
@@ -597,11 +603,7 @@ mod tests {
     }
 
     /// Helper to get a value from a database.
-    fn get_value(
-        db_path: &std::path::Path,
-        column: Column,
-        key: &[u8],
-    ) -> Result<Option<Vec<u8>>> {
+    fn get_value(db_path: &Path, column: Column, key: &[u8]) -> Result<Option<Vec<u8>>> {
         use crate::open_database;
 
         let db = open_database(db_path)?;
@@ -627,7 +629,7 @@ mod tests {
             name: None,
             description: None,
             source: SourceEndpoint {
-                db_path: source_path.clone(),
+                db_path: source_path,
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
@@ -680,11 +682,10 @@ mod tests {
         );
 
         // Verify specific key was copied with correct value
-        let mut key = [0u8; 64];
-        key[..32].copy_from_slice(&test_context_id(0x11));
-        key[32..].copy_from_slice(&test_state_key(0xAA));
+        let key = ContextStateKey::new(test_context_id(0x11), test_state_key(0xAA));
+        let key_bytes = key.as_key().as_bytes();
 
-        let value = get_value(&target_path, Column::State, &key)?;
+        let value = get_value(&target_path, Column::State, key_bytes)?;
         ensure!(
             value.as_deref() == Some(&b"value-1a"[..]),
             "expected value 'value-1a', got {:?}",
@@ -709,7 +710,7 @@ mod tests {
             name: None,
             description: None,
             source: SourceEndpoint {
-                db_path: source_path.clone(),
+                db_path: source_path,
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
@@ -741,7 +742,11 @@ mod tests {
         }
 
         let target_count = count_keys_in_column(&target_path, Column::Generic)?;
-        ensure!(target_count == 1, "expected 1 key in target, found {}", target_count);
+        ensure!(
+            target_count == 1,
+            "expected 1 key in target, found {}",
+            target_count
+        );
 
         Ok(())
     }
@@ -799,14 +804,17 @@ mod tests {
 
         // Verify only 1 key remains (context_id 0x22)
         let final_count = count_keys_in_column(&target_path, Column::State)?;
-        ensure!(final_count == 1, "expected 1 key remaining, found {}", final_count);
+        ensure!(
+            final_count == 1,
+            "expected 1 key remaining, found {}",
+            final_count
+        );
 
         // Verify the remaining key is the one with context_id 0x22
-        let mut remaining_key = [0u8; 64];
-        remaining_key[..32].copy_from_slice(&test_context_id(0x22));
-        remaining_key[32..].copy_from_slice(&test_state_key(0xAA));
+        let remaining_key = ContextStateKey::new(test_context_id(0x22), test_state_key(0xAA));
+        let remaining_key_bytes = remaining_key.as_key().as_bytes();
 
-        let value = get_value(&target_path, Column::State, &remaining_key)?;
+        let value = get_value(&target_path, Column::State, remaining_key_bytes)?;
         ensure!(
             value.is_some(),
             "expected context 0x22 key to remain after deletion"
@@ -842,18 +850,18 @@ mod tests {
                 entries: vec![
                     UpsertEntry {
                         key: EncodedValue::Hex {
-                            data: "0x6b6579414243".to_string(),
+                            data: "0x6b6579414243".to_owned(),
                         }, // "keyABC"
                         value: EncodedValue::Utf8 {
-                            data: "literal-value-1".to_string(),
+                            data: "literal-value-1".to_owned(),
                         },
                     },
                     UpsertEntry {
                         key: EncodedValue::Hex {
-                            data: "0x6b6579444546".to_string(),
+                            data: "0x6b6579444546".to_owned(),
                         }, // "keyDEF"
                         value: EncodedValue::Utf8 {
-                            data: "literal-value-2".to_string(),
+                            data: "literal-value-2".to_owned(),
                         },
                     },
                 ],
@@ -874,7 +882,11 @@ mod tests {
 
         // Verify target database contains the upserted entries
         let target_count = count_keys_in_column(&target_path, Column::Generic)?;
-        ensure!(target_count == 2, "expected 2 keys in target, found {}", target_count);
+        ensure!(
+            target_count == 2,
+            "expected 2 keys in target, found {}",
+            target_count
+        );
 
         let value1 = get_value(&target_path, Column::Generic, b"keyABC")?;
         ensure!(
@@ -910,7 +922,7 @@ mod tests {
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -950,7 +962,7 @@ mod tests {
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -996,7 +1008,7 @@ mod tests {
             name: None,
             description: None,
             source: SourceEndpoint {
-                db_path: source_path.clone(),
+                db_path: source_path,
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
@@ -1025,10 +1037,10 @@ mod tests {
                     column: Column::Generic,
                     entries: vec![UpsertEntry {
                         key: EncodedValue::Utf8 {
-                            data: "key-3".to_string(),
+                            data: "key-3".to_owned(),
                         },
                         value: EncodedValue::Utf8 {
-                            data: "value-3".to_string(),
+                            data: "value-3".to_owned(),
                         },
                     }],
                 }),
@@ -1050,7 +1062,11 @@ mod tests {
 
         // Verify final database state
         let final_count = count_keys_in_column(&target_path, Column::Generic)?;
-        ensure!(final_count == 3, "expected 3 keys in target, found {}", final_count);
+        ensure!(
+            final_count == 3,
+            "expected 3 keys in target, found {}",
+            final_count
+        );
 
         Ok(())
     }
@@ -1071,7 +1087,7 @@ mod tests {
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -1080,10 +1096,10 @@ mod tests {
                 column: Column::Generic,
                 entries: vec![UpsertEntry {
                     key: EncodedValue::Utf8 {
-                        data: "key".to_string(),
+                        data: "key".to_owned(),
                     },
                     value: EncodedValue::Utf8 {
-                        data: "value".to_string(),
+                        data: "value".to_owned(),
                     },
                 }],
             })],
@@ -1121,9 +1137,9 @@ mod tests {
 
         // Insert 1500 entries to test batching across multiple commits
         for i in 0..1500_u32 {
-            let mut state_key = [0u8; 32];
+            let mut state_key = [0_u8; 32];
             state_key[..4].copy_from_slice(&i.to_be_bytes());
-            fixture.insert_state_entry(&ctx, &state_key, format!("value-{}", i).as_bytes())?;
+            fixture.insert_state_entry(&ctx, &state_key, format!("value-{i}").as_bytes())?;
         }
 
         setup_empty_target_db(&target_path)?;
@@ -1133,7 +1149,7 @@ mod tests {
             name: None,
             description: None,
             source: SourceEndpoint {
-                db_path: source_path.clone(),
+                db_path: source_path,
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
@@ -1183,9 +1199,9 @@ mod tests {
 
         // Insert 1500 entries to test batching across multiple commits
         for i in 0..1500_u32 {
-            let mut state_key = [0u8; 32];
+            let mut state_key = [0_u8; 32];
             state_key[..4].copy_from_slice(&i.to_be_bytes());
-            fixture.insert_state_entry(&ctx, &state_key, format!("value-{}", i).as_bytes())?;
+            fixture.insert_state_entry(&ctx, &state_key, format!("value-{i}").as_bytes())?;
         }
 
         // Verify initial state
@@ -1230,7 +1246,11 @@ mod tests {
 
         // Verify target is empty
         let final_count = count_keys_in_column(&target_path, Column::State)?;
-        ensure!(final_count == 0, "expected 0 keys in target, found {}", final_count);
+        ensure!(
+            final_count == 0,
+            "expected 0 keys in target, found {}",
+            final_count
+        );
 
         Ok(())
     }
@@ -1251,7 +1271,7 @@ mod tests {
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -1260,10 +1280,10 @@ mod tests {
                 column: Column::Generic,
                 entries: vec![UpsertEntry {
                     key: EncodedValue::Utf8 {
-                        data: "key".to_string(),
+                        data: "key".to_owned(),
                     },
                     value: EncodedValue::Utf8 {
-                        data: "value".to_string(),
+                        data: "value".to_owned(),
                     },
                 }],
             })],
@@ -1298,7 +1318,7 @@ mod tests {
             name: None,
             description: None,
             source: SourceEndpoint {
-                db_path: source_path.clone(),
+                db_path: source_path,
                 wasm_file: None,
             },
             target: None, // No target!
@@ -1345,11 +1365,11 @@ mod tests {
             name: None,
             description: None,
             source: SourceEndpoint {
-                db_path: source_path.clone(),
+                db_path: source_path,
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -1392,7 +1412,7 @@ mod tests {
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -1426,9 +1446,8 @@ mod tests {
         setup_target_db_with_data(&target_path)?;
 
         // Build a specific key to check for
-        let mut key = [0u8; 64];
-        key[..32].copy_from_slice(&test_context_id(0x11));
-        key[32..].copy_from_slice(&test_state_key(0xAA));
+        let key = ContextStateKey::new(test_context_id(0x11), test_state_key(0xAA));
+        let key_bytes = key.as_key().as_bytes();
 
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
@@ -1439,7 +1458,7 @@ mod tests {
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -1449,7 +1468,7 @@ mod tests {
                 filters: PlanFilters::default(),
                 assertion: VerificationAssertion::ContainsKey {
                     contains_key: EncodedValue::Hex {
-                        data: hex::encode(key),
+                        data: hex::encode(key_bytes),
                     },
                 },
             })],
@@ -1474,9 +1493,8 @@ mod tests {
         setup_target_db_with_data(&target_path)?;
 
         // Build a key that doesn't exist
-        let mut key = [0u8; 64];
-        key[..32].copy_from_slice(&test_context_id(0xFF)); // Non-existent context
-        key[32..].copy_from_slice(&test_state_key(0xFF));
+        let key = ContextStateKey::new(test_context_id(0xFF), test_state_key(0xFF));
+        let key_bytes = key.as_key().as_bytes();
 
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
@@ -1487,7 +1505,7 @@ mod tests {
                 wasm_file: None,
             },
             target: Some(TargetEndpoint {
-                db_path: target_path.clone(),
+                db_path: target_path,
                 backup_dir: None,
             }),
             defaults: PlanDefaults::default(),
@@ -1497,7 +1515,7 @@ mod tests {
                 filters: PlanFilters::default(),
                 assertion: VerificationAssertion::MissingKey {
                     missing_key: EncodedValue::Hex {
-                        data: hex::encode(key),
+                        data: hex::encode(key_bytes),
                     },
                 },
             })],
@@ -1541,10 +1559,10 @@ mod tests {
                 column: Column::Generic,
                 entries: vec![UpsertEntry {
                     key: EncodedValue::Utf8 {
-                        data: "key-to-overwrite".to_string(),
+                        data: "key-to-overwrite".to_owned(),
                     },
                     value: EncodedValue::Utf8 {
-                        data: "new-value".to_string(),
+                        data: "new-value".to_owned(),
                     },
                 }],
             })],
@@ -1599,10 +1617,10 @@ mod tests {
                     column: Column::Generic,
                     entries: vec![UpsertEntry {
                         key: EncodedValue::Utf8 {
-                            data: "key-1".to_string(),
+                            data: "key-1".to_owned(),
                         },
                         value: EncodedValue::Utf8 {
-                            data: "value-1".to_string(),
+                            data: "value-1".to_owned(),
                         },
                     }],
                 }),
@@ -1619,10 +1637,10 @@ mod tests {
                     column: Column::Generic,
                     entries: vec![UpsertEntry {
                         key: EncodedValue::Utf8 {
-                            data: "key-2".to_string(),
+                            data: "key-2".to_owned(),
                         },
                         value: EncodedValue::Utf8 {
-                            data: "value-2".to_string(),
+                            data: "value-2".to_owned(),
                         },
                     }],
                 }),

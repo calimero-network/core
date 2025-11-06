@@ -3,10 +3,18 @@
 //! This module provides helper functions for setting up temporary RocksDB instances
 //! with sample Calimero data for testing migration plans and dry-run reports.
 
-#![allow(clippy::arithmetic_side_effects, reason = "Test utility calculations for buffer sizes are safe")]
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "Test utility calculations for buffer sizes are safe"
+)]
 
 use std::path::{Path, PathBuf};
 
+use calimero_primitives::context::ContextId;
+use calimero_store::key::{
+    AsKeyParts, ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+};
+use calimero_store::types::ContextMeta;
 use eyre::{ensure, Result};
 use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
 
@@ -41,7 +49,7 @@ impl DbFixture {
     /// Insert a single state entry for a given context ID.
     pub fn insert_state_entry(
         &self,
-        context_id: &[u8; 32],
+        context_id: &ContextId,
         state_key: &[u8; 32],
         value: &[u8],
     ) -> Result<()> {
@@ -51,12 +59,12 @@ impl DbFixture {
             .cf_handle(Column::State.as_str())
             .ok_or_else(|| eyre::eyre!("State column family not found"))?;
 
-        let mut full_key = [0_u8; 64];
-        full_key[..32].copy_from_slice(context_id);
-        full_key[32..64].copy_from_slice(state_key);
+        // Use actual Calimero types to construct the key
+        let key = ContextStateKey::new(*context_id, *state_key);
+        let key_bytes = key.as_key().as_bytes();
 
         let mut batch = WriteBatch::default();
-        batch.put_cf(cf_state, full_key, value);
+        batch.put_cf(cf_state, key_bytes, value);
         db.write(batch)?;
 
         Ok(())
@@ -77,12 +85,11 @@ impl DbFixture {
         Ok(())
     }
 
-    /// Insert a Meta column entry (context_id + metadata_key structure).
+    /// Insert a Meta column entry with serialized ContextMeta value.
     pub fn insert_meta_entry(
         &self,
-        context_id: &[u8; 32],
-        meta_key: &[u8],
-        value: &[u8],
+        context_id: &ContextId,
+        meta_value: &ContextMeta,
     ) -> Result<()> {
         let db =
             DB::open_cf_descriptors(&Self::default_opts(), &self.path, Self::cf_descriptors())?;
@@ -90,12 +97,15 @@ impl DbFixture {
             .cf_handle(Column::Meta.as_str())
             .ok_or_else(|| eyre::eyre!("Meta column family not found"))?;
 
-        let mut full_key = Vec::with_capacity(32 + meta_key.len());
-        full_key.extend_from_slice(context_id);
-        full_key.extend_from_slice(meta_key);
+        // Use actual Calimero types to construct the key
+        let key = ContextMetaKey::new(*context_id);
+        let key_bytes = key.as_key().as_bytes();
+
+        // Serialize the value using Borsh
+        let value_bytes = borsh::to_vec(meta_value)?;
 
         let mut batch = WriteBatch::default();
-        batch.put_cf(cf_meta, full_key, value);
+        batch.put_cf(cf_meta, key_bytes, value_bytes);
         db.write(batch)?;
 
         Ok(())
@@ -117,8 +127,9 @@ impl DbFixture {
 }
 
 /// Helper to create test context IDs from simple byte patterns.
-pub fn test_context_id(byte: u8) -> [u8; 32] {
-    [byte; 32]
+/// Returns an actual ContextId instead of raw bytes.
+pub fn test_context_id(byte: u8) -> ContextId {
+    ContextId::from([byte; 32])
 }
 
 /// Helper to create test state keys from simple byte patterns.
@@ -129,6 +140,21 @@ pub fn test_state_key(byte: u8) -> [u8; 32] {
 /// Helper to create a short (malformed) key for testing edge cases.
 pub fn short_key(len: usize) -> Vec<u8> {
     vec![0xFF; len]
+}
+
+/// Helper to create test ContextMeta with placeholder values.
+pub fn test_context_meta(app_id_byte: u8) -> ContextMeta {
+    use calimero_primitives::application::ApplicationId;
+    use calimero_store::key::ApplicationMeta as ApplicationMetaKey;
+
+    let app_id = ApplicationId::from([app_id_byte; 32]);
+    let app_meta_key = ApplicationMetaKey::new(app_id);
+
+    ContextMeta::new(
+        app_meta_key,
+        [0_u8; 32], // root_hash
+        Vec::new(), // dag_heads
+    )
 }
 
 #[cfg(test)]
@@ -180,11 +206,11 @@ mod tests {
         )?;
         let cf_state = db.cf_handle(Column::State.as_str()).unwrap();
 
-        let mut full_key = [0_u8; 64];
-        full_key[..32].copy_from_slice(&ctx_id);
-        full_key[32..64].copy_from_slice(&state_key);
+        // Use actual Calimero types to construct the key
+        let key = ContextStateKey::new(ctx_id, state_key);
+        let key_bytes = key.as_key().as_bytes();
 
-        let value = db.get_cf(cf_state, full_key)?;
+        let value = db.get_cf(cf_state, key_bytes)?;
         ensure!(
             value.as_deref() == Some(&b"test-value"[..]),
             "Expected value 'test-value', got {:?}",
