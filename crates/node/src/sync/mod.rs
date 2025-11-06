@@ -29,6 +29,7 @@
 
 mod blobs;
 mod config;
+mod dag_bootstrapper;
 mod delta_request;
 mod helpers;
 mod key;

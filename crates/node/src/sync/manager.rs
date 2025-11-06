@@ -18,7 +18,6 @@ use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
 use libp2p::PeerId;
-use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio::time::{self, timeout_at, Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
@@ -26,6 +25,7 @@ use tracing::{debug, error, info, warn};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
+use super::dag_bootstrapper::DagBootstrapper;
 use super::peer_selector::PeerSelector;
 use super::tracking::{SyncProtocol, SyncState};
 
@@ -43,6 +43,7 @@ pub struct SyncManager {
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
     peer_selector: PeerSelector,
+    dag_bootstrapper: DagBootstrapper,
 }
 
 impl Clone for SyncManager {
@@ -58,6 +59,12 @@ impl Clone for SyncManager {
                 self.sync_config.clone(),
                 self.network_client.clone(),
                 self.context_client.clone(),
+            ),
+            dag_bootstrapper: DagBootstrapper::new(
+                self.sync_config.clone(),
+                self.context_client.clone(),
+                self.network_client.clone(),
+                self.node_state.clone(),
             ),
         }
     }
@@ -78,6 +85,13 @@ impl SyncManager {
             context_client.clone(),
         );
 
+        let dag_bootstrapper = DagBootstrapper::new(
+            sync_config.clone(),
+            context_client.clone(),
+            network_client.clone(),
+            node_state.clone(),
+        );
+
         Self {
             sync_config,
             node_client,
@@ -86,6 +100,7 @@ impl SyncManager {
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
             peer_selector,
+            dag_bootstrapper,
         }
     }
 
@@ -408,7 +423,8 @@ impl SyncManager {
             );
 
             let result = self
-                .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, &mut stream)
+                .dag_bootstrapper
+                .catch_up(context_id, chosen_peer, our_identity, &mut stream)
                 .await?;
 
             // If peer had no data (heads_count=0), return error to try next peer
@@ -443,7 +459,8 @@ impl SyncManager {
 
                 // Request DAG heads just like uninitialized nodes
                 let result = self
-                    .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, &mut stream)
+                    .dag_bootstrapper
+                    .catch_up(context_id, chosen_peer, our_identity, &mut stream)
                     .await?;
 
                 // If peer had no data, return error to try next peer
@@ -458,213 +475,6 @@ impl SyncManager {
         // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
         debug!(%context_id, "Node is in sync, no active protocol needed");
         Ok(SyncProtocol::None)
-    }
-
-    /// Request peer's DAG heads and sync all missing deltas
-    async fn request_dag_heads_and_sync(
-        &self,
-        context_id: ContextId,
-        peer_id: PeerId,
-        our_identity: PublicKey,
-        stream: &mut Stream,
-    ) -> eyre::Result<SyncProtocol> {
-        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
-
-        // Send DAG heads request
-        let request_msg = StreamMessage::Init {
-            context_id,
-            party_id: our_identity,
-            payload: InitPayload::DagHeadsRequest { context_id },
-            next_nonce: {
-                use rand::Rng;
-                rand::thread_rng().gen()
-            },
-        };
-
-        self.send(stream, &request_msg, None).await?;
-
-        // Receive response
-        let response = self.recv(stream, None).await?;
-
-        match response {
-            Some(StreamMessage::Message {
-                payload:
-                    MessagePayload::DagHeadsResponse {
-                        dag_heads,
-                        root_hash,
-                    },
-                ..
-            }) => {
-                info!(
-                    %context_id,
-                    heads_count = dag_heads.len(),
-                    peer_root_hash = %root_hash,
-                    "Received DAG heads from peer, requesting deltas"
-                );
-
-                // Check if peer has state even without DAG heads
-                if dag_heads.is_empty() && *root_hash != [0; 32] {
-                    error!(
-                        %context_id,
-                        peer_root_hash = %root_hash,
-                        "Peer has state but no DAG heads!"
-                    );
-                    bail!(
-                        "Peer has state but no DAG heads (migration issue). \
-                         Clear data directories on both nodes and recreate context."
-                    );
-                }
-
-                if dag_heads.is_empty() {
-                    info!(%context_id, "Peer also has no deltas and no state, will try next peer");
-                    // Return None to signal caller to try next peer
-                    return Ok(SyncProtocol::None);
-                }
-
-                // CRITICAL FIX: Fetch ALL DAG heads first, THEN request missing parents
-                // This ensures we don't miss sibling heads that might be the missing parents
-
-                // Get or create DeltaStore for this context (do this once before the loop)
-                let (delta_store_ref, is_new_store) = {
-                    let mut is_new = false;
-                    let delta_store = self
-                        .node_state
-                        .delta_stores
-                        .entry(context_id)
-                        .or_insert_with(|| {
-                            is_new = true;
-                            crate::delta_store::DeltaStore::new(
-                                [0u8; 32],
-                                self.context_client.clone(),
-                                context_id,
-                                our_identity,
-                            )
-                        });
-
-                    let delta_store_ref = delta_store.clone();
-                    (delta_store_ref, is_new)
-                };
-
-                // Load persisted deltas from database on first access
-                if is_new_store {
-                    if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-                        warn!(
-                            ?e,
-                            %context_id,
-                            "Failed to load persisted deltas, starting with empty DAG"
-                        );
-                    }
-                }
-
-                // Phase 1: Request and add ALL DAG heads
-                for head_id in &dag_heads {
-                    info!(
-                        %context_id,
-                        head_id = ?head_id,
-                        "Requesting DAG head delta from peer"
-                    );
-
-                    let delta_request = StreamMessage::Init {
-                        context_id,
-                        party_id: our_identity,
-                        payload: InitPayload::DeltaRequest {
-                            context_id,
-                            delta_id: *head_id,
-                        },
-                        next_nonce: {
-                            use rand::Rng;
-                            rand::thread_rng().gen()
-                        },
-                    };
-
-                    self.send(stream, &delta_request, None).await?;
-
-                    let delta_response = self.recv(stream, None).await?;
-
-                    match delta_response {
-                        Some(StreamMessage::Message {
-                            payload: MessagePayload::DeltaResponse { delta },
-                            ..
-                        }) => {
-                            // Deserialize and add to DAG
-                            let storage_delta: calimero_storage::delta::CausalDelta =
-                                borsh::from_slice(&delta)?;
-
-                            let dag_delta = calimero_dag::CausalDelta {
-                                id: storage_delta.id,
-                                parents: storage_delta.parents,
-                                payload: storage_delta.actions,
-                                hlc: storage_delta.hlc,
-                                expected_root_hash: storage_delta.expected_root_hash,
-                            };
-
-                            if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
-                                warn!(
-                                    ?e,
-                                    %context_id,
-                                    head_id = ?head_id,
-                                    "Failed to add DAG head delta"
-                                );
-                            } else {
-                                info!(
-                                    %context_id,
-                                    head_id = ?head_id,
-                                    "Successfully added DAG head delta"
-                                );
-                            }
-                        }
-                        _ => {
-                            warn!(%context_id, head_id = ?head_id, "Unexpected response to delta request");
-                        }
-                    }
-                }
-
-                // Phase 2: Now check for missing parents and fetch them recursively
-                let missing_result = delta_store_ref.get_missing_parents().await;
-
-                // Note: Cascaded events from DB loads logged but not executed here (state_delta handler will catch them)
-                if !missing_result.cascaded_events.is_empty() {
-                    info!(
-                        %context_id,
-                        cascaded_count = missing_result.cascaded_events.len(),
-                        "Cascaded deltas from DB load during DAG head sync"
-                    );
-                }
-
-                if !missing_result.missing_ids.is_empty() {
-                    info!(
-                        %context_id,
-                        missing_count = missing_result.missing_ids.len(),
-                        "DAG heads have missing parents, requesting them recursively"
-                    );
-
-                    // Request missing parents (this uses recursive topological fetching)
-                    if let Err(e) = self
-                        .request_missing_deltas(
-                            context_id,
-                            missing_result.missing_ids,
-                            peer_id,
-                            delta_store_ref.clone(),
-                            our_identity,
-                        )
-                        .await
-                    {
-                        warn!(
-                            ?e,
-                            %context_id,
-                            "Failed to request missing parent deltas during DAG catchup"
-                        );
-                    }
-                }
-
-                // Return a non-None protocol to signal success (prevents trying next peer)
-                Ok(SyncProtocol::DagCatchup)
-            }
-            _ => {
-                warn!(%context_id, "Unexpected response to DAG heads request, trying next peer");
-                Ok(SyncProtocol::None)
-            }
-        }
     }
 
     pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
