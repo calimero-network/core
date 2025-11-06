@@ -319,9 +319,14 @@ mod tests {
         let missing = EncodedValue::Utf8 {
             data: "truly-missing".into(),
         };
-        let assertion = VerificationAssertion::MissingKey { missing_key: missing };
+        let assertion = VerificationAssertion::MissingKey {
+            missing_key: missing,
+        };
         let outcome = evaluate_assertion(&db, Column::Generic, &assertion, 0)?;
-        ensure!(outcome.passed == Some(true), "expected pass for missing key");
+        ensure!(
+            outcome.passed == Some(true),
+            "expected pass for missing key"
+        );
         ensure!(outcome.summary.contains("missing"), "expected 'missing'");
 
         // Fail case - key exists

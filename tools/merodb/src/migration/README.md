@@ -50,6 +50,7 @@ defaults:
   columns: ["State"]
   decode_with_abi: true
   write_if_missing: false
+  batch_size: 1000  # Default batch size for copy/delete steps
   filters:
     context_ids:
       - "0x112233..."
@@ -66,10 +67,16 @@ steps:
     transform:
       decode_with_abi: true
       jq: ".value.parsed | del(.internal)"
+    guards:
+      requires_empty_target: true  # Ensure column is empty
+      requires_validation: false   # Skip validation checks
+    batch_size: 2000  # Override default for this step
   - type: verify
     column: State
     assertion:
       expected_count: 123
+    guards:
+      requires_validation: true  # Validate before verification
 ```
 
 ### 2.1 Top-Level Fields
@@ -79,9 +86,9 @@ steps:
 | `version`    | Plan schema version. Only `1` is accepted; upgrades must bump this value.                                      |
 | `name`/`description` | Optional metadata shown in CLI output to aid humans.                                                |
 | `source`     | Required path to the source RocksDB database plus optional WASM file for ABI decoding.                         |
-| `target`     | Optional path to the target database and backup directory (used later for mutating runs).                      |
-| `defaults`   | Settings inherited by every step unless overridden (columns, filters, `decode_with_abi`, `write_if_missing`).   |
-| `steps`      | Ordered list of migration actions (`copy`, `delete`, `upsert`, `verify`). Each step can override defaults.      |
+| `target`     | Optional path to the target database and backup directory (used for mutating runs and automatic backups).      |
+| `defaults`   | Settings inherited by every step unless overridden (columns, filters, `decode_with_abi`, `write_if_missing`, `batch_size`).   |
+| `steps`      | Ordered list of migration actions (`copy`, `delete`, `upsert`, `verify`). Each step can override defaults and add guards.      |
 
 ### 2.2 Filters (`PlanFilters`)
 
@@ -252,11 +259,67 @@ The execution engine implements mutating operations for migration plans when `--
 
 ### 6.4 Safety Mechanisms
 
+The execution engine includes comprehensive safety features to protect against data loss and ensure migration integrity:
+
+#### Automatic Backups
+
+- **Backup creation**: When `backup_dir` is configured in the migration plan's target endpoint, a timestamped backup is automatically created before any mutations
+- **Incremental backups**: Uses RocksDB's native backup engine for efficient storage
+- **Timestamped directories**: Each backup is stored in `backup_dir/backup-{timestamp}` for easy identification and restoration
+
+Example configuration:
+```yaml
+target:
+  db_path: /path/to/target
+  backup_dir: /path/to/backups  # Automatic backup before mutations
+```
+
+#### Step Guards
+
+Guards enforce preconditions that must be met before a step executes. Add guards to any step type:
+
+```yaml
+steps:
+  - type: copy
+    column: State
+    guards:
+      requires_empty_target: true  # Abort if target column has any keys
+      requires_validation: true    # Run validation checks on target
+```
+
+Available guards:
+- **`requires_empty_target`**: Ensures the target column is completely empty before executing (useful for initial migrations)
+- **`requires_validation`**: Runs validation logic on the target database to ensure it's in a consistent state
+
+Guards are checked before step execution and abort the migration with a clear error message if requirements aren't met.
+
+#### Configurable Batch Sizes
+
+Control memory usage and transaction sizes by configuring batch sizes at the plan level or per-step:
+
+```yaml
+defaults:
+  batch_size: 500  # Plan-level default for all copy/delete steps
+
+steps:
+  - type: copy
+    column: State
+    batch_size: 2000  # Override for this specific step
+  - type: delete
+    column: Config
+    # Uses plan default (500)
+```
+
+Batch size priority: step override > plan default > engine default (1000 keys).
+
+#### Additional Safety Features
+
 - Explicit `--apply` flag required to enable mutations
 - Target database must be opened with write access
-- WriteBatch ensures atomic commits per step (batch size: 1000 keys)
+- WriteBatch ensures atomic commits per step
 - Verification steps abort the migration if assertions fail
 - Progress logging for operations processing large key sets
+- Read-only mode enforced in dry-run to prevent accidental writes
 
 ### 6.5 CLI Usage
 
@@ -312,7 +375,7 @@ merodb migrate --plan plan.yaml --target-db /path/to/target --apply --report res
 - **Build Dry-run Engine** – ✅ filter resolution, per-step previews, warnings, and JSON export (`--report`).
 - **Develop Test Fixtures & Dry-run Tests** – ✅ dry-run smoke tests; JSON report coverage newly added.
 - **Enable Mutating Execution** – ✅ write batches, progress logging, `--apply` flag support.
-- **Add Safety Mechanisms** – 🔄 backups, guard rails, context alias support.
+- **Add Safety Mechanisms** – ✅ automatic backups (`backup_dir`), step guards (`requires_validation`, `requires_empty_target`), configurable batch sizes.
 - **Implement Verification Steps** – ✅ integrated into execution engine with fail-fast behavior.
 - **Polish CLI UX + Reporting** – ✅ `--report` JSON output for both dry-run and apply modes.
 - **Finalize Testing & CI** – 🔄 expand coverage, integrate into CI.
@@ -323,9 +386,12 @@ merodb migrate --plan plan.yaml --target-db /path/to/target --apply --report res
 
 - **Always dry-run first**: treat the dry-run output as the contract for what would happen in apply mode. Verify the key counts and samples before executing.
 - **Use --apply cautiously**: the `--apply` flag performs actual mutations. Always ensure you have backups before running in apply mode.
+- **Enable automatic backups**: configure `backup_dir` in your target endpoint to automatically create backups before mutations. This is your safety net.
+- **Use step guards for safety**: add `requires_empty_target` guard for initial migrations, or `requires_validation` to ensure database consistency before risky operations.
+- **Tune batch sizes for performance**: adjust `batch_size` based on your key sizes and available memory. Larger batches = fewer commits but more memory usage.
 - **Leverage filters**: precise `context_ids`, prefixes, and assertions make plans safer and easier to reason about.
 - **Watch warnings**: the CLI prints warnings whenever decoding fails, filters are ignored, or the ABI is missing.
-- **Monitor progress**: execution mode logs progress every 1000 keys for long-running operations.
+- **Monitor progress**: execution mode logs progress every batch (configurable batch size) for long-running operations.
 - **Verification steps**: use verify steps to validate the target database state at critical points in the migration.
 - **Idempotency**: design steps to be idempotent where possible, so migrations can be safely re-run if interrupted.
 - **Document plans**: use `name` and `description` fields so future readers (and CLI output) understand intent.
