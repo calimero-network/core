@@ -288,8 +288,20 @@ steps:
 ```
 
 Available guards:
+
 - **`requires_empty_target`**: Ensures the target column is completely empty before executing (useful for initial migrations)
-- **`requires_validation`**: Runs validation logic on the target database to ensure it's in a consistent state
+
+- **`requires_validation`**: Runs comprehensive validation on the target database to ensure it's in a consistent state before executing potentially destructive operations. The validation performs:
+  - **Key Size Validation**: Verifies all keys match expected byte lengths for their column type
+  - **Key Structure Validation**: Checks structural integrity of keys:
+    - Simple ID columns (Meta, Config, Blobs, Application): Validates IDs are not all zeros
+    - Compound keys (Identity, Delta, State): Validates both components are non-zero
+    - Identity keys: Additionally validates UTF-8 encoding in public key portion
+    - Alias keys: Validates kind byte (1-3) and non-zero scope/name
+    - Generic keys: Validates keys are not all zeros
+  - **Value Deserialization**: Attempts to deserialize all values according to their schema
+
+  If validation fails, the step is blocked and a detailed error report is displayed showing invalid entries and specific errors.
 
 Guards are checked before step execution and abort the migration with a clear error message if requirements aren't met.
 

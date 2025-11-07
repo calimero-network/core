@@ -61,11 +61,18 @@ merodb --db-path /path/to/rocksdb --export --columns Meta,Config,State --wasm-fi
 
 ### Validate Database
 
-Validate the database integrity:
+Validate the database integrity by performing comprehensive checks on all column families:
 
 ```bash
 merodb --db-path /path/to/rocksdb --validate --output validation.json
 ```
+
+The validation checks:
+- **Key Size Validation**: Verifies all keys match expected byte lengths for their column type
+- **Key Structure Validation**: Validates internal structure of keys (non-zero IDs, valid components, UTF-8 encoding where required)
+- **Value Deserialization**: Attempts to deserialize all values according to their schema
+
+The output includes overall statistics, per-column results, and detailed error information for any invalid entries found.
 
 ### Export DAG Structure
 

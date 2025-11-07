@@ -38,6 +38,7 @@ use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded, WriteBatch};
 use serde::Serialize;
 
 use crate::types::Column;
+use crate::validation::validate_database;
 
 use super::backup::create_backup;
 use super::context::MigrationContext;
@@ -128,10 +129,42 @@ fn check_step_guards(step: &PlanStep, target_db: &DBWithThreadMode<SingleThreade
     // Check requires_validation guard
     if guards.requires_validation {
         eprintln!("  Guard check: requires_validation");
-        // Reuse existing validation logic from the main crate
-        // For now, we'll perform a basic check that the database is accessible
-        // In the future, this could invoke `validate_database` or similar
-        eprintln!("    Database structure validated (passed)");
+
+        let validation_result =
+            validate_database(target_db).wrap_err("Failed to run validation on target database")?;
+
+        let status = validation_result
+            .get("validation_result")
+            .and_then(|v| v.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+
+        let invalid_count = validation_result
+            .get("validation_result")
+            .and_then(|v| v.get("invalid_entries"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+
+        if status != "passed" || invalid_count > 0 {
+            eprintln!("    Validation failed with {invalid_count} invalid entries");
+
+            // Show first few errors for context
+            if let Some(errors) = validation_result.get("errors").and_then(|e| e.as_array()) {
+                for (i, error) in errors.iter().take(5).enumerate() {
+                    eprintln!("      Error {}: {}", i + 1, error);
+                }
+                if errors.len() > 5 {
+                    eprintln!("      ... and {} more errors", errors.len() - 5);
+                }
+            }
+
+            bail!(
+                "Guard check failed: requires_validation - database validation failed with {} invalid entries",
+                invalid_count
+            );
+        }
+
+        eprintln!("    Database validation passed");
     }
 
     Ok(())
