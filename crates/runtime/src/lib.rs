@@ -128,15 +128,24 @@ impl Module {
 
         // Call the auto-generated registration hook if it exists
         // This enables automatic CRDT merge during sync
+        // Note: This is optional and failures are non-fatal (especially for JS apps)
         if let Ok(register_fn) = instance
             .exports
             .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
         {
-            if let Err(err) = register_fn.call(&mut store) {
-                // Log but don't fail - registration is optional (backward compat)
-                debug!(%context_id, error=?err, "Failed to call merge registration hook");
-            } else {
-                debug!(%context_id, "Successfully registered CRDT merge function");
+            match register_fn.call(&mut store) {
+                Ok(()) => {
+                    debug!(%context_id, "Successfully registered CRDT merge function");
+                }
+                Err(err) => {
+                    // Log but don't fail - registration is optional (backward compat)
+                    // JS apps may not have this function properly initialized yet
+                    debug!(
+                        %context_id,
+                        error=?err,
+                        "Failed to call merge registration hook (non-fatal, continuing)"
+                    );
+                }
             }
         }
 
@@ -191,12 +200,17 @@ impl Module {
             };
 
             let message = err.message();
+            let message_str = if message.is_empty() {
+                "<no error message>"
+            } else {
+                message.as_str()
+            };
 
             error!(
                 %context_id,
                 method,
                 error_debug = ?err,
-                error_message = message,
+                error_message = %message_str,
                 wasm_trace = trace_joined.as_deref(),
                 "WASM method execution failed"
             );
