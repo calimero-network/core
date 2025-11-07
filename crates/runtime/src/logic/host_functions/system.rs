@@ -1,6 +1,6 @@
 use core::cell::RefCell;
 use serde::Serialize;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     errors::{HostError, Location, PanicContext},
@@ -347,13 +347,26 @@ impl VMHostFunctions<'_> {
 
         let message = self.read_guest_memory_str(&src_log_buf)?.to_owned();
 
-        self.with_logic_mut(|logic| logic.logs.push(message));
+        self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
-        trace!(
-            target: "runtime::host::system",
-            total_logs = self.borrow_logic().logs.len(),
-            "log_utf8"
-        );
+        let total_logs = self.borrow_logic().logs.len();
+        let interesting = message.contains("[dispatcher]") || message.contains("QuickJS");
+
+        if interesting {
+            info!(
+                target: "runtime::guest::log",
+                total_logs,
+                message = %message,
+                "guest log"
+            );
+        } else {
+            debug!(
+                target: "runtime::guest::log",
+                total_logs,
+                message = %message,
+                "guest log"
+            );
+        }
 
         Ok(())
     }

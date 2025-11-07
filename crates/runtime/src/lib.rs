@@ -169,7 +169,38 @@ impl Module {
         }
 
         if let Err(err) = function.call(&mut store, &[]) {
-            error!(%context_id, method, error=?err, "WASM method execution failed");
+            let traces = err
+                .trace()
+                .iter()
+                .map(|frame| {
+                    let module = frame.module_name();
+                    let func = frame.function_name().unwrap_or("<unknown-func>");
+                    let offset = frame.func_offset();
+                    let offset = if offset == 0 {
+                        String::new()
+                    } else {
+                        format!("@0x{offset:x}")
+                    };
+                    format!("{module}::{func}{offset}")
+                })
+                .collect::<Vec<_>>();
+            let trace_joined = if traces.is_empty() {
+                None
+            } else {
+                Some(traces.join(" -> "))
+            };
+
+            let message = err.message();
+
+            error!(
+                %context_id,
+                method,
+                error_debug = ?err,
+                error_message = message,
+                wasm_trace = trace_joined.as_deref(),
+                "WASM method execution failed"
+            );
+
             return match err.downcast::<VMLogicError>() {
                 Ok(err) => Ok(logic.finish(Some(err.try_into()?))),
                 Err(err) => Ok(logic.finish(Some(err.into()))),
