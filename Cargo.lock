@@ -6438,15 +6438,20 @@ name = "merodb"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
+ "base64 0.22.1",
  "borsh",
+ "calimero-primitives",
  "calimero-store",
  "calimero-wasm-abi",
  "clap",
  "eyre",
  "hex",
+ "once_cell",
  "rocksdb",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "tempfile",
  "tokio",
  "wasmparser 0.118.2",
 ]

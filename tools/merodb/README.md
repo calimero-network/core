@@ -61,11 +61,18 @@ merodb --db-path /path/to/rocksdb --export --columns Meta,Config,State --wasm-fi
 
 ### Validate Database
 
-Validate the database integrity:
+Validate the database integrity by performing comprehensive checks on all column families:
 
 ```bash
 merodb --db-path /path/to/rocksdb --validate --output validation.json
 ```
+
+The validation checks:
+- **Key Size Validation**: Verifies all keys match expected byte lengths for their column type
+- **Key Structure Validation**: Validates internal structure of keys (non-zero IDs, valid components, UTF-8 encoding where required)
+- **Value Deserialization**: Attempts to deserialize all values according to their schema
+
+The output includes overall statistics, per-column results, and detailed error information for any invalid entries found.
 
 ### Export DAG Structure
 
@@ -128,6 +135,17 @@ The GUI automatically exports and processes the database server-side, eliminatin
 - `.data.State.entries | map(.key)` - Extract all state keys
 - `.data | to_entries | map({column: .key, count: .value.count})` - Get entry counts per column
 
+## Migration Workflow (`merodb migrate`)
+
+A full walkthrough (plan schema, dry-run engine, roadmap, and YAML reference) now lives in [`src/migration/README.md`](src/migration/README.md). Refer to that document when authoring plans or extending the migration implementation.
+
+During dry runs the CLI prints a human-readable preview and can also persist machine-readable output using:
+
+```bash
+merodb migrate --plan ./plan.yaml --report ./dry-run.json
+```
+
+The `--report` file contains the step-by-step summary emitted by the dry-run engine, including counts, samples, and warnings.
 ## Column Families
 
 The tool supports all Calimero RocksDB column families:
