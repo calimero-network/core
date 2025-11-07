@@ -223,24 +223,30 @@ impl TargetContext {
     /// engine to write data to the target database. The database is opened with
     /// all column families to ensure proper schema alignment with the source.
     ///
+    /// If the target directory does not exist, it will be created automatically.
+    ///
     /// # Arguments
     ///
-    /// * `path` - Path to the target RocksDB database
+    /// * `path` - Path to the target RocksDB database (will be created if missing)
     /// * `backup_dir` - Optional directory for storing backups before mutations
     ///
     /// # Returns
     ///
     /// A `TargetContext` with write access enabled, or an error if the database
-    /// cannot be opened or does not exist.
+    /// cannot be opened or the directory cannot be created.
     fn new_writable(path: PathBuf, backup_dir: Option<PathBuf>) -> Result<Self> {
         use crate::types::Column;
         use rocksdb::Options;
 
-        ensure!(
-            path.exists(),
-            "Target database path does not exist: {}",
-            path.display()
-        );
+        // Create the directory if it doesn't exist
+        if !path.exists() {
+            std::fs::create_dir_all(&path).wrap_err_with(|| {
+                format!(
+                    "Failed to create target database directory at {}",
+                    path.display()
+                )
+            })?;
+        }
 
         // Prepare column family names for opening the database with write access
         let cf_names: Vec<String> = Column::all()
@@ -248,7 +254,9 @@ impl TargetContext {
             .map(|c| c.as_str().to_owned())
             .collect();
 
-        let options = Options::default();
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
 
         // Open database in read-write mode for mutating operations
         let db = DBWithThreadMode::<SingleThreaded>::open_cf(&options, &path, &cf_names)
