@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 use serde::Serialize;
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     errors::{HostError, Location, PanicContext},
@@ -60,6 +61,14 @@ impl VMHostFunctions<'_> {
         let line = location.line();
         let column = location.column();
 
+        warn!(
+            target: "runtime::host::system",
+            file = %file,
+            line,
+            column,
+            "Guest panic() without message"
+        );
+
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message: "explicit panic".to_owned(),
@@ -89,6 +98,12 @@ impl VMHostFunctions<'_> {
         src_panic_msg_ptr: u64,
         src_location_ptr: u64,
     ) -> VMLogicResult<()> {
+        debug!(
+            target: "runtime::host::system",
+            src_panic_msg_ptr,
+            src_location_ptr,
+            "panic_utf8 invoked"
+        );
         let panic_message_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
         let location =
@@ -98,6 +113,15 @@ impl VMHostFunctions<'_> {
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
+
+        error!(
+            target: "runtime::host::system",
+            message = %panic_message,
+            file = %file,
+            line,
+            column,
+            "Guest panic captured"
+        );
 
         Err(HostError::Panic {
             context: PanicContext::Guest,
@@ -118,11 +142,20 @@ impl VMHostFunctions<'_> {
     /// The length of the data in the specified register. If the register is not found,
     /// it returns `u64::MAX`.
     pub fn register_len(&self, register_id: u64) -> VMLogicResult<u64> {
-        Ok(self
+        let len = self
             .borrow_logic()
             .registers
             .get_len(register_id)
-            .unwrap_or(u64::MAX))
+            .unwrap_or(u64::MAX);
+
+        trace!(
+            target: "runtime::host::system",
+            register_id,
+            len,
+            "register_len"
+        );
+
+        Ok(len)
     }
 
     /// Reads the data from a register into a guest memory buffer.
@@ -149,11 +182,25 @@ impl VMHostFunctions<'_> {
         let data = self.borrow_logic().registers.get(register_id)?;
 
         if data.len() != usize::try_from(dest_data.len()).map_err(|_| HostError::IntegerOverflow)? {
+            trace!(
+                target: "runtime::host::system",
+                register_id,
+                register_size = data.len(),
+                dest_size = dest_data.len(),
+                "read_register length mismatch"
+            );
             return Ok(0);
         }
 
         self.read_guest_memory_slice_mut(&dest_data)
             .copy_from_slice(data);
+
+        trace!(
+            target: "runtime::host::system",
+            register_id,
+            bytes_copied = data.len(),
+            "read_register"
+        );
 
         Ok(1)
     }
@@ -172,7 +219,15 @@ impl VMHostFunctions<'_> {
             logic
                 .registers
                 .set(logic.limits, dest_register_id, logic.context.context_id)
-        })
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "context_id written"
+        );
+
+        Ok(())
     }
 
     /// Copies the executor's public key into a register.
@@ -191,7 +246,15 @@ impl VMHostFunctions<'_> {
                 dest_register_id,
                 logic.context.executor_public_key,
             )
-        })
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "executor_id written"
+        );
+
+        Ok(())
     }
 
     /// Copies the input data for the current execution (from context ID) into a register.
@@ -209,6 +272,13 @@ impl VMHostFunctions<'_> {
                 .registers
                 .set(logic.limits, dest_register_id, &*logic.context.input)
         })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            input_len = self.borrow_logic().context.input.len(),
+            "input copied to register"
+        );
 
         Ok(())
     }
@@ -235,7 +305,19 @@ impl VMHostFunctions<'_> {
             sys::ValueReturn::Err(value) => Err(self.read_guest_memory_slice(&value).to_vec()),
         };
 
+        let result_len = match &result {
+            Ok(value) | Err(value) => value.len(),
+        };
+        let was_ok = result.is_ok();
+
         self.with_logic_mut(|logic| logic.returns = Some(result));
+
+        debug!(
+            target: "runtime::host::system",
+            success = was_ok,
+            bytes = result_len,
+            "value_return captured"
+        );
 
         Ok(())
     }
@@ -266,6 +348,12 @@ impl VMHostFunctions<'_> {
         let message = self.read_guest_memory_str(&src_log_buf)?.to_owned();
 
         self.with_logic_mut(|logic| logic.logs.push(message));
+
+        trace!(
+            target: "runtime::host::system",
+            total_logs = self.borrow_logic().logs.len(),
+            "log_utf8"
+        );
 
         Ok(())
     }
@@ -320,6 +408,14 @@ impl VMHostFunctions<'_> {
                 handler,
             });
         });
+
+        debug!(
+            target: "runtime::host::system",
+            events = self.borrow_logic().events.len(),
+            kind_len,
+            data_len,
+            "emit"
+        );
 
         Ok(())
     }
