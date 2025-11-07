@@ -15,6 +15,8 @@ pub struct MigrationOverrides {
     pub source_db: Option<PathBuf>,
     pub wasm_file: Option<PathBuf>,
     pub target_db: Option<PathBuf>,
+    pub backup_dir: Option<PathBuf>,
+    pub no_backup: bool,
 }
 
 /// Aggregates plan metadata with opened database handles for a run.
@@ -52,6 +54,8 @@ impl MigrationContext {
             source_db,
             wasm_file,
             target_db,
+            backup_dir,
+            no_backup,
         } = overrides;
 
         let source_db_path = source_db.unwrap_or_else(|| plan.source.db_path.clone());
@@ -60,7 +64,11 @@ impl MigrationContext {
         let source = SourceContext::new(source_db_path, source_wasm_path)?;
 
         let target_path = target_db.or_else(|| plan.target.as_ref().map(|t| t.db_path.clone()));
-        let target_backup = plan.target.as_ref().and_then(|t| t.backup_dir.clone());
+        let target_backup = if no_backup {
+            None
+        } else {
+            backup_dir.or_else(|| plan.target.as_ref().and_then(|t| t.backup_dir.clone()))
+        };
 
         // Open target database in appropriate mode based on dry_run flag
         let target = match target_path {

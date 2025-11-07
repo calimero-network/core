@@ -33,6 +33,14 @@ pub struct MigrateArgs {
     #[arg(long, value_name = "PATH")]
     pub target_db: Option<PathBuf>,
 
+    /// Backup directory for target database (overrides plan configuration)
+    #[arg(long, value_name = "PATH")]
+    pub backup_dir: Option<PathBuf>,
+
+    /// Skip backup creation before applying migration (use with caution)
+    #[arg(long)]
+    pub no_backup: bool,
+
     /// Perform a dry run without writing to the target (default behavior)
     #[arg(long)]
     pub dry_run: bool,
@@ -82,6 +90,8 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
         source_db: args.db_path.clone(),
         wasm_file: args.wasm_file.clone(),
         target_db: args.target_db.clone(),
+        backup_dir: args.backup_dir.clone(),
+        no_backup: args.no_backup,
     };
 
     let context = MigrationContext::new(plan, overrides, dry_run)?;
