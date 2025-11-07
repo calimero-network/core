@@ -11,7 +11,7 @@ use super::context::{AbiManifestStatus, MigrationContext, MigrationOverrides};
 use super::dry_run::{generate_report as generate_dry_run_report, DryRunReport, StepDetail};
 use super::execute::{execute_migration, ExecutionReport, StepExecutionDetail};
 use super::loader::load_plan;
-use super::plan::{MigrationPlan, PlanStep};
+use super::plan::PlanStep;
 use super::report::write_json_report;
 
 /// Clap-backed argument struct for the `migrate` subcommand.
@@ -96,7 +96,7 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
 
     let context = MigrationContext::new(plan, overrides, dry_run)?;
 
-    print_plan_summary(context.plan(), plan_path);
+    print_plan_summary(&context, plan_path);
 
     println!();
     println!(
@@ -199,7 +199,8 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_plan_summary(plan: &MigrationPlan, plan_path: &Path) {
+fn print_plan_summary(context: &MigrationContext, plan_path: &Path) {
+    let plan = context.plan();
     println!("Loaded migration plan: {}", plan_path.display());
     println!("  Version: {}", plan.version.as_u32());
     if let Some(name) = plan.name.as_deref() {
@@ -208,13 +209,21 @@ fn print_plan_summary(plan: &MigrationPlan, plan_path: &Path) {
     if let Some(description) = plan.description.as_deref() {
         println!("  Description: {description}");
     }
-    println!("  Source DB: {}", plan.source.db_path.display());
-    if let Some(wasm) = plan.source.wasm_file.as_ref() {
-        println!("  Source WASM: {}", wasm.display());
+
+    // Show actual source paths being used (from context, not plan)
+    println!("  Source DB: {}", context.source().path().display());
+    match context.source().abi_status() {
+        AbiManifestStatus::NotConfigured => {}
+        AbiManifestStatus::Pending { wasm_path } => {
+            println!("  Source WASM: {}", wasm_path.display());
+        }
+        AbiManifestStatus::Loaded => {}
     }
-    if let Some(target) = plan.target.as_ref() {
-        println!("  Target DB: {}", target.db_path.display());
-        if let Some(backup) = target.backup_dir.as_ref() {
+
+    // Show actual target paths being used (from context, not plan)
+    if let Some(target) = context.target() {
+        println!("  Target DB: {}", target.path().display());
+        if let Some(backup) = target.backup_dir() {
             println!("  Target backup dir: {}", backup.display());
         }
     } else {
