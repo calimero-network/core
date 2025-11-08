@@ -230,6 +230,56 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// Handles QuickJS debug prints routed through `js_std_d_print`.
+    ///
+    /// QuickJS' libc invokes this host import to surface diagnostics. We treat it like any
+    /// other guest log, storing it in the execution outcome and emitting it at `info` level.
+    pub fn js_std_d_print(
+        &mut self,
+        _ctx_ptr: u64,
+        message_ptr: u64,
+        message_len: u64,
+    ) -> VMLogicResult<u32> {
+        trace!(
+            target: "runtime::guest::log",
+            ptr = message_ptr,
+            len = message_len,
+            "js_std_d_print invoked"
+        );
+
+        let len = usize::try_from(message_len).map_err(|_| HostError::IntegerOverflow)?;
+
+        let mut bytes = vec![0u8; len];
+        if len > 0 {
+            self.borrow_memory()
+                .read(message_ptr, &mut bytes)
+                .map_err(|_| HostError::InvalidMemoryAccess)?;
+        }
+
+        {
+            let logic = self.borrow_logic();
+            if logic.logs.len()
+                >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+            {
+                return Err(HostError::LogsOverflow.into());
+            }
+        }
+
+        let message = String::from_utf8_lossy(&bytes).to_string();
+        self.with_logic_mut(|logic| logic.logs.push(message.clone()));
+
+        let total_logs = self.borrow_logic().logs.len();
+        info!(
+            target: "runtime::guest::log",
+            interesting = false,
+            total_logs,
+            message = %message,
+            "guest log (js_std_d_print)"
+        );
+
+        Ok(0)
+    }
+
     /// Copies the executor's public key into a register.
     ///
     /// # Arguments
@@ -335,7 +385,25 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BadUTF8` if the message is not a valid UTF-8 string.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn log_utf8(&mut self, src_log_ptr: u64) -> VMLogicResult<()> {
-        let src_log_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr)? };
+        trace!(
+            target: "runtime::guest::log",
+            ptr = src_log_ptr,
+            "log_utf8 invoked"
+        );
+
+        let src_log_buf =
+            match unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr) } {
+                Ok(buf) => buf,
+                Err(err) => {
+                    error!(
+                        target: "runtime::guest::log",
+                        ptr = src_log_ptr,
+                        error = ?err,
+                        "failed to read guest log buffer descriptor"
+                    );
+                    return Err(err);
+                }
+            };
 
         let logic = self.borrow_logic();
 
@@ -345,28 +413,32 @@ impl VMHostFunctions<'_> {
             return Err(HostError::LogsOverflow.into());
         }
 
-        let message = self.read_guest_memory_str(&src_log_buf)?.to_owned();
+        let message = match self.read_guest_memory_str(&src_log_buf) {
+            Ok(msg) => msg.to_owned(),
+            Err(err) => {
+                error!(
+                    target: "runtime::guest::log",
+                    ptr = src_log_ptr,
+                    buf_len = src_log_buf.len(),
+                    error = ?err,
+                    "failed to read guest log message"
+                );
+                return Err(err);
+            }
+        };
 
         self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
         let total_logs = self.borrow_logic().logs.len();
         let interesting = message.contains("[dispatcher]") || message.contains("QuickJS");
 
-        if interesting {
-            info!(
-                target: "runtime::guest::log",
-                total_logs,
-                message = %message,
-                "guest log"
-            );
-        } else {
-            debug!(
-                target: "runtime::guest::log",
-                total_logs,
-                message = %message,
-                "guest log"
-            );
-        }
+        info!(
+            target: "runtime::guest::log",
+            interesting,
+            total_logs,
+            message = %message,
+            "guest log"
+        );
 
         Ok(())
     }

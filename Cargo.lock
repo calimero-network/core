@@ -2201,6 +2201,7 @@ dependencies = [
  "bytes",
  "calimero-node-primitives",
  "calimero-primitives",
+ "calimero-storage",
  "calimero-sys",
  "eyre",
  "fragile",

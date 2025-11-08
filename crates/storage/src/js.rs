@@ -7,10 +7,13 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate as calimero_storage;
-use crate::collections::{error::StoreError, UnorderedMap};
+use crate::collections::{
+    error::StoreError, Counter as StorageCounter, LwwRegister as StorageLwwRegister, UnorderedMap,
+    UnorderedSet, Vector,
+};
 use crate::entities::{Element, Metadata};
 use crate::store::MainStorage;
-use crate::{address::Id, Interface};
+use crate::{address::Id, Interface, StorageError};
 
 /// Macro support for deriving storage traits on the wrapper types.
 use calimero_storage_macros::AtomicUnit;
@@ -94,17 +97,244 @@ impl JsUnorderedMap {
     }
 
     /// Persists the map using the provided interface.
-    pub fn save(&mut self) -> Result<bool, crate::StorageError> {
+    pub fn save(&mut self) -> Result<bool, StorageError> {
         Interface::<MainStorage>::save(self)
     }
 
     /// Loads a map by identifier using the provided interface.
-    pub fn load(id: Id) -> Result<Option<Self>, crate::StorageError> {
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
         Interface::<MainStorage>::find_by_id::<Self>(id)
     }
 }
 
 impl Default for JsUnorderedMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsVector {
+    vector: Vector<Vec<u8>>,
+
+    #[storage]
+    storage: Element,
+}
+
+#[allow(missing_docs)]
+impl JsVector {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            vector: Vector::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    pub fn len(&self) -> Result<usize, StoreError> {
+        self.vector.len()
+    }
+
+    pub fn push(&mut self, value: &[u8]) -> Result<(), StoreError> {
+        self.vector.push(value.to_vec())
+    }
+
+    pub fn get(&self, index: usize) -> Result<Option<Vec<u8>>, StoreError> {
+        self.vector.get(index)
+    }
+
+    pub fn update(&mut self, index: usize, value: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.vector.update(index, value.to_vec())
+    }
+
+    pub fn pop(&mut self) -> Result<Option<Vec<u8>>, StoreError> {
+        self.vector.pop()
+    }
+
+    pub fn clear(&mut self) -> Result<(), StoreError> {
+        self.vector.clear()
+    }
+
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsVector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsUnorderedSet {
+    set: UnorderedSet<Vec<u8>>,
+
+    #[storage]
+    storage: Element,
+}
+
+#[allow(missing_docs)]
+impl JsUnorderedSet {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            set: UnorderedSet::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    pub fn len(&self) -> Result<usize, StoreError> {
+        self.set.len()
+    }
+
+    pub fn insert(&mut self, value: &[u8]) -> Result<bool, StoreError> {
+        self.set.insert(value.to_vec())
+    }
+
+    pub fn contains(&self, value: &[u8]) -> Result<bool, StoreError> {
+        self.set.contains(value)
+    }
+
+    pub fn remove(&mut self, value: &[u8]) -> Result<bool, StoreError> {
+        self.set.remove(value)
+    }
+
+    pub fn clear(&mut self) -> Result<(), StoreError> {
+        self.set.clear()
+    }
+
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsUnorderedSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsLwwRegister {
+    register: StorageLwwRegister<Option<Vec<u8>>>,
+
+    #[storage]
+    storage: Element,
+}
+
+#[allow(missing_docs)]
+impl JsLwwRegister {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            register: StorageLwwRegister::new(None),
+            storage: Element::new(None),
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    pub fn set(&mut self, value: Option<&[u8]>) {
+        match value {
+            Some(bytes) => self.register.set(Some(bytes.to_vec())),
+            None => self.register.set(None),
+        }
+    }
+
+    pub fn get(&self) -> Option<Vec<u8>> {
+        self.register.get().clone()
+    }
+
+    pub fn timestamp(&self) -> crate::logical_clock::HybridTimestamp {
+        self.register.timestamp()
+    }
+
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsLwwRegister {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsCounter {
+    counter: StorageCounter<false>,
+
+    #[storage]
+    storage: Element,
+}
+
+#[allow(missing_docs)]
+impl JsCounter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            counter: StorageCounter::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    pub fn increment(&mut self) -> Result<(), StoreError> {
+        self.counter.increment()
+    }
+
+    pub fn value(&self) -> Result<u64, StoreError> {
+        self.counter.value()
+    }
+
+    pub fn get_executor_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
+        self.counter.get_positive_count(executor_id)
+    }
+
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsCounter {
     fn default() -> Self {
         Self::new()
     }

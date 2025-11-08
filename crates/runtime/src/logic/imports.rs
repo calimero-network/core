@@ -32,6 +32,7 @@ impl VMLogic<'_> {
             fn input(register_id: u64);
             fn value_return(value_ptr: u64);
             fn log_utf8(log_ptr: u64);
+            fn js_std_d_print(ctx_ptr: u64, message_ptr: u64, message_len: u64) -> u32;
             fn emit(event_ptr: u64);
             fn emit_with_handler(event_ptr: u64, handler_ptr: u64);
             fn xcall(xcall_ptr: u64);
@@ -45,6 +46,40 @@ impl VMLogic<'_> {
             ) -> u32;
             fn storage_read(key_ptr: u64, register_id: u64) -> u32;
             fn storage_remove(key_ptr: u64, register_id: u64) -> u32;
+            fn js_crdt_map_new(register_id: u64) -> i32;
+            fn js_crdt_map_get(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_map_insert(
+                map_id_ptr: u64,
+                key_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_map_remove(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_map_contains(map_id_ptr: u64, key_ptr: u64) -> i32;
+            fn js_crdt_vector_new(register_id: u64) -> i32;
+            fn js_crdt_vector_len(vector_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_vector_push(vector_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_vector_get(vector_id_ptr: u64, index: u64, register_id: u64) -> i32;
+            fn js_crdt_vector_pop(vector_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_set_new(register_id: u64) -> i32;
+            fn js_crdt_set_insert(set_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_set_contains(set_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_set_remove(set_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_set_len(set_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_set_clear(set_id_ptr: u64) -> i32;
+            fn js_crdt_lww_new(register_id: u64) -> i32;
+            fn js_crdt_lww_set(register_id_ptr: u64, value_ptr: u64, has_value: u32) -> i32;
+            fn js_crdt_lww_get(register_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_lww_timestamp(register_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_counter_new(register_id: u64) -> i32;
+            fn js_crdt_counter_increment(counter_id_ptr: u64) -> i32;
+            fn js_crdt_counter_value(counter_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_counter_get_executor_count(
+                counter_id_ptr: u64,
+                executor_ptr: u64,
+                has_executor: u32,
+                register_id: u64,
+            ) -> i32;
 
             fn fetch(
                 url_ptr: u64,

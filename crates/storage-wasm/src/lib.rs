@@ -60,6 +60,7 @@ macro_rules! log_trace {
 fn set_error<E: std::fmt::Display>(err: E) -> i32 {
     let _ = Lazy::force(&INIT_SENTINEL);
     log_trace!("set_error: {err}");
+    log_message(&format!("[storage-wasm] error: {err}"));
     if let Ok(mut guard) = LAST_ERROR.lock() {
         *guard = Some(err.to_string());
     }
