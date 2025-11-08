@@ -30,7 +30,6 @@
 mod blobs;
 mod config;
 mod delta_request;
-mod helpers;
 mod key;
 mod manager;
 pub(crate) mod stream;

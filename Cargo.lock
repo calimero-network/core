@@ -2150,7 +2150,6 @@ dependencies = [
 name = "calimero-node-primitives"
 version = "0.0.0"
 dependencies = [
- "actix",
  "async-stream",
  "borsh",
  "calimero-blobstore",
@@ -2159,7 +2158,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-storage",
  "calimero-store",
- "calimero-utils-actix",
  "camino",
  "eyre",
  "futures-util",

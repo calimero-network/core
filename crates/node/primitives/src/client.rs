@@ -11,7 +11,6 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::NodeEvent;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use calimero_utils_actix::LazyRecipient;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
@@ -20,7 +19,6 @@ use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
-use crate::messages::NodeMessage;
 use crate::sync::BroadcastMessage;
 
 mod alias;
@@ -32,7 +30,6 @@ pub struct NodeClient {
     datastore: Store,
     blobstore: BlobManager,
     network_client: NetworkClient,
-    node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
 }
@@ -43,7 +40,6 @@ impl NodeClient {
         datastore: Store,
         blobstore: BlobManager,
         network_client: NetworkClient,
-        node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
         ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
     ) -> Self {
@@ -51,7 +47,6 @@ impl NodeClient {
             datastore,
             blobstore,
             network_client,
-            node_manager,
             event_sender,
             ctx_sync_tx,
         }

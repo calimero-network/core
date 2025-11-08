@@ -166,7 +166,7 @@ impl SyncManager {
                 context_id: *context_id,
                 delta_id,
             },
-            next_nonce: super::helpers::generate_nonce(),
+            next_nonce: crate::utils::generate_nonce(),
         };
 
         super::stream::send(stream, &msg, None).await?;
@@ -312,7 +312,7 @@ impl SyncManager {
         let msg = StreamMessage::Message {
             sequence_id: sqx.next(),
             payload: response,
-            next_nonce: super::helpers::generate_nonce(),
+            next_nonce: crate::utils::generate_nonce(),
         };
 
         super::stream::send(stream, &msg, None).await?;
@@ -353,7 +353,7 @@ impl SyncManager {
                 dag_heads: context.dag_heads,
                 root_hash: context.root_hash,
             },
-            next_nonce: super::helpers::generate_nonce(),
+            next_nonce: crate::utils::generate_nonce(),
         };
 
         super::stream::send(stream, &msg, None).await?;
