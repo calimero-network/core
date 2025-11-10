@@ -236,6 +236,7 @@ panic = "unwind"
 lto = "fat"
 codegen-units = 1
 opt-level = "z"
+strip = "symbols"
 panic = "abort"
 
 [profile.app-release]
@@ -244,5 +245,6 @@ codegen-units = 1
 opt-level = "z"
 lto = true
 debug = false
+strip = "symbols"
 overflow-checks = true
 

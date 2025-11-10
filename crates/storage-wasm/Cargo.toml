@@ -17,6 +17,3 @@ once_cell.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 calimero-sdk = { path = "../sdk" }
-
-[lints]
-workspace = true
