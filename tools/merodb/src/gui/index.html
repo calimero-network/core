@@ -2386,11 +2386,11 @@
             node.append('text')
                 .attr('dy', -10)
                 .attr('text-anchor', 'middle')
-                .style('font-size', '10px')
+                .style('font-size', '9px')
                 .style('fill', '#d4d4d4')
                 .text(d => {
                     if (d.data.id) {
-                        return d.data.id.substring(0, 8) + '...';
+                        return d.data.id.substring(0, 4) + '...';
                     }
                     return d.data.type || 'node';
                 });
@@ -2467,11 +2467,11 @@
                 .attr('x', d => d.x < Math.PI === !d.children ? 6 : -6)
                 .attr('text-anchor', d => d.x < Math.PI === !d.children ? 'start' : 'end')
                 .attr('transform', d => d.x >= Math.PI ? 'rotate(180)' : null)
-                .style('font-size', '10px')
+                .style('font-size', '9px')
                 .style('fill', '#d4d4d4')
                 .text(d => {
                     if (d.data.id) {
-                        return d.data.id.substring(0, 8) + '...';
+                        return d.data.id.substring(0, 4) + '...';
                     }
                     return d.data.type || 'node';
                 });

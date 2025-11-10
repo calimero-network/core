@@ -33,8 +33,8 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
         .route("/api/state-tree", post(handle_state_tree))
         .route("/api/validate-abi", post(handle_validate_abi));
 
-    let addr = format!("127.0.0.1:{}", port);
-    println!("Starting GUI server at http://{}", addr);
+    let addr = format!("127.0.0.1:{port}");
+    println!("Starting GUI server at http://{addr}");
     println!("Press Ctrl+C to stop the server");
 
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -110,7 +110,7 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             }
             Err(e) => {
                 let warning = format!("The uploaded WASM file does not contain an exported ABI. The file may not have been built with ABI support. State values will not be decoded. Error: {e}");
-                eprintln!("Warning: {}", warning);
+                eprintln!("Warning: {warning}");
                 warning_message = Some(warning);
                 None
             }
@@ -291,13 +291,10 @@ async fn handle_validate_abi(mut multipart: Multipart) -> impl IntoResponse {
     // Parse multipart form data
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_owned();
-        match name.as_str() {
-            "wasm_file" => {
-                if let Ok(bytes) = field.bytes().await {
-                    wasm_bytes = Some(bytes.to_vec());
-                }
+        if name.as_str() == "wasm_file" {
+            if let Ok(bytes) = field.bytes().await {
+                wasm_bytes = Some(bytes.to_vec());
             }
-            _ => {}
         }
     }
 

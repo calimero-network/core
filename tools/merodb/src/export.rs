@@ -354,6 +354,7 @@ pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -
 }
 
 /// Extract state tree structure starting from state_root
+#[cfg(feature = "gui")]
 pub fn extract_state_tree(
     db: &DBWithThreadMode<SingleThreaded>,
     manifest: &Manifest,
@@ -388,8 +389,13 @@ pub fn extract_state_tree(
             .and_then(|v| v.as_str())
             .ok_or_else(|| eyre::eyre!("Failed to extract root_hash from Meta value"))?;
 
-        // Build tree for this context
-        let tree = build_tree_from_root(db, &state_cf, root_hash_str, manifest)?;
+        // Decode context_id from hex to bytes for State column lookup
+        let context_id_bytes =
+            hex::decode(context_id).wrap_err("Failed to decode context_id from hex")?;
+
+        // Find the actual root node in the State column by iterating through entries
+        // and finding one where parent_id == null
+        let tree = find_and_build_tree_for_context(db, state_cf, &context_id_bytes, manifest)?;
 
         contexts.push(json!({
             "context_id": context_id,
@@ -404,15 +410,67 @@ pub fn extract_state_tree(
     }))
 }
 
+/// Find the root node for a context and build the tree
+#[cfg(feature = "gui")]
+fn find_and_build_tree_for_context(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    manifest: &Manifest,
+) -> Result<Value> {
+    use rocksdb::IteratorMode;
+
+    // Iterate through State column to find entries for this context
+    let iter = db.iterator_cf(state_cf, IteratorMode::Start);
+
+    for item in iter {
+        let (key, value) = item.wrap_err("Failed to read State entry")?;
+
+        // Check if this key belongs to our context (first 32 bytes match context_id)
+        if key.len() == 64 && &key[0..32] == context_id {
+            // Try to decode as EntityIndex to check if it's a root node
+            if let Ok(index) = borsh::from_slice::<EntityIndex>(&value) {
+                // Found a root node (parent_id is None)
+                if index.parent_id.is_none() {
+                    // Extract state_key (last 32 bytes) and convert to hex
+                    let state_key_hex = hex::encode(&key[32..64]);
+                    // Build the tree from this root
+                    return build_tree_from_root(
+                        db,
+                        state_cf,
+                        context_id,
+                        &state_key_hex,
+                        manifest,
+                    );
+                }
+            }
+        }
+    }
+
+    // No root node found for this context
+    Ok(json!({
+        "id": "unknown",
+        "type": "missing",
+        "note": "No root node (parent_id == null) found in State column for this context"
+    }))
+}
+
 /// Recursively build tree structure from a given root hash
+#[cfg(feature = "gui")]
 fn build_tree_from_root(
     db: &DBWithThreadMode<SingleThreaded>,
     state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
     node_id: &str,
     manifest: &Manifest,
 ) -> Result<Value> {
-    // Query State column for this node_id
-    let key = node_id.as_bytes();
+    // Decode the node_id (state key) from hex string
+    let state_key = hex::decode(node_id).wrap_err("Failed to decode node_id from hex")?;
+
+    // Construct composite key: context_id (32 bytes) + state_key (32 bytes) = 64 bytes
+    let mut key = Vec::with_capacity(64);
+    key.extend_from_slice(context_id);
+    key.extend_from_slice(&state_key);
     let value_bytes = db
         .get_cf(state_cf, key)
         .wrap_err("Failed to query State column")?;
@@ -430,8 +488,10 @@ fn build_tree_from_root(
         let children_info: Vec<Value> = if let Some(children) = &index.children {
             let mut child_nodes = Vec::new();
             for child in children {
-                let child_id = String::from_utf8_lossy(child.id.as_bytes()).to_string();
-                let child_tree = build_tree_from_root(db, state_cf, &child_id, manifest)?;
+                // Convert child id to hex string for consistent representation
+                let child_id = hex::encode(child.id.as_bytes());
+                let child_tree =
+                    build_tree_from_root(db, state_cf, context_id, &child_id, manifest)?;
                 child_nodes.push(child_tree);
             }
             child_nodes
@@ -472,6 +532,7 @@ fn build_tree_from_root(
 }
 
 /// Export data without ABI manifest
+#[cfg(feature = "gui")]
 pub fn export_data_without_abi(
     db: &DBWithThreadMode<SingleThreaded>,
     columns: &[Column],

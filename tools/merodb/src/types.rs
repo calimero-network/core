@@ -295,7 +295,7 @@ fn parse_context_meta(data: &[u8]) -> Result<Value> {
     match StoreContextMeta::try_from_slice(data) {
         Ok(meta) => Ok(json!({
             "application_id": String::from_utf8_lossy(meta.application.application_id().as_ref()),
-            "root_hash": String::from_utf8_lossy(&meta.root_hash),
+            "root_hash": hex::encode(meta.root_hash),
             "dag_heads": meta.dag_heads.iter().map(hex::encode).collect::<Vec<_>>()
         })),
         Err(e) => Ok(json!({
