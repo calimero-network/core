@@ -126,20 +126,6 @@ impl Module {
             }
         };
 
-        // Call the auto-generated registration hook if it exists
-        // This enables automatic CRDT merge during sync
-        if let Ok(register_fn) = instance
-            .exports
-            .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
-        {
-            if let Err(err) = register_fn.call(&mut store) {
-                // Log but don't fail - registration is optional (backward compat)
-                debug!(%context_id, error=?err, "Failed to call merge registration hook");
-            } else {
-                debug!(%context_id, "Successfully registered CRDT merge function");
-            }
-        }
-
         let _ = match instance.exports.get_memory("memory") {
             Ok(memory) => logic.with_memory(memory.clone()),
             // todo! test memory returns MethodNotFound
@@ -148,6 +134,29 @@ impl Module {
                 return Ok(logic.finish(Some(err.into())));
             }
         };
+
+        // Call the auto-generated registration hook if it exists.
+        // This enables automatic CRDT merge during sync.
+        // Note: This is optional and failures are non-fatal (especially for JS apps).
+        if let Ok(register_fn) = instance
+            .exports
+            .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
+        {
+            match register_fn.call(&mut store) {
+                Ok(()) => {
+                    debug!(%context_id, "Successfully registered CRDT merge function");
+                }
+                Err(err) => {
+                    // Log but don't fail - registration is optional (backward compat)
+                    // JS apps may not have this function properly initialized yet.
+                    debug!(
+                        %context_id,
+                        error=?err,
+                        "Failed to call merge registration hook (non-fatal, continuing)"
+                    );
+                }
+            }
+        }
 
         let function = match instance.exports.get_function(method) {
             Ok(function) => function,
@@ -169,7 +178,43 @@ impl Module {
         }
 
         if let Err(err) = function.call(&mut store, &[]) {
-            error!(%context_id, method, error=?err, "WASM method execution failed");
+            let traces = err
+                .trace()
+                .iter()
+                .map(|frame| {
+                    let module = frame.module_name();
+                    let func = frame.function_name().unwrap_or("<unknown-func>");
+                    let offset = frame.func_offset();
+                    let offset = if offset == 0 {
+                        String::new()
+                    } else {
+                        format!("@0x{offset:x}")
+                    };
+                    format!("{module}::{func}{offset}")
+                })
+                .collect::<Vec<_>>();
+            let trace_joined = if traces.is_empty() {
+                None
+            } else {
+                Some(traces.join(" -> "))
+            };
+
+            let message = err.message();
+            let message_str = if message.is_empty() {
+                "<no error message>"
+            } else {
+                message.as_str()
+            };
+
+            error!(
+                %context_id,
+                method,
+                error_debug = ?err,
+                error_message = %message_str,
+                wasm_trace = trace_joined.as_deref(),
+                "WASM method execution failed"
+            );
+
             return match err.downcast::<VMLogicError>() {
                 Ok(err) => Ok(logic.finish(Some(err.try_into()?))),
                 Err(err) => Ok(logic.finish(Some(err.into()))),

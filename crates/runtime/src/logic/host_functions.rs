@@ -1,5 +1,6 @@
 mod blobs;
 mod governance;
+mod js_collections;
 mod storage;
 mod system;
 mod utility;

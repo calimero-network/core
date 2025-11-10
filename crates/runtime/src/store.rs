@@ -2,6 +2,8 @@ use core::fmt::Debug;
 use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
 
+use tracing::debug;
+
 use calimero_primitives::reflect::Reflect;
 
 pub type Key = Vec<u8>;
@@ -21,19 +23,28 @@ pub struct InMemoryStorage {
 
 impl Storage for InMemoryStorage {
     fn get(&self, key: &Key) -> Option<Value> {
+        debug!(target: "runtime::storage::memory", key_len = key.len(), "InMemoryStorage::get");
         self.inner.get(key).cloned()
     }
 
     fn set(&mut self, key: Key, value: Value) -> Option<Value> {
+        debug!(
+            target: "runtime::storage::memory",
+            key_len = key.len(),
+            value_len = value.len(),
+            "InMemoryStorage::set"
+        );
         self.inner.insert(key, value)
     }
 
     // todo! revisit this, should we return the value by default?
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
+        debug!(target: "runtime::storage::memory", key_len = key.len(), "InMemoryStorage::remove");
         self.inner.remove(key)
     }
 
     fn has(&self, key: &Key) -> bool {
+        debug!(target: "runtime::storage::memory", key_len = key.len(), "InMemoryStorage::has");
         self.inner.contains_key(key)
     }
 }
