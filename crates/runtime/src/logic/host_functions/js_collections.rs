@@ -844,8 +844,38 @@ impl VMHostFunctions<'_> {
 
 fn load_js_map_instance(id: Id) -> Result<JsUnorderedMap, String> {
     match JsUnorderedMap::load(id) {
-        Ok(Some(map)) => Ok(map),
-        Ok(None) => Err("map not found".to_owned()),
+        Ok(Some(map)) => {
+            debug!(
+                target: "runtime::map",
+                map_id = %id.to_string(),
+                "loaded JsUnorderedMap from storage"
+            );
+            Ok(map)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::map",
+                map_id = %missing_id,
+                "JsUnorderedMap not found in storage"
+            );
+            // This can happen if the contract serialised only the collection id
+            // (e.g. via state snapshot) but the underlying CRDT was never
+            // persisted.  Recreate the host object with the same id and attach
+            // it to the root so the very next read/write works as expected.
+            let mut map = JsUnorderedMap::new_with_id(id);
+            match save_js_map_instance(&mut map) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::map",
+                        map_id = %missing_id,
+                        "recreated missing JsUnorderedMap"
+                    );
+                    Ok(map)
+                }
+                Err(err) => Err(err),
+            }
+        }
         Err(err) => Err(err.to_string()),
     }
 }
@@ -867,8 +897,36 @@ fn save_js_map_instance(map: &mut JsUnorderedMap) -> Result<(), String> {
 
 fn load_js_vector_instance(id: Id) -> Result<JsVector, String> {
     match JsVector::load(id) {
-        Ok(Some(vector)) => Ok(vector),
-        Ok(None) => Err("vector not found".to_owned()),
+        Ok(Some(vector)) => {
+            debug!(
+                target: "runtime::vector",
+                vector_id = %id.to_string(),
+                "loaded JsVector from storage"
+            );
+            Ok(vector)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::vector",
+                vector_id = %missing_id,
+                "JsVector not found in storage"
+            );
+            // The vector was referenced by id but not stored. Recreate and
+            // persist it so subsequent operations proceed without errors.
+            let mut vector = JsVector::new_with_id(id);
+            match save_js_vector_instance(&mut vector) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::vector",
+                        vector_id = %missing_id,
+                        "recreated missing JsVector"
+                    );
+                    Ok(vector)
+                }
+                Err(err) => Err(err),
+            }
+        }
         Err(err) => Err(err.to_string()),
     }
 }
@@ -890,8 +948,36 @@ fn save_js_vector_instance(vector: &mut JsVector) -> Result<(), String> {
 
 fn load_js_set_instance(id: Id) -> Result<JsUnorderedSet, String> {
     match JsUnorderedSet::load(id) {
-        Ok(Some(set)) => Ok(set),
-        Ok(None) => Err("set not found".to_owned()),
+        Ok(Some(set)) => {
+            debug!(
+                target: "runtime::set",
+                set_id = %id.to_string(),
+                "loaded JsUnorderedSet from storage"
+            );
+            Ok(set)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::set",
+                set_id = %missing_id,
+                "JsUnorderedSet not found in storage"
+            );
+            // See comment above: recreate the CRDT so the deserialised state
+            // has a concrete backing object before we try to mutate it.
+            let mut set = JsUnorderedSet::new_with_id(id);
+            match save_js_set_instance(&mut set) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::set",
+                        set_id = %missing_id,
+                        "recreated missing JsUnorderedSet"
+                    );
+                    Ok(set)
+                }
+                Err(err) => Err(err),
+            }
+        }
         Err(err) => Err(err.to_string()),
     }
 }
@@ -913,8 +999,34 @@ fn save_js_set_instance(set: &mut JsUnorderedSet) -> Result<(), String> {
 
 fn load_js_lww_register_instance(id: Id) -> Result<JsLwwRegister, String> {
     match JsLwwRegister::load(id) {
-        Ok(Some(register)) => Ok(register),
-        Ok(None) => Err("register not found".to_owned()),
+        Ok(Some(register)) => {
+            debug!(
+                target: "runtime::lww_register",
+                register_id = %id.to_string(),
+                "loaded JsLwwRegister from storage"
+            );
+            Ok(register)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::lww_register",
+                register_id = %missing_id,
+                "JsLwwRegister not found in storage"
+            );
+            let mut register = JsLwwRegister::new_with_id(id);
+            match save_js_lww_register_instance(&mut register) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::lww_register",
+                        register_id = %missing_id,
+                        "recreated missing JsLwwRegister"
+                    );
+                    Ok(register)
+                }
+                Err(err) => Err(err),
+            }
+        }
         Err(err) => Err(err.to_string()),
     }
 }
@@ -984,23 +1096,12 @@ fn save_js_counter_instance(counter: &mut JsCounter) -> Result<(), String> {
             ensure_root_index_internal().map_err(|err| err.to_string())?;
             match Interface::<MainStorage>::add_child_to(Id::root(), counter) {
                 Ok(_) => {
-                    let counter_id_str = counter.id().to_string();
                     debug!(
                         target: "runtime::counter",
-                        counter_id = %counter_id_str,
+                        counter_id = %counter.id().to_string(),
                         "attached JsCounter to root index"
                     );
-                    match counter.save() {
-                        Ok(_) => {
-                            debug!(
-                                target: "runtime::counter",
-                                counter_id = %counter_id_str,
-                                "saved JsCounter after attaching to root index"
-                            );
-                            Ok(())
-                        }
-                        Err(err) => Err(err.to_string()),
-                    }
+                    Ok(())
                 }
                 Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
                 Err(err) => Err(err.to_string()),
