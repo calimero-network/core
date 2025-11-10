@@ -352,3 +352,169 @@ pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -
         }
     }
 }
+
+/// Extract state tree structure starting from state_root
+pub fn extract_state_tree(
+    db: &DBWithThreadMode<SingleThreaded>,
+    manifest: &Manifest,
+) -> Result<Value> {
+    // Get Meta column to find contexts and their root hashes
+    let meta_cf = db
+        .cf_handle("Meta")
+        .ok_or_else(|| eyre::eyre!("Meta column family not found"))?;
+
+    let state_cf = db
+        .cf_handle("State")
+        .ok_or_else(|| eyre::eyre!("State column family not found"))?;
+
+    let mut contexts = Vec::new();
+
+    // Iterate through Meta column to find all contexts
+    let iter = db.iterator_cf(&meta_cf, IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item.wrap_err("Failed to read Meta entry")?;
+
+        // Try to parse the key to get context_id
+        let key_json = parse_key(Column::Meta, &key)?;
+        let context_id = key_json
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| eyre::eyre!("Failed to extract context_id from Meta key"))?;
+
+        // Parse the value to get root_hash
+        let value_json = parse_value(Column::Meta, &value)?;
+        let root_hash_str = value_json
+            .get("root_hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| eyre::eyre!("Failed to extract root_hash from Meta value"))?;
+
+        // Build tree for this context
+        let tree = build_tree_from_root(db, &state_cf, root_hash_str, manifest)?;
+
+        contexts.push(json!({
+            "context_id": context_id,
+            "root_hash": root_hash_str,
+            "tree": tree
+        }));
+    }
+
+    Ok(json!({
+        "contexts": contexts,
+        "total_contexts": contexts.len()
+    }))
+}
+
+/// Recursively build tree structure from a given root hash
+fn build_tree_from_root(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    node_id: &str,
+    manifest: &Manifest,
+) -> Result<Value> {
+    // Query State column for this node_id
+    let key = node_id.as_bytes();
+    let value_bytes = db
+        .get_cf(state_cf, key)
+        .wrap_err("Failed to query State column")?;
+
+    let Some(value_bytes) = value_bytes else {
+        return Ok(json!({
+            "id": node_id,
+            "type": "missing",
+            "note": "Node not found in State column"
+        }));
+    };
+
+    // Try to decode as EntityIndex
+    if let Ok(index) = borsh::from_slice::<EntityIndex>(&value_bytes) {
+        let children_info: Vec<Value> = if let Some(children) = &index.children {
+            let mut child_nodes = Vec::new();
+            for child in children {
+                let child_id = String::from_utf8_lossy(child.id.as_bytes()).to_string();
+                let child_tree = build_tree_from_root(db, state_cf, &child_id, manifest)?;
+                child_nodes.push(child_tree);
+            }
+            child_nodes
+        } else {
+            Vec::new()
+        };
+
+        return Ok(json!({
+            "id": node_id,
+            "type": "EntityIndex",
+            "parent_id": index.parent_id.map(|id| String::from_utf8_lossy(id.as_bytes()).to_string()),
+            "full_hash": hex::encode(index.full_hash),
+            "own_hash": hex::encode(index.own_hash),
+            "created_at": index.metadata.created_at,
+            "updated_at": *index.metadata.updated_at,
+            "deleted_at": index.deleted_at,
+            "children": children_info,
+            "children_count": children_info.len()
+        }));
+    }
+
+    // Try to decode as data entry
+    if let Some(decoded) = decode_state_entry(&value_bytes, manifest) {
+        return Ok(json!({
+            "id": node_id,
+            "type": "DataEntry",
+            "data": decoded
+        }));
+    }
+
+    // Fallback for unknown format
+    Ok(json!({
+        "id": node_id,
+        "type": "Unknown",
+        "size": value_bytes.len(),
+        "raw": String::from_utf8_lossy(&value_bytes)
+    }))
+}
+
+/// Export data without ABI manifest
+pub fn export_data_without_abi(
+    db: &DBWithThreadMode<SingleThreaded>,
+    columns: &[Column],
+) -> Result<Value> {
+    let mut data = serde_json::Map::new();
+
+    for column in columns {
+        let cf_name = column.as_str();
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| eyre::eyre!("Column family '{cf_name}' not found"))?;
+
+        let mut entries = Vec::new();
+        let iter = db.iterator_cf(&cf, IteratorMode::Start);
+
+        for item in iter {
+            let (key, value) = item
+                .wrap_err_with(|| format!("Failed to read entry from column family '{cf_name}'"))?;
+
+            let key_json = parse_key(*column, &key)
+                .wrap_err_with(|| format!("Failed to parse key in column '{cf_name}'"))?;
+
+            let value_json = parse_value(*column, &value)
+                .wrap_err_with(|| format!("Failed to parse value in column '{cf_name}'"))?;
+
+            entries.push(json!({
+                "key": key_json,
+                "value": value_json
+            }));
+        }
+
+        drop(data.insert(
+            cf_name.to_owned(),
+            json!({
+                "count": entries.len(),
+                "entries": entries
+            }),
+        ));
+    }
+
+    Ok(json!({
+        "database": "Calimero RocksDB Export",
+        "exported_columns": columns.iter().map(Column::as_str).collect::<Vec<_>>(),
+        "data": data
+    }))
+}

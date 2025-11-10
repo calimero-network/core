@@ -821,6 +821,7 @@
                 <div class="view-tabs">
                     <button class="tab-button active" onclick="switchTab('data')">📊 Data View</button>
                     <button class="tab-button" onclick="switchTab('dag')">🔗 DAG View</button>
+                    <button class="tab-button" onclick="switchTab('state')">🌲 State Tree</button>
                 </div>
 
                 <!-- Data View (existing panels) -->
@@ -937,6 +938,59 @@
                         <div id="dag-tooltip" class="dag-tooltip hidden"></div>
                     </div>
                 </div>
+
+                <!-- State Tree View -->
+                <div id="state-view" class="hidden">
+                    <div class="dag-container">
+                        <div class="dag-controls">
+                            <div class="dag-control-group">
+                                <label for="state-context-select">Context:</label>
+                                <select id="state-context-select" onchange="renderStateTree()">
+                                    <option value="">Select a context...</option>
+                                </select>
+                            </div>
+                            <div class="dag-control-group">
+                                <label for="state-layout-select">Layout:</label>
+                                <select id="state-layout-select" onchange="renderStateTree()">
+                                    <option value="tree">Tree (Top-Down)</option>
+                                    <option value="radial">Radial</option>
+                                </select>
+                            </div>
+                            <button class="dag-control-button" onclick="resetStateZoom()">Reset Zoom</button>
+                            <button class="dag-control-button" onclick="expandAllNodes()">Expand All</button>
+                            <button class="dag-control-button" onclick="collapseAllNodes()">Collapse All</button>
+                            <button class="dag-control-button" onclick="exportStateImage()">Export Image</button>
+                        </div>
+
+                        <div class="dag-stats">
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Total Nodes</span>
+                                <span class="dag-stat-value" id="state-stat-nodes">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Max Depth</span>
+                                <span class="dag-stat-value" id="state-stat-depth">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Leaf Nodes</span>
+                                <span class="dag-stat-value" id="state-stat-leaves">0</span>
+                            </div>
+                            <div class="dag-stat">
+                                <span class="dag-stat-label">Root Hash</span>
+                                <span class="dag-stat-value" id="state-stat-root" style="font-size: 12px; font-family: monospace;">-</span>
+                            </div>
+                        </div>
+
+                        <div id="state-loading" class="loading-message hidden">
+                            <span class="spinner">⏳</span> Loading state tree...
+                        </div>
+
+                        <div id="state-error" class="error-message hidden"></div>
+
+                        <svg id="state-svg"></svg>
+                        <div id="state-tooltip" class="dag-tooltip hidden"></div>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
@@ -950,6 +1004,8 @@
         let jqReady = null;
         let currentDbPath = null;
         let currentWasmFile = null;
+        let stateTreeData = null;
+        let currentStateZoom = null;
 
         // Initialize jq-web library
         if (typeof jq !== 'undefined') {
@@ -1051,6 +1107,7 @@
         function resetView() {
             jsonData = null;
             dagData = null;  // Clear DAG data cache
+            stateTreeData = null;  // Clear state tree data cache
             queryHistory = [];
             currentDbPath = null;
             currentWasmFile = null;
@@ -1058,6 +1115,7 @@
             document.getElementById('viewer-view').classList.add('hidden');
             document.getElementById('data-view').classList.remove('hidden');
             document.getElementById('dag-view').classList.add('hidden');
+            document.getElementById('state-view').classList.add('hidden');
             // Reset tab to data view
             document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
             document.querySelectorAll('.tab-button')[0].classList.add('active');
@@ -1100,6 +1158,7 @@
                 // Success - reload the data
                 jsonData = result.data;
                 dagData = null;  // Clear DAG cache to force reload
+                stateTreeData = null;  // Clear state tree cache to force reload
                 
                 // Re-render based on current tab
                 const activeTab = document.querySelector('.tab-button.active');
@@ -1391,13 +1450,16 @@
             });
             event.target.classList.add('active');
 
-            // Toggle views
+            // Hide all views
+            document.getElementById('data-view').classList.add('hidden');
+            document.getElementById('dag-view').classList.add('hidden');
+            document.getElementById('state-view').classList.add('hidden');
+
+            // Show selected view
             if (tab === 'data') {
                 document.getElementById('data-view').classList.remove('hidden');
-                document.getElementById('dag-view').classList.add('hidden');
             } else if (tab === 'dag') {
                 console.log('Switching to DAG view, dagData:', dagData, 'jsonData exists:', !!jsonData);
-                document.getElementById('data-view').classList.add('hidden');
                 document.getElementById('dag-view').classList.remove('hidden');
                 // Load DAG data if not already loaded
                 if (!dagData && jsonData) {
@@ -1407,6 +1469,19 @@
                     console.log('DAG data already loaded or no jsonData');
                     if (dagData) {
                         renderDAG();
+                    }
+                }
+            } else if (tab === 'state') {
+                console.log('Switching to State Tree view');
+                document.getElementById('state-view').classList.remove('hidden');
+                // Load state tree data if not already loaded
+                if (!stateTreeData) {
+                    console.log('Calling loadStateTreeData...');
+                    loadStateTreeData();
+                } else {
+                    console.log('State tree data already loaded');
+                    if (stateTreeData) {
+                        renderStateTree();
                     }
                 }
             }
@@ -2021,6 +2096,403 @@
             link.download = 'dag-visualization.svg';
             link.click();
             URL.revokeObjectURL(url);
+        }
+
+        // ===== State Tree Visualization Functions =====
+
+        async function loadStateTreeData() {
+            console.log('loadStateTreeData called');
+
+            if (!currentDbPath || !currentWasmFile) {
+                showStateError('Database and WASM file are required for state tree visualization');
+                return;
+            }
+
+            // Show loading state
+            document.getElementById('state-loading').classList.remove('hidden');
+            hideStateError();
+
+            try {
+                // Create form data
+                const formData = new FormData();
+                formData.append('db_path', currentDbPath);
+                formData.append('wasm_file', currentWasmFile);
+
+                // Send request to backend
+                const response = await fetch('/api/state-tree', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to load state tree');
+                }
+
+                // Success - store the data
+                stateTreeData = result.data;
+                console.log('State tree data loaded:', stateTreeData);
+
+                // Update context selector
+                const contextSelect = document.getElementById('state-context-select');
+                contextSelect.innerHTML = '<option value="">Select a context...</option>';
+
+                if (stateTreeData.contexts && stateTreeData.contexts.length > 0) {
+                    for (const ctx of stateTreeData.contexts) {
+                        const option = document.createElement('option');
+                        option.value = ctx.context_id;
+                        option.textContent = `${ctx.context_id.substring(0, 16)}... (root: ${ctx.root_hash.substring(0, 8)}...)`;
+                        contextSelect.appendChild(option);
+                    }
+
+                    // Auto-select first context
+                    contextSelect.value = stateTreeData.contexts[0].context_id;
+                    renderStateTree();
+                } else {
+                    showStateError('No contexts found in database');
+                }
+
+            } catch (err) {
+                console.error('Failed to load state tree:', err);
+                showStateError(err.message || 'Failed to load state tree');
+            } finally {
+                document.getElementById('state-loading').classList.add('hidden');
+            }
+        }
+
+        function renderStateTree() {
+            if (!stateTreeData) {
+                console.log('No state tree data available');
+                return;
+            }
+
+            const selectedContextId = document.getElementById('state-context-select').value;
+            if (!selectedContextId) {
+                console.log('No context selected');
+                return;
+            }
+
+            const layoutType = document.getElementById('state-layout-select').value;
+            console.log('Rendering state tree for context:', selectedContextId, 'layout:', layoutType);
+
+            // Find the selected context
+            const context = stateTreeData.contexts.find(c => c.context_id === selectedContextId);
+            if (!context) {
+                showStateError('Selected context not found');
+                return;
+            }
+
+            // Calculate tree statistics
+            const stats = calculateTreeStats(context.tree);
+
+            // Update stats display
+            document.getElementById('state-stat-nodes').textContent = stats.totalNodes;
+            document.getElementById('state-stat-depth').textContent = stats.maxDepth;
+            document.getElementById('state-stat-leaves').textContent = stats.leafNodes;
+            document.getElementById('state-stat-root').textContent = context.root_hash.substring(0, 16) + '...';
+
+            // Render based on layout type
+            if (layoutType === 'tree') {
+                renderTreeLayout(context.tree);
+            } else {
+                renderRadialLayout(context.tree);
+            }
+        }
+
+        function calculateTreeStats(node, depth = 0) {
+            let totalNodes = 1;
+            let maxDepth = depth;
+            let leafNodes = 0;
+
+            if (!node.children || node.children.length === 0) {
+                leafNodes = 1;
+            } else {
+                for (const child of node.children) {
+                    const childStats = calculateTreeStats(child, depth + 1);
+                    totalNodes += childStats.totalNodes;
+                    maxDepth = Math.max(maxDepth, childStats.maxDepth);
+                    leafNodes += childStats.leafNodes;
+                }
+            }
+
+            return { totalNodes, maxDepth, leafNodes };
+        }
+
+        function renderTreeLayout(treeData) {
+            const svg = d3.select('#state-svg');
+            svg.selectAll('*').remove();
+            svg.on('.zoom', null);
+
+            const width = document.getElementById('state-svg').clientWidth || 1200;
+            const height = 800;
+
+            svg.attr('viewBox', [0, 0, width, height]);
+
+            const g = svg.append('g').attr('transform', 'translate(0,40)');
+
+            // Setup zoom
+            currentStateZoom = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => {
+                    g.attr('transform', `translate(0,40) ${event.transform}`);
+                });
+            svg.call(currentStateZoom);
+
+            // Create tree layout
+            const treeLayout = d3.tree()
+                .size([width - 200, height - 100]);
+
+            // Convert data to d3 hierarchy
+            const root = d3.hierarchy(treeData, d => d.children);
+
+            // Apply layout
+            treeLayout(root);
+
+            // Draw links
+            g.selectAll('.tree-link')
+                .data(root.links())
+                .join('path')
+                .attr('class', 'dag-link')
+                .attr('d', d3.linkVertical()
+                    .x(d => d.x)
+                    .y(d => d.y));
+
+            // Draw nodes
+            const node = g.selectAll('.tree-node')
+                .data(root.descendants())
+                .join('g')
+                .attr('class', d => {
+                    let classes = 'dag-node';
+                    if (!d.children && !d.data.children) classes += ' leaf';
+                    if (d.depth === 0) classes += ' root';
+                    return classes;
+                })
+                .attr('transform', d => `translate(${d.x},${d.y})`);
+
+            node.append('circle')
+                .attr('r', 6)
+                .on('mouseenter', showStateTooltip)
+                .on('mouseleave', hideStateTooltip)
+                .on('click', (event, d) => {
+                    d3.selectAll('.dag-node').classed('selected', false);
+                    d3.select(event.currentTarget.parentNode).classed('selected', true);
+                });
+
+            node.append('text')
+                .attr('dy', -10)
+                .attr('text-anchor', 'middle')
+                .style('font-size', '10px')
+                .style('fill', '#d4d4d4')
+                .text(d => {
+                    if (d.data.id) {
+                        return d.data.id.substring(0, 8) + '...';
+                    }
+                    return d.data.type || 'node';
+                });
+        }
+
+        function renderRadialLayout(treeData) {
+            const svg = d3.select('#state-svg');
+            svg.selectAll('*').remove();
+            svg.on('.zoom', null);
+
+            const width = document.getElementById('state-svg').clientWidth || 1200;
+            const height = 800;
+            const radius = Math.min(width, height) / 2 - 100;
+
+            svg.attr('viewBox', [0, 0, width, height]);
+
+            const g = svg.append('g')
+                .attr('transform', `translate(${width / 2},${height / 2})`);
+
+            // Setup zoom
+            currentStateZoom = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => {
+                    g.attr('transform', `translate(${width / 2},${height / 2}) ${event.transform}`);
+                });
+            svg.call(currentStateZoom);
+
+            // Create radial tree layout
+            const treeLayout = d3.tree()
+                .size([2 * Math.PI, radius])
+                .separation((a, b) => (a.parent === b.parent ? 1 : 2) / a.depth);
+
+            // Convert data to d3 hierarchy
+            const root = d3.hierarchy(treeData, d => d.children);
+
+            // Apply layout
+            treeLayout(root);
+
+            // Draw links
+            g.selectAll('.tree-link')
+                .data(root.links())
+                .join('path')
+                .attr('class', 'dag-link')
+                .attr('d', d3.linkRadial()
+                    .angle(d => d.x)
+                    .radius(d => d.y));
+
+            // Draw nodes
+            const node = g.selectAll('.tree-node')
+                .data(root.descendants())
+                .join('g')
+                .attr('class', d => {
+                    let classes = 'dag-node';
+                    if (!d.children && !d.data.children) classes += ' leaf';
+                    if (d.depth === 0) classes += ' root';
+                    return classes;
+                })
+                .attr('transform', d => `
+                    rotate(${d.x * 180 / Math.PI - 90})
+                    translate(${d.y},0)
+                `);
+
+            node.append('circle')
+                .attr('r', 6)
+                .on('mouseenter', showStateTooltip)
+                .on('mouseleave', hideStateTooltip)
+                .on('click', (event, d) => {
+                    d3.selectAll('.dag-node').classed('selected', false);
+                    d3.select(event.currentTarget.parentNode).classed('selected', true);
+                });
+
+            node.append('text')
+                .attr('dy', '0.31em')
+                .attr('x', d => d.x < Math.PI === !d.children ? 6 : -6)
+                .attr('text-anchor', d => d.x < Math.PI === !d.children ? 'start' : 'end')
+                .attr('transform', d => d.x >= Math.PI ? 'rotate(180)' : null)
+                .style('font-size', '10px')
+                .style('fill', '#d4d4d4')
+                .text(d => {
+                    if (d.data.id) {
+                        return d.data.id.substring(0, 8) + '...';
+                    }
+                    return d.data.type || 'node';
+                });
+        }
+
+        function showStateTooltip(event, d) {
+            const tooltip = document.getElementById('state-tooltip');
+            const nodeData = d.data;
+
+            let content = `<h4>Node: ${nodeData.type || 'Unknown'}</h4>`;
+
+            if (nodeData.id) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">ID:</span>
+                        <span class="tooltip-value">${nodeData.id.substring(0, 24)}...</span>
+                    </div>`;
+            }
+
+            if (nodeData.full_hash) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Full Hash:</span>
+                        <span class="tooltip-value">${nodeData.full_hash.substring(0, 16)}...</span>
+                    </div>`;
+            }
+
+            if (nodeData.own_hash) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Own Hash:</span>
+                        <span class="tooltip-value">${nodeData.own_hash.substring(0, 16)}...</span>
+                    </div>`;
+            }
+
+            if (nodeData.parent_id) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Parent:</span>
+                        <span class="tooltip-value">${nodeData.parent_id.substring(0, 16)}...</span>
+                    </div>`;
+            }
+
+            if (nodeData.children_count !== undefined) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Children:</span>
+                        <span class="tooltip-value">${nodeData.children_count}</span>
+                    </div>`;
+            }
+
+            if (nodeData.created_at) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Created:</span>
+                        <span class="tooltip-value">${nodeData.created_at}</span>
+                    </div>`;
+            }
+
+            if (nodeData.updated_at) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Updated:</span>
+                        <span class="tooltip-value">${nodeData.updated_at}</span>
+                    </div>`;
+            }
+
+            if (nodeData.deleted_at) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Deleted:</span>
+                        <span class="tooltip-value" style="color: #f44336;">${nodeData.deleted_at}</span>
+                    </div>`;
+            }
+
+            tooltip.innerHTML = content;
+            tooltip.classList.remove('hidden');
+
+            // Position tooltip
+            const svgRect = document.getElementById('state-svg').getBoundingClientRect();
+            tooltip.style.left = (event.pageX + 10) + 'px';
+            tooltip.style.top = (event.pageY - 10) + 'px';
+        }
+
+        function hideStateTooltip() {
+            document.getElementById('state-tooltip').classList.add('hidden');
+        }
+
+        function resetStateZoom() {
+            if (currentStateZoom) {
+                d3.select('#state-svg').transition().duration(750).call(currentStateZoom.transform, d3.zoomIdentity);
+            }
+        }
+
+        function expandAllNodes() {
+            // This would require implementing collapsible nodes, which we can add later
+            alert('Expand all functionality coming soon!');
+        }
+
+        function collapseAllNodes() {
+            // This would require implementing collapsible nodes, which we can add later
+            alert('Collapse all functionality coming soon!');
+        }
+
+        function exportStateImage() {
+            const svg = document.getElementById('state-svg');
+            const serializer = new XMLSerializer();
+            const source = serializer.serializeToString(svg);
+            const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'state-tree-visualization.svg';
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function showStateError(message) {
+            const errorEl = document.getElementById('state-error');
+            errorEl.textContent = message;
+            errorEl.classList.remove('hidden');
+        }
+
+        function hideStateError() {
+            document.getElementById('state-error').classList.add('hidden');
         }
     </script>
 </body>

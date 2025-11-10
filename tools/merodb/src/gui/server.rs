@@ -25,7 +25,8 @@ struct ExportResponse {
 pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
     let app = Router::new()
         .route("/", get(render_app))
-        .route("/api/export", post(handle_export));
+        .route("/api/export", post(handle_export))
+        .route("/api/state-tree", post(handle_state_tree));
 
     let addr = format!("127.0.0.1:{}", port);
     println!("Starting GUI server at http://{}", addr);
@@ -152,6 +153,107 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
     };
 
     (StatusCode::OK, Json(ExportResponse { data })).into_response()
+}
+
+async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
+    let mut db_path: Option<PathBuf> = None;
+    let mut wasm_bytes: Option<Vec<u8>> = None;
+
+    // Parse multipart form data
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_owned();
+
+        match name.as_str() {
+            "db_path" => {
+                if let Ok(value) = field.text().await {
+                    db_path = Some(PathBuf::from(value));
+                }
+            }
+            "wasm_file" => {
+                if let Ok(bytes) = field.bytes().await {
+                    wasm_bytes = Some(bytes.to_vec());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Validate inputs
+    let Some(db_path) = db_path else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Database path is required".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Check if database path exists
+    if !db_path.exists() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Database path does not exist: {}", db_path.display()),
+            }),
+        )
+            .into_response();
+    }
+
+    // WASM is required for state tree extraction
+    let Some(wasm_bytes) = wasm_bytes else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "WASM file is required for state tree extraction".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Extract ABI from WASM bytes
+    let abi_manifest = match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Failed to extract ABI from WASM: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Open database
+    let db = match open_database(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to open database: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Extract state tree
+    let tree_data = match export::extract_state_tree(&db, &abi_manifest) {
+        Ok(data) => data,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to extract state tree: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(ExportResponse { data: tree_data })).into_response()
 }
 
 fn open_database(path: &PathBuf) -> eyre::Result<DBWithThreadMode<SingleThreaded>> {
