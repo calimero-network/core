@@ -23,6 +23,3 @@ toml.workspace = true
 calimero-context.workspace = true
 calimero-server = { workspace = true }
 calimero-network-primitives.workspace = true
-
-[lints]
-workspace = true

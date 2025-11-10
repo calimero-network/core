@@ -35,6 +35,3 @@ default = []
 full = ["reqwest/rustls-tls", "reqwest/gzip", "reqwest/brotli"]
 native-tls = ["reqwest/native-tls"]
 rustls = ["reqwest/rustls-tls"]
-
-[lints]
-workspace = true

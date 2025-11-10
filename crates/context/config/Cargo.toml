@@ -34,10 +34,6 @@ starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"], optional = true }
 url = { workspace = true, optional = true }
-
-[lints]
-workspace = true
-
 [features]
 default = []
 
