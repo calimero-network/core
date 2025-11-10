@@ -312,6 +312,24 @@ impl PlanDefaults {
     pub fn effective_decode_with_abi(&self, override_flag: Option<bool>) -> bool {
         override_flag.or(self.decode_with_abi).unwrap_or(false)
     }
+
+    /// Determine the effective write_if_missing flag considering both defaults and overrides.
+    ///
+    /// This method implements a three-level priority system for the `write_if_missing` setting:
+    /// 1. **Step override** (highest priority): If the step explicitly sets this flag, use it
+    /// 2. **Plan default**: If the plan defaults specify this flag, use it
+    /// 3. **Engine default** (lowest priority): Fall back to `false` if neither is specified
+    ///
+    /// # Arguments
+    ///
+    /// * `override_flag` - Optional step-level override for write_if_missing
+    ///
+    /// # Returns
+    ///
+    /// The effective boolean value to use for write-if-missing semantics in this step.
+    pub fn effective_write_if_missing(&self, override_flag: Option<bool>) -> bool {
+        override_flag.or(self.write_if_missing).unwrap_or(false)
+    }
 }
 
 /// Common filters that can be referenced by multiple steps.
@@ -720,13 +738,102 @@ impl CopyStep {
     }
 }
 
+/// Configuration for transforming values during copy operations.
+///
+/// Copy steps can apply three types of transformations to values before writing them
+/// to the target database. All transformations are optional and can be combined.
+///
+/// ## Transformation Order
+///
+/// When multiple transformations are enabled, they are applied in this order:
+/// 1. **write_if_missing check**: Skip if key exists in target (no transformation)
+/// 2. **decode_with_abi**: Deserialize binary value using WASM ABI manifest → JSON
+/// 3. **jq**: Apply jq expression to modify the JSON value
+///
+/// ## Field Descriptions
+///
+/// ### `decode_with_abi`
+/// - **Type**: `Option<bool>`
+/// - **Default**: Inherits from `defaults.decode_with_abi`, or `false` if not set
+/// - **Purpose**: Deserialize binary-encoded application state using the WASM ABI manifest
+/// - **Requirements**:
+///   - Source database must have an associated WASM file (via `source.wasm_file` or `--wasm-file`)
+///   - WASM file must contain a `calimero_abi_v1` custom section with the ABI manifest
+///   - Primarily useful for the State column (other columns may not be ABI-decodable)
+/// - **Output format**: JSON-encoded bytes
+/// - **Example use case**: Converting binary contract state to human-readable JSON for inspection or transformation
+/// - **Error behavior**:
+///   - If `decode_with_abi=true` but no WASM file is provided: Migration fails immediately with
+///     "decode_with_abi requested but source ABI manifest is not available"
+///   - If WASM file exists but lacks ABI custom section: Migration fails with
+///     "No 'calimero_abi_v1' custom section found in WASM file"
+///   - Validation happens before processing any keys (fail-fast to prevent partial migrations)
+///
+/// ### `jq`
+/// - **Type**: `Option<String>`
+/// - **Default**: `None` (no jq transformation)
+/// - **Purpose**: Apply a jq expression to modify values during copy
+/// - **Input requirements**: Value must be valid JSON (either from ABI decoding or original)
+/// - **Output requirements**: jq expression must produce exactly one output value
+/// - **Processing**: Runs after `decode_with_abi` if both are enabled
+/// - **Example**: `".value.parsed | del(.internal_field)"` removes a field from state
+/// - **Error handling**: Invalid jq syntax or runtime errors abort the migration
+///
+/// ### `write_if_missing`
+/// - **Type**: `Option<bool>`
+/// - **Default**: Inherits from `defaults.write_if_missing`, or `false` if not set
+/// - **Purpose**: Skip writing keys that already exist in the target database
+/// - **Behavior**:
+///   - `true`: Check target DB for each key; skip if exists (idempotent)
+///   - `false`: Always write keys (overwrites existing values)
+/// - **Performance**: Requires additional read operation per key, may slow down migration
+/// - **Example use case**: Incremental migrations, merging multiple source databases
+/// - **Reporting**: Skipped keys are counted and reported in warnings
+///
+/// ## Example Configurations
+///
+/// ```yaml
+/// # Decode binary state to JSON and remove sensitive fields
+/// transform:
+///   decode_with_abi: true
+///   jq: ".value.parsed | del(.password, .api_key)"
+///
+/// # Copy only missing keys (idempotent migration)
+/// transform:
+///   write_if_missing: true
+///
+/// # Combine all transformations
+/// transform:
+///   decode_with_abi: true
+///   jq: ".value.parsed | select(.status == \"active\")"
+///   write_if_missing: true
+/// ```
+///
+/// ## Inheritance from Defaults
+///
+/// Step-level `transform` fields override plan-level `defaults`:
+/// - If `transform.decode_with_abi` is `Some(true/false)`, it takes precedence
+/// - If `transform.decode_with_abi` is `None`, inherits `defaults.decode_with_abi`
+/// - If both are `None`, engine default (`false`) is used
+///
+/// This allows setting defaults for all steps while overriding specific steps.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CopyTransform {
+    /// Deserialize values using WASM ABI manifest before copying.
+    /// Requires source database to have an associated WASM file.
     #[serde(default)]
     pub decode_with_abi: Option<bool>,
+
+    /// jq expression to transform values during copy.
+    /// Input must be valid JSON; expression must produce exactly one output.
     #[serde(default)]
     pub jq: Option<String>,
+
+    /// Skip writing keys that already exist in target database.
+    /// Enables idempotent migrations and incremental data merges.
+    #[serde(default)]
+    pub write_if_missing: Option<bool>,
 }
 
 impl CopyTransform {
@@ -774,6 +881,9 @@ impl CopyTransform {
         }
         if let Some(jq) = &self.jq {
             parts.push(format!("jq={jq}"));
+        }
+        if let Some(flag) = self.write_if_missing {
+            parts.push(format!("write_if_missing={flag}"));
         }
         if parts.is_empty() {
             None
@@ -1269,6 +1379,7 @@ mod validation_tests {
             transform: CopyTransform {
                 decode_with_abi: None,
                 jq: Some("   ".into()),
+                write_if_missing: None,
             },
             guards: StepGuards::default(),
             batch_size: None,

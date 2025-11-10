@@ -1079,6 +1079,7 @@ mod tests {
                 transform: CopyTransform {
                     decode_with_abi: Some(true), // Request ABI decoding
                     jq: None,
+                    write_if_missing: None,
                 },
                 guards: StepGuards::default(),
                 batch_size: None,
@@ -1131,6 +1132,7 @@ mod tests {
                 transform: CopyTransform {
                     decode_with_abi: None,
                     jq: Some("   ".into()), // Empty/whitespace-only JQ expression
+                    write_if_missing: None,
                 },
                 guards: StepGuards::default(),
                 batch_size: None,
@@ -1187,6 +1189,7 @@ mod tests {
                 transform: CopyTransform {
                     decode_with_abi: Some(false),
                     jq: Some(".value.parsed.nonexistent_field".into()), // References non-existent field
+                    write_if_missing: None,
                 },
                 guards: StepGuards::default(),
                 batch_size: None,
