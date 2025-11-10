@@ -193,6 +193,32 @@
             color: #f48771;
         }
 
+        .warning-message {
+            padding: 15px;
+            background: #5a4a1d;
+            border: 1px solid #d4a017;
+            border-radius: 4px;
+            color: #f4d171;
+            margin-top: 15px;
+        }
+
+        .warning-message strong {
+            color: #ffd700;
+        }
+
+        .info-message {
+            padding: 15px;
+            background: #1d3a2e;
+            border: 1px solid #28a745;
+            border-radius: 4px;
+            color: #7ce3a6;
+            margin-top: 15px;
+        }
+
+        .info-message strong {
+            color: #28a745;
+        }
+
         .instructions {
             margin-top: 40px;
             padding: 30px;
@@ -796,6 +822,8 @@
                         </div>
 
                         <div id="error-message" class="error-message hidden"></div>
+                        <div id="warning-message" class="warning-message hidden"></div>
+                        <div id="info-message" class="info-message hidden"></div>
                     </form>
                 </div>
                 <div class="instructions">
@@ -1020,13 +1048,49 @@
         const loadButton = document.getElementById('load-button');
         const loadingMessage = document.getElementById('loading-message');
         const errorMessage = document.getElementById('error-message');
+        const warningMessage = document.getElementById('warning-message');
+        const infoMessage = document.getElementById('info-message');
 
-        // Update filename display when WASM file is selected
-        wasmInput.addEventListener('change', () => {
+        // Update filename display when WASM file is selected and validate ABI
+        wasmInput.addEventListener('change', async () => {
             if (wasmInput.files.length > 0) {
-                wasmFilename.textContent = wasmInput.files[0].name;
+                const file = wasmInput.files[0];
+                wasmFilename.textContent = file.name;
+
+                // Validate ABI immediately
+                hideWarning();
+                hideInfo();
+                hideError();
+
+                try {
+                    const formData = new FormData();
+                    formData.append('wasm_file', file);
+
+                    const response = await fetch('/api/validate-abi', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        showError(result.error || 'Failed to validate WASM file');
+                        return;
+                    }
+
+                    // Show warning or info message
+                    if (result.warning) {
+                        showWarning(result.warning);
+                    } else if (result.info) {
+                        showInfo(result.info);
+                    }
+                } catch (err) {
+                    showError('Failed to validate WASM file: ' + err.message);
+                }
             } else {
                 wasmFilename.textContent = '';
+                hideWarning();
+                hideInfo();
             }
         });
 
@@ -1046,6 +1110,8 @@
             loadButton.disabled = true;
             loadingMessage.classList.remove('hidden');
             hideError();
+            hideWarning();
+            hideInfo();
 
             try {
                 // Create form data
@@ -1070,21 +1136,41 @@
                 // Success - load the data
                 jsonData = result.data;
                 dagData = null;  // Clear DAG cache to force reload for new database
-                
+
                 // Store current path and WASM for refresh functionality
                 currentDbPath = dbPath;
                 currentWasmFile = wasmFile;
-                
+
                 const fileName = wasmFile ? `${dbPath} (via ${wasmFile.name})` : `${dbPath} (no ABI)`;
                 document.getElementById('file-name').textContent = fileName;
-                showViewer();
-                renderJson(jsonData);
-                hideError();
+
+                // Hide loading state first
+                loadButton.disabled = false;
+                loadingMessage.classList.add('hidden');
+
+                // Check for warning from backend and show on upload screen
+                if (result.warning) {
+                    showWarning(result.warning);
+                } else {
+                    hideWarning();
+                }
+
+                // Check for info message from backend and show on upload screen
+                if (result.info) {
+                    showInfo(result.info);
+                } else {
+                    hideInfo();
+                }
+
+                // Wait a moment to let user see the message before switching views
+                setTimeout(() => {
+                    showViewer();
+                    renderJson(jsonData);
+                    hideError();
+                }, 2000);
 
             } catch (err) {
                 showError(err.message || 'Failed to load database');
-            } finally {
-                // Hide loading state
                 loadButton.disabled = false;
                 loadingMessage.classList.add('hidden');
             }
@@ -1097,6 +1183,24 @@
 
         function hideError() {
             errorMessage.classList.add('hidden');
+        }
+
+        function showWarning(message) {
+            warningMessage.innerHTML = `<strong>⚠️ Warning:</strong> ${message}`;
+            warningMessage.classList.remove('hidden');
+        }
+
+        function hideWarning() {
+            warningMessage.classList.add('hidden');
+        }
+
+        function showInfo(message) {
+            infoMessage.innerHTML = `<strong>✓ Success:</strong> ${message}`;
+            infoMessage.classList.remove('hidden');
+        }
+
+        function hideInfo() {
+            infoMessage.classList.add('hidden');
         }
 
         function showViewer() {

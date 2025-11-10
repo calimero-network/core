@@ -20,13 +20,18 @@ struct ErrorResponse {
 #[derive(Debug, Serialize)]
 struct ExportResponse {
     data: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    info: Option<String>,
 }
 
 pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
     let app = Router::new()
         .route("/", get(render_app))
         .route("/api/export", post(handle_export))
-        .route("/api/state-tree", post(handle_state_tree));
+        .route("/api/state-tree", post(handle_state_tree))
+        .route("/api/validate-abi", post(handle_validate_abi));
 
     let addr = format!("127.0.0.1:{}", port);
     println!("Starting GUI server at http://{}", addr);
@@ -93,12 +98,20 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
     }
 
     // Extract ABI from WASM bytes (if provided)
+    let mut warning_message = None;
+    let mut info_message = None;
     let abi_manifest = if let Some(wasm_bytes) = wasm_bytes {
         match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
-            Ok(manifest) => Some(manifest),
+            Ok(manifest) => {
+                info_message = Some(
+                    "Successfully extracted ABI from WASM file. State values will be decoded using the ABI schema.".to_string()
+                );
+                Some(manifest)
+            }
             Err(e) => {
-                eprintln!("Warning: Failed to extract ABI from WASM: {e}");
-                eprintln!("Continuing without ABI - state values will not be decoded");
+                let warning = format!("The uploaded WASM file does not contain an exported ABI. The file may not have been built with ABI support. State values will not be decoded. Error: {e}");
+                eprintln!("Warning: {}", warning);
+                warning_message = Some(warning);
                 None
             }
         }
@@ -152,7 +165,15 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
         }
     };
 
-    (StatusCode::OK, Json(ExportResponse { data })).into_response()
+    (
+        StatusCode::OK,
+        Json(ExportResponse {
+            data,
+            warning: warning_message,
+            info: info_message,
+        }),
+    )
+        .into_response()
 }
 
 async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
@@ -253,7 +274,63 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
         }
     };
 
-    (StatusCode::OK, Json(ExportResponse { data: tree_data })).into_response()
+    (
+        StatusCode::OK,
+        Json(ExportResponse {
+            data: tree_data,
+            warning: None,
+            info: None,
+        }),
+    )
+        .into_response()
+}
+
+async fn handle_validate_abi(mut multipart: Multipart) -> impl IntoResponse {
+    let mut wasm_bytes: Option<Vec<u8>> = None;
+
+    // Parse multipart form data
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_owned();
+        match name.as_str() {
+            "wasm_file" => {
+                if let Ok(bytes) = field.bytes().await {
+                    wasm_bytes = Some(bytes.to_vec());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Check if WASM file was provided
+    let Some(wasm_bytes) = wasm_bytes else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "No WASM file provided".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Try to extract ABI from WASM bytes
+    let response = match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
+        Ok(_manifest) => ExportResponse {
+            data: serde_json::json!({"has_abi": true}),
+            warning: None,
+            info: Some(
+                "Successfully extracted ABI from WASM file. State values will be decoded using the ABI schema.".to_string()
+            ),
+        },
+        Err(e) => ExportResponse {
+            data: serde_json::json!({"has_abi": false}),
+            warning: Some(format!(
+                "The uploaded WASM file does not contain an exported ABI. The file may not have been built with ABI support. State values will not be decoded. Error: {e}"
+            )),
+            info: None,
+        },
+    };
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 fn open_database(path: &PathBuf) -> eyre::Result<DBWithThreadMode<SingleThreaded>> {
