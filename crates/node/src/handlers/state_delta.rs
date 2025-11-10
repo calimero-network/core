@@ -366,13 +366,15 @@ pub async fn handle_state_delta(
     // to avoid infinite loops and ensure proper distributed execution.
     if applied && !handlers_already_executed {
         if let Some(ref payload) = events_payload {
-            if author_id != our_identity {
-                info!(
-                    %context_id,
-                    %author_id,
-                    %our_identity,
-                    "Executing event handlers (delta applied, we are a receiving node)"
-                );
+            let is_author = author_id == our_identity;
+            info!(
+                %context_id,
+                %author_id,
+                %our_identity,
+                is_author,
+                "Evaluating event handler execution for applied delta"
+            );
+            if !is_author {
                 execute_event_handlers_parsed(
                     &node_clients.context,
                     &context_id,

@@ -7,6 +7,7 @@ use crate::{
     logic::{sys, VMHostFunctions, VMLogicResult},
 };
 use calimero_primitives::common::DIGEST_SIZE;
+use calimero_storage::{address::Id, index::Index, store::MainStorage};
 
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
@@ -675,6 +676,31 @@ impl VMHostFunctions<'_> {
         })?;
 
         Ok(())
+    }
+
+    /// Flushes pending CRDT actions recorded by the storage layer and commits them as a causal delta.
+    ///
+    /// Returns `1` if a delta was emitted, `0` if there was nothing to commit.
+    pub fn flush_delta(&mut self) -> VMLogicResult<i32> {
+        let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())
+            .map_err(|err| HostError::Panic {
+                context: PanicContext::Host,
+                message: format!("failed to fetch root hash: {err}"),
+                location: Location::Unknown,
+            })?
+            .map(|(full_hash, _)| full_hash)
+            .unwrap_or([0; 32]);
+
+        match calimero_storage::delta::commit_causal_delta(&root_hash) {
+            Ok(Some(_)) => Ok(1),
+            Ok(None) => Ok(0),
+            Err(err) => Err(HostError::Panic {
+                context: PanicContext::Host,
+                message: format!("commit_causal_delta failed: {err}"),
+                location: Location::Unknown,
+            }
+            .into()),
+        }
     }
 }
 

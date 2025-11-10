@@ -185,7 +185,7 @@ impl JsVector {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            vector: Vector::new(),
+            vector: Vector::default(),
             storage: Element::new(None),
         }
     }
@@ -197,7 +197,7 @@ impl JsVector {
     #[must_use]
     pub fn new_with_id(id: Id) -> Self {
         Self {
-            vector: Vector::new(),
+            vector: Vector::default(),
             storage: Element::new(Some(id)),
         }
     }
@@ -299,7 +299,7 @@ impl JsUnorderedSet {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            set: UnorderedSet::new(),
+            set: UnorderedSet::default(),
             storage: Element::new(None),
         }
     }
@@ -311,7 +311,7 @@ impl JsUnorderedSet {
     #[must_use]
     pub fn new_with_id(id: Id) -> Self {
         Self {
-            set: UnorderedSet::new(),
+            set: UnorderedSet::default(),
             storage: Element::new(Some(id)),
         }
     }
@@ -437,6 +437,7 @@ impl JsLwwRegister {
     }
 
     pub fn set(&mut self, value: Option<&[u8]>) {
+        self.storage.update();
         match value {
             Some(bytes) => self.register.set(Some(bytes.to_vec())),
             None => self.register.set(None),
@@ -445,6 +446,11 @@ impl JsLwwRegister {
 
     pub fn get(&self) -> Option<Vec<u8>> {
         self.register.get().clone()
+    }
+
+    pub fn clear(&mut self) {
+        self.storage.update();
+        self.register.set(None);
     }
 
     pub fn timestamp(&self) -> crate::logical_clock::HybridTimestamp {
@@ -494,6 +500,7 @@ impl JsCounter {
         }
     }
 
+    /// Rehydrates a counter using a known identifier.
     #[must_use]
     pub fn new_with_id(id: Id) -> Self {
         Self {
