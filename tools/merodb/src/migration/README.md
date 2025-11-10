@@ -67,6 +67,7 @@ steps:
     transform:
       decode_with_abi: true
       jq: ".value.parsed | del(.internal)"
+      write_if_missing: false
     guards:
       requires_empty_target: true  # Ensure column is empty
       requires_validation: false   # Skip validation checks
@@ -105,12 +106,144 @@ steps:
 
 | Type    | Required Fields                                        | Behaviour                                                                                                         |
 |---------|--------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
-| `copy`  | `column`, optional `filters`, optional `transform`     | Preview: counts matched keys and captures samples. Future “apply” will copy data into the target database.        |
-| `delete`| `column`, optional `filters`                           | Preview: counts matches only. Future “apply” will delete matching keys from the target.                           |
-| `upsert`| `column`, `entries` (`[{ key, value }]`)               | Preview: shows how many literal entries would be written. Future “apply” will write them to the target.           |
-| `verify`| `column`, `assertion`                                  | Preview: evaluates `expected_count`, `min_count`, `max_count`, `contains_key`, or `missing_key` immediately.      |
+| `copy`  | `column`, optional `filters`, optional `transform`     | Copies matching keys from source to target, optionally transforming values (ABI decode, jq, write-if-missing).    |
+| `delete`| `column`, optional `filters`                           | Preview: counts matches only. Apply: deletes matching keys from the target.                                       |
+| `upsert`| `column`, `entries` (`[{ key, value }]`)               | Preview: shows how many literal entries would be written. Apply: writes them to the target.                       |
+| `verify`| `column`, `assertion`                                  | Evaluates `expected_count`, `min_count`, `max_count`, `contains_key`, or `missing_key` immediately.               |
 
 Assertions use `VerificationAssertion` in `plan.rs`. For `contains_key`/`missing_key` the key is an `EncodedValue` (`hex`, `base64`, `utf8`, or `json`).
+
+### 2.4 Copy Transformations
+
+Copy steps support three optional transformations that can modify values before writing to the target:
+
+#### `decode_with_abi` (boolean)
+
+Deserializes binary-encoded values using the WASM ABI manifest, converting them to JSON format.
+
+**Requirements:**
+- Source must have a WASM file (via `source.wasm_file` or `--wasm-file`)
+- WASM file must contain a `calimero_abi_v1` custom section
+- Primarily useful for the State column
+
+**Behavior:**
+- Validates ABI availability before processing any keys (fail-fast)
+- Parses each value using column-specific ABI logic
+- Outputs JSON-encoded bytes
+
+**Error handling:**
+- If `decode_with_abi=true` but no WASM file: "decode_with_abi requested but source ABI manifest is not available"
+- If WASM lacks ABI section: "No 'calimero_abi_v1' custom section found in WASM file"
+- If value decode fails: Migration aborts with specific key reference
+
+**Example:**
+```yaml
+transform:
+  decode_with_abi: true  # Convert binary state to JSON
+```
+
+#### `jq` (string)
+
+Applies a jq expression to transform values during copy. The value must be valid JSON (either from ABI decoding or original).
+
+**Requirements:**
+- jq expression must be valid syntax
+- Expression must produce exactly one output value
+- Input must be valid JSON
+
+**Processing order:**
+- Runs after `decode_with_abi` if both are enabled
+- If only `jq` is set, value must already be JSON
+
+**Error handling:**
+- Parse errors: "Failed to parse jq expression"
+- Wrong output count: "jq expression must produce exactly one output"
+- Runtime errors abort the migration
+
+**Examples:**
+```yaml
+# Remove sensitive fields from decoded state
+transform:
+  decode_with_abi: true
+  jq: ".value.parsed | del(.password, .api_key)"
+
+# Filter to only active items
+transform:
+  decode_with_abi: true
+  jq: ".value.parsed | select(.status == \"active\")"
+
+# Transform JSON structure
+transform:
+  jq: ".data | { id: .id, name: .metadata.name }"
+```
+
+#### `write_if_missing` (boolean)
+
+Skips writing keys that already exist in the target database, enabling idempotent migrations.
+
+**Behavior:**
+- `true`: Check target DB for each key; skip if exists
+- `false` (default): Always write keys (overwrites existing values)
+
+**Performance:**
+- Requires additional read operation per key
+- May slow down migrations on large datasets
+
+**Reporting:**
+- Skipped keys are counted and shown in warnings
+
+**Use cases:**
+- Incremental migrations (only copy new data)
+- Merging multiple source databases without overwrites
+- Re-running migrations safely after interruption
+
+**Example:**
+```yaml
+transform:
+  write_if_missing: true  # Idempotent migration
+```
+
+#### Transformation Order
+
+When multiple transformations are enabled, they execute in this order:
+
+1. **write_if_missing check** → Skip if key exists in target (no transformation)
+2. **decode_with_abi** → Deserialize binary value using WASM ABI → JSON
+3. **jq** → Apply jq expression to modify the JSON value
+
+#### Combining Transformations
+
+All three transformations can be combined:
+
+```yaml
+transform:
+  decode_with_abi: true         # 1. Convert binary to JSON
+  jq: ".value.parsed | del(.temp)"  # 2. Remove temporary field
+  write_if_missing: true        # 3. Only write if key doesn't exist
+```
+
+#### Inheritance from Defaults
+
+Transformation flags support 3-level priority:
+- **Step override** (highest): `transform.decode_with_abi`
+- **Plan default**: `defaults.decode_with_abi`
+- **Engine default** (lowest): `false`
+
+Example:
+```yaml
+defaults:
+  decode_with_abi: true  # All steps decode by default
+
+steps:
+  - type: copy
+    column: State
+    # Inherits decode_with_abi=true from defaults
+
+  - type: copy
+    column: Delta
+    transform:
+      decode_with_abi: false  # Override: no decoding for this step
+```
 
 ---
 
@@ -242,8 +375,9 @@ The execution engine implements mutating operations for migration plans when `--
 ### 6.2 Key Features
 
 - **WriteBatch Operations**: All writes within a step are batched and committed atomically
+- **Value Transformations**: Copy steps support ABI decoding, jq transformations, and write-if-missing
 - **Progress Logging**: Real-time progress updates during long-running operations
-- **Idempotency**: Steps can be safely re-run if interrupted
+- **Idempotency**: Steps can be safely re-run if interrupted (especially with `write_if_missing=true`)
 - **Filter Reuse**: Leverages the same filter resolution logic from dry-run mode
 - **Verification Integration**: Verify steps can abort migrations if assertions fail
 
@@ -251,11 +385,11 @@ The execution engine implements mutating operations for migration plans when `--
 
 1. **Validation**: Ensures context has write access and target database is configured
 2. **Step Execution**: Iterates through each step in the plan:
-   - **Copy**: Reads matching keys from source, writes to target in batches
+   - **Copy**: Reads matching keys from source, optionally transforms values (ABI decode, jq, write-if-missing), writes to target in batches
    - **Delete**: Identifies matching keys in target, deletes them in batches
    - **Upsert**: Writes literal key-value entries to target in a single batch
    - **Verify**: Evaluates assertions against target database (read-only)
-3. **Reporting**: Collects execution statistics and returns detailed report
+3. **Reporting**: Collects execution statistics (including skipped keys for write-if-missing) and returns detailed report
 
 ### 6.4 Safety Mechanisms
 
@@ -402,10 +536,16 @@ merodb migrate --plan plan.yaml --target-db /path/to/target --apply --report res
 - **Use step guards for safety**: add `requires_empty_target` guard for initial migrations, or `requires_validation` to ensure database consistency before risky operations.
 - **Tune batch sizes for performance**: adjust `batch_size` based on your key sizes and available memory. Larger batches = fewer commits but more memory usage.
 - **Leverage filters**: precise `context_ids`, prefixes, and assertions make plans safer and easier to reason about.
-- **Watch warnings**: the CLI prints warnings whenever decoding fails, filters are ignored, or the ABI is missing.
+- **Use transformations wisely**:
+  - Set `decode_with_abi=true` to convert binary state to human-readable JSON
+  - Use `jq` to remove sensitive fields or filter data during migration
+  - Enable `write_if_missing=true` for idempotent migrations that can be safely re-run
+  - Always test transformations in dry-run mode first
+- **Fail-fast validation**: transformations validate ABI availability and jq syntax before processing any keys, preventing partial migrations.
+- **Watch warnings**: the CLI prints warnings whenever decoding fails, filters are ignored, the ABI is missing, or keys are skipped.
 - **Monitor progress**: execution mode logs progress every batch (configurable batch size) for long-running operations.
 - **Verification steps**: use verify steps to validate the target database state at critical points in the migration.
-- **Idempotency**: design steps to be idempotent where possible, so migrations can be safely re-run if interrupted.
+- **Idempotency**: design steps to be idempotent where possible (use `write_if_missing=true`), so migrations can be safely re-run if interrupted.
 - **Document plans**: use `name` and `description` fields so future readers (and CLI output) understand intent.
 - **Version control**: plans are code—store them alongside application migrations in Git.
 - **JSON reports**: use `--report` to generate machine-readable reports for both dry-run and apply modes.
