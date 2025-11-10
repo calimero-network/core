@@ -16,6 +16,7 @@ use std::{
     fmt::Display,
     panic::{self, AssertUnwindSafe},
 };
+use tracing::{debug, warn};
 
 const COLLECTION_ID_LEN: usize = 32;
 
@@ -542,6 +543,12 @@ impl VMHostFunctions<'_> {
         match outcome {
             Ok(Ok(counter)) => {
                 self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                let counter_id_str = counter.id().to_string();
+                debug!(
+                    target: "runtime::counter",
+                    counter_id = %counter_id_str,
+                    "created JsCounter"
+                );
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
@@ -556,6 +563,7 @@ impl VMHostFunctions<'_> {
             Ok(id) => id,
             Err(message) => return self.write_error_message(0, message),
         };
+        let counter_id_str = counter_id.to_string();
 
         let mut counter = match load_js_counter_instance(counter_id) {
             Ok(counter) => counter,
@@ -564,10 +572,25 @@ impl VMHostFunctions<'_> {
 
         match counter.increment() {
             Ok(()) => match save_js_counter_instance(&mut counter) {
-                Ok(()) => Ok(1),
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::counter",
+                        counter_id = %counter_id_str,
+                        "incremented JsCounter"
+                    );
+                    Ok(1)
+                }
                 Err(message) => self.write_error_message(0, message),
             },
-            Err(err) => self.write_error_message(0, err),
+            Err(err) => {
+                warn!(
+                    target: "runtime::counter",
+                    counter_id = %counter_id_str,
+                    error = %err,
+                    "JsCounter increment failed"
+                );
+                self.write_error_message(0, err)
+            }
         }
     }
 
@@ -913,19 +936,72 @@ fn save_js_lww_register_instance(register: &mut JsLwwRegister) -> Result<(), Str
 
 fn load_js_counter_instance(id: Id) -> Result<JsCounter, String> {
     match JsCounter::load(id) {
-        Ok(Some(counter)) => Ok(counter),
-        Ok(None) => Err("counter not found".to_owned()),
+        Ok(Some(counter)) => {
+            let counter_id_str = counter.id().to_string();
+            debug!(
+                target: "runtime::counter",
+                counter_id = %counter_id_str,
+                "loaded JsCounter from storage"
+            );
+            Ok(counter)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::counter",
+                counter_id = %missing_id,
+                "JsCounter not found in storage"
+            );
+            let mut counter = JsCounter::new_with_id(id);
+            match save_js_counter_instance(&mut counter) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::counter",
+                        counter_id = %missing_id,
+                        "recreated missing JsCounter"
+                    );
+                    Ok(counter)
+                }
+                Err(err) => Err(err),
+            }
+        }
         Err(err) => Err(err.to_string()),
     }
 }
 
 fn save_js_counter_instance(counter: &mut JsCounter) -> Result<(), String> {
     match counter.save() {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            let counter_id_str = counter.id().to_string();
+            debug!(
+                target: "runtime::counter",
+                counter_id = %counter_id_str,
+                "saved JsCounter to storage"
+            );
+            Ok(())
+        }
         Err(StorageError::CannotCreateOrphan(_)) => {
             ensure_root_index_internal().map_err(|err| err.to_string())?;
             match Interface::<MainStorage>::add_child_to(Id::root(), counter) {
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    let counter_id_str = counter.id().to_string();
+                    debug!(
+                        target: "runtime::counter",
+                        counter_id = %counter_id_str,
+                        "attached JsCounter to root index"
+                    );
+                    match counter.save() {
+                        Ok(_) => {
+                            debug!(
+                                target: "runtime::counter",
+                                counter_id = %counter_id_str,
+                                "saved JsCounter after attaching to root index"
+                            );
+                            Ok(())
+                        }
+                        Err(err) => Err(err.to_string()),
+                    }
+                }
                 Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
                 Err(err) => Err(err.to_string()),
             }

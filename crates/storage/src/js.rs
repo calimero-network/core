@@ -442,6 +442,14 @@ impl JsCounter {
     }
 
     #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            counter: StorageCounter::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    #[must_use]
     pub fn id(&self) -> Id {
         self.storage.id()
     }
