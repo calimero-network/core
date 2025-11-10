@@ -44,7 +44,7 @@ use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
-use crate::address::{Id, Path};
+use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Metadata};
 use crate::env::time_now;
 use crate::index::Index;

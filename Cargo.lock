@@ -1913,6 +1913,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -2200,6 +2201,7 @@ dependencies = [
  "bytes",
  "calimero-node-primitives",
  "calimero-primitives",
+ "calimero-storage",
  "calimero-sys",
  "eyre",
  "fragile",
@@ -9825,6 +9827,16 @@ dependencies = [
  "cfg-if",
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "storage-wasm"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "calimero-sdk",
+ "calimero-storage",
+ "once_cell",
 ]
 
 [[package]]

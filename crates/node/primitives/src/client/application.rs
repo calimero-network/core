@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, ErrorKind};
 use std::sync::Arc;
 
 use calimero_primitives::application::{
@@ -13,6 +13,7 @@ use futures_util::TryStreamExt;
 use reqwest::Url;
 use tokio::fs::File;
 use tokio_util::compat::TokioAsyncReadCompatExt;
+use tracing::{debug, trace};
 
 use super::NodeClient;
 
@@ -123,15 +124,49 @@ impl NodeClient {
         package: &str,
         version: &str,
     ) -> eyre::Result<ApplicationId> {
-        let path = path.canonicalize_utf8()?;
+        let metadata_len = metadata.len();
+        debug!(
+            path = %path,
+            package,
+            version,
+            metadata_len,
+            "install_application_from_path started"
+        );
 
-        let file = File::open(&path).await?;
+        let path = match path.canonicalize_utf8() {
+            Ok(canonicalized) => canonicalized,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                bail!("application file not found at {}", path);
+            }
+            Err(err) => return Err(err.into()),
+        };
+        trace!(path = %path, "application path canonicalized");
+
+        let file = match File::open(&path).await {
+            Ok(file) => file,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                bail!("application file not found at {}", path);
+            }
+            Err(err) => return Err(err.into()),
+        };
+        trace!(path = %path, "application file opened");
 
         let expected_size = file.metadata().await?.len();
+        debug!(
+            path = %path,
+            expected_size,
+            "install_application_from_path discovered file size"
+        );
 
         let (blob_id, size) = self
             .add_blob(file.compat(), Some(expected_size), None)
             .await?;
+        debug!(
+            %blob_id,
+            expected_size,
+            stored_size = size,
+            "application blob added via add_blob"
+        );
 
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")

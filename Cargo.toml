@@ -82,6 +82,7 @@ members = [
     "./e2e-tests",
     "./tools/calimero-abi",
     "./tools/merodb",
+    "./crates/storage-wasm",
 ]
 
 [workspace.dependencies]
@@ -228,11 +229,14 @@ e2e-tests = { path = "./e2e-tests" }
 kv-store = { path = "./apps/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }
 
+[profile.dev]
+panic = "unwind"
+
 [profile.release]
-strip = "symbols"
 lto = "fat"
 codegen-units = 1
 opt-level = "z"
+strip = "symbols"
 panic = "abort"
 
 [profile.app-release]
@@ -241,6 +245,6 @@ codegen-units = 1
 opt-level = "z"
 lto = true
 debug = false
-panic = "abort"
+strip = "symbols"
 overflow-checks = true
 

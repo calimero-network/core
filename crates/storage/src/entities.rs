@@ -279,6 +279,34 @@ impl Display for Element {
     }
 }
 
+impl Metadata {
+    /// Creates new metadata with the provided timestamps.
+    #[must_use]
+    pub fn new(created_at: u64, updated_at: u64) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+        }
+    }
+
+    /// Updates the `updated_at` timestamp.
+    pub fn set_updated_at(&mut self, timestamp: u64) {
+        self.updated_at = timestamp.into();
+    }
+
+    /// Returns the creation timestamp.
+    #[must_use]
+    pub const fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    /// Returns the last update timestamp.
+    #[must_use]
+    pub fn updated_at(&self) -> u64 {
+        *self.updated_at
+    }
+}
+
 /// System metadata (timestamps in u64 nanoseconds).
 #[derive(
     BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
