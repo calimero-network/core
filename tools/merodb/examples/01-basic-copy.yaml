@@ -1,0 +1,31 @@
+# Basic Copy Migration
+#
+# This example demonstrates a simple copy operation that moves all State entries
+# from one database to another without any transformations.
+#
+# Usage:
+#   merodb migrate --plan examples/01-basic-copy.yaml --apply
+
+version: 1
+name: basic-copy-migration
+description: Copy all state entries from source to target database
+
+source:
+  db_path: /path/to/source/db
+
+target:
+  db_path: /path/to/target/db
+  backup_dir: /path/to/backups  # Automatic backup before mutations
+
+steps:
+  - type: copy
+    name: copy-all-state
+    column: State
+    # No filters = copy everything
+    # No transform = raw byte copy (fastest)
+
+  - type: verify
+    name: verify-copied-count
+    column: State
+    assertion:
+      min_count: 1  # Ensure at least some data was copied

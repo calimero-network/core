@@ -8,6 +8,7 @@
 //! ## Key Features
 //!
 //! - **`WriteBatch` Operations**: All writes within a step are batched and committed atomically
+//! - **Value Transformations**: Copy steps support ABI decoding, jq transformations, and write-if-missing
 //! - **Idempotency**: Steps can be safely re-run if interrupted (future enhancement)
 //! - **Detailed Logging**: Progress and key operations are logged for observability
 //! - **Filter Reuse**: Leverages the same filter resolution logic from dry-run mode
@@ -16,16 +17,49 @@
 //!
 //! Each migration step type is executed as follows:
 //!
-//! - **Copy**: Reads matching keys from source, writes to target using `WriteBatch`
+//! - **Copy**: Reads matching keys from source, optionally transforms values, writes to target
 //! - **Delete**: Identifies matching keys in target, deletes them using `WriteBatch`
 //! - **Upsert**: Writes literal key-value entries to target using `WriteBatch`
 //! - **Verify**: Evaluates assertions against the target database (read-only)
+//!
+//! ## Copy Step Transformations
+//!
+//! Copy steps now support three types of transformations (all optional):
+//!
+//! ### 1. ABI Decoding (`decode_with_abi`)
+//! Deserializes binary-encoded values using the WASM ABI manifest, converting them to JSON.
+//! Requires the source database to have an associated WASM file.
+//!
+//! **Example use case**: Converting binary contract state to human-readable JSON
+//!
+//! ### 2. jq Transformation (`jq`)
+//! Applies a jq expression to modify values during copy. The value must be valid JSON
+//! (either from ABI decoding or original value).
+//!
+//! **Example use case**: Removing sensitive fields or filtering specific state values
+//!
+//! ```yaml
+//! transform:
+//!   decode_with_abi: true
+//!   jq: ".value.parsed | del(.internal_field)"
+//! ```
+//!
+//! ### 3. Write-If-Missing (`write_if_missing`)
+//! Skips writing keys that already exist in the target database, enabling idempotent
+//! migrations and incremental data merges.
+//!
+//! **Example use case**: Merging multiple source databases without overwriting existing data
+//!
+//! **Processing Order**: write_if_missing check → ABI decoding → jq transformation → write
+//!
+//! See [`execute_copy_step`] for detailed implementation.
 //!
 //! ## Safety Mechanisms
 //!
 //! - All operations require an explicit target database with write access
 //! - `WriteBatch` ensures atomic commits per step
 //! - Verification steps can abort the migration if assertions fail
+//! - Transformation errors (ABI decode failure, invalid jq) abort the migration
 //!
 
 #![allow(
@@ -208,7 +242,6 @@ pub fn execute_migration(context: &MigrationContext) -> Result<ExecutionReport> 
     );
 
     let plan = context.plan();
-    let source_db = context.source().db();
     let target_db = target.db();
 
     // Create backup if backup_dir is configured
@@ -233,9 +266,7 @@ pub fn execute_migration(context: &MigrationContext) -> Result<ExecutionReport> 
             .wrap_err_with(|| format!("Step {} guard check failed", index + 1))?;
 
         let report = match step {
-            PlanStep::Copy(copy) => {
-                execute_copy_step(index, copy, &plan.defaults, source_db, target_db)?
-            }
+            PlanStep::Copy(copy) => execute_copy_step(index, copy, &plan.defaults, context)?,
             PlanStep::Delete(delete) => {
                 execute_delete_step(index, delete, &plan.defaults, target_db)?
             }
@@ -255,40 +286,159 @@ pub fn execute_migration(context: &MigrationContext) -> Result<ExecutionReport> 
     Ok(ExecutionReport { steps })
 }
 
-/// Execute a `copy` step: read matching keys from source, write to target.
+/// Execute a `copy` step: read matching keys from source, write to target with optional transformations.
 ///
-/// This function:
-/// 1. Resolves filters from defaults and step overrides
-/// 2. Scans the source database column for matching keys
-/// 3. Writes matched key-value pairs to the target database in batches
-/// 4. Returns statistics about the operation
+/// This function implements the core copy logic with support for three transformation features:
+///
+/// ## Transformation Features
+///
+/// ### 1. ABI Decoding (`decode_with_abi`)
+/// When enabled, values are deserialized using the WASM ABI manifest before being written.
+/// This converts binary-encoded application state into structured JSON format.
+///
+/// **Requirements**:
+/// - Source must have a WASM file with ABI manifest (via `source.wasm_file` or `--wasm-file`)
+/// - WASM file must contain a `calimero_abi_v1` custom section
+/// - Only works for columns that have ABI-decodable values (primarily State column)
+///
+/// **Error handling** (fail-fast before processing keys):
+/// - Returns error if `decode_with_abi=true` but no WASM file is provided
+/// - Returns error if WASM file exists but has no `calimero_abi_v1` custom section
+/// - Returns error if value cannot be decoded with the provided ABI during processing
+///
+/// ### 2. jq Transformation (`jq`)
+/// Applies a jq expression to transform values during copy. The jq filter receives the value
+/// as JSON input and must produce exactly one JSON output.
+///
+/// **Processing order**:
+/// - If both `decode_with_abi` and `jq` are set, ABI decoding happens first, then jq
+/// - If only `jq` is set, value must already be valid JSON
+///
+/// **Example**: `.value.parsed | del(.internal_field)` removes a field from decoded state
+///
+/// **Error handling**:
+/// - Returns error if jq expression is invalid (parse error)
+/// - Returns error if jq produces != 1 output
+/// - Returns error if input is not valid JSON
+///
+/// ### 3. Write-If-Missing (`write_if_missing`)
+/// When enabled, keys that already exist in the target database are skipped (not overwritten).
+/// This enables idempotent migrations and incremental data merges.
+///
+/// **Behavior**:
+/// - Checks target DB for key existence before each write
+/// - Skipped keys are counted and reported in warnings
+/// - Default is `false` (always overwrite)
+///
+/// ## Execution Flow
+///
+/// 1. Resolve transformation settings (step override > plan default > engine default)
+/// 2. Validate ABI manifest availability if `decode_with_abi=true`
+/// 3. Compile jq filter if `jq` expression is provided
+/// 4. For each key in source column that matches filters:
+///    a. Check `write_if_missing` - skip if key exists in target
+///    b. Apply ABI decoding if enabled
+///    c. Apply jq transformation if provided
+///    d. Add to batch and write when batch size reached
+/// 5. Commit final batch
+/// 6. Report statistics including skipped key count
 ///
 /// # Arguments
 ///
-/// * `index` - Step index for reporting
-/// * `step` - Copy step configuration
-/// * `defaults` - Plan-level defaults for filters and options
-/// * `source_db` - Source database (read-only)
-/// * `target_db` - Target database (writable)
+/// * `index` - Step index for reporting (0-based)
+/// * `step` - Copy step configuration including transformation settings
+/// * `defaults` - Plan-level defaults for filters and transformation options
+/// * `context` - Migration context containing source/target databases and optional ABI manifest
 ///
 /// # Returns
 ///
-/// A `StepExecutionReport` containing copy statistics and any warnings.
+/// A `StepExecutionReport` containing:
+/// - Number of keys copied
+/// - Total bytes copied
+/// - Warnings (e.g., skipped keys, filter issues)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `decode_with_abi=true` but ABI manifest is not available
+/// - ABI decoding fails for a value
+/// - jq expression is invalid or produces wrong number of outputs
+/// - Value is not valid JSON when jq transformation is requested
+/// - Target database is not configured
+/// - Database I/O operations fail
 fn execute_copy_step(
     index: usize,
     step: &CopyStep,
     defaults: &PlanDefaults,
-    source_db: &DBWithThreadMode<SingleThreaded>,
-    target_db: &DBWithThreadMode<SingleThreaded>,
+    context: &MigrationContext,
 ) -> Result<StepExecutionReport> {
+    use crate::export::parse_value_with_abi;
+    use jaq_interpret::FilterT;
+
     let filters = defaults.merge_filters(&step.filters);
-    let resolved = ResolvedFilters::resolve(step.column, &filters);
+    let mut resolved = ResolvedFilters::resolve(step.column, &filters);
+
+    // Determine transformation settings using 3-level priority system:
+    // 1. Step-level transform.* field (highest priority)
+    // 2. Plan-level defaults.* field
+    // 3. Engine default (false for all flags)
+    let decode_with_abi = defaults.effective_decode_with_abi(step.transform.decode_with_abi);
+    let write_if_missing = defaults.effective_write_if_missing(step.transform.write_if_missing);
+    let jq_expr = step.transform.jq.as_deref();
+
+    // Validate and prepare ABI manifest if decode_with_abi is enabled.
+    // The manifest is lazily loaded from the WASM file on first access and cached.
+    // This ensures the manifest is available before we start iterating keys, avoiding
+    // partial copy failures midway through execution.
+    let abi_manifest = if decode_with_abi {
+        let manifest = context.source().abi_manifest()?.ok_or_else(|| {
+            eyre::eyre!(
+                "decode_with_abi requested but source ABI manifest is not available. \
+                 Specify wasm_file in the plan or provide --wasm-file"
+            )
+        })?;
+        Some(manifest)
+    } else {
+        None
+    };
+
+    // Compile jq filter upfront if specified. This validates the jq expression syntax
+    // early and avoids re-compiling the same expression for every key.
+    // The jaq library parses the expression into an AST, then compiles it into an
+    // executable filter that can be run against JSON values.
+    let jq_filter = if let Some(expr) = jq_expr {
+        // Parse jq expression into AST
+        let (filter_ast, errs) = jaq_parse::parse(expr, jaq_parse::main());
+        if !errs.is_empty() {
+            eyre::bail!(
+                "Failed to parse jq expression '{}': {:?}",
+                expr,
+                errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>()
+            );
+        }
+        let filter_ast =
+            filter_ast.ok_or_else(|| eyre::eyre!("No filter AST returned from jq parse"))?;
+
+        // Compile AST into executable filter
+        let mut ctx = jaq_interpret::ParseCtx::new(Vec::new());
+        ctx.insert_natives(core::iter::empty()); // No custom jq functions
+        let filter = ctx.compile(filter_ast);
+        Some(filter)
+    } else {
+        None
+    };
 
     // Determine batch size: step override > plan default > engine default
     let batch_size = step
         .batch_size
         .or(defaults.batch_size)
         .unwrap_or(DEFAULT_BATCH_SIZE);
+
+    let source_db = context.source().db();
+    let target_db = context
+        .target()
+        .ok_or_else(|| eyre::eyre!("Target database required for copy step"))?
+        .db();
 
     let source_cf = source_db
         .cf_handle(step.column.as_str())
@@ -299,6 +449,7 @@ fn execute_copy_step(
         .ok_or_else(|| eyre::eyre!("Target column family '{}' not found", step.column.as_str()))?;
 
     let mut keys_copied = 0;
+    let mut keys_skipped = 0;
     let mut bytes_copied = 0;
     let mut batch = WriteBatch::default();
 
@@ -311,24 +462,99 @@ fn execute_copy_step(
             )
         })?;
 
-        if resolved.matches(step.column, &key) {
-            // Add to current batch
-            batch.put_cf(target_cf, &key, &value);
-            keys_copied += 1;
-            bytes_copied += key.len() + value.len();
+        // Apply filters - skip keys that don't match the configured criteria
+        if !resolved.matches(step.column, &key) {
+            continue;
+        }
 
-            // Commit batch if size limit reached
-            if keys_copied % batch_size == 0 {
-                target_db.write(batch).wrap_err_with(|| {
-                    format!(
-                        "Failed to write batch to target column family '{}' after {} keys",
-                        step.column.as_str(),
-                        keys_copied
-                    )
-                })?;
-                batch = WriteBatch::default();
-                eprintln!("    Progress: {keys_copied} keys copied...");
+        // Transformation 1: write_if_missing check
+        // If enabled, perform a target DB lookup to check if this key already exists.
+        // This enables idempotent migrations - keys that exist are preserved, only
+        // missing keys are written. Useful for incremental migrations and data merges.
+        if write_if_missing && target_db.get_cf(target_cf, &key)?.is_some() {
+            keys_skipped += 1;
+            continue;
+        }
+
+        // Apply value transformations in order: ABI decoding → jq transformation
+        // Both transformations are optional and can be used independently or together.
+        let final_value = if decode_with_abi || jq_filter.is_some() {
+            // Transformation 2: ABI decoding (optional, runs first)
+            // Deserializes binary-encoded values using the WASM ABI manifest.
+            // The result is JSON-encoded for further processing or storage.
+            let mut transformed_value = if decode_with_abi {
+                let manifest = abi_manifest.expect("ABI manifest should be available");
+
+                // Parse the binary value using column-specific ABI logic
+                let parsed =
+                    parse_value_with_abi(step.column, &value, manifest).wrap_err_with(|| {
+                        format!("Failed to parse value with ABI for key {:?}", &key[..])
+                    })?;
+
+                // Convert parsed JSON value to bytes for next transformation or storage
+                serde_json::to_vec(&parsed)
+                    .wrap_err("Failed to serialize ABI-decoded value to JSON")?
+            } else {
+                // No ABI decoding - pass through raw bytes
+                value.to_vec()
+            };
+
+            // Transformation 3: jq transformation (optional, runs after ABI decoding)
+            // Applies a jq expression to modify the JSON value.
+            // The input must be valid JSON (either from ABI decoding or original value).
+            if let Some(filter) = &jq_filter {
+                // Parse bytes as JSON for jq processing
+                let input_json: serde_json::Value = serde_json::from_slice(&transformed_value)
+                    .wrap_err("Failed to parse value as JSON for jq transformation")?;
+
+                // Execute jq filter with no external inputs (empty iterator)
+                let inputs = jaq_interpret::RcIter::new(core::iter::empty());
+                let mut outputs: Vec<_> = filter
+                    .run((
+                        jaq_interpret::Ctx::new([], &inputs),
+                        jaq_interpret::Val::from(input_json),
+                    ))
+                    .collect();
+
+                // jq must produce exactly one output value
+                // Multiple outputs or no outputs indicate an error in the jq expression
+                if outputs.len() != 1 {
+                    eyre::bail!(
+                        "jq expression must produce exactly one output, got {}",
+                        outputs.len()
+                    );
+                }
+
+                // Extract the single output and convert back to JSON bytes
+                let output = outputs
+                    .remove(0)
+                    .map_err(|e| eyre::eyre!("jq error: {}", e))?;
+                transformed_value = serde_json::to_vec(&serde_json::Value::from(output))
+                    .wrap_err("Failed to serialize jq output")?;
             }
+
+            transformed_value
+        } else {
+            // No transformations - copy raw bytes as-is
+            value.to_vec()
+        };
+
+        // Add to current batch
+        batch.put_cf(target_cf, &key, &final_value);
+        keys_copied += 1;
+        bytes_copied += key.len() + final_value.len();
+
+        // Commit batch if size limit reached
+        if keys_copied % batch_size == 0 {
+            target_db.write(batch).wrap_err_with(|| {
+                format!(
+                    "Failed to write batch to target column family '{}' after {} keys",
+                    step.column.as_str(),
+                    keys_copied
+                )
+            })?;
+            batch = WriteBatch::default();
+            eprintln!("    Progress: {keys_copied} keys copied...");
         }
     }
 
@@ -341,6 +567,13 @@ fn execute_copy_step(
                 keys_copied
             )
         })?;
+    }
+
+    // Add warning about skipped keys if write_if_missing was used
+    if write_if_missing && keys_skipped > 0 {
+        resolved.warnings.push(format!(
+            "Skipped {keys_skipped} keys that already existed in target (write_if_missing=true)"
+        ));
     }
 
     Ok(StepExecutionReport {

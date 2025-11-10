@@ -290,7 +290,7 @@ impl Deref for UpdatedAt {
 }
 
 /// Parse a value with the ABI manifest present
-fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Result<Value> {
+pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Result<Value> {
     match column {
         Column::State => {
             if let Some(decoded) = decode_state_entry(value, manifest) {

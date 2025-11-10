@@ -9,6 +9,8 @@ use crate::types::Column;
 use super::context::{AbiManifestStatus, MigrationContext};
 use super::dry_run::DryRunReport;
 use super::plan::PlanFilters;
+#[cfg(test)]
+use super::plan::TargetEndpoint;
 
 /// Persist the dry-run report as pretty JSON at the requested destination.
 pub fn write_json_report(
@@ -182,7 +184,10 @@ mod tests {
                 db_path: path.to_path_buf(),
                 wasm_file: None,
             },
-            target: None,
+            target: Some(TargetEndpoint {
+                db_path: path.to_path_buf(),
+                backup_dir: None,
+            }),
             defaults: PlanDefaults {
                 columns: Vec::new(),
                 filters: PlanFilters::default(),

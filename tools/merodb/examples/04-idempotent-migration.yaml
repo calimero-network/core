@@ -1,0 +1,37 @@
+# Idempotent Migration with write_if_missing
+#
+# This example demonstrates using write_if_missing to create an idempotent
+# migration that can be safely re-run without overwriting existing data.
+#
+# Usage:
+#   merodb migrate --plan examples/05-idempotent-migration.yaml --apply
+#   # Can be run multiple times safely - only new keys are copied
+
+version: 1
+name: idempotent-migration
+description: Incremental migration that skips existing keys
+
+source:
+  db_path: /path/to/source/db
+
+target:
+  db_path: /path/to/target/db
+  backup_dir: /path/to/backups
+
+# Enable write_if_missing for all copy steps
+defaults:
+  write_if_missing: true
+
+steps:
+  - type: copy
+    name: copy-new-state-only
+    column: State
+    # Inherits write_if_missing=true from defaults
+    # Keys that already exist in target are skipped
+    # Skipped keys are counted and reported in warnings
+
+  - type: verify
+    name: verify-target-has-data
+    column: State
+    assertion:
+      min_count: 1

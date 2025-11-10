@@ -20,7 +20,7 @@
 //! The CLI consumes the `DryRunReport` and prints a human-readable preview. A future iteration can
 //! serialize the same data structure as JSON for `--report` output.
 
-use eyre::{Result, WrapErr};
+use eyre::{eyre, Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
 use serde::Serialize;
 
@@ -104,7 +104,8 @@ impl StepDetail {}
 /// - Verification assertion evaluation encounters database errors
 pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     let plan = context.plan();
-    let db = context.source().db();
+    let source_db = context.source().db();
+    let target_db = context.target().map(|target| target.db());
     let abi_manifest = context.source().abi_manifest()?;
 
     let mut steps = Vec::with_capacity(plan.steps.len());
@@ -113,11 +114,33 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     for (index, step) in plan.steps.iter().enumerate() {
         let report = match step {
             PlanStep::Copy(copy) => {
-                preview_copy_step(index, copy, &plan.defaults, db, abi_manifest)?
+                preview_copy_step(index, copy, &plan.defaults, source_db, abi_manifest)?
             }
-            PlanStep::Delete(delete) => preview_delete_step(index, delete, &plan.defaults, db)?,
+            PlanStep::Delete(delete) => {
+                let target_db = target_db.ok_or_else(|| {
+                    eyre!(
+                        "Step {} ({} column '{}') requires a target database. Provide --target-db or configure target.db_path in the plan.",
+                        index + 1,
+                        step.kind(),
+                        step.column().as_str()
+                    )
+                })?;
+
+                preview_delete_step(index, delete, &plan.defaults, target_db)?
+            }
             PlanStep::Upsert(upsert) => preview_upsert_step(index, upsert, &plan.defaults),
-            PlanStep::Verify(verify) => preview_verify_step(index, verify, &plan.defaults, db)?,
+            PlanStep::Verify(verify) => {
+                let target_db = target_db.ok_or_else(|| {
+                    eyre!(
+                        "Step {} ({} column '{}') requires a target database. Provide --target-db or configure target.db_path in the plan.",
+                        index + 1,
+                        step.kind(),
+                        step.column().as_str()
+                    )
+                })?;
+
+                preview_verify_step(index, verify, &plan.defaults, target_db)?
+            }
         };
 
         steps.push(report);
@@ -480,8 +503,8 @@ mod tests {
     use crate::migration::context::{MigrationContext, MigrationOverrides};
     use crate::migration::plan::{
         CopyStep, CopyTransform, DeleteStep, EncodedValue, KeyRange, MigrationPlan, PlanDefaults,
-        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, StepGuards, UpsertEntry, UpsertStep,
-        VerificationAssertion, VerifyStep,
+        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, StepGuards, TargetEndpoint,
+        UpsertEntry, UpsertStep, VerificationAssertion, VerifyStep,
     };
     use crate::migration::test_utils::{test_context_id, test_context_meta, DbFixture};
     use crate::types::Column;
@@ -518,6 +541,13 @@ mod tests {
         Ok(())
     }
 
+    fn target_config(path: &Path) -> TargetEndpoint {
+        TargetEndpoint {
+            db_path: path.to_path_buf(),
+            backup_dir: None,
+        }
+    }
+
     /// Build a minimal two-step plan (copy + verify) scoped to the synthetic state row we insert.
     fn basic_plan(path: &Path) -> MigrationPlan {
         MigrationPlan {
@@ -528,7 +558,7 @@ mod tests {
                 db_path: path.to_path_buf(),
                 wasm_file: None,
             },
-            target: None,
+            target: Some(target_config(path)),
             defaults: PlanDefaults {
                 columns: Vec::new(),
                 filters: PlanFilters::default(),
@@ -630,6 +660,8 @@ mod tests {
 
         setup_db(&db_path)?;
 
+        let target = target_config(&db_path);
+
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
@@ -638,7 +670,7 @@ mod tests {
                 db_path,
                 wasm_file: None,
             },
-            target: None,
+            target: Some(target),
             defaults: PlanDefaults::default(),
             steps: vec![PlanStep::Delete(DeleteStep {
                 name: Some("delete-test".into()),
@@ -672,13 +704,11 @@ mod tests {
     }
 
     #[test]
-    /// Test dry-run behavior for upsert steps.
-    fn dry_run_reports_upsert_step() -> Result<()> {
+    fn dry_run_delete_without_target_errors() -> Result<()> {
         let temp = TempDir::new()?;
         let db_path = temp.path().join("db");
 
         setup_db(&db_path)?;
-
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
@@ -688,6 +718,50 @@ mod tests {
                 wasm_file: None,
             },
             target: None,
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Delete(DeleteStep {
+                name: Some("delete-test".into()),
+                column: Column::State,
+                filters: PlanFilters::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), true)?;
+        ensure!(
+            context.target().is_none(),
+            "expected context without target"
+        );
+        let error = generate_report(&context).expect_err("expected missing target error");
+        ensure!(
+            error.to_string().contains("requires a target database"),
+            "expected error about missing target, got: {}",
+            error
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    /// Test dry-run behavior for upsert steps.
+    fn dry_run_reports_upsert_step() -> Result<()> {
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        setup_db(&db_path)?;
+
+        let target = target_config(&db_path);
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path,
+                wasm_file: None,
+            },
+            target: Some(target),
             defaults: PlanDefaults::default(),
             steps: vec![PlanStep::Upsert(UpsertStep {
                 name: Some("upsert-test".into()),
@@ -818,6 +892,8 @@ mod tests {
 
         setup_db(&db_path)?;
 
+        let target = target_config(&db_path);
+
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
@@ -826,7 +902,7 @@ mod tests {
                 db_path,
                 wasm_file: None,
             },
-            target: None,
+            target: Some(target),
             defaults: PlanDefaults::default(),
             steps: vec![PlanStep::Verify(VerifyStep {
                 name: Some("min-count-check".into()),
@@ -867,6 +943,8 @@ mod tests {
 
         setup_db(&db_path)?;
 
+        let target = target_config(&db_path);
+
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
@@ -875,7 +953,7 @@ mod tests {
                 db_path,
                 wasm_file: None,
             },
-            target: None,
+            target: Some(target),
             defaults: PlanDefaults::default(),
             steps: vec![PlanStep::Verify(VerifyStep {
                 name: Some("max-count-check".into()),
@@ -1001,6 +1079,7 @@ mod tests {
                 transform: CopyTransform {
                     decode_with_abi: Some(true), // Request ABI decoding
                     jq: None,
+                    write_if_missing: None,
                 },
                 guards: StepGuards::default(),
                 batch_size: None,
@@ -1053,6 +1132,7 @@ mod tests {
                 transform: CopyTransform {
                     decode_with_abi: None,
                     jq: Some("   ".into()), // Empty/whitespace-only JQ expression
+                    write_if_missing: None,
                 },
                 guards: StepGuards::default(),
                 batch_size: None,
@@ -1109,6 +1189,7 @@ mod tests {
                 transform: CopyTransform {
                     decode_with_abi: Some(false),
                     jq: Some(".value.parsed.nonexistent_field".into()), // References non-existent field
+                    write_if_missing: None,
                 },
                 guards: StepGuards::default(),
                 batch_size: None,
@@ -1363,6 +1444,8 @@ mod tests {
         fixture.insert_state_entry(&test_context_id(0x11), &[0x22; 32], b"value-1")?;
         fixture.insert_state_entry(&test_context_id(0x11), &[0x33; 32], b"value-2")?;
 
+        let target = target_config(&db_path);
+
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
@@ -1371,7 +1454,7 @@ mod tests {
                 db_path,
                 wasm_file: None,
             },
-            target: None,
+            target: Some(target),
             defaults: PlanDefaults::default(),
             steps: vec![
                 // Should pass: exact count matches
@@ -1467,6 +1550,8 @@ mod tests {
             data: "nonexistent-key".into(),
         };
 
+        let target = target_config(&db_path);
+
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
@@ -1475,7 +1560,7 @@ mod tests {
                 db_path,
                 wasm_file: None,
             },
-            target: None,
+            target: Some(target),
             defaults: PlanDefaults::default(),
             steps: vec![
                 // Should pass: key exists
@@ -1567,6 +1652,8 @@ mod tests {
             data: "this-key-does-not-exist".into(),
         };
 
+        let target = target_config(&db_path);
+
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
@@ -1575,7 +1662,7 @@ mod tests {
                 db_path,
                 wasm_file: None,
             },
-            target: None,
+            target: Some(target),
             defaults: PlanDefaults::default(),
             steps: vec![
                 // Should pass: key is indeed missing
