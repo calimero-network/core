@@ -113,13 +113,9 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     // Process each step in order, building preview reports
     for (index, step) in plan.steps.iter().enumerate() {
         let report = match step {
-            PlanStep::Copy(copy) => preview_copy_step(
-                index,
-                copy,
-                &plan.defaults,
-                source_db,
-                abi_manifest,
-            )?,
+            PlanStep::Copy(copy) => {
+                preview_copy_step(index, copy, &plan.defaults, source_db, abi_manifest)?
+            }
             PlanStep::Delete(delete) => {
                 let target_db = target_db.ok_or_else(|| {
                     eyre!(
@@ -507,8 +503,8 @@ mod tests {
     use crate::migration::context::{MigrationContext, MigrationOverrides};
     use crate::migration::plan::{
         CopyStep, CopyTransform, DeleteStep, EncodedValue, KeyRange, MigrationPlan, PlanDefaults,
-        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, StepGuards, TargetEndpoint, UpsertEntry,
-        UpsertStep, VerificationAssertion, VerifyStep,
+        PlanFilters, PlanStep, PlanVersion, SourceEndpoint, StepGuards, TargetEndpoint,
+        UpsertEntry, UpsertStep, VerificationAssertion, VerifyStep,
     };
     use crate::migration::test_utils::{test_context_id, test_context_meta, DbFixture};
     use crate::types::Column;
@@ -739,9 +735,7 @@ mod tests {
         );
         let error = generate_report(&context).expect_err("expected missing target error");
         ensure!(
-            error
-                .to_string()
-                .contains("requires a target database"),
+            error.to_string().contains("requires a target database"),
             "expected error about missing target, got: {}",
             error
         );
