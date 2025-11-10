@@ -38,6 +38,7 @@ impl VMLogic<'_> {
             fn xcall(xcall_ptr: u64);
 
             fn commit(root_hash_ptr: u64, artifact_ptr: u64);
+            fn flush_delta() -> i32;
 
             fn storage_write(
                 key_ptr: u64,
