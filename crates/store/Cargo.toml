@@ -26,6 +26,3 @@ calimero-storage.workspace = true
 borsh = ["borsh/derive"]
 serde = ["dep:serde", "dep:serde_json"]
 datatypes = ["borsh", "calimero-primitives/borsh"]
-
-[lints]
-workspace = true

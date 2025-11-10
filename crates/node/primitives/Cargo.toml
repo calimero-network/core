@@ -30,6 +30,3 @@ calimero-network-primitives.workspace = true
 calimero-storage.workspace = true
 calimero-store.workspace = true
 calimero-utils-actix.workspace = true
-
-[lints]
-workspace = true
