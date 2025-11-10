@@ -43,6 +43,3 @@ serde_json.workspace = true
 
 [features]
 host-traces = ["owo-colors"]
-
-[lints]
-workspace = true

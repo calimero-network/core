@@ -38,6 +38,3 @@ examples = [
   "tokio-util/io",
   "tokio-util/compat",
 ]
-
-[lints]
-workspace = true

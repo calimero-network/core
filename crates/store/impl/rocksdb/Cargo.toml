@@ -17,6 +17,3 @@ calimero-store.workspace = true
 
 [dev-dependencies]
 tempdir.workspace = true
-
-[lints]
-workspace = true
