@@ -256,16 +256,19 @@ impl VMHostFunctions<'_> {
                 .map_err(|_| HostError::InvalidMemoryAccess)?;
         }
 
-        {
+        let message = String::from_utf8_lossy(&bytes).to_string();
+        let max_len = {
             let logic = self.borrow_logic();
             if logic.logs.len()
                 >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
             {
                 return Err(HostError::LogsOverflow.into());
             }
+            usize::try_from(logic.limits.max_log_size).map_err(|_| HostError::IntegerOverflow)?
+        };
+        if message.len() > max_len {
+            return Err(HostError::LogLengthOverflow.into());
         }
-
-        let message = String::from_utf8_lossy(&bytes).to_string();
         self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
         let total_logs = self.borrow_logic().logs.len();
@@ -405,14 +408,6 @@ impl VMHostFunctions<'_> {
                 }
             };
 
-        let logic = self.borrow_logic();
-
-        if logic.logs.len()
-            >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
-        {
-            return Err(HostError::LogsOverflow.into());
-        }
-
         let message = match self.read_guest_memory_str(&src_log_buf) {
             Ok(msg) => msg.to_owned(),
             Err(err) => {
@@ -426,6 +421,18 @@ impl VMHostFunctions<'_> {
                 return Err(err);
             }
         };
+        let max_len = {
+            let logic = self.borrow_logic();
+            if logic.logs.len()
+                >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+            {
+                return Err(HostError::LogsOverflow.into());
+            }
+            usize::try_from(logic.limits.max_log_size).map_err(|_| HostError::IntegerOverflow)?
+        };
+        if message.len() > max_len {
+            return Err(HostError::LogLengthOverflow.into());
+        }
 
         self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
@@ -891,6 +898,27 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_log_utf8_length_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        limits.max_log_size = 4;
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "exceeds";
+        let msg_ptr = 200u64;
+        write_str(&host, msg_ptr, msg);
+        let buf_ptr = 12u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, msg_ptr, msg.len() as u64);
+
+        let err = host.log_utf8(buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogLengthOverflow)
+        ));
+    }
+
     /// Tests that the `log_utf8()` host function correctly handles the bad UTF8 and properly returns
     /// an error `HostError::BadUTF8` when the incorrect string is provided (the failure occurs
     /// because of the verification happening inside the private `read_guest_memory_str` function).
@@ -912,6 +940,27 @@ mod tests {
         // `log_utf8` calls `read_guest_memory_str` internally. We expect it to fail.
         let err = host.log_utf8(buf_ptr).unwrap_err();
         assert!(matches!(err, VMLogicError::HostError(HostError::BadUTF8)));
+    }
+
+    #[test]
+    fn test_js_std_d_print_length_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        limits.max_log_size = 5;
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "too long";
+        let msg_ptr = 512u64;
+        write_str(&host, msg_ptr, msg);
+
+        let err = host
+            .js_std_d_print(0, msg_ptr, msg.len() as u64)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogLengthOverflow)
+        ));
     }
 
     /// Tests the `panic()` host function (without a custom message).

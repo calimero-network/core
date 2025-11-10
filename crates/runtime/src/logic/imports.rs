@@ -56,6 +56,7 @@ impl VMLogic<'_> {
             ) -> i32;
             fn js_crdt_map_remove(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_map_contains(map_id_ptr: u64, key_ptr: u64) -> i32;
+            fn js_crdt_map_iter(map_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_vector_new(register_id: u64) -> i32;
             fn js_crdt_vector_len(vector_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_vector_push(vector_id_ptr: u64, value_ptr: u64) -> i32;
@@ -66,6 +67,7 @@ impl VMLogic<'_> {
             fn js_crdt_set_contains(set_id_ptr: u64, value_ptr: u64) -> i32;
             fn js_crdt_set_remove(set_id_ptr: u64, value_ptr: u64) -> i32;
             fn js_crdt_set_len(set_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_set_iter(set_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_set_clear(set_id_ptr: u64) -> i32;
             fn js_crdt_lww_new(register_id: u64) -> i32;
             fn js_crdt_lww_set(register_id_ptr: u64, value_ptr: u64, has_value: u32) -> i32;

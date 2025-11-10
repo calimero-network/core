@@ -242,7 +242,6 @@ impl<'a> VMLogic<'a> {
     ///
     /// * `memory` - The `wasmer::Memory` instance from the instantiated guest module.
     pub fn with_memory(&mut self, memory: wasmer::Memory) -> &mut Self {
-        trace!(target: "runtime::logic", "VMLogic::with_memory");
         self.memory = Some(memory);
         self
     }

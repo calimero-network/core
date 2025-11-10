@@ -1,6 +1,9 @@
-#![allow(clippy::missing_errors_doc)]
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "FFI surface returns error codes instead of Result-based APIs"
+)]
 
-use std::mem;
+use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 use std::slice;
 use std::sync::Mutex;
@@ -202,7 +205,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 pub extern "C" fn cs_alloc(size: u32) -> u32 {
     let mut buf = Vec::<u8>::with_capacity(size as usize);
     let ptr = buf.as_mut_ptr();
-    mem::forget(buf);
+    let _buf = ManuallyDrop::new(buf);
     ptr as u32
 }
 

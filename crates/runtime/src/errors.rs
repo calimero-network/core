@@ -94,6 +94,8 @@ pub enum HostError {
     KeyLengthOverflow,
     #[error("value length overflow")]
     ValueLengthOverflow,
+    #[error("log size overflow")]
+    LogLengthOverflow,
     #[error("logs overflow")]
     LogsOverflow,
     #[error("events overflow")]

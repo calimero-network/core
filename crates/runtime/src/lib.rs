@@ -126,9 +126,18 @@ impl Module {
             }
         };
 
-        // Call the auto-generated registration hook if it exists
-        // This enables automatic CRDT merge during sync
-        // Note: This is optional and failures are non-fatal (especially for JS apps)
+        let _ = match instance.exports.get_memory("memory") {
+            Ok(memory) => logic.with_memory(memory.clone()),
+            // todo! test memory returns MethodNotFound
+            Err(err) => {
+                error!(%context_id, method, error=?err, "Failed to get WASM memory");
+                return Ok(logic.finish(Some(err.into())));
+            }
+        };
+
+        // Call the auto-generated registration hook if it exists.
+        // This enables automatic CRDT merge during sync.
+        // Note: This is optional and failures are non-fatal (especially for JS apps).
         if let Ok(register_fn) = instance
             .exports
             .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
@@ -139,7 +148,7 @@ impl Module {
                 }
                 Err(err) => {
                     // Log but don't fail - registration is optional (backward compat)
-                    // JS apps may not have this function properly initialized yet
+                    // JS apps may not have this function properly initialized yet.
                     debug!(
                         %context_id,
                         error=?err,
@@ -148,15 +157,6 @@ impl Module {
                 }
             }
         }
-
-        let _ = match instance.exports.get_memory("memory") {
-            Ok(memory) => logic.with_memory(memory.clone()),
-            // todo! test memory returns MethodNotFound
-            Err(err) => {
-                error!(%context_id, method, error=?err, "Failed to get WASM memory");
-                return Ok(logic.finish(Some(err.into())));
-            }
-        };
 
         let function = match instance.exports.get_function(method) {
             Ok(function) => function,
