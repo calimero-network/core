@@ -42,6 +42,23 @@ impl JsUnorderedMap {
         }
     }
 
+    /// Rehydrates a map using a known identifier.
+    ///
+    /// This is primarily used when deserialising contract state: the wasm side
+    /// only stores the map id, so when the state is reconstructed we need a
+    /// `JsUnorderedMap` that shares the same identifier. Merely allocating the
+    /// wrapper is not enough – the collection still has to be attached to the
+    /// storage index so subsequent reads do not fail with "map not found".  
+    /// Callers are expected to invoke [`save`](Self::save) after creating the
+    /// wrapper (the runtime loaders already do this).
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            map: UnorderedMap::default(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
     /// Returns the unique identifier of this collection.
     #[must_use]
     pub fn id(&self) -> Id {
@@ -173,6 +190,18 @@ impl JsVector {
         }
     }
 
+    /// Equivalent to [`new`](Self::new) but ensures the wrapper reports the
+    /// provided identifier.  The runtime persists the freshly created instance
+    /// immediately so that subsequent loads succeed even if the original vector
+    /// was missing from storage.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            vector: Vector::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
     #[must_use]
     pub fn id(&self) -> Id {
         self.storage.id()
@@ -272,6 +301,18 @@ impl JsUnorderedSet {
         Self {
             set: UnorderedSet::new(),
             storage: Element::new(None),
+        }
+    }
+
+    /// Creates a set wrapper that reuses an existing identifier.  Just like the
+    /// map/vector variants this is paired with an eager `save` on the runtime
+    /// side to guarantee that the collection is registered in the storage
+    /// index before it is accessed.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            set: UnorderedSet::new(),
+            storage: Element::new(Some(id)),
         }
     }
 
@@ -378,6 +419,18 @@ impl JsLwwRegister {
         }
     }
 
+    /// Recreates a register wrapper for an existing identifier.  Used when state
+    /// is deserialised and we only have the register id; the runtime will
+    /// persist the newly constructed wrapper before it is accessed to avoid
+    /// "register not found" errors.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            register: StorageLwwRegister::new(None),
+            storage: Element::new(Some(id)),
+        }
+    }
+
     #[must_use]
     pub fn id(&self) -> Id {
         self.storage.id()
@@ -438,6 +491,14 @@ impl JsCounter {
         Self {
             counter: StorageCounter::new(),
             storage: Element::new(None),
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            counter: StorageCounter::new(),
+            storage: Element::new(Some(id)),
         }
     }
 
