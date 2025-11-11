@@ -20,6 +20,7 @@ export class StateTreeVisualizer {
         this.tooltipCounter = 0;
         this.tooltipPinned = false;
         this.currentTooltip = null;
+        this.pinnedDuringHover = false;
         this.setupKeyboardListeners();
     }
 
@@ -187,15 +188,18 @@ export class StateTreeVisualizer {
                 .attr('transform', d => `translate(${source.y0},${source.x0})`)
                 .style('cursor', d => d._children || d.children ? 'pointer' : 'default')
                 .on('click', (event, d) => {
-                    if (d.children) {
-                        d._children = d.children;
-                        d.children = null;
-                    } else if (d._children) {
-                        d.children = d._children;
-                        d._children = null;
+                    // Only expand/collapse if Cmd/Ctrl is NOT pressed
+                    if (!event.metaKey && !event.ctrlKey) {
+                        if (d.children) {
+                            d._children = d.children;
+                            d.children = null;
+                        } else if (d._children) {
+                            d.children = d._children;
+                            d._children = null;
+                        }
+                        update(d);
+                        this.updateStats();
                     }
-                    update(d);
-                    this.updateStats();
                 })
                 .on('mouseover', (event, d) => {
                     this.showTooltip(event, d);
@@ -505,8 +509,13 @@ export class StateTreeVisualizer {
      */
     showTooltip(event, d) {
         // If Ctrl/Cmd is pressed, create a new pinned tooltip
+        // Only create one tooltip per node per hover session
         if (this.tooltipPinned) {
-            this.createPinnedTooltip(event, d.data);
+            // Check if we already created a tooltip for this node in this hover session
+            if (!this.pinnedDuringHover) {
+                this.createPinnedTooltip(event, d.data);
+                this.pinnedDuringHover = true;
+            }
             return;
         }
 
@@ -699,5 +708,7 @@ export class StateTreeVisualizer {
         if (!this.tooltipPinned && this.currentTooltip) {
             this.currentTooltip.classed('hidden', true);
         }
+        // Reset the flag when mouse leaves the node
+        this.pinnedDuringHover = false;
     }
 }
