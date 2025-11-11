@@ -63,6 +63,8 @@ service runs alongside the node or inside it.
 - Server configuration accepts an optional `auth` section to tune storage, provider,
   and security settings for the embedded service; defaults mirror the standalone
   auth binary.
+- Disabling the feature flag restores the external-auth behaviour with no config
+  changes required.
 - CI/CD pipelines should publish both binaries so infrastructure can choose the
   appropriate deployment model per environment.
 
