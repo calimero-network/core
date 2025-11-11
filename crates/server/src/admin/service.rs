@@ -220,7 +220,6 @@ pub(crate) fn setup(
         .nest("/alias", alias::service())
         // TEE attestation
         .nest("/tee", tee::service())
-        .route("/certificate", get(certificate_handler))
         .layer(Extension(Arc::clone(&shared_state)))
         .layer(session_layer.clone());
 
@@ -228,6 +227,7 @@ pub(crate) fn setup(
         .route("/health", get(health_check_handler))
         // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))
+        .route("/certificate", get(certificate_handler))
         .layer(Extension(shared_state));
 
     Some((admin_path, protected_routes, public_routes))

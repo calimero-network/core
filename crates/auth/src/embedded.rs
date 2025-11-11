@@ -93,7 +93,7 @@ pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
 #[must_use]
 pub fn default_config() -> AuthConfig {
     let mut providers = HashMap::new();
-    providers.insert("near_wallet".to_string(), true);
+    providers.insert("user_password".to_string(), true);
 
     AuthConfig {
         listen_addr: "127.0.0.1:3001".parse().unwrap(),
@@ -102,7 +102,9 @@ pub fn default_config() -> AuthConfig {
             access_token_expiry: 3600,
             refresh_token_expiry: 2592000,
         },
-        storage: StorageConfig::Memory,
+        storage: StorageConfig::RocksDB {
+            path: "auth".into(),
+        },
         cors: Default::default(),
         security: SecurityConfig {
             max_body_size: 1024 * 1024, // 1MB

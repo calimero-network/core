@@ -61,9 +61,8 @@ service runs alongside the node or inside it.
   routes, and guards the JSON-RPC, admin, WebSocket, and SSE endpoints with the
   bundled JWT middleware.
 - When `auth_mode = "embedded"` but there is no `[network.server.embedded_auth]`
-  block, the service falls back
-  falls back to in-memory storage and localhost bindings, mirroring
-  `mero-auth`’s defaults.
+  block, the service defaults to a local RocksDB store under the node’s home
+  directory (`auth/`) and enables only the `user_password` provider.
 - Switching back to proxy mode is as simple as running with
   `--auth-mode proxy` (or removing the `auth_mode` line), keeping existing
   deployments compatible.
@@ -87,13 +86,12 @@ type = "rocksdb"
 path = "data/auth"
 
 [network.server.embedded_auth.providers]
-near_wallet = true
-user_password = false
+user_password = true
 ```
 
-Omitting the block falls back to the embedded defaults (in-memory storage, localhost
-bind, and the standard provider set). External deployments can keep existing configs
-unchanged while opting in environment by environment.
+Omitting the block leaves the embedded defaults in place (RocksDB storage at
+`auth/`, username/password authentication). External deployments can keep existing
+configs unchanged while opting in environment by environment.
 
 #### CI/CD expectations
 

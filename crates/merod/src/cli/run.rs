@@ -7,6 +7,7 @@ use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
+use mero_auth::config::StorageConfig as AuthStorageConfig;
 
 use super::auth_mode::AuthModeArg;
 use crate::cli::RootArgs;
@@ -34,7 +35,17 @@ impl RunCommand {
         }
 
         let network = config.network;
-        let server_source = network.server;
+        let mut server_source = network.server;
+
+        if let Some(cfg) = server_source.embedded_auth.as_mut() {
+            if let AuthStorageConfig::RocksDB { path: storage_path } = &mut cfg.storage {
+                if storage_path.is_relative() {
+                    if let Some(rel_str) = storage_path.to_str() {
+                        *storage_path = path.join(rel_str).into_std_path_buf();
+                    }
+                }
+            }
+        }
         let server_config = ServerConfig::with_auth(
             server_source.listen,
             config.identity.clone(),
