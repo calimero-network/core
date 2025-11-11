@@ -2338,71 +2338,167 @@
             svg.on('.zoom', null);
 
             const width = document.getElementById('state-svg').clientWidth || 1200;
-            const height = 800;
+            const marginTop = 10;
+            const marginRight = 120;
+            const marginBottom = 10;
+            const marginLeft = 40;
 
-            svg.attr('viewBox', [0, 0, width, height]);
+            // Convert data to d3 hierarchy
+            const root = d3.hierarchy(treeData, d => d.children);
 
-            const g = svg.append('g').attr('transform', 'translate(0,40)');
+            const dx = 20;
+            const dy = (width - marginRight - marginLeft) / (1 + root.height);
+
+            // Create a tree layout
+            const tree = d3.tree().nodeSize([dx, dy]);
+
+            // Initial positions - collapse all nodes except root and first level
+            root.x0 = dy / 2;
+            root.y0 = 0;
+            root.descendants().forEach((d, i) => {
+                d.id = i;
+                d._children = d.children;
+                // Expand root and first level only
+                if (d.depth > 1) d.children = null;
+            });
+
+            const g = svg.append('g')
+                .attr('font-family', 'sans-serif')
+                .attr('font-size', 10);
+
+            const gLink = g.append('g')
+                .attr('fill', 'none')
+                .attr('stroke', '#3e3e42')
+                .attr('stroke-opacity', 0.4)
+                .attr('stroke-width', 1.5);
+
+            const gNode = g.append('g')
+                .attr('cursor', 'pointer')
+                .attr('pointer-events', 'all');
+
+            function update(event, source) {
+                const duration = event?.altKey ? 2500 : 250;
+                const nodes = root.descendants().reverse();
+                const links = root.links();
+
+                // Compute the new tree layout
+                tree(root);
+
+                let left = root;
+                let right = root;
+                root.eachBefore(node => {
+                    if (node.x < left.x) left = node;
+                    if (node.x > right.x) right = node;
+                });
+
+                const height = right.x - left.x + marginTop + marginBottom;
+
+                const transition = svg.transition()
+                    .duration(duration)
+                    .attr('viewBox', [-marginLeft, left.x - marginTop, width, height])
+                    .tween('resize', window.ResizeObserver ? null : () => () => svg.dispatch('toggle'));
+
+                // Update the nodes
+                const node = gNode.selectAll('g')
+                    .data(nodes, d => d.id);
+
+                // Enter any new nodes at the parent's previous position
+                const nodeEnter = node.enter().append('g')
+                    .attr('transform', d => `translate(${source.y0},${source.x0})`)
+                    .attr('fill-opacity', 0)
+                    .attr('stroke-opacity', 0)
+                    .on('click', (event, d) => {
+                        d.children = d.children ? null : d._children;
+                        update(event, d);
+                    });
+
+                nodeEnter.append('circle')
+                    .attr('r', 4)
+                    .attr('fill', d => d._children ? '#0e639c' : '#999')
+                    .attr('stroke-width', 10)
+                    .on('mouseenter', showStateTooltip)
+                    .on('mouseleave', hideStateTooltip);
+
+                nodeEnter.append('text')
+                    .attr('dy', '0.31em')
+                    .attr('x', d => d._children ? -6 : 6)
+                    .attr('text-anchor', d => d._children ? 'end' : 'start')
+                    .text(d => {
+                        if (d.data.id) {
+                            return d.data.id.substring(0, 8) + '...';
+                        }
+                        return d.data.type || 'node';
+                    })
+                    .style('fill', '#d4d4d4')
+                    .style('font-size', '11px')
+                    .clone(true).lower()
+                    .attr('stroke-linejoin', 'round')
+                    .attr('stroke-width', 3)
+                    .attr('stroke', '#1e1e1e');
+
+                // Transition nodes to their new position
+                const nodeUpdate = node.merge(nodeEnter).transition(transition)
+                    .attr('transform', d => `translate(${d.y},${d.x})`)
+                    .attr('fill-opacity', 1)
+                    .attr('stroke-opacity', 1);
+
+                // Transition exiting nodes to the parent's new position
+                const nodeExit = node.exit().transition(transition).remove()
+                    .attr('transform', d => `translate(${source.y},${source.x})`)
+                    .attr('fill-opacity', 0)
+                    .attr('stroke-opacity', 0);
+
+                // Update the links
+                const link = gLink.selectAll('path')
+                    .data(links, d => d.target.id);
+
+                // Enter any new links at the parent's previous position
+                const linkEnter = link.enter().append('path')
+                    .attr('d', d => {
+                        const o = {x: source.x0, y: source.y0};
+                        return diagonal({source: o, target: o});
+                    });
+
+                // Transition links to their new position
+                link.merge(linkEnter).transition(transition)
+                    .attr('d', diagonal);
+
+                // Transition exiting nodes to the parent's new position
+                link.exit().transition(transition).remove()
+                    .attr('d', d => {
+                        const o = {x: source.x, y: source.y};
+                        return diagonal({source: o, target: o});
+                    });
+
+                // Stash the old positions for transition
+                root.eachBefore(d => {
+                    d.x0 = d.x;
+                    d.y0 = d.y;
+                });
+            }
+
+            // Diagonal link generator
+            function diagonal(d) {
+                return `M${d.source.y},${d.source.x}
+                        C${d.source.y + dy / 2},${d.source.x}
+                         ${d.target.y - dy / 2},${d.target.x}
+                         ${d.target.y},${d.target.x}`;
+            }
 
             // Setup zoom
             currentStateZoom = d3.zoom()
                 .scaleExtent([0.1, 4])
                 .on('zoom', (event) => {
-                    g.attr('transform', `translate(0,40) ${event.transform}`);
+                    g.attr('transform', event.transform);
                 });
             svg.call(currentStateZoom);
 
-            // Create tree layout
-            const treeLayout = d3.tree()
-                .size([width - 200, height - 100]);
+            // Store root and update function for expand/collapse controls
+            currentRoot = root;
+            updateFunction = update;
 
-            // Convert data to d3 hierarchy
-            const root = d3.hierarchy(treeData, d => d.children);
-
-            // Apply layout
-            treeLayout(root);
-
-            // Draw links
-            g.selectAll('.tree-link')
-                .data(root.links())
-                .join('path')
-                .attr('class', 'dag-link')
-                .attr('d', d3.linkVertical()
-                    .x(d => d.x)
-                    .y(d => d.y));
-
-            // Draw nodes
-            const node = g.selectAll('.tree-node')
-                .data(root.descendants())
-                .join('g')
-                .attr('class', d => {
-                    let classes = 'dag-node';
-                    if (!d.children && !d.data.children) classes += ' leaf';
-                    if (d.depth === 0) classes += ' root';
-                    return classes;
-                })
-                .attr('transform', d => `translate(${d.x},${d.y})`);
-
-            node.append('circle')
-                .attr('r', 6)
-                .on('mouseenter', showStateTooltip)
-                .on('mouseleave', hideStateTooltip)
-                .on('click', (event, d) => {
-                    d3.selectAll('.dag-node').classed('selected', false);
-                    d3.select(event.currentTarget.parentNode).classed('selected', true);
-                });
-
-            node.append('text')
-                .attr('dy', -10)
-                .attr('text-anchor', 'middle')
-                .style('font-size', '9px')
-                .style('fill', '#d4d4d4')
-                .text(d => {
-                    if (d.data.id) {
-                        return d.data.id.substring(0, 4) + '...';
-                    }
-                    return d.data.type || 'node';
-                });
+            // Initial render
+            update(null, root);
         }
 
         function renderRadialLayout(treeData) {
@@ -2575,14 +2671,46 @@
             }
         }
 
+        let currentRoot = null;
+        let updateFunction = null;
+
         function expandAllNodes() {
-            // This would require implementing collapsible nodes, which we can add later
-            alert('Expand all functionality coming soon!');
+            if (!currentRoot) {
+                alert('Please render the tree first');
+                return;
+            }
+
+            // Expand all nodes
+            currentRoot.descendants().forEach(d => {
+                if (d._children) {
+                    d.children = d._children;
+                }
+            });
+
+            // Re-render with update function
+            if (updateFunction) {
+                updateFunction(null, currentRoot);
+            }
         }
 
         function collapseAllNodes() {
-            // This would require implementing collapsible nodes, which we can add later
-            alert('Collapse all functionality coming soon!');
+            if (!currentRoot) {
+                alert('Please render the tree first');
+                return;
+            }
+
+            // Collapse all nodes except root
+            currentRoot.descendants().forEach(d => {
+                if (d.children && d.depth > 0) {
+                    d._children = d.children;
+                    d.children = null;
+                }
+            });
+
+            // Re-render with update function
+            if (updateFunction) {
+                updateFunction(null, currentRoot);
+            }
         }
 
         function exportStateImage() {
