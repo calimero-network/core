@@ -750,9 +750,11 @@
             padding: 12px;
             color: #d4d4d4;
             font-size: 12px;
-            pointer-events: none;
+            pointer-events: auto;
             z-index: 1000;
-            max-width: 400px;
+            max-width: 500px;
+            max-height: 600px;
+            overflow-y: auto;
         }
 
         .dag-tooltip h4 {
@@ -774,6 +776,58 @@
         .dag-tooltip .tooltip-value {
             color: #d4d4d4;
             font-family: 'Courier New', monospace;
+        }
+
+        .tooltip-close {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #3e3e42;
+            border: none;
+            color: #d4d4d4;
+            cursor: pointer;
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+            font-size: 14px;
+            line-height: 1;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .tooltip-close:hover {
+            background: #007acc;
+            color: #ffffff;
+        }
+
+        .tooltip-selectable {
+            user-select: text;
+            word-break: break-all;
+        }
+
+        .tooltip-section {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #3e3e42;
+        }
+
+        .tooltip-section:first-child {
+            margin-top: 0;
+            padding-top: 0;
+            border-top: none;
+        }
+
+        .tooltip-section-title {
+            color: #569cd6;
+            font-weight: bold;
+            margin-bottom: 6px;
+        }
+
+        .tooltip-pinned {
+            box-shadow: 0 4px 12px rgba(0, 122, 204, 0.3);
+            border-color: #007acc;
         }
     </style>
 </head>
@@ -995,6 +1049,9 @@
                             <button class="dag-control-button" onclick="expandAllNodes()">Expand All</button>
                             <button class="dag-control-button" onclick="collapseAllNodes()">Collapse All</button>
                             <button class="dag-control-button" onclick="exportStateImage()">Export Image</button>
+                            <div style="margin-left: auto; font-size: 11px; color: #858585; font-style: italic;">
+                                💡 Tip: Hover over nodes for details, Ctrl/Cmd+Click to pin tooltip
+                            </div>
                         </div>
 
                         <div class="dag-stats">
@@ -1046,6 +1103,32 @@
         if (typeof jq !== 'undefined') {
             jqReady = jq;
         }
+
+        // Setup tooltip event listeners for persistence
+        document.addEventListener('click', (event) => {
+            const tooltip = document.getElementById('state-tooltip');
+            if (tooltip && !tooltip.contains(event.target) && !event.target.closest('.dag-node')) {
+                closeStateTooltip();
+            }
+        });
+
+        // Keep tooltip visible when hovering over it
+        document.addEventListener('DOMContentLoaded', () => {
+            const tooltip = document.getElementById('state-tooltip');
+            if (tooltip) {
+                tooltip.addEventListener('mouseenter', () => {
+                    if (tooltipTimer) {
+                        clearTimeout(tooltipTimer);
+                        tooltipTimer = null;
+                    }
+                });
+                tooltip.addEventListener('mouseleave', () => {
+                    if (!tooltipPinned) {
+                        hideStateTooltip();
+                    }
+                });
+            }
+        });
 
         // Form handling
         const loadForm = document.getElementById('load-form');
@@ -2413,18 +2496,25 @@
                 const nodeEnter = node.enter().append('g')
                     .attr('transform', d => `translate(${source.y0},${source.x0})`)
                     .attr('fill-opacity', 0)
-                    .attr('stroke-opacity', 0)
-                    .on('click', (event, d) => {
-                        d.children = d.children ? null : d._children;
-                        update(event, d);
-                    });
+                    .attr('stroke-opacity', 0);
 
                 nodeEnter.append('circle')
                     .attr('r', 4)
                     .attr('fill', d => d._children ? '#0e639c' : '#999')
                     .attr('stroke-width', 10)
                     .on('mouseenter', showStateTooltip)
-                    .on('mouseleave', hideStateTooltip);
+                    .on('mouseleave', hideStateTooltip)
+                    .on('click', (event, d) => {
+                        event.stopPropagation();
+                        // Right-click or Ctrl+Click to pin tooltip
+                        if (event.ctrlKey || event.metaKey || event.button === 2) {
+                            pinStateTooltip(event, d);
+                        } else {
+                            // Regular click expands/collapses
+                            d.children = d.children ? null : d._children;
+                            update(event, d);
+                        }
+                    });
 
                 nodeEnter.append('text')
                     .attr('dy', '0.31em')
@@ -2570,8 +2660,15 @@
                 .on('mouseenter', showStateTooltip)
                 .on('mouseleave', hideStateTooltip)
                 .on('click', (event, d) => {
-                    d3.selectAll('.dag-node').classed('selected', false);
-                    d3.select(event.currentTarget.parentNode).classed('selected', true);
+                    event.stopPropagation();
+                    // Ctrl/Cmd+Click to pin tooltip
+                    if (event.ctrlKey || event.metaKey) {
+                        pinStateTooltip(event, d);
+                    } else {
+                        // Regular click for selection
+                        d3.selectAll('.dag-node').classed('selected', false);
+                        d3.select(event.currentTarget.parentNode).classed('selected', true);
+                    }
                 });
 
             node.append('text')
@@ -2589,17 +2686,46 @@
                 });
         }
 
-        function showStateTooltip(event, d) {
-            const tooltip = document.getElementById('state-tooltip');
-            const nodeData = d.data;
+        let tooltipPinned = false;
+        let tooltipTimer = null;
 
-            let content = `<h4>Node: ${nodeData.type || 'Unknown'}</h4>`;
+        function showStateTooltip(event, d) {
+            // Don't show hover tooltip if already pinned
+            if (tooltipPinned) return;
+
+            // Clear any existing timer
+            if (tooltipTimer) {
+                clearTimeout(tooltipTimer);
+                tooltipTimer = null;
+            }
+
+            const tooltip = document.getElementById('state-tooltip');
+            const content = buildTooltipContent(d.data);
+
+            tooltip.innerHTML = content;
+            tooltip.classList.remove('hidden');
+            tooltip.classList.remove('tooltip-pinned');
+
+            // Position tooltip
+            tooltip.style.left = (event.pageX + 10) + 'px';
+            tooltip.style.top = (event.pageY - 10) + 'px';
+        }
+
+        function buildTooltipContent(nodeData) {
+            let content = `
+                <button class="tooltip-close" onclick="closeStateTooltip()" title="Close (or click outside)">&times;</button>
+                <div class="tooltip-section">
+                    <h4>Node: ${nodeData.type || 'Unknown'}</h4>
+                </div>`;
+
+            // Basic node info section
+            content += '<div class="tooltip-section">';
 
             if (nodeData.id) {
                 content += `
                     <div class="tooltip-row">
                         <span class="tooltip-label">ID:</span>
-                        <span class="tooltip-value">${nodeData.id.substring(0, 24)}...</span>
+                        <span class="tooltip-value tooltip-selectable">${nodeData.id}</span>
                     </div>`;
             }
 
@@ -2607,7 +2733,7 @@
                 content += `
                     <div class="tooltip-row">
                         <span class="tooltip-label">Full Hash:</span>
-                        <span class="tooltip-value">${nodeData.full_hash.substring(0, 16)}...</span>
+                        <span class="tooltip-value tooltip-selectable">${nodeData.full_hash}</span>
                     </div>`;
             }
 
@@ -2615,7 +2741,7 @@
                 content += `
                     <div class="tooltip-row">
                         <span class="tooltip-label">Own Hash:</span>
-                        <span class="tooltip-value">${nodeData.own_hash.substring(0, 16)}...</span>
+                        <span class="tooltip-value tooltip-selectable">${nodeData.own_hash}</span>
                     </div>`;
             }
 
@@ -2623,7 +2749,7 @@
                 content += `
                     <div class="tooltip-row">
                         <span class="tooltip-label">Parent:</span>
-                        <span class="tooltip-value">${nodeData.parent_id.substring(0, 16)}...</span>
+                        <span class="tooltip-value tooltip-selectable">${nodeData.parent_id}</span>
                     </div>`;
             }
 
@@ -2659,17 +2785,135 @@
                     </div>`;
             }
 
+            content += '</div>';
+
+            // Decoded data section (for DataEntry types)
+            if (nodeData.data) {
+                content += buildDecodedDataSection(nodeData.data);
+            }
+
+            return content;
+        }
+
+        function buildDecodedDataSection(data) {
+            let section = '<div class="tooltip-section"><div class="tooltip-section-title">Decoded Data</div>';
+
+            if (data.type) {
+                section += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Entry Type:</span>
+                        <span class="tooltip-value">${data.type}</span>
+                    </div>`;
+            }
+
+            if (data.field) {
+                section += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Field:</span>
+                        <span class="tooltip-value">${data.field}</span>
+                    </div>`;
+            }
+
+            // For Entry types (map entries)
+            if (data.key) {
+                section += '<div style="margin-top: 8px;"><strong>Key:</strong></div>';
+
+                if (data.key.type) {
+                    section += `
+                        <div class="tooltip-row" style="margin-left: 12px;">
+                            <span class="tooltip-label">Type:</span>
+                            <span class="tooltip-value">${data.key.type}</span>
+                        </div>`;
+                }
+
+                if (data.key.parsed !== undefined) {
+                    const parsedValue = typeof data.key.parsed === 'object'
+                        ? JSON.stringify(data.key.parsed, null, 2)
+                        : String(data.key.parsed);
+                    section += `
+                        <div class="tooltip-row" style="margin-left: 12px;">
+                            <span class="tooltip-label">Value:</span>
+                            <span class="tooltip-value tooltip-selectable">${escapeHtml(parsedValue)}</span>
+                        </div>`;
+                }
+            }
+
+            // For ScalarEntry or Entry value
+            if (data.value) {
+                section += '<div style="margin-top: 8px;"><strong>Value:</strong></div>';
+
+                if (data.value.type) {
+                    section += `
+                        <div class="tooltip-row" style="margin-left: 12px;">
+                            <span class="tooltip-label">Type:</span>
+                            <span class="tooltip-value">${data.value.type}</span>
+                        </div>`;
+                }
+
+                if (data.value.parsed !== undefined) {
+                    const parsedValue = typeof data.value.parsed === 'object'
+                        ? JSON.stringify(data.value.parsed, null, 2)
+                        : String(data.value.parsed);
+                    section += `
+                        <div class="tooltip-row" style="margin-left: 12px;">
+                            <span class="tooltip-label">Parsed:</span>
+                            <span class="tooltip-value tooltip-selectable" style="white-space: pre-wrap;">${escapeHtml(parsedValue)}</span>
+                        </div>`;
+                }
+            }
+
+            if (data.element && data.element.id) {
+                section += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Element ID:</span>
+                        <span class="tooltip-value tooltip-selectable">${data.element.id}</span>
+                    </div>`;
+            }
+
+            section += '</div>';
+            return section;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function pinStateTooltip(event, d) {
+            const tooltip = document.getElementById('state-tooltip');
+            const content = buildTooltipContent(d.data);
+
             tooltip.innerHTML = content;
             tooltip.classList.remove('hidden');
+            tooltip.classList.add('tooltip-pinned');
+            tooltipPinned = true;
 
             // Position tooltip
-            const svgRect = document.getElementById('state-svg').getBoundingClientRect();
             tooltip.style.left = (event.pageX + 10) + 'px';
             tooltip.style.top = (event.pageY - 10) + 'px';
         }
 
+        function closeStateTooltip() {
+            const tooltip = document.getElementById('state-tooltip');
+            tooltip.classList.add('hidden');
+            tooltip.classList.remove('tooltip-pinned');
+            tooltipPinned = false;
+        }
+
         function hideStateTooltip() {
-            document.getElementById('state-tooltip').classList.add('hidden');
+            // Don't hide if pinned
+            if (tooltipPinned) return;
+
+            // Add a small delay before hiding to allow moving cursor to tooltip
+            if (tooltipTimer) {
+                clearTimeout(tooltipTimer);
+            }
+            tooltipTimer = setTimeout(() => {
+                if (!tooltipPinned) {
+                    document.getElementById('state-tooltip').classList.add('hidden');
+                }
+            }, 100);
         }
 
         function resetStateZoom() {
