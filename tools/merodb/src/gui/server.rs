@@ -36,8 +36,7 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
     let static_dir = gui_dir.join("static");
 
     // Serve static files from /static/*
-    let serve_static = ServeDir::new(&static_dir)
-        .append_index_html_on_directories(false);
+    let serve_static = ServeDir::new(&static_dir).append_index_html_on_directories(false);
 
     let app = Router::new()
         .route("/", get(render_app))
