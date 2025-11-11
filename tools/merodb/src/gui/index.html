@@ -2706,13 +2706,11 @@
                 return;
             }
 
-            // Collapse all nodes except root
-            currentRoot.descendants().forEach(d => {
-                if (d.children && d.depth > 0) {
-                    d._children = d.children;
-                    d.children = null;
-                }
-            });
+            // Simply collapse the root node (same as clicking on it when expanded)
+            if (currentRoot.children) {
+                currentRoot._children = currentRoot.children;
+                currentRoot.children = null;
+            }
 
             // Re-render with update function
             if (updateFunction) {
