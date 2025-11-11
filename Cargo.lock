@@ -6472,6 +6472,7 @@ dependencies = [
  "hex",
  "ic-agent",
  "libp2p",
+ "mero-auth",
  "multiaddr",
  "near-crypto",
  "rand 0.8.5",

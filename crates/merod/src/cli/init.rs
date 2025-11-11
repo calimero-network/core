@@ -35,6 +35,7 @@ use hex::encode;
 use ic_agent::export::Principal;
 use ic_agent::identity::{BasicIdentity, Identity};
 use libp2p::identity::Keypair;
+use mero_auth::config::StorageConfig as AuthStorageConfig;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
@@ -328,6 +329,15 @@ impl InitCommand {
         };
 
         let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
+        let embedded_auth = if matches!(auth_mode, AuthMode::Embedded) {
+            let mut auth_cfg = mero_auth::embedded::default_config();
+            auth_cfg.storage = AuthStorageConfig::RocksDB {
+                path: "auth".into(),
+            };
+            Some(auth_cfg)
+        } else {
+            None
+        };
 
         let server_config = ServerConfig::with_auth(
             self.server_host
@@ -339,7 +349,7 @@ impl InitCommand {
             Some(WsConfig::new(true)),
             Some(SseConfig::new(true)),
             auth_mode,
-            None,
+            embedded_auth,
         );
 
         let config = ConfigFile::new(

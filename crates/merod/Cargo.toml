@@ -45,6 +45,7 @@ calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true
 calimero-version.workspace = true
+mero-auth = { path = "../auth" }
 
 [package.metadata.workspaces]
 independent = true
