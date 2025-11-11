@@ -1266,12 +1266,21 @@
                 
                 // Re-render based on current tab
                 const activeTab = document.querySelector('.tab-button.active');
-                const currentView = activeTab ? activeTab.textContent.includes('DAG') ? 'dag' : 'data' : 'data';
-                
+                let currentView = 'data';
+                if (activeTab) {
+                    if (activeTab.textContent.includes('DAG')) {
+                        currentView = 'dag';
+                    } else if (activeTab.textContent.includes('State Tree')) {
+                        currentView = 'state';
+                    }
+                }
+
                 if (currentView === 'data') {
                     renderJson(jsonData);
-                } else {
+                } else if (currentView === 'dag') {
                     switchTab('dag');  // This will reload the DAG view
+                } else if (currentView === 'state') {
+                    switchTab('state');  // This will reload the State Tree view
                 }
                 
                 hideError();
