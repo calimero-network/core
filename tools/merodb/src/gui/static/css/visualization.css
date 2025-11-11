@@ -157,3 +157,45 @@
     word-break: break-all;
     user-select: text;
 }
+
+/* Pinned Tooltip Styles */
+.state-tooltip-pinned {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    border: 2px solid var(--color-border-default);
+    z-index: 1000;
+    user-select: none;
+}
+
+.state-tooltip-pinned .tooltip-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-default);
+    color: var(--color-text-primary);
+    font-size: 20px;
+    line-height: 1;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-base);
+}
+
+.state-tooltip-pinned .tooltip-close:hover {
+    background: var(--color-danger);
+    color: white;
+    border-color: var(--color-danger);
+}
+
+.state-tooltip-pinned .tooltip-content {
+    padding-top: 8px;
+}
+
+.state-tooltip-temp {
+    z-index: 999;
+}

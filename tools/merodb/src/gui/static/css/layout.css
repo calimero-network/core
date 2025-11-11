@@ -100,3 +100,22 @@
     min-height: 600px;
     position: relative;
 }
+
+/* Hint Text Styling */
+.hint {
+    text-align: center;
+    margin: 8px 0;
+}
+
+.hint kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-primary);
+    border: 1px solid var(--color-border-default);
+    border-radius: 3px;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
+    font-family: monospace;
+}

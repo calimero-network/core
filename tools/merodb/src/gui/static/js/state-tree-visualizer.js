@@ -16,7 +16,29 @@ export class StateTreeVisualizer {
         this.currentZoom = null;
         this.root = null;
         this.updateFn = null;
-        this.tooltip = d3.select('#state-tooltip');
+        this.activeTooltips = [];
+        this.tooltipCounter = 0;
+        this.tooltipPinned = false;
+        this.currentTooltip = null;
+        this.setupKeyboardListeners();
+    }
+
+    /**
+     * Setup keyboard listeners for tooltip pinning
+     */
+    setupKeyboardListeners() {
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Control' || e.key === 'Meta' || e.ctrlKey || e.metaKey) {
+                this.tooltipPinned = true;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'Control' || e.key === 'Meta') {
+                this.tooltipPinned = false;
+                // Don't auto-hide on key release, let mouseout handle it
+            }
+        });
     }
 
     /**
@@ -189,6 +211,19 @@ export class StateTreeVisualizer {
                 .attr('r', 6)
                 .attr('class', d => (!d.children && !d._children) ? 'leaf' : '');
 
+            // Add node ID labels
+            nodeEnter.append('text')
+                .attr('dy', '0.31em')
+                .attr('x', d => (d.children || d._children) ? -10 : 10)
+                .attr('text-anchor', d => (d.children || d._children) ? 'end' : 'start')
+                .text(d => {
+                    const id = d.data.id || 'N/A';
+                    return id !== 'N/A' ? `${id.substring(0, 8)}...` : 'N/A';
+                })
+                .style('font-size', '10px')
+                .style('fill', '#bbb')
+                .style('pointer-events', 'none');
+
             // Transition nodes to their new position
             const nodeUpdate = nodeEnter.merge(node);
 
@@ -202,6 +237,10 @@ export class StateTreeVisualizer {
                     if (d._children) return 'collapsed';
                     return '';
                 });
+
+            nodeUpdate.select('text')
+                .attr('x', d => (d.children || d._children) ? -10 : 10)
+                .attr('text-anchor', d => (d.children || d._children) ? 'end' : 'start');
 
             // Transition exiting nodes
             const nodeExit = node.exit()
@@ -305,7 +344,30 @@ export class StateTreeVisualizer {
 
         nodes.append('circle')
             .attr('r', 4)
-            .attr('class', d => d.children ? '' : 'leaf');
+            .attr('class', d => d.children ? '' : 'leaf')
+            .on('mouseover', (event, d) => {
+                this.showTooltip(event, d);
+            })
+            .on('mousemove', (event) => {
+                this.moveTooltip(event);
+            })
+            .on('mouseout', () => {
+                this.hideTooltip();
+            });
+
+        // Add node ID labels for radial layout
+        nodes.append('text')
+            .attr('dy', '0.31em')
+            .attr('x', d => d.x < Math.PI === !d.children ? 6 : -6)
+            .attr('text-anchor', d => d.x < Math.PI === !d.children ? 'start' : 'end')
+            .attr('transform', d => d.x >= Math.PI ? 'rotate(180)' : null)
+            .text(d => {
+                const id = d.data.id || 'N/A';
+                return id !== 'N/A' ? `${id.substring(0, 8)}...` : 'N/A';
+            })
+            .style('font-size', '10px')
+            .style('fill', '#bbb')
+            .style('pointer-events', 'none');
 
         this.root = root;
         this.setupZoom(svg, g);
@@ -361,7 +423,7 @@ export class StateTreeVisualizer {
     }
 
     /**
-     * Collapse entire tree to root's children
+     * Collapse entire tree to root only
      */
     collapseAll() {
         if (!this.root) return;
@@ -374,15 +436,11 @@ export class StateTreeVisualizer {
             }
         };
 
-        // Keep root's immediate children visible
+        // Collapse all children of root (same as clicking on root node)
         if (this.root.children) {
-            this.root.children.forEach(child => {
-                if (child.children) {
-                    child._children = child.children;
-                    child._children.forEach(collapseNode);
-                    child.children = null;
-                }
-            });
+            this.root._children = this.root.children;
+            this.root._children.forEach(collapseNode);
+            this.root.children = null;
         }
 
         if (this.updateFn) {
@@ -446,11 +504,37 @@ export class StateTreeVisualizer {
      * @param {Object} d - Node data
      */
     showTooltip(event, d) {
-        const data = d.data;
+        // If Ctrl/Cmd is pressed, create a new pinned tooltip
+        if (this.tooltipPinned) {
+            this.createPinnedTooltip(event, d.data);
+            return;
+        }
 
+        // Otherwise, show temporary tooltip
+        if (!this.currentTooltip) {
+            this.currentTooltip = d3.select('body').append('div')
+                .attr('class', 'tooltip state-tooltip-temp')
+                .style('position', 'fixed')
+                .style('pointer-events', 'none');
+        }
+
+        const html = this.formatTooltipContent(d.data);
+        this.currentTooltip
+            .html(html)
+            .style('left', `${event.pageX + 10}px`)
+            .style('top', `${event.pageY + 10}px`)
+            .classed('hidden', false);
+    }
+
+    /**
+     * Format tooltip content HTML
+     * @param {Object} data - Node data
+     * @returns {string} HTML content
+     */
+    formatTooltipContent(data) {
         const formatTimestamp = (ts) => {
             if (!ts) return 'N/A';
-            const date = new Date(ts / 1000000); // Convert nanoseconds to milliseconds
+            const date = new Date(ts / 1000000);
             return date.toLocaleString();
         };
 
@@ -511,11 +595,89 @@ export class StateTreeVisualizer {
         }
         html += `</div>`;
 
-        this.tooltip
-            .html(html)
+        return html;
+    }
+
+    /**
+     * Create a pinned, draggable tooltip
+     * @param {MouseEvent} event - Mouse event
+     * @param {Object} data - Node data
+     */
+    createPinnedTooltip(event, data) {
+        const tooltipId = `tooltip-${this.tooltipCounter++}`;
+
+        const tooltip = d3.select('body').append('div')
+            .attr('id', tooltipId)
+            .attr('class', 'tooltip state-tooltip-pinned')
+            .style('position', 'fixed')
             .style('left', `${event.pageX + 10}px`)
             .style('top', `${event.pageY + 10}px`)
-            .classed('hidden', false);
+            .style('pointer-events', 'auto')
+            .style('cursor', 'move');
+
+        // Add close button
+        const closeBtn = tooltip.append('button')
+            .attr('class', 'tooltip-close')
+            .html('&times;')
+            .on('click', () => {
+                tooltip.remove();
+                this.activeTooltips = this.activeTooltips.filter(t => t.id !== tooltipId);
+            });
+
+        // Add content
+        tooltip.append('div')
+            .attr('class', 'tooltip-content')
+            .html(this.formatTooltipContent(data));
+
+        // Make draggable
+        this.makeDraggable(tooltip);
+
+        this.activeTooltips.push({ id: tooltipId, element: tooltip });
+    }
+
+    /**
+     * Make a tooltip draggable
+     * @param {d3.Selection} tooltip - Tooltip element
+     */
+    makeDraggable(tooltip) {
+        const tooltipNode = tooltip.node();
+        let isDragging = false;
+        let startX = 0;
+        let startY = 0;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        const dragStart = (e) => {
+            if (e.target.classList.contains('tooltip-close')) return;
+
+            isDragging = true;
+            const rect = tooltipNode.getBoundingClientRect();
+            offsetX = e.clientX - rect.left;
+            offsetY = e.clientY - rect.top;
+            tooltipNode.style.cursor = 'grabbing';
+        };
+
+        const drag = (e) => {
+            if (!isDragging) return;
+            e.preventDefault();
+
+            const newLeft = e.clientX - offsetX;
+            const newTop = e.clientY - offsetY;
+
+            tooltip
+                .style('left', `${newLeft}px`)
+                .style('top', `${newTop}px`);
+        };
+
+        const dragEnd = () => {
+            isDragging = false;
+            tooltipNode.style.cursor = 'move';
+        };
+
+        tooltip.on('mousedown', dragStart);
+        d3.select(document)
+            .on('mousemove.drag-' + tooltip.attr('id'), drag)
+            .on('mouseup.drag-' + tooltip.attr('id'), dragEnd);
     }
 
     /**
@@ -523,15 +685,19 @@ export class StateTreeVisualizer {
      * @param {MouseEvent} event - Mouse event
      */
     moveTooltip(event) {
-        this.tooltip
-            .style('left', `${event.pageX + 10}px`)
-            .style('top', `${event.pageY + 10}px`);
+        if (this.currentTooltip && !this.tooltipPinned) {
+            this.currentTooltip
+                .style('left', `${event.pageX + 10}px`)
+                .style('top', `${event.pageY + 10}px`);
+        }
     }
 
     /**
-     * Hide tooltip
+     * Hide tooltip (unless pinned)
      */
     hideTooltip() {
-        this.tooltip.classed('hidden', true);
+        if (!this.tooltipPinned && this.currentTooltip) {
+            this.currentTooltip.classed('hidden', true);
+        }
     }
 }
