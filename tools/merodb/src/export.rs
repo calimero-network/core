@@ -123,7 +123,7 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
         "type": "Entry",
         "field": field.name.clone(),
         "element": {
-            "id": String::from_utf8_lossy(&element_id)
+            "id": hex::encode(element_id)
         },
         "key": {
             "parsed": key_value,
@@ -143,11 +143,11 @@ fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
     if let Ok(index) = borsh::from_slice::<EntityIndex>(bytes) {
         return Some(json!({
             "type": "EntityIndex",
-            "id": String::from_utf8_lossy(index.id.as_bytes()),
-            "parent_id": index.parent_id.map(|id| String::from_utf8_lossy(id.as_bytes()).to_string()),
+            "id": hex::encode(index.id.as_bytes()),
+            "parent_id": index.parent_id.map(|id| hex::encode(id.as_bytes())),
             "children_count": index.children.as_ref().map_or(0, Vec::len),
-            "full_hash": String::from_utf8_lossy(&index.full_hash),
-            "own_hash": String::from_utf8_lossy(&index.own_hash),
+            "full_hash": hex::encode(index.full_hash),
+            "own_hash": hex::encode(index.own_hash),
             "created_at": index.metadata.created_at,
             "updated_at": *index.metadata.updated_at,
             "deleted_at": index.deleted_at
@@ -159,7 +159,7 @@ fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
         if let Ok(id) = borsh::from_slice::<Id>(bytes) {
             return Some(json!({
                 "type": "RawId",
-                "id": String::from_utf8_lossy(id.as_bytes()),
+                "id": hex::encode(id.as_bytes()),
                 "note": "Direct ID storage (possibly root collection reference or internal metadata)"
             }));
         }
@@ -229,7 +229,7 @@ fn decode_scalar_entry(bytes: &[u8], field: &Field, manifest: &Manifest) -> Resu
         "type": "ScalarEntry",
         "field": field.name.clone(),
         "element": {
-            "id": String::from_utf8_lossy(&element_id)
+            "id": hex::encode(element_id)
         },
         "value": {
             "parsed": value_parsed,
@@ -502,7 +502,7 @@ fn build_tree_from_root(
         return Ok(json!({
             "id": node_id,
             "type": "EntityIndex",
-            "parent_id": index.parent_id.map(|id| String::from_utf8_lossy(id.as_bytes()).to_string()),
+            "parent_id": index.parent_id.map(|id| hex::encode(id.as_bytes())),
             "full_hash": hex::encode(index.full_hash),
             "own_hash": hex::encode(index.own_hash),
             "created_at": index.metadata.created_at,
