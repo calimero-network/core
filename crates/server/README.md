@@ -2,6 +2,9 @@
 
 - [Node Server](#node-server)
   - [Introduction](#introduction)
+  - [Build Modes](#build-modes)
+    - [Default mode (external auth)](#default-mode-external-auth)
+    - [Bundled auth mode](#bundled-auth-mode)
     - [1. Admin API](#1-admin-api)
     - [2. JSON rpc](#2-json-rpc)
       - [Query Method](#query-method)
@@ -37,6 +40,31 @@ Node Server component is split into 4 parts:
 2.  [JSON rpc](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/jsonrpc.rs)
 3.  [Websocket](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/ws.rs)
 4.  [SSE](https://github.com/calimero-network/core/blob/master/crates/server/src/sse.rs)
+
+## Build Modes
+
+Two build outputs are supported so operators can choose whether the authentication
+service runs alongside the node or inside it.
+
+### Default mode (external auth)
+
+- `calimero-server` is built with default Cargo features.
+- The node expects an external `mero-auth` deployment and continues to forward
+  authentication traffic to it, matching the current production setup.
+- Existing configuration files work without modification.
+
+### Bundled auth mode
+
+- Enable the feature flag: `cargo build -p calimero-server --features bundled-auth`.
+- The resulting binary embeds the `mero-auth` crate, exposes its `/auth` endpoints,
+  and serves the authentication UI assets directly from the node.
+- `CALIMERO_AUTH_FRONTEND_PATH` (or the fetch-related environment variables used by
+  `mero-auth`’s build script) must be set during the build so assets can be bundled.
+- Server configuration accepts an optional `auth` section to tune storage, provider,
+  and security settings for the embedded service; defaults mirror the standalone
+  auth binary.
+- CI/CD pipelines should publish both binaries so infrastructure can choose the
+  appropriate deployment model per environment.
 
 ### 1. Admin API
 
