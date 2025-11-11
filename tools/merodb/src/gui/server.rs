@@ -9,6 +9,7 @@ use axum::{
 };
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 use serde::Serialize;
+use tower_http::services::ServeDir;
 
 use crate::{abi, export, types::Column};
 
@@ -27,14 +28,27 @@ struct ExportResponse {
 }
 
 pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
+    // Get the directory containing the GUI files
+    let gui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("gui");
+
+    let static_dir = gui_dir.join("static");
+
+    // Serve static files from /static/*
+    let serve_static = ServeDir::new(&static_dir)
+        .append_index_html_on_directories(false);
+
     let app = Router::new()
         .route("/", get(render_app))
         .route("/api/export", post(handle_export))
         .route("/api/state-tree", post(handle_state_tree))
-        .route("/api/validate-abi", post(handle_validate_abi));
+        .route("/api/validate-abi", post(handle_validate_abi))
+        .nest_service("/static", serve_static);
 
     let addr = format!("127.0.0.1:{port}");
     println!("Starting GUI server at http://{addr}");
+    println!("Serving static files from: {}", static_dir.display());
     println!("Press Ctrl+C to stop the server");
 
     let listener = tokio::net::TcpListener::bind(&addr)

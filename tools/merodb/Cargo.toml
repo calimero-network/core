@@ -10,7 +10,7 @@ publish = false
 
 [features]
 default = []
-gui = ["axum", "tokio"]
+gui = ["axum", "tokio", "tower-http"]
 
 [dependencies]
 rocksdb = { workspace = true }
@@ -34,6 +34,7 @@ jaq-syn = "1.1"
 # GUI dependencies (optional)
 axum = { version = "0.7", optional = true, features = ["multipart"] }
 tokio = { version = "1", features = ["full"], optional = true }
+tower-http = { version = "0.5", optional = true, features = ["fs"] }
 
 [dev-dependencies]
 tempfile = "3.10"

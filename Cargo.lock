@@ -6511,6 +6511,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tokio",
+ "tower-http 0.5.2",
  "wasmparser 0.118.2",
 ]
 

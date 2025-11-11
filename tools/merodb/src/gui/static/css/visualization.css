@@ -1,0 +1,159 @@
+/**
+ * DAG and State Tree Visualization Styles
+ * D3.js-based graph and tree visualizations
+ */
+
+/* SVG Canvas */
+.visualization__svg {
+    background: var(--color-bg-primary);
+    border-radius: var(--radius-md);
+    width: 100%;
+    min-height: 500px;
+}
+
+/* DAG Nodes */
+.dag-node {
+    cursor: pointer;
+}
+
+.dag-node circle {
+    fill: var(--color-node-primary);
+    stroke: var(--color-node-stroke);
+    stroke-width: 2px;
+    transition: all var(--transition-base);
+}
+
+.dag-node:hover circle {
+    stroke-width: 3px;
+}
+
+.dag-node.root circle {
+    fill: var(--color-node-root);
+    stroke: var(--color-node-root-stroke);
+}
+
+.dag-node.detached circle {
+    fill: var(--color-node-detached);
+    stroke: var(--color-node-detached-stroke);
+}
+
+.dag-node.leaf circle {
+    fill: var(--color-node-leaf);
+    stroke: var(--color-node-leaf-stroke);
+}
+
+.dag-node.dag-head circle {
+    fill: var(--color-node-head);
+    stroke: var(--color-node-head-stroke);
+    stroke-width: 3px;
+}
+
+.dag-node.genesis circle {
+    fill: #424242;
+    stroke: #616161;
+    stroke-width: 2px;
+    stroke-dasharray: 4;
+}
+
+.dag-node.selected circle {
+    fill: #ff6b6b;
+    stroke: #ff5252;
+    stroke-width: 3px;
+}
+
+.dag-node text {
+    fill: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-family-mono);
+    pointer-events: none;
+}
+
+/* DAG Links */
+.dag-link {
+    stroke: var(--color-link-default);
+    stroke-width: 2px;
+    fill: none;
+    transition: all var(--transition-base);
+}
+
+.dag-link.highlighted {
+    stroke: var(--color-link-highlighted);
+    stroke-width: 3px;
+}
+
+/* State Tree Nodes */
+.state-node {
+    cursor: pointer;
+}
+
+.state-node circle {
+    fill: var(--color-node-primary);
+    stroke: var(--color-node-stroke);
+    stroke-width: 2px;
+    transition: all var(--transition-base);
+}
+
+.state-node:hover circle {
+    stroke-width: 3px;
+}
+
+.state-node circle.leaf {
+    fill: var(--color-node-root);
+    stroke: var(--color-node-root-stroke);
+}
+
+.state-node circle.collapsed {
+    fill: var(--color-node-leaf);
+    stroke: var(--color-node-leaf-stroke);
+    stroke-width: 3px;
+}
+
+.state-node text {
+    fill: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-family-mono);
+    pointer-events: none;
+}
+
+/* State Tree Links */
+.state-link {
+    stroke: var(--color-link-default);
+    stroke-width: 2px;
+    fill: none;
+}
+
+/* Tooltip Specific Styles for Visualizations */
+.visualization__tooltip-section {
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--color-border-default);
+}
+
+.visualization__tooltip-section:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
+.visualization__tooltip-title {
+    color: var(--color-json-boolean);
+    font-weight: var(--font-weight-bold);
+    margin-bottom: 6px;
+}
+
+.visualization__tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: var(--space-xs);
+}
+
+.visualization__tooltip-label {
+    color: var(--color-text-tertiary);
+}
+
+.visualization__tooltip-value {
+    color: var(--color-text-secondary);
+    font-family: var(--font-family-mono);
+    word-break: break-all;
+    user-select: text;
+}
