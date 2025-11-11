@@ -47,9 +47,5 @@ calimero-utils-actix.workspace = true
 calimero-version.workspace = true
 mero-auth = { path = "../auth" }
 
-[features]
-default = []
-bundled-auth = ["calimero-server/bundled-auth", "calimero-config/bundled-auth"]
-
 [package.metadata.workspaces]
 independent = true
