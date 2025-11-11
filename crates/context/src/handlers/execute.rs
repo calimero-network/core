@@ -682,13 +682,42 @@ async fn internal_execute(
                 }
             };
 
-            // Use current DAG heads as parents for this new delta
+            // Use current DAG heads as parents, verifying they exist in RocksDB
             let parents = if context.dag_heads.is_empty() {
                 // Genesis case: parent is the zero hash
                 vec![[0u8; 32]]
             } else {
-                // Normal case: parents are current DAG heads
-                context.dag_heads.clone()
+                // Filter out parents that aren't persisted yet (cascaded deltas)
+                let mut verified_parents = Vec::new();
+                for head in &context.dag_heads {
+                    if *head == [0u8; 32] {
+                        verified_parents.push(*head);
+                        continue;
+                    }
+
+                    // Check if this parent is actually in RocksDB
+                    let db_key = key::ContextDagDelta::new(context.id, *head);
+                    if store.handle().get(&db_key).is_ok_and(|v| v.is_some()) {
+                        verified_parents.push(*head);
+                    } else {
+                        warn!(
+                            context_id = %context.id,
+                            parent_id = ?head,
+                            "DAG head not in RocksDB - skipping as parent (likely cascaded delta not yet persisted)"
+                        );
+                    }
+                }
+
+                // If NO parents verified, use genesis
+                if verified_parents.is_empty() {
+                    warn!(
+                        context_id = %context.id,
+                        "No DAG heads in RocksDB - using genesis as parent"
+                    );
+                    vec![[0u8; 32]]
+                } else {
+                    verified_parents
+                }
             };
 
             let hlc = calimero_storage::env::hlc_timestamp();
@@ -721,8 +750,7 @@ async fn internal_execute(
             }
         }
 
-        // CRITICAL: Always persist context metadata when root_hash changes
-        // This ensures receiving nodes update their state after applying deltas
+        // Persist context metadata when root_hash changes
         let mut handle = store.handle();
 
         debug!(
@@ -755,6 +783,7 @@ async fn internal_execute(
                     hlc: delta.hlc,
                     applied: true,
                     expected_root_hash: delta.expected_root_hash,
+                    events: None, // No events stored for locally created deltas
                 },
             )?;
 

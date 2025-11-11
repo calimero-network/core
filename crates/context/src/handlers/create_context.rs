@@ -313,6 +313,7 @@ async fn create_context(
                     hlc,
                     applied: true,
                     expected_root_hash: root_hash,
+                    events: None, // Genesis delta has no events
                 };
 
                 debug!(

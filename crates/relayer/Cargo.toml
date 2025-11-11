@@ -30,6 +30,3 @@ url = { workspace = true, features = ["serde"] }
 
 [package.metadata.workspaces]
 independent = true
-
-[lints]
-workspace = true

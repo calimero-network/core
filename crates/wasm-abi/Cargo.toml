@@ -20,8 +20,5 @@ jsonschema.workspace = true
 
 # This crate inherits the workspace version
 
-[lints]
-workspace = true
-
 [lib]
 name = "calimero_wasm_abi" 

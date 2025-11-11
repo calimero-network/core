@@ -18,6 +18,3 @@ calimero-primitives = { workspace = true, features = ["rand"] }
 [dev-dependencies]
 eyre.workspace = true
 rand.workspace = true
-
-[lints]
-workspace = true

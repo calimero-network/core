@@ -16,6 +16,7 @@ use futures_util::{AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_write};
+use tracing::{debug, error, trace};
 
 pub mod config;
 
@@ -130,12 +131,18 @@ impl BlobManager {
     where
         T: AsyncRead,
     {
+        debug!(
+            size_hint = size.as_ref().map(Size::hint),
+            "put_sized invoked"
+        );
+
         let mut stream = pin!(BufReader::new(stream));
 
         let blobs = try_stream!({
             let mut buf = vec![0_u8; CHUNK_SIZE].into_boxed_slice();
             let mut file = State::default();
             let mut blob = State::default();
+            let mut chunk_index: u64 = 0;
 
             let overflow_data = loop {
                 let bytes = stream.read(&mut buf[blob.size..]).await?;
@@ -151,7 +158,19 @@ impl BlobManager {
                     blob.size = new_blob_size;
                     file.size = new_file_size;
 
+                    trace!(
+                        chunk_index,
+                        chunk_bytes = chunk.len(),
+                        file_bytes = file.size,
+                        "read chunk data from stream"
+                    );
+
                     if let Some(expected) = Size::overflows(size.as_ref(), new_file_size) {
+                        trace!(
+                            expected,
+                            file_bytes = file.size,
+                            "size overflow detected while chunking"
+                        );
                         break Some(expected);
                     }
 
@@ -175,6 +194,15 @@ impl BlobManager {
                 )?;
 
                 self.blob_store.put(id, &buf[..blob.size]).await?;
+
+                trace!(
+                    ?id,
+                    chunk_index,
+                    chunk_size = blob.size,
+                    file_bytes = file.size,
+                    "blob chunk persisted"
+                );
+                chunk_index += 1;
 
                 yield Value::Part {
                     id,
@@ -221,9 +249,15 @@ impl BlobManager {
             digest.update(id.as_ref());
         }
 
+        let chunk_count = links.len();
+
         let (hash, size) = match blobs.try_next().await? {
             Some(Value::Full { hash, size }) => (hash, size),
             Some(Value::Overflow { found, expected }) => {
+                error!(
+                    found,
+                    expected, "blob size overflow while finalising stream"
+                );
                 eyre::bail!("expected {} bytes in the stream, found {}", expected, found)
             }
             _ => {
@@ -237,6 +271,20 @@ impl BlobManager {
             &BlobMetaKey::new(id),
             &BlobMetaValue::new(size, *hash, links.into_boxed_slice()),
         )?;
+
+        debug!(
+            ?id,
+            total_size = size,
+            chunk_count,
+            "blob metadata persisted"
+        );
+
+        debug!(
+            ?id,
+            total_size = size,
+            chunk_count,
+            "blob stored successfully"
+        );
 
         Ok((id, hash, size)) // todo!: Ok(Blob { id, size, hash }::{fn stream()})
     }
@@ -258,6 +306,7 @@ pub struct Blob {
 impl Blob {
     fn new(id: BlobId, blob_mgr: BlobManager) -> EyreResult<Option<Self>> {
         let Some(blob_meta) = blob_mgr.data_store.handle().get(&BlobMetaKey::new(id))? else {
+            trace!(?id, "blob metadata not found");
             return Ok(None);
         };
 
@@ -266,19 +315,50 @@ impl Blob {
             reason = "False positive; not possible with macro"
         )]
         let stream = Box::pin(try_stream!({
+            let mut chunk_index: u64 = 0;
+            trace!(
+                ?id,
+                link_count = blob_meta.links.len(),
+                "initializing blob stream"
+            );
             if blob_meta.links.is_empty() {
                 let maybe_blob = blob_mgr.blob_store.get(id).await;
                 let maybe_blob = maybe_blob.map_err(BlobError::RepoError)?;
                 let blob = maybe_blob.ok_or_else(|| BlobError::DanglingBlob { id })?;
+                trace!(
+                    ?id,
+                    chunk_index,
+                    chunk_size = blob.len(),
+                    "serving single blob chunk"
+                );
+                chunk_index += 1;
                 return yield blob;
             }
 
-            for link in blob_meta.links {
-                let maybe_link = Self::new(link.blob_id(), blob_mgr.clone());
+            for link_meta in blob_meta.links {
+                let child_id = link_meta.blob_id();
+                trace!(?id, child_id = %child_id, "resolving linked blob");
+                let maybe_link = Self::new(child_id, blob_mgr.clone());
                 let maybe_link = maybe_link.map_err(BlobError::RepoError)?;
-                let link = maybe_link.ok_or_else(|| BlobError::DanglingBlob { id })?;
-                for await blob in link {
-                    yield blob?;
+                let mut link_stream = maybe_link.ok_or_else(|| {
+                    error!(
+                        ?id,
+                        missing_child = %child_id,
+                        "blob metadata missing referenced child"
+                    );
+                    BlobError::DanglingBlob { id: child_id }
+                })?;
+                while let Some(data) = link_stream.try_next().await? {
+                    let current_index = chunk_index;
+                    chunk_index += 1;
+                    trace!(
+                        ?id,
+                        child_id = %child_id,
+                        chunk_index = current_index,
+                        chunk_size = data.len(),
+                        "serving linked blob chunk"
+                    );
+                    yield data;
                 }
             }
         }));

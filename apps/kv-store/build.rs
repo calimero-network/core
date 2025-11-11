@@ -1,6 +1,7 @@
-use std::fs;
 use std::path::Path;
+use std::{env, fs};
 
+use calimero_wasm_abi::embed::generate_embed_code;
 use calimero_wasm_abi::emitter::emit_manifest;
 
 fn main() {
@@ -25,5 +26,18 @@ fn main() {
     let abi_path = res_dir.join("abi.json");
     fs::write(&abi_path, json).expect("Failed to write ABI JSON");
 
-    println!("cargo:rerun-if-changed={}", abi_path.display());
+    // Generate the embed code to include ABI in WASM
+    let embed_code = generate_embed_code(&manifest);
+
+    // Write the generated code to a file that will be included in the build
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
+    let generated_path = Path::new(&out_dir).join("generated_abi.rs");
+
+    fs::write(&generated_path, embed_code).expect("Failed to write generated ABI code");
+
+    // Tell Cargo to include our generated file
+    println!(
+        "cargo:rustc-env=GENERATED_ABI_PATH={}",
+        generated_path.display()
+    );
 }

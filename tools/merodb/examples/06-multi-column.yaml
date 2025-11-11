@@ -1,0 +1,62 @@
+# Multi-Column Migration
+#
+# This example demonstrates migrating multiple columns with different
+# transformation settings for each.
+#
+# Usage:
+#   merodb migrate --plan examples/07-multi-column.yaml --apply
+
+version: 1
+name: multi-column-migration
+description: Migrate multiple columns with different transformations
+
+source:
+  db_path: /path/to/source/db
+  wasm_file: /path/to/contract.wasm
+
+target:
+  db_path: /path/to/target/db
+  backup_dir: /path/to/backups
+
+defaults:
+  batch_size: 2000
+
+steps:
+  # Copy State column with transformations
+  - type: copy
+    name: copy-transformed-state
+    column: State
+    transform:
+      decode_with_abi: true
+      jq: ".value.parsed | del(.internal)"
+      write_if_missing: true
+    guards:
+      requires_empty_target: true
+
+  # Copy Meta column without transformations (raw bytes)
+  - type: copy
+    name: copy-raw-meta
+    column: Meta
+    # No transform = raw byte copy
+    guards:
+      requires_empty_target: true
+
+  # Copy Config column with only write_if_missing
+  - type: copy
+    name: copy-config-idempotent
+    column: Config
+    transform:
+      write_if_missing: true
+
+  # Verify all columns
+  - type: verify
+    name: verify-state-migrated
+    column: State
+    assertion:
+      min_count: 1
+
+  - type: verify
+    name: verify-meta-migrated
+    column: Meta
+    assertion:
+      min_count: 1

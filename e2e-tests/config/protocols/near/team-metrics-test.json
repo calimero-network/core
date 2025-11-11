@@ -19,9 +19,9 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
+        "durationMs": 500,
         "description": [
-          "Wait for context initialization"
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
         ]
       }
     },
@@ -54,7 +54,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -63,9 +66,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "Wait for nodes to join and sync"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -113,13 +116,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "CRITICAL: Concurrent updates to different counters in TeamStats",
-          "This tests that #[derive(Mergeable)] correctly merges:",
-          "- Node 1 incremented wins",
-          "- Nodes 2 & 3 incremented losses",
-          "Result: BOTH counters should reflect all increments!"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -157,4 +156,3 @@
     }
   ]
 }
-

@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
-use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey};
+use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey};
 
 #[expect(
     missing_copy_implementations,
@@ -102,6 +102,11 @@ impl PublicKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+
+    /// Verify a signature against this public key
+    pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
+        VerifyingKey::from_bytes(self.as_ref())?.verify(message, signature)
     }
 }
 

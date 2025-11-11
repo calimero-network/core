@@ -1,0 +1,40 @@
+# Filtered Copy Migration
+#
+# This example shows how to copy only specific context IDs and use filters
+# to selectively migrate data.
+#
+# Usage:
+#   merodb migrate --plan examples/02-filtered-copy.yaml --apply
+
+version: 1
+name: filtered-copy-migration
+description: Copy state entries for specific contexts only
+
+source:
+  db_path: /path/to/source/db
+
+target:
+  db_path: /path/to/target/db
+  backup_dir: /path/to/backups
+
+# Set default filters for all steps
+defaults:
+  filters:
+    context_ids:
+      - "1122334455667788990011223344556677889900112233445566778899001122"
+      - "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+
+steps:
+  - type: copy
+    name: copy-filtered-state
+    column: State
+    # Inherits context_ids filter from defaults
+    guards:
+      requires_empty_target: true  # Safety: ensure target column is empty
+
+  - type: verify
+    name: verify-only-specified-contexts
+    column: State
+    # Verify we copied the expected contexts
+    assertion:
+      expected_count: 42  # Adjust based on your expected count

@@ -166,7 +166,34 @@ impl ContextManager {
         let entry = self.contexts.entry(*context_id);
 
         match entry {
-            btree_map::Entry::Occupied(occupied) => Ok(Some(occupied.into_mut())),
+            btree_map::Entry::Occupied(mut occupied) => {
+                // CRITICAL FIX: Always reload dag_heads from database to get latest state
+                // The dag_heads can be updated by delta_store when receiving network deltas,
+                // but the cached Context object won't reflect these changes.
+                // This was causing all deltas to use genesis as parent instead of actual dag_heads.
+                let handle = self.datastore.handle();
+                let key = calimero_store::key::ContextMeta::new(*context_id);
+
+                if let Some(meta) = handle.get(&key)? {
+                    let cached = occupied.get_mut();
+
+                    // Update dag_heads if they changed in DB
+                    if cached.meta.dag_heads != meta.dag_heads {
+                        tracing::debug!(
+                            %context_id,
+                            old_heads_count = cached.meta.dag_heads.len(),
+                            new_heads_count = meta.dag_heads.len(),
+                            "Refreshing dag_heads from database (cache was stale)"
+                        );
+                        cached.meta.dag_heads = meta.dag_heads;
+                    }
+
+                    // Also update root_hash in case it changed
+                    cached.meta.root_hash = meta.root_hash.into();
+                }
+
+                Ok(Some(occupied.into_mut()))
+            }
             btree_map::Entry::Vacant(vacant) => {
                 let Some(context) = self.context_client.get_context(context_id)? else {
                     return Ok(None);

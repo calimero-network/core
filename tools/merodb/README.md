@@ -61,11 +61,33 @@ merodb --db-path /path/to/rocksdb --export --columns Meta,Config,State --wasm-fi
 
 ### Validate Database
 
-Validate the database integrity:
+Validate the database integrity by performing comprehensive checks on all column families:
 
 ```bash
 merodb --db-path /path/to/rocksdb --validate --output validation.json
 ```
+
+The validation checks:
+- **Key Size Validation**: Verifies all keys match expected byte lengths for their column type
+- **Key Structure Validation**: Validates internal structure of keys (non-zero IDs, valid components, UTF-8 encoding where required)
+- **Value Deserialization**: Attempts to deserialize all values according to their schema
+
+The output includes overall statistics, per-column results, and detailed error information for any invalid entries found.
+
+### Export DAG Structure
+
+Export Context DAG deltas as a graph structure for visualization:
+
+```bash
+merodb --db-path /path/to/rocksdb --export-dag --output dag.json
+```
+
+This command extracts all Context DAG deltas from the Generic column family and outputs:
+- **Nodes**: Each delta with its metadata (timestamp, HLC, actions size, applied status)
+- **Edges**: Parent-child relationships between deltas
+- **Contexts**: Grouping of deltas by context ID
+- **Roots**: Genesis deltas (starting points)
+- **Leaves**: Most recent deltas (endpoints)
 
 ### Interactive GUI (requires `gui` feature)
 
@@ -83,6 +105,7 @@ The GUI will start a local web server (default port 8080). You can then:
 4. Browse the database structure with an interactive tree view
 5. Run JQ queries to filter and analyze the data
 6. Explore query results in real-time
+7. **View DAG visualization** - Switch to the DAG View tab to see an interactive visualization of Context DAG deltas with hierarchical or force-directed layouts
 
 Specify a custom port:
 
@@ -112,6 +135,17 @@ The GUI automatically exports and processes the database server-side, eliminatin
 - `.data.State.entries | map(.key)` - Extract all state keys
 - `.data | to_entries | map({column: .key, count: .value.count})` - Get entry counts per column
 
+## Migration Workflow (`merodb migrate`)
+
+A full walkthrough (plan schema, dry-run engine, roadmap, and YAML reference) now lives in [`src/migration/README.md`](src/migration/README.md). Refer to that document when authoring plans or extending the migration implementation.
+
+During dry runs the CLI prints a human-readable preview and can also persist machine-readable output using:
+
+```bash
+merodb migrate --plan ./plan.yaml --report ./dry-run.json
+```
+
+The `--report` file contains the step-by-step summary emitted by the dry-run engine, including counts, samples, and warnings.
 ## Column Families
 
 The tool supports all Calimero RocksDB column families:
@@ -166,10 +200,13 @@ merodb --schema --output schema.json
 merodb --db-path ~/.calimero/data --validate --output validation.json
 
 # 3. Export all data for analysis
-merodb --db-path ~/.calimero/data --export --all --output full-export.json
+merodb --db-path ~/.calimero/data --export --all --output full-export.json --wasm-file contract.wasm
 
 # 4. Export only context-related data
-merodb --db-path ~/.calimero/data --export --columns Meta,Config,Identity --output contexts.json
+merodb --db-path ~/.calimero/data --export --columns Meta,Config,Identity --output contexts.json --wasm-file contract.wasm
+
+# 5. Export DAG structure for visualization
+merodb --db-path ~/.calimero/data --export-dag --output dag.json
 ```
 
 ### Debugging a Specific Context

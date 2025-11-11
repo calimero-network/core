@@ -2,6 +2,7 @@ use crate::{
     errors::HostError,
     logic::{sys, VMHostFunctions, VMLogicResult},
 };
+use tracing::{debug, trace};
 
 impl VMHostFunctions<'_> {
     /// Reads a value from the persistent storage.
@@ -33,13 +34,39 @@ impl VMHostFunctions<'_> {
         }
         let key = self.read_guest_memory_slice(&key).to_vec();
 
+        trace!(
+            target: "runtime::host::storage",
+            op = "read",
+            key_len = key.len(),
+            dest_register_id,
+            "storage_read"
+        );
+
         if let Some(value) = logic.storage.get(&key) {
+            let value_len = value.len();
             self.with_logic_mut(|logic| {
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
+            debug!(
+                target: "runtime::host::storage",
+                op = "read",
+                key_len = key.len(),
+                value_len,
+                dest_register_id,
+                "storage_read hit"
+            );
+
             return Ok(1);
         }
+
+        debug!(
+            target: "runtime::host::storage",
+            op = "read",
+            key_len = key.len(),
+            dest_register_id,
+            "storage_read miss"
+        );
 
         Ok(0)
     }
@@ -78,14 +105,40 @@ impl VMHostFunctions<'_> {
 
         let key = self.read_guest_memory_slice(&key).to_vec();
 
+        trace!(
+            target: "runtime::host::storage",
+            op = "remove",
+            key_len = key.len(),
+            dest_register_id,
+            "storage_remove"
+        );
+
         if let Some(value) = logic.storage.get(&key) {
+            let value_len = value.len();
             self.with_logic_mut(|logic| {
                 let _ignored = logic.storage.remove(&key);
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
+            debug!(
+                target: "runtime::host::storage",
+                op = "remove",
+                key_len = key.len(),
+                removed_value_len = value_len,
+                dest_register_id,
+                "storage_remove removed"
+            );
+
             return Ok(1);
         }
+
+        debug!(
+            target: "runtime::host::storage",
+            op = "remove",
+            key_len = key.len(),
+            dest_register_id,
+            "storage_remove miss"
+        );
 
         Ok(0)
     }
@@ -133,16 +186,44 @@ impl VMHostFunctions<'_> {
 
         let key = self.read_guest_memory_slice(&key).to_vec();
         let value = self.read_guest_memory_slice(&value).to_vec();
+        let key_len = key.len();
+        let value_len = value.len();
+
+        trace!(
+            target: "runtime::host::storage",
+            op = "write",
+            key_len,
+            value_len,
+            dest_register_id,
+            "storage_write"
+        );
 
         let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 
         if let Some(evicted) = evicted {
+            let evicted_len = evicted.len();
             self.with_logic_mut(|logic| {
                 logic.registers.set(logic.limits, dest_register_id, evicted)
             })?;
 
+            debug!(
+                target: "runtime::host::storage",
+                op = "write",
+                dest_register_id,
+                evicted_len,
+                "storage_write evicted"
+            );
+
             return Ok(1);
         }
+
+        debug!(
+            target: "runtime::host::storage",
+            op = "write",
+            dest_register_id,
+            value_len,
+            "storage_write new entry"
+        );
 
         Ok(0)
     }

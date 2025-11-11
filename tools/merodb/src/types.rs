@@ -26,6 +26,8 @@ use calimero_store::types::{
     ContextIdentity as StoreContextIdentity, ContextMeta as StoreContextMeta,
 };
 use eyre::Result;
+use serde::de::Error as DeError;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// All column families in Calimero's RocksDB
@@ -35,6 +37,7 @@ pub enum Column {
     Config,
     Identity,
     State,
+    Delta,
     Blobs,
     Application,
     Alias,
@@ -49,6 +52,7 @@ impl Column {
             Self::Config,
             Self::Identity,
             Self::State,
+            Self::Delta,
             Self::Blobs,
             Self::Application,
             Self::Alias,
@@ -63,6 +67,7 @@ impl Column {
             Self::Config => "Config",
             Self::Identity => "Identity",
             Self::State => "State",
+            Self::Delta => "Delta",
             Self::Blobs => "Blobs",
             Self::Application => "Application",
             Self::Alias => "Alias",
@@ -77,10 +82,11 @@ impl Column {
             Self::Config => 32,      // ContextId
             Self::Identity => 64,    // ContextId + PublicKey
             Self::State => 64,       // ContextId + StateKey
+            Self::Delta => 64,       // ContextId + DeltaId
             Self::Blobs => 32,       // BlobId
             Self::Application => 32, // ApplicationId
             Self::Alias => 83,       // Kind + Scope + Name
-            Self::Generic => 0, // Variable: 48 bytes (Scope+Fragment) OR 64 bytes (ContextId+DeltaId for DAG deltas)
+            Self::Generic => 0, // Variable: 48 bytes (Scope+Fragment) or 64 bytes (ContextId+DeltaId)
         }
     }
 
@@ -91,10 +97,11 @@ impl Column {
             Self::Config => "ContextId (32 bytes)",
             Self::Identity => "ContextId (32 bytes) + PublicKey (32 bytes)",
             Self::State => "ContextId (32 bytes) + StateKey (32 bytes)",
+            Self::Delta => "ContextId (32 bytes) + DeltaId (32 bytes)",
             Self::Blobs => "BlobId (32 bytes)",
             Self::Application => "ApplicationId (32 bytes)",
             Self::Alias => "Kind (1 byte) + Scope (32 bytes) + Name (50 bytes)",
-            Self::Generic => "Scope (16 bytes) + Fragment (32 bytes) OR ContextId (32 bytes) + DeltaId (32 bytes) for DAG deltas",
+            Self::Generic => "Scope (16 bytes) + Fragment (32 bytes) OR ContextId (32 bytes) + DeltaId (32 bytes) for backwards compatibility with older delta storage",
         }
     }
 
@@ -105,15 +112,55 @@ impl Column {
             Self::Config => "ContextConfig { protocol, network, contract, proxy_contract, application_revision, members_revision }",
             Self::Identity => "ContextIdentity { private_key: Option<[u8; 32]>, sender_key: Option<[u8; 32]> }",
             Self::State => "Raw bytes (application-specific state)",
+            Self::Delta => "ContextDagDelta { delta_id, parents, actions, hlc, applied, expected_root_hash }",
             Self::Blobs => "BlobMeta { size: u64, hash: [u8; 32], links: Box<[BlobId]> }",
             Self::Application => "ApplicationMeta { bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId, package: Box<str>, version: Box<str> }",
             Self::Alias => "Hash (32 bytes) - can point to ContextId, PublicKey, or ApplicationId",
-            Self::Generic => "Raw bytes (generic key-value storage) OR ContextDagDelta { delta_id, parents, actions, timestamp, applied } for DAG deltas",
+            Self::Generic => "Raw bytes (generic key-value storage)",
+        }
+    }
+
+    /// Parse a column from its canonical string representation.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Meta" => Some(Self::Meta),
+            "Config" => Some(Self::Config),
+            "Identity" => Some(Self::Identity),
+            "State" => Some(Self::State),
+            "Delta" => Some(Self::Delta),
+            "Blobs" => Some(Self::Blobs),
+            "Application" => Some(Self::Application),
+            "Alias" => Some(Self::Alias),
+            "Generic" => Some(Self::Generic),
+            _ => None,
         }
     }
 }
 
+impl<'de> Deserialize<'de> for Column {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as Deserialize>::deserialize(deserializer)?;
+        Self::from_name(value.trim()).ok_or_else(|| {
+            let expected = Self::all()
+                .iter()
+                .map(Self::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            DeError::custom(format!(
+                "Unknown column family '{value}'. Expected one of: {expected}"
+            ))
+        })
+    }
+}
+
 /// Parse a key into a human-readable JSON representation
+#[expect(
+    clippy::too_many_lines,
+    reason = "Branch-heavy decoding logic mirrors database schema"
+)]
 pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
     match column {
         Column::Meta | Column::Config | Column::Blobs | Column::Application => {
@@ -141,6 +188,20 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
             Ok(json!({
                 "context_id": hex::encode(&key[0..32]),
                 "public_key": String::from_utf8_lossy(&key[32..64])
+            }))
+        }
+        Column::Delta => {
+            if key.len() != 64 {
+                return Ok(json!({
+                    "error": "Invalid key size",
+                    "expected": 64,
+                    "actual": key.len(),
+                    "raw": String::from_utf8_lossy(key)
+                }));
+            }
+            Ok(json!({
+                "context_id": hex::encode(&key[0..32]),
+                "delta_id": hex::encode(&key[32..64])
             }))
         }
         Column::State => {
@@ -185,7 +246,7 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
         Column::Generic => {
             // Generic column can contain two types:
             // 1. Regular generic keys: 48 bytes (Scope + Fragment)
-            // 2. ContextDagDelta keys: 64 bytes (ContextId + DeltaId)
+            // 2. ContextDagDelta keys: 64 bytes (ContextId + DeltaId) - for backwards compatibility
             match key.len() {
                 48 => Ok(json!({
                     "type": "generic",
@@ -195,14 +256,16 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
                 64 => Ok(json!({
                     "type": "context_dag_delta",
                     "context_id": hex::encode(&key[0..32]),
-                    "delta_id": String::from_utf8_lossy(&key[32..64])
+                    "delta_id": hex::encode(&key[32..64])
                 })),
-                _ => Ok(json!({
-                    "error": "Invalid key size",
-                    "expected": "48 (generic) or 64 (context_dag_delta)",
-                    "actual": key.len(),
-                    "raw": String::from_utf8_lossy(key)
-                })),
+                _ => {
+                    // Unknown key size - still parse it for debugging
+                    Ok(json!({
+                        "type": "unknown",
+                        "size": key.len(),
+                        "raw_hex": hex::encode(key)
+                    }))
+                }
             }
         }
     }
@@ -218,6 +281,7 @@ pub fn parse_value(column: Column, value: &[u8]) -> Result<Value> {
             "raw": String::from_utf8_lossy(value),
             "size": value.len()
         })),
+        Column::Delta => parse_dag_delta(value),
         Column::Blobs => parse_blob_meta(value),
         Column::Application => parse_application_meta(value),
         Column::Alias => parse_alias_target(value),
@@ -232,7 +296,7 @@ fn parse_context_meta(data: &[u8]) -> Result<Value> {
         Ok(meta) => Ok(json!({
             "application_id": String::from_utf8_lossy(meta.application.application_id().as_ref()),
             "root_hash": String::from_utf8_lossy(&meta.root_hash),
-            "dag_heads": meta.dag_heads.iter().map(|h| String::from_utf8_lossy(h).to_string()).collect::<Vec<_>>()
+            "dag_heads": meta.dag_heads.iter().map(hex::encode).collect::<Vec<_>>()
         })),
         Err(e) => Ok(json!({
             "error": format!("Failed to parse ContextMeta: {e}"),
@@ -330,15 +394,38 @@ fn parse_alias_target(data: &[u8]) -> Result<Value> {
     }
 }
 
-fn parse_generic_value(data: &[u8]) -> Result<Value> {
-    // Try to parse as ContextDagDelta first
+fn parse_dag_delta(data: &[u8]) -> Result<Value> {
     match StoreContextDagDelta::try_from_slice(data) {
         Ok(delta) => {
             let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
             Ok(json!({
                 "type": "context_dag_delta",
-                "delta_id": String::from_utf8_lossy(&delta.delta_id),
-                "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
+                "delta_id": hex::encode(delta.delta_id),
+                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                "actions_size": delta.actions.len(),
+                "timestamp": timestamp_raw,
+                "hlc": hlc_json,
+                "applied": delta.applied,
+                "expected_root_hash": hex::encode(delta.expected_root_hash)
+            }))
+        }
+        Err(e) => Ok(json!({
+            "error": format!("Failed to parse ContextDagDelta: {e}"),
+            "raw": String::from_utf8_lossy(data),
+            "size": data.len()
+        })),
+    }
+}
+
+fn parse_generic_value(data: &[u8]) -> Result<Value> {
+    // Try to parse as ContextDagDelta first (for backwards compatibility)
+    match StoreContextDagDelta::try_from_slice(data) {
+        Ok(delta) => {
+            let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
+            Ok(json!({
+                "type": "context_dag_delta",
+                "delta_id": hex::encode(delta.delta_id),
+                "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,

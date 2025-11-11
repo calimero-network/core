@@ -33,6 +33,3 @@ calimero-utils-actix.workspace = true
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
 tempfile = "3.23"
-
-[lints]
-workspace = true

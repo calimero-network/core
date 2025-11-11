@@ -80,6 +80,15 @@ async fn delete_context(
 
     delete_context_scoped::<key::ContextState, 32>(&mut datastore, &context_id, [0; 32], None)?;
 
+    // NOTE: We do NOT delete ContextDagDelta entries!
+    // Deltas are part of the immutable distributed DAG and must be kept for:
+    // 1. Other nodes syncing missing parents
+    // 2. Historical integrity and audit trail
+    // 3. Preventing "DeltaNotFound" errors during distributed sync
+    //
+    // Context "deletion" should be a soft delete (marking as inactive/left)
+    // rather than actually removing DAG history. See issue for details.
+
     Ok(())
 }
 

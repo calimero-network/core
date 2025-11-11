@@ -80,16 +80,6 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     };
 
-    let Some(wasm_bytes) = wasm_bytes else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "WASM file is required".to_owned(),
-            }),
-        )
-            .into_response();
-    };
-
     // Check if database path exists
     if !db_path.exists() {
         return (
@@ -101,18 +91,19 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     }
 
-    // Extract ABI from WASM bytes
-    let abi_manifest = match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
-        Ok(manifest) => manifest,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Failed to extract ABI from WASM: {e}"),
-                }),
-            )
-                .into_response();
+    // Extract ABI from WASM bytes (if provided)
+    let abi_manifest = if let Some(wasm_bytes) = wasm_bytes {
+        match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
+            Ok(manifest) => Some(manifest),
+            Err(e) => {
+                eprintln!("Warning: Failed to extract ABI from WASM: {e}");
+                eprintln!("Continuing without ABI - state values will not be decoded");
+                None
+            }
         }
+    } else {
+        eprintln!("No WASM file provided - state values will not be decoded");
+        None
     };
 
     // Open database
@@ -131,16 +122,32 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
 
     // Export all columns
     let columns = Column::all().to_vec();
-    let data = match export::export_data(&db, &columns, &abi_manifest) {
-        Ok(data) => data,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to export data: {e}"),
-                }),
-            )
-                .into_response();
+    let data = if let Some(manifest) = abi_manifest {
+        match export::export_data(&db, &columns, &manifest) {
+            Ok(data) => data,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to export data: {e}"),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        // Export without ABI - use a dummy manifest
+        match export::export_data_without_abi(&db, &columns) {
+            Ok(data) => data,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to export data: {e}"),
+                    }),
+                )
+                    .into_response();
+            }
         }
     };
 

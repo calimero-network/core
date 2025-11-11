@@ -1069,3 +1069,75 @@ impl SyncContextResponse {
         Self { data: Empty {} }
     }
 }
+
+// -------------------------------------------- TEE API --------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeAttestRequest {
+    /// Client-provided nonce for freshness (32 bytes as hex string)
+    pub nonce: String,
+    /// Optional application ID to include in attestation
+    /// If provided, the application's bytecode BlobId (hash) will be included in report_data
+    pub application_id: Option<ApplicationId>,
+}
+
+impl TeeAttestRequest {
+    pub fn new(nonce: String, application_id: Option<ApplicationId>) -> Self {
+        Self {
+            nonce,
+            application_id,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeInfoResponseData {
+    /// Cloud provider (e.g., "gcp", "azure", "unknown")
+    pub cloud_provider: String,
+    /// OS image name (e.g., "ubuntu-2404-tdx-v20250115")
+    pub os_image: String,
+    /// MRTD extracted from TD report (48 bytes hex)
+    pub mrtd: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeInfoResponse {
+    pub data: TeeInfoResponseData,
+}
+
+impl TeeInfoResponse {
+    pub fn new(cloud_provider: String, os_image: String, mrtd: String) -> Self {
+        Self {
+            data: TeeInfoResponseData {
+                cloud_provider,
+                os_image,
+                mrtd,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeAttestResponseData {
+    /// Base64-encoded TDX quote
+    /// The quote contains the report_data which the client must verify
+    pub quote_b64: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeAttestResponse {
+    pub data: TeeAttestResponseData,
+}
+
+impl TeeAttestResponse {
+    pub fn new(quote_b64: String) -> Self {
+        Self {
+            data: TeeAttestResponseData { quote_b64 },
+        }
+    }
+}

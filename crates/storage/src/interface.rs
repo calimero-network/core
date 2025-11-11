@@ -44,7 +44,7 @@ use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
-use crate::address::{Id, Path};
+use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Metadata};
 use crate::env::time_now;
 use crate::index::Index;
@@ -486,37 +486,6 @@ impl<S: StorageAdaptor> Interface<S> {
         Self::find_by_id_raw(id).ok_or(StorageError::IndexNotFound(id))
     }
 
-    /// Finds entities by hierarchical path.
-    ///
-    /// **Note**: Not yet implemented.
-    ///
-    /// # Errors
-    /// Currently panics (unimplemented).
-    ///
-    pub fn find_by_path<D: Data>(_path: &Path) -> Result<Vec<D>, StorageError> {
-        unimplemented!()
-    }
-
-    /// Finds children by parent ID and collection name.
-    ///
-    /// # Errors
-    /// - `IndexNotFound` if parent doesn't exist
-    /// - `DeserializationError` if child data is corrupt
-    ///
-    pub fn find_children_by_id<D: Data>(
-        parent_id: Id,
-        collection: &str,
-    ) -> Result<Vec<D>, StorageError> {
-        let child_infos = <Index<S>>::get_children_of(parent_id)?;
-        let mut children = Vec::new();
-        for child_info in child_infos {
-            if let Some(child) = Self::find_by_id(child_info.id())? {
-                children.push(child);
-            }
-        }
-        Ok(children)
-    }
-
     /// Generates comparison metadata for tree synchronization.
     ///
     /// Includes hashes, ancestors, children info. Used by [`compare_trees()`](Self::compare_trees()).
@@ -824,32 +793,4 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
-
-    // NOTE: Sync orchestration moved to node layer (YAGNI)
-    //
-    // The sync decision logic should be in the node's sync manager, not in storage.
-    // Storage provides primitives (generate_snapshot, full_resync, needs_full_resync),
-    // but the orchestration belongs in the network/node layer where it can access
-    // network protocols and handle peer communication.
-    //
-    // Example node layer implementation:
-    //
-    // ```rust
-    // impl SyncManager {
-    //     async fn sync_with_peer(&self, peer_id: NodeId) -> Result<()> {
-    //         use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
-    //
-    //         if Interface::needs_full_resync(peer_id, TOMBSTONE_RETENTION_NANOS)? {
-    //             let snapshot = network::request_snapshot(peer_id).await?;
-    //             Interface::full_resync(peer_id, snapshot)?;
-    //         } else {
-    //             // Incremental sync via compare_trees
-    //             let comparison = network::request_comparison(peer_id).await?;
-    //             let (local_actions, remote_actions) = Interface::compare_trees(comparison)?;
-    //             // Apply actions...
-    //         }
-    //         Ok(())
-    //     }
-    // }
-    // ```
 }

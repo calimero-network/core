@@ -1,11 +1,13 @@
 use core::cell::RefCell;
 use serde::Serialize;
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     errors::{HostError, Location, PanicContext},
     logic::{sys, VMHostFunctions, VMLogicResult},
 };
 use calimero_primitives::common::DIGEST_SIZE;
+use calimero_storage::{address::Id, index::Index, store::MainStorage};
 
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
@@ -60,6 +62,14 @@ impl VMHostFunctions<'_> {
         let line = location.line();
         let column = location.column();
 
+        warn!(
+            target: "runtime::host::system",
+            file = %file,
+            line,
+            column,
+            "Guest panic() without message"
+        );
+
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message: "explicit panic".to_owned(),
@@ -89,6 +99,12 @@ impl VMHostFunctions<'_> {
         src_panic_msg_ptr: u64,
         src_location_ptr: u64,
     ) -> VMLogicResult<()> {
+        debug!(
+            target: "runtime::host::system",
+            src_panic_msg_ptr,
+            src_location_ptr,
+            "panic_utf8 invoked"
+        );
         let panic_message_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
         let location =
@@ -98,6 +114,15 @@ impl VMHostFunctions<'_> {
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
+
+        error!(
+            target: "runtime::host::system",
+            message = %panic_message,
+            file = %file,
+            line,
+            column,
+            "Guest panic captured"
+        );
 
         Err(HostError::Panic {
             context: PanicContext::Guest,
@@ -118,11 +143,20 @@ impl VMHostFunctions<'_> {
     /// The length of the data in the specified register. If the register is not found,
     /// it returns `u64::MAX`.
     pub fn register_len(&self, register_id: u64) -> VMLogicResult<u64> {
-        Ok(self
+        let len = self
             .borrow_logic()
             .registers
             .get_len(register_id)
-            .unwrap_or(u64::MAX))
+            .unwrap_or(u64::MAX);
+
+        trace!(
+            target: "runtime::host::system",
+            register_id,
+            len,
+            "register_len"
+        );
+
+        Ok(len)
     }
 
     /// Reads the data from a register into a guest memory buffer.
@@ -149,11 +183,25 @@ impl VMHostFunctions<'_> {
         let data = self.borrow_logic().registers.get(register_id)?;
 
         if data.len() != usize::try_from(dest_data.len()).map_err(|_| HostError::IntegerOverflow)? {
+            trace!(
+                target: "runtime::host::system",
+                register_id,
+                register_size = data.len(),
+                dest_size = dest_data.len(),
+                "read_register length mismatch"
+            );
             return Ok(0);
         }
 
         self.read_guest_memory_slice_mut(&dest_data)
             .copy_from_slice(data);
+
+        trace!(
+            target: "runtime::host::system",
+            register_id,
+            bytes_copied = data.len(),
+            "read_register"
+        );
 
         Ok(1)
     }
@@ -172,7 +220,68 @@ impl VMHostFunctions<'_> {
             logic
                 .registers
                 .set(logic.limits, dest_register_id, logic.context.context_id)
-        })
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "context_id written"
+        );
+
+        Ok(())
+    }
+
+    /// Handles QuickJS debug prints routed through `js_std_d_print`.
+    ///
+    /// QuickJS' libc invokes this host import to surface diagnostics. We treat it like any
+    /// other guest log, storing it in the execution outcome and emitting it at `info` level.
+    pub fn js_std_d_print(
+        &mut self,
+        _ctx_ptr: u64,
+        message_ptr: u64,
+        message_len: u64,
+    ) -> VMLogicResult<u32> {
+        trace!(
+            target: "runtime::guest::log",
+            ptr = message_ptr,
+            len = message_len,
+            "js_std_d_print invoked"
+        );
+
+        let len = usize::try_from(message_len).map_err(|_| HostError::IntegerOverflow)?;
+
+        let mut bytes = vec![0u8; len];
+        if len > 0 {
+            self.borrow_memory()
+                .read(message_ptr, &mut bytes)
+                .map_err(|_| HostError::InvalidMemoryAccess)?;
+        }
+
+        let message = String::from_utf8_lossy(&bytes).to_string();
+        let max_len = {
+            let logic = self.borrow_logic();
+            if logic.logs.len()
+                >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+            {
+                return Err(HostError::LogsOverflow.into());
+            }
+            usize::try_from(logic.limits.max_log_size).map_err(|_| HostError::IntegerOverflow)?
+        };
+        if message.len() > max_len {
+            return Err(HostError::LogLengthOverflow.into());
+        }
+        self.with_logic_mut(|logic| logic.logs.push(message.clone()));
+
+        let total_logs = self.borrow_logic().logs.len();
+        info!(
+            target: "runtime::guest::log",
+            interesting = false,
+            total_logs,
+            message = %message,
+            "guest log (js_std_d_print)"
+        );
+
+        Ok(0)
     }
 
     /// Copies the executor's public key into a register.
@@ -191,7 +300,15 @@ impl VMHostFunctions<'_> {
                 dest_register_id,
                 logic.context.executor_public_key,
             )
-        })
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "executor_id written"
+        );
+
+        Ok(())
     }
 
     /// Copies the input data for the current execution (from context ID) into a register.
@@ -209,6 +326,13 @@ impl VMHostFunctions<'_> {
                 .registers
                 .set(logic.limits, dest_register_id, &*logic.context.input)
         })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            input_len = self.borrow_logic().context.input.len(),
+            "input copied to register"
+        );
 
         Ok(())
     }
@@ -235,7 +359,19 @@ impl VMHostFunctions<'_> {
             sys::ValueReturn::Err(value) => Err(self.read_guest_memory_slice(&value).to_vec()),
         };
 
+        let result_len = match &result {
+            Ok(value) | Err(value) => value.len(),
+        };
+        let was_ok = result.is_ok();
+
         self.with_logic_mut(|logic| logic.returns = Some(result));
+
+        debug!(
+            target: "runtime::host::system",
+            success = was_ok,
+            bytes = result_len,
+            "value_return captured"
+        );
 
         Ok(())
     }
@@ -253,19 +389,64 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BadUTF8` if the message is not a valid UTF-8 string.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn log_utf8(&mut self, src_log_ptr: u64) -> VMLogicResult<()> {
-        let src_log_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr)? };
+        trace!(
+            target: "runtime::guest::log",
+            ptr = src_log_ptr,
+            "log_utf8 invoked"
+        );
 
-        let logic = self.borrow_logic();
+        let src_log_buf =
+            match unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr) } {
+                Ok(buf) => buf,
+                Err(err) => {
+                    error!(
+                        target: "runtime::guest::log",
+                        ptr = src_log_ptr,
+                        error = ?err,
+                        "failed to read guest log buffer descriptor"
+                    );
+                    return Err(err);
+                }
+            };
 
-        if logic.logs.len()
-            >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
-        {
-            return Err(HostError::LogsOverflow.into());
+        let message = match self.read_guest_memory_str(&src_log_buf) {
+            Ok(msg) => msg.to_owned(),
+            Err(err) => {
+                error!(
+                    target: "runtime::guest::log",
+                    ptr = src_log_ptr,
+                    buf_len = src_log_buf.len(),
+                    error = ?err,
+                    "failed to read guest log message"
+                );
+                return Err(err);
+            }
+        };
+        let max_len = {
+            let logic = self.borrow_logic();
+            if logic.logs.len()
+                >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+            {
+                return Err(HostError::LogsOverflow.into());
+            }
+            usize::try_from(logic.limits.max_log_size).map_err(|_| HostError::IntegerOverflow)?
+        };
+        if message.len() > max_len {
+            return Err(HostError::LogLengthOverflow.into());
         }
 
-        let message = self.read_guest_memory_str(&src_log_buf)?.to_owned();
+        self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
-        self.with_logic_mut(|logic| logic.logs.push(message));
+        let total_logs = self.borrow_logic().logs.len();
+        let interesting = message.contains("[dispatcher]") || message.contains("QuickJS");
+
+        info!(
+            target: "runtime::guest::log",
+            interesting,
+            total_logs,
+            message = %message,
+            "guest log"
+        );
 
         Ok(())
     }
@@ -320,6 +501,14 @@ impl VMHostFunctions<'_> {
                 handler,
             });
         });
+
+        debug!(
+            target: "runtime::host::system",
+            events = self.borrow_logic().events.len(),
+            kind_len,
+            data_len,
+            "emit"
+        );
 
         Ok(())
     }
@@ -487,6 +676,31 @@ impl VMHostFunctions<'_> {
         })?;
 
         Ok(())
+    }
+
+    /// Flushes pending CRDT actions recorded by the storage layer and commits them as a causal delta.
+    ///
+    /// Returns `1` if a delta was emitted, `0` if there was nothing to commit.
+    pub fn flush_delta(&mut self) -> VMLogicResult<i32> {
+        let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())
+            .map_err(|err| HostError::Panic {
+                context: PanicContext::Host,
+                message: format!("failed to fetch root hash: {err}"),
+                location: Location::Unknown,
+            })?
+            .map(|(full_hash, _)| full_hash)
+            .unwrap_or([0; 32]);
+
+        match calimero_storage::delta::commit_causal_delta(&root_hash) {
+            Ok(Some(_)) => Ok(1),
+            Ok(None) => Ok(0),
+            Err(err) => Err(HostError::Panic {
+                context: PanicContext::Host,
+                message: format!("commit_causal_delta failed: {err}"),
+                location: Location::Unknown,
+            }
+            .into()),
+        }
     }
 }
 
@@ -710,6 +924,27 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_log_utf8_length_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        limits.max_log_size = 4;
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "exceeds";
+        let msg_ptr = 200u64;
+        write_str(&host, msg_ptr, msg);
+        let buf_ptr = 12u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, msg_ptr, msg.len() as u64);
+
+        let err = host.log_utf8(buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogLengthOverflow)
+        ));
+    }
+
     /// Tests that the `log_utf8()` host function correctly handles the bad UTF8 and properly returns
     /// an error `HostError::BadUTF8` when the incorrect string is provided (the failure occurs
     /// because of the verification happening inside the private `read_guest_memory_str` function).
@@ -731,6 +966,27 @@ mod tests {
         // `log_utf8` calls `read_guest_memory_str` internally. We expect it to fail.
         let err = host.log_utf8(buf_ptr).unwrap_err();
         assert!(matches!(err, VMLogicError::HostError(HostError::BadUTF8)));
+    }
+
+    #[test]
+    fn test_js_std_d_print_length_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        limits.max_log_size = 5;
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "too long";
+        let msg_ptr = 512u64;
+        write_str(&host, msg_ptr, msg);
+
+        let err = host
+            .js_std_d_print(0, msg_ptr, msg.len() as u64)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogLengthOverflow)
+        ));
     }
 
     /// Tests the `panic()` host function (without a custom message).

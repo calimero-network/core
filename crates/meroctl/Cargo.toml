@@ -44,6 +44,3 @@ async-trait.workspace = true
 
 [package.metadata.workspaces]
 independent = true
-
-[lints]
-workspace = true

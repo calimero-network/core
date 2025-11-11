@@ -1,3 +1,5 @@
+pub mod cli;
+
 use borsh::BorshDeserialize;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{CollectionType, Field, Manifest, TypeDef, TypeRef};
@@ -288,7 +290,7 @@ impl Deref for UpdatedAt {
 }
 
 /// Parse a value with the ABI manifest present
-fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Result<Value> {
+pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Result<Value> {
     match column {
         Column::State => {
             if let Some(decoded) = decode_state_entry(value, manifest) {
@@ -310,8 +312,8 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                         let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                         return Ok(json!({
                             "type": "context_dag_delta",
-                            "delta_id": String::from_utf8_lossy(&delta.delta_id),
-                            "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
+                            "delta_id": hex::encode(delta.delta_id),
+                            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                             "actions": {
                                 "parsed": parsed,
                                 "raw": String::from_utf8_lossy(&delta.actions)
@@ -326,8 +328,8 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                 let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                 return Ok(json!({
                     "type": "context_dag_delta",
-                    "delta_id": String::from_utf8_lossy(&delta.delta_id),
-                    "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
+                    "delta_id": hex::encode(delta.delta_id),
+                    "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                     "actions": {
                         "raw": String::from_utf8_lossy(&delta.actions),
                         "note": "Unable to decode actions with ABI"

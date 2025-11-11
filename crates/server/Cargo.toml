@@ -10,6 +10,7 @@ publish = true
 
 [dependencies]
 axum = { workspace = true, features = ["multipart", "ws", "tokio"] }
+base64.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
@@ -36,6 +37,10 @@ calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-store = { workspace = true, features = ["serde"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+configfs-tsm.workspace = true
+tdx_workload_attestation = { workspace = true, features = ["tdx-linux"] }
+
 [dev-dependencies]
 color-eyre.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -53,6 +58,3 @@ serde_json.workspace = true
 
 [features]
 # No feature flags; all functionality is always enabled
-
-[lints]
-workspace = true
