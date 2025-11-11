@@ -419,8 +419,27 @@ fn find_and_build_tree_for_context(
     manifest: &Manifest,
 ) -> Result<Value> {
     use rocksdb::IteratorMode;
+    use std::collections::HashMap;
 
-    // Iterate through State column to find entries for this context
+    // First pass: build a mapping of element_id -> state_key for all EntityIndex nodes
+    let mut element_to_state: HashMap<String, String> = HashMap::new();
+    let iter = db.iterator_cf(state_cf, IteratorMode::Start);
+
+    for item in iter {
+        let (key, value) = item.wrap_err("Failed to read State entry")?;
+
+        // Check if this key belongs to our context (first 32 bytes match context_id)
+        if key.len() == 64 && &key[0..32] == context_id {
+            // Try to decode as EntityIndex
+            if let Ok(index) = borsh::from_slice::<EntityIndex>(&value) {
+                let element_id = hex::encode(index.id.as_bytes());
+                let state_key = hex::encode(&key[32..64]);
+                element_to_state.insert(element_id, state_key);
+            }
+        }
+    }
+
+    // Second pass: find the root node and build the tree
     let iter = db.iterator_cf(state_cf, IteratorMode::Start);
 
     for item in iter {
@@ -434,13 +453,14 @@ fn find_and_build_tree_for_context(
                 if index.parent_id.is_none() {
                     // Extract state_key (last 32 bytes) and convert to hex
                     let state_key_hex = hex::encode(&key[32..64]);
-                    // Build the tree from this root
+                    // Build the tree from this root with the element_id mapping
                     return build_tree_from_root(
                         db,
                         state_cf,
                         context_id,
                         &state_key_hex,
                         manifest,
+                        &element_to_state,
                     );
                 }
             }
@@ -463,6 +483,7 @@ fn build_tree_from_root(
     context_id: &[u8],
     node_id: &str,
     manifest: &Manifest,
+    element_to_state: &std::collections::HashMap<String, String>,
 ) -> Result<Value> {
     // Decode the node_id (state key) from hex string
     let state_key = hex::decode(node_id).wrap_err("Failed to decode node_id from hex")?;
@@ -488,11 +509,28 @@ fn build_tree_from_root(
         let children_info: Vec<Value> = if let Some(children) = &index.children {
             let mut child_nodes = Vec::new();
             for child in children {
-                // Convert child id to hex string for consistent representation
-                let child_id = hex::encode(child.id.as_bytes());
-                let child_tree =
-                    build_tree_from_root(db, state_cf, context_id, &child_id, manifest)?;
-                child_nodes.push(child_tree);
+                // Convert child element_id to hex string
+                let child_element_id = hex::encode(child.id.as_bytes());
+
+                // Look up the state_key for this element_id
+                if let Some(child_state_key) = element_to_state.get(&child_element_id) {
+                    let child_tree = build_tree_from_root(
+                        db,
+                        state_cf,
+                        context_id,
+                        child_state_key,
+                        manifest,
+                        element_to_state,
+                    )?;
+                    child_nodes.push(child_tree);
+                } else {
+                    // Child element_id not found in mapping - it might be a data entry
+                    child_nodes.push(json!({
+                        "id": child_element_id,
+                        "type": "missing",
+                        "note": "Child element_id not found in state mapping"
+                    }));
+                }
             }
             child_nodes
         } else {
