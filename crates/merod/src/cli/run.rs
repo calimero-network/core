@@ -40,9 +40,8 @@ impl RunCommand {
         if let Some(cfg) = server_source.embedded_auth.as_mut() {
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut cfg.storage {
                 if storage_path.is_relative() {
-                    if let Some(rel_str) = storage_path.to_str() {
-                        *storage_path = path.join(rel_str).into_std_path_buf();
-                    }
+                    let joined = path.as_std_path().join(&*storage_path);
+                    *storage_path = joined;
                 }
             }
         }
