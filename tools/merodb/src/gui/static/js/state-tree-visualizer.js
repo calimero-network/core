@@ -92,10 +92,8 @@ export class StateTreeVisualizer {
             select.appendChild(option);
         });
 
-        // Select first context by default
-        if (this.state.stateTreeData.contexts.length > 0) {
-            select.value = '0';
-        }
+        // Select "All Contexts" by default to show all state items
+        select.value = 'all';
     }
 
     /**
@@ -109,9 +107,21 @@ export class StateTreeVisualizer {
         const selectedValue = select?.value || '0';
 
         if (selectedValue === 'all') {
-            // For "all contexts", use the first context
-            // TODO: Could merge all contexts or show them separately
-            return this.state.stateTreeData.contexts[0]?.tree || null;
+            // Create a virtual root that contains all contexts as children
+            const allContextTrees = this.state.stateTreeData.contexts.map((context, index) => ({
+                ...context.tree,
+                id: `context-${index}-${context.tree.id}`,
+                type: 'ContextRoot',
+                context_id: context.context_id,
+                context_index: index
+            }));
+
+            return {
+                id: 'all-contexts-root',
+                type: 'VirtualRoot',
+                children: allContextTrees,
+                children_count: allContextTrees.length
+            };
         }
 
         const index = parseInt(selectedValue, 10);
