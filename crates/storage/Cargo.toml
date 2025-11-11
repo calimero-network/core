@@ -17,6 +17,7 @@ indexmap.workspace = true
 serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 calimero-sdk.workspace = true
 calimero-storage-macros.workspace = true
