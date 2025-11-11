@@ -38,11 +38,16 @@ export class App {
         // WASM file selection
         const wasmInput = document.getElementById('wasm-input');
         if (wasmInput) {
-            wasmInput.addEventListener('change', (e) => {
+            wasmInput.addEventListener('change', async (e) => {
                 const file = e.target.files[0];
                 const filename = document.getElementById('wasm-filename');
                 if (filename) {
                     filename.textContent = file ? file.name : 'No file chosen';
+                }
+
+                // Validate ABI immediately when file is selected
+                if (file) {
+                    await this.validateWasmAbi(file);
                 }
             });
         }
@@ -164,6 +169,28 @@ export class App {
                     this.stateVisualizer.exportImage();
                 }
             });
+        }
+    }
+
+    /**
+     * Validate WASM file for ABI presence
+     * @param {File} wasmFile - WASM file to validate
+     */
+    async validateWasmAbi(wasmFile) {
+        UIManager.hideMessage('warning-message');
+        UIManager.hideMessage('info-message');
+
+        try {
+            const response = await ApiService.validateAbi(wasmFile);
+
+            if (response.warning) {
+                UIManager.showMessage('warning-message', response.warning);
+            }
+            if (response.info) {
+                UIManager.showMessage('info-message', response.info);
+            }
+        } catch (error) {
+            UIManager.showMessage('warning-message', `WASM validation warning: ${error.message}`);
         }
     }
 

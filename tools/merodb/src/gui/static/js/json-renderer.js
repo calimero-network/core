@@ -11,8 +11,9 @@ export class JSONRenderer {
      * Render JSON data into a container
      * @param {*} data - JSON data to render
      * @param {string} containerId - Container element ID
+     * @param {boolean} collapseChildren - Whether to collapse child nodes (default: true)
      */
-    static render(data, containerId) {
+    static render(data, containerId, collapseChildren = true) {
         const container = document.getElementById(containerId);
         if (!container) {
             console.error(`Container ${containerId} not found`);
@@ -20,23 +21,26 @@ export class JSONRenderer {
         }
 
         container.innerHTML = '';
-        container.appendChild(this.createNode(data));
+        // Render root with expanded state, but collapse its children
+        container.appendChild(this.createNode(data, null, false, collapseChildren));
     }
 
     /**
      * Create a DOM node for a JSON value
      * @param {*} value - JSON value
      * @param {string|null} key - Object key or array index
+     * @param {boolean} startCollapsed - Whether to start collapsed
+     * @param {boolean} collapseChildren - Whether children should start collapsed
      * @returns {HTMLElement}
      */
-    static createNode(value, key = null) {
+    static createNode(value, key = null, startCollapsed = false, collapseChildren = false) {
         const div = document.createElement('div');
         div.className = 'json-viewer__node';
 
         if (Array.isArray(value)) {
-            this.renderArray(div, value, key);
+            this.renderArray(div, value, key, startCollapsed, collapseChildren);
         } else if (value !== null && typeof value === 'object') {
-            this.renderObject(div, value, key);
+            this.renderObject(div, value, key, startCollapsed, collapseChildren);
         } else {
             this.renderPrimitive(div, value, key);
         }
@@ -49,8 +53,10 @@ export class JSONRenderer {
      * @param {HTMLElement} container - Container element
      * @param {Object} obj - Object to render
      * @param {string|null} key - Object key
+     * @param {boolean} startCollapsed - Whether to start collapsed
+     * @param {boolean} collapseChildren - Whether children should start collapsed
      */
-    static renderObject(container, obj, key) {
+    static renderObject(container, obj, key, startCollapsed = false, collapseChildren = false) {
         const entries = Object.entries(obj);
         const keySpan = key
             ? `<span class="json-viewer__key">"${UIManager.escapeHtml(key)}"</span><span class="json-viewer__colon">: </span>`
@@ -59,16 +65,21 @@ export class JSONRenderer {
         // Header with expand/collapse
         const header = document.createElement('div');
         header.className = 'json-viewer__key-container';
-        header.innerHTML = `<span class="json-viewer__expand-icon">▼</span>${keySpan}<span class="json-viewer__brace">{</span><span class="json-viewer__count"> ${entries.length} items</span>`;
+        const expandIcon = startCollapsed ? '▶' : '▼';
+        header.innerHTML = `<span class="json-viewer__expand-icon">${expandIcon}</span>${keySpan}<span class="json-viewer__brace">{</span><span class="json-viewer__count"> ${entries.length} items</span>`;
 
         // Children container
         const childrenContainer = document.createElement('div');
         childrenContainer.className = 'json-viewer__children';
+        if (startCollapsed) {
+            childrenContainer.style.display = 'none';
+        }
 
         entries.forEach(([k, v]) => {
             const entry = document.createElement('div');
             entry.className = 'json-viewer__entry';
-            entry.appendChild(this.createNode(v, k));
+            // Children inherit the collapseChildren flag as their startCollapsed state
+            entry.appendChild(this.createNode(v, k, collapseChildren, false));
             childrenContainer.appendChild(entry);
         });
 
@@ -76,6 +87,9 @@ export class JSONRenderer {
         const footer = document.createElement('div');
         footer.innerHTML = '<span class="json-viewer__brace">}</span>';
         footer.style.marginLeft = '20px';
+        if (startCollapsed) {
+            footer.style.display = 'none';
+        }
 
         // Toggle functionality
         header.addEventListener('click', () => {
@@ -95,8 +109,10 @@ export class JSONRenderer {
      * @param {HTMLElement} container - Container element
      * @param {Array} arr - Array to render
      * @param {string|null} key - Object key
+     * @param {boolean} startCollapsed - Whether to start collapsed
+     * @param {boolean} collapseChildren - Whether children should start collapsed
      */
-    static renderArray(container, arr, key) {
+    static renderArray(container, arr, key, startCollapsed = false, collapseChildren = false) {
         const keySpan = key
             ? `<span class="json-viewer__key">"${UIManager.escapeHtml(key)}"</span><span class="json-viewer__colon">: </span>`
             : '';
@@ -104,16 +120,21 @@ export class JSONRenderer {
         // Header with expand/collapse
         const header = document.createElement('div');
         header.className = 'json-viewer__key-container';
-        header.innerHTML = `<span class="json-viewer__expand-icon">▼</span>${keySpan}<span class="json-viewer__brace">[</span><span class="json-viewer__count"> ${arr.length} items</span>`;
+        const expandIcon = startCollapsed ? '▶' : '▼';
+        header.innerHTML = `<span class="json-viewer__expand-icon">${expandIcon}</span>${keySpan}<span class="json-viewer__brace">[</span><span class="json-viewer__count"> ${arr.length} items</span>`;
 
         // Children container
         const childrenContainer = document.createElement('div');
         childrenContainer.className = 'json-viewer__children';
+        if (startCollapsed) {
+            childrenContainer.style.display = 'none';
+        }
 
         arr.forEach((v, i) => {
             const entry = document.createElement('div');
             entry.className = 'json-viewer__entry';
-            entry.appendChild(this.createNode(v, String(i)));
+            // Children inherit the collapseChildren flag as their startCollapsed state
+            entry.appendChild(this.createNode(v, String(i), collapseChildren, false));
             childrenContainer.appendChild(entry);
         });
 
@@ -121,6 +142,9 @@ export class JSONRenderer {
         const footer = document.createElement('div');
         footer.innerHTML = '<span class="json-viewer__brace">]</span>';
         footer.style.marginLeft = '20px';
+        if (startCollapsed) {
+            footer.style.display = 'none';
+        }
 
         // Toggle functionality
         header.addEventListener('click', () => {
