@@ -63,6 +63,9 @@ service runs alongside the node or inside it.
 - When `auth_mode = "embedded"` but there is no `[network.server.embedded_auth]`
   block, the service defaults to a local RocksDB store under the node’s home
   directory (`auth/`) and enables only the `user_password` provider.
+- `merod init --auth-mode embedded` writes those defaults during node
+  initialization; use `--auth-storage-path <dir>` to move the RocksDB data or
+  `--auth-storage memory` for an ephemeral setup.
 - Switching back to proxy mode is as simple as running with
   `--auth-mode proxy` (or removing the `auth_mode` line), keeping existing
   deployments compatible.
