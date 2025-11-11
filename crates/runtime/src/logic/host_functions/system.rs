@@ -1,13 +1,16 @@
+use borsh::to_vec;
 use core::cell::RefCell;
 use serde::Serialize;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     errors::{HostError, Location, PanicContext},
-    logic::{sys, VMHostFunctions, VMLogicResult},
+    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult},
 };
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_storage::{address::Id, index::Index, store::MainStorage};
+use calimero_storage::{
+    address::Id, entities::Metadata, index::Index, interface::Interface, store::MainStorage,
+};
 
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
@@ -644,7 +647,15 @@ impl VMHostFunctions<'_> {
 
     /// Commits the execution state, providing a state root and an artifact.
     ///
-    /// This function can only be called once per execution.
+    /// Every JS contract must call this exactly once per execution. The runtime
+    /// stores the root hash and artifact in the `Outcome`; the **Rust core**
+    /// (particularly the Wasm execution services in `crates/context` and
+    /// `crates/node`) expects those fields to be present so it can broadcast
+    /// receipts, trigger event handlers, and persist execution metadata. This is
+    /// the same contract followed by the Rust SDK—those services never inspect
+    /// guest memory directly, they rely on the `Outcome` produced here. The
+    /// newer `persist_root_state` API complements this by ensuring the Merkle
+    /// tree reflects the same state.
     ///
     /// # Arguments
     ///
@@ -665,12 +676,13 @@ impl VMHostFunctions<'_> {
         let artifact = self.read_guest_memory_slice(&artifact).to_vec();
 
         self.with_logic_mut(|logic| {
-            if logic.root_hash.is_some() {
+            if logic.commit_called {
                 return Err(HostError::InvalidMemoryAccess);
             }
 
             logic.root_hash = Some(root_hash);
             logic.artifact = artifact;
+            logic.commit_called = true;
 
             Ok(())
         })?;
@@ -678,8 +690,86 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    /// Flushes pending CRDT actions recorded by the storage layer and commits them as a causal delta.
+    /// Persists the root state document provided by the guest runtime.
     ///
+    /// Instead of writing directly to storage (which would bypass Merkle bookkeeping),
+    /// the payload is stored through the storage interface so that parent hashes are
+    /// recomputed and a CRDT action is emitted. The Rust SDK accomplishes the same thing
+    /// by calling storage APIs directly; the JS SDK cannot, so it funnels the serialized
+    /// root document back to the host via this hook. Paired with `commit` and
+    /// `flush_delta`, this keeps both the outcome artifact and the storage DAG in sync.
+    pub fn persist_root_state(
+        &mut self,
+        src_doc_ptr: u64,
+        created_at: u64,
+        updated_at: u64,
+    ) -> VMLogicResult<()> {
+        let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_doc_ptr)? };
+        let payload = self.read_guest_memory_slice(&buffer).to_vec();
+
+        let metadata = Metadata::new(created_at, updated_at.max(created_at));
+
+        Interface::<MainStorage>::save_raw(Id::root(), payload, metadata).map_err(|err| {
+            VMLogicError::from(HostError::Panic {
+                context: PanicContext::Host,
+                message: format!("persist_root_state failed: {err}"),
+                location: Location::Unknown,
+            })
+        })?;
+
+        Ok(())
+    }
+
+    /// Reads the persisted root state document into a register.
+    ///
+    /// Returns `1` if the state exists, `0` otherwise.
+    pub fn read_root_state(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        if let Some(bytes) = Interface::<MainStorage>::find_by_id_raw(Id::root()) {
+            let value_len = bytes.len();
+            self.with_logic_mut(|logic| {
+                let _ = logic.registers.set(logic.limits, dest_register_id, bytes);
+                Ok::<(), HostError>(())
+            })?;
+
+            debug!(
+                target: "runtime::host::system",
+                value_len,
+                dest_register_id,
+                "read_root_state"
+            );
+
+            return Ok(1);
+        }
+
+        Ok(0)
+    }
+
+    /// Applies a serialized storage delta produced by another executor.
+    ///
+    /// The delta must be encoded as `StorageDelta::Actions` in Borsh format. The host
+    /// will deserialize the actions and feed them into the storage interface so that
+    /// CRDT entities and the root document are updated atomically.
+    pub fn apply_storage_delta(&mut self, src_delta_ptr: u64) -> VMLogicResult<()> {
+        let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_delta_ptr)? };
+        let payload = self.read_guest_memory_slice(&buffer).to_vec();
+
+        calimero_storage::collections::Root::<Vec<u8>>::sync(&payload).map_err(|err| {
+            VMLogicError::from(HostError::Panic {
+                context: PanicContext::Host,
+                message: format!("apply_storage_delta failed: {err}"),
+                location: Location::Unknown,
+            })
+        })?;
+
+        Ok(())
+    }
+
+    /// Flushes pending CRDT actions recorded by the storage layer and commits them
+    /// as a causal delta.
+    ///
+    /// The delta is only emitted if `persist_root_state` (or other storage
+    /// operations) recorded actions since the last flush. The Rust SDK triggers
+    /// this automatically when collections mutate; the JS SDK does it manually.
     /// Returns `1` if a delta was emitted, `0` if there was nothing to commit.
     pub fn flush_delta(&mut self) -> VMLogicResult<i32> {
         let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())
@@ -692,8 +782,51 @@ impl VMHostFunctions<'_> {
             .unwrap_or([0; 32]);
 
         match calimero_storage::delta::commit_causal_delta(&root_hash) {
-            Ok(Some(_)) => Ok(1),
-            Ok(None) => Ok(0),
+            Ok(Some(delta)) => {
+                use calimero_storage::interface::Action;
+
+                let action_ids: Vec<String> = delta
+                    .actions
+                    .iter()
+                    .map(|action| match action {
+                        Action::Add { id, .. }
+                        | Action::Update { id, .. }
+                        | Action::DeleteRef { id, .. }
+                        | Action::Compare { id } => format!("{id:?}"),
+                    })
+                    .collect();
+
+                debug!(
+                    target: "runtime::host::system",
+                    action_count = delta.actions.len(),
+                    parent_count = delta.parents.len(),
+                    action_ids = ?action_ids,
+                    "flush_delta emitting causal delta"
+                );
+                let storage_delta =
+                    calimero_storage::delta::StorageDelta::Actions(delta.actions.clone());
+                let artifact = to_vec(&storage_delta).map_err(|err| {
+                    VMLogicError::from(HostError::Panic {
+                        context: PanicContext::Host,
+                        message: format!("failed to serialize causal delta: {err}"),
+                        location: Location::Unknown,
+                    })
+                })?;
+
+                self.with_logic_mut(|logic| {
+                    logic.root_hash = Some(root_hash);
+                    logic.artifact = artifact;
+                    Ok::<(), HostError>(())
+                })?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.with_logic_mut(|logic| {
+                    logic.root_hash = Some(root_hash);
+                    Ok::<(), HostError>(())
+                })?;
+                Ok(0)
+            }
             Err(err) => Err(HostError::Panic {
                 context: PanicContext::Host,
                 message: format!("commit_causal_delta failed: {err}"),

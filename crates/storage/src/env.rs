@@ -243,9 +243,7 @@ mod mocked {
     /// Commits the root hash to the runtime.
     pub(super) fn commit(root_hash: &[u8; 32], _artifact: &[u8]) {
         ROOT_HASH.with(|rh| {
-            if rh.borrow_mut().replace(*root_hash).is_some() {
-                Option::expect(None, "State previously committed")
-            }
+            let _ = rh.borrow_mut().replace(*root_hash);
         });
     }
 
