@@ -23,14 +23,31 @@ impl RunCommand {
         }
 
         let config = ConfigFile::load(&path).await?;
-        let server_config = ServerConfig::new(
-            config.network.server.listen,
-            config.identity.clone(),
-            config.network.server.admin,
-            config.network.server.jsonrpc,
-            config.network.server.websocket,
-            config.network.server.sse,
-        );
+        let server_config = {
+            #[cfg(feature = "bundled-auth")]
+            {
+                ServerConfig::with_bundled_auth(
+                    config.network.server.listen,
+                    config.identity.clone(),
+                    config.network.server.admin,
+                    config.network.server.jsonrpc,
+                    config.network.server.websocket,
+                    config.network.server.sse,
+                    config.network.server.auth.clone(),
+                )
+            }
+            #[cfg(not(feature = "bundled-auth"))]
+            {
+                ServerConfig::new(
+                    config.network.server.listen,
+                    config.identity.clone(),
+                    config.network.server.admin,
+                    config.network.server.jsonrpc,
+                    config.network.server.websocket,
+                    config.network.server.sse,
+                )
+            }
+        };
 
         start(NodeConfig {
             home: path.clone(),

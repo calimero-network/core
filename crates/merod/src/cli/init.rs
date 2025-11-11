@@ -321,6 +321,36 @@ impl InitCommand {
             params: client_params,
         };
 
+        let server_config = {
+            #[cfg(feature = "bundled-auth")]
+            {
+                ServerConfig::with_bundled_auth(
+                    self.server_host
+                        .into_iter()
+                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
+                        .collect(),
+                    Some(AdminConfig::new(true)),
+                    Some(JsonRpcConfig::new(true)),
+                    Some(WsConfig::new(true)),
+                    Some(SseConfig::new(true)),
+                    None,
+                )
+            }
+            #[cfg(not(feature = "bundled-auth"))]
+            {
+                ServerConfig::new(
+                    self.server_host
+                        .into_iter()
+                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
+                        .collect(),
+                    Some(AdminConfig::new(true)),
+                    Some(JsonRpcConfig::new(true)),
+                    Some(WsConfig::new(true)),
+                    Some(SseConfig::new(true)),
+                )
+            }
+        };
+
         let config = ConfigFile::new(
             identity,
             NetworkConfig::new(
@@ -333,16 +363,7 @@ impl InitCommand {
                     RelayConfig::new(self.relay_registrations_limit),
                     AutonatConfig::new(self.autonat_confidence_threshold),
                 ),
-                ServerConfig::new(
-                    self.server_host
-                        .into_iter()
-                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
-                        .collect(),
-                    Some(AdminConfig::new(true)),
-                    Some(JsonRpcConfig::new(true)),
-                    Some(WsConfig::new(true)),
-                    Some(SseConfig::new(true)),
-                ),
+                server_config,
             ),
             SyncConfig {
                 timeout: DEFAULT_SYNC_TIMEOUT,

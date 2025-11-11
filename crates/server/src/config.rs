@@ -8,6 +8,9 @@ use crate::jsonrpc::JsonRpcConfig;
 use crate::sse::SseConfig;
 use crate::ws::WsConfig;
 
+#[cfg(feature = "bundled-auth")]
+use mero_auth::config::AuthConfig as BundledAuthConfig;
+
 pub const DEFAULT_PORT: u16 = 2528; // (CHAT in T9) + 100
 pub const DEFAULT_ADDRS: [IpAddr; 2] = [
     IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -28,6 +31,9 @@ pub struct ServerConfig {
     pub websocket: Option<WsConfig>,
 
     pub sse: Option<SseConfig>,
+
+    #[cfg(feature = "bundled-auth")]
+    pub bundled_auth: Option<BundledAuthConfig>,
 }
 
 impl ServerConfig {
@@ -47,7 +53,37 @@ impl ServerConfig {
             jsonrpc,
             websocket,
             sse,
+            #[cfg(feature = "bundled-auth")]
+            bundled_auth: None,
         }
+    }
+
+    #[cfg(feature = "bundled-auth")]
+    #[must_use]
+    pub const fn with_bundled_auth(
+        listen: Vec<Multiaddr>,
+        identity: Keypair,
+        admin: Option<AdminConfig>,
+        jsonrpc: Option<JsonRpcConfig>,
+        websocket: Option<WsConfig>,
+        sse: Option<SseConfig>,
+        bundled_auth: Option<BundledAuthConfig>,
+    ) -> Self {
+        Self {
+            listen,
+            identity,
+            admin,
+            jsonrpc,
+            websocket,
+            sse,
+            bundled_auth,
+        }
+    }
+
+    #[cfg(feature = "bundled-auth")]
+    #[must_use]
+    pub fn bundled_auth(&self) -> Option<&BundledAuthConfig> {
+        self.bundled_auth.as_ref()
     }
 }
 

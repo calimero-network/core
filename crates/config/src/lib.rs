@@ -12,6 +12,9 @@ use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read_to_string, write};
 
+#[cfg(feature = "bundled-auth")]
+use mero_auth::config::AuthConfig as BundledAuthConfig;
+
 pub const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -92,6 +95,10 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub sse: Option<SseConfig>,
+
+    #[cfg(feature = "bundled-auth")]
+    #[serde(default)]
+    pub auth: Option<BundledAuthConfig>,
 }
 
 impl ServerConfig {
@@ -109,7 +116,35 @@ impl ServerConfig {
             jsonrpc,
             websocket,
             sse,
+            #[cfg(feature = "bundled-auth")]
+            auth: None,
         }
+    }
+
+    #[cfg(feature = "bundled-auth")]
+    #[must_use]
+    pub const fn with_bundled_auth(
+        listen: Vec<Multiaddr>,
+        admin: Option<AdminConfig>,
+        jsonrpc: Option<JsonRpcConfig>,
+        websocket: Option<WsConfig>,
+        sse: Option<SseConfig>,
+        auth: Option<BundledAuthConfig>,
+    ) -> Self {
+        Self {
+            listen,
+            admin,
+            jsonrpc,
+            websocket,
+            sse,
+            auth,
+        }
+    }
+
+    #[cfg(feature = "bundled-auth")]
+    #[must_use]
+    pub fn auth(&self) -> Option<&BundledAuthConfig> {
+        self.auth.as_ref()
     }
 }
 

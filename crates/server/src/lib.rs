@@ -20,6 +20,8 @@ use tracing::warn;
 use crate::admin::service::{setup, site};
 
 pub mod admin;
+#[cfg(feature = "bundled-auth")]
+mod auth;
 pub mod config;
 pub mod jsonrpc;
 mod metrics;
@@ -93,7 +95,7 @@ pub async fn start(
 
     let mut app = Router::new();
 
-    let mut serviced = false;
+    let mut service_count = 0usize;
 
     let shared_state = Arc::new(AdminState::new(
         datastore.clone(),
@@ -103,18 +105,17 @@ pub async fn start(
 
     if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
         app = app.nest(&path, router);
-        serviced = true;
+        service_count += 1;
     }
 
     if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
         app = app.route(&path, handler);
-
-        serviced = true;
+        service_count += 1;
     }
 
     if let Some((path, router)) = sse::service(&config, node_client.clone(), datastore.clone()) {
         app = app.nest(&path, router);
-        serviced = true;
+        service_count += 1;
     }
 
     if let Some((api_path, router)) = setup(&config, shared_state) {
@@ -123,15 +124,22 @@ pub async fn start(
         }
 
         app = app.nest(&api_path, router);
-        serviced = true;
+        service_count += 1;
     }
 
     if let Some((path, router)) = metrics::service(&config, prom_registry) {
         app = app.nest(path, router);
-        serviced = true;
+        service_count += 1;
     }
 
-    if !serviced {
+    #[cfg(feature = "bundled-auth")]
+    {
+        let bundled_auth = auth::initialise(&config).await?;
+        app = app.merge(bundled_auth.into_router());
+        service_count += 1;
+    }
+
+    if service_count == 0 {
         warn!("No services enabled, enable at least one service to start the server");
 
         return Ok(());

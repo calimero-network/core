@@ -46,5 +46,9 @@ calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true
 calimero-version.workspace = true
 
+[features]
+default = []
+bundled-auth = ["calimero-server/bundled-auth", "calimero-config/bundled-auth"]
+
 [package.metadata.workspaces]
 independent = true
