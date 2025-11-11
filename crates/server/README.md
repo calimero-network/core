@@ -126,6 +126,47 @@ merod --node-name my-node init --auth-mode embedded --auth-storage memory
   confirm `/auth` endpoints are reachable in embedded mode and that the proxy mode
   continues to rely on the external service.
 
+#### Configuring `server.auth`
+
+When the bundled build is enabled, the node configuration (`config.toml`) can inline
+authentication settings under `network.server.auth`. The schema matches `mero-auth`
+configuration; for example:
+
+```toml
+[network.server.auth]
+listen_addr = "0.0.0.0:3001"
+
+[network.server.auth.jwt]
+issuer = "calimero-auth"
+access_token_expiry = 3600
+refresh_token_expiry = 2_592_000
+
+[network.server.auth.storage]
+type = "rocksdb"
+path = "data/auth"
+
+[network.server.auth.providers]
+near_wallet = true
+user_password = false
+```
+
+Omitting the block falls back to the embedded defaults (in-memory storage, localhost
+bind, and the standard provider set). External deployments can keep existing configs
+unchanged while opting in environment by environment.
+
+#### CI/CD expectations
+
+- Build both targets:
+  - `cargo build -p calimero-server` (external-auth binary)
+  - `cargo build -p calimero-server --features bundled-auth` (embedded-auth binary)
+- Publish or package both artefacts; downstream infrastructure selects the variant.
+- For the bundled build, ensure the environment exposes the frontend assets:
+  - `CALIMERO_AUTH_FRONTEND_SRC` pointing to a release archive or local build, or
+  - `CALIMERO_AUTH_FRONTEND_PATH` pointing to a prebuilt directory.
+- When running integration suites, exercise at least one smoke test against each
+  binary to confirm `/auth` endpoints are reachable in the embedded build and that
+  the external build still reaches the standalone auth service.
+
 ### 1. Admin API
 
 The Admin API component of the Node Server exposes API for connection with the
