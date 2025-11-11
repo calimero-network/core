@@ -4,7 +4,7 @@
   - [Introduction](#introduction)
   - [Build Modes](#build-modes)
     - [Default mode (external auth)](#default-mode-external-auth)
-    - [Bundled auth mode](#bundled-auth-mode)
+    - [Embedded auth mode](#embedded-auth-mode)
     - [1. Admin API](#1-admin-api)
     - [2. JSON rpc](#2-json-rpc)
       - [Query Method](#query-method)
@@ -53,41 +53,40 @@ service runs alongside the node or inside it.
   authentication traffic to it, matching the current production setup.
 - Existing configuration files work without modification.
 
-### Bundled auth mode
+### Embedded auth mode
 
-- Enable the feature flag: `cargo build -p calimero-server --features bundled-auth`.
-- The resulting binary embeds the `mero-auth` crate, exposes its `/auth` endpoints,
-  and serves the authentication UI assets directly from the node.
-- `CALIMERO_AUTH_FRONTEND_PATH` (or the fetch-related environment variables used by
-  `mero-auth`’s build script) must be set during the build so assets can be bundled.
-- Server configuration accepts an optional `auth` section to tune storage, provider,
-  and security settings for the embedded service; defaults mirror the standalone
-  auth binary.
-- Disabling the feature flag restores the external-auth behaviour with no config
-  changes required.
-- CI/CD pipelines should publish both binaries so infrastructure can choose the
-  appropriate deployment model per environment.
+- Choose the mode at runtime: `merod run --auth-mode embedded` or set
+  `network.server.auth_mode = "embedded"` in `config.toml`.
+- The node boots the embedded `mero-auth` service, mounts its `/auth` and `/admin`
+  routes, and guards the JSON-RPC, admin, WebSocket, and SSE endpoints with the
+  bundled JWT middleware.
+- When `auth_mode = "embedded"` but there is no `[network.server.embedded_auth]`
+  block, the service falls back
+  falls back to in-memory storage and localhost bindings, mirroring
+  `mero-auth`’s defaults.
+- Switching back to proxy mode is as simple as running with
+  `--auth-mode proxy` (or removing the `auth_mode` line), keeping existing
+  deployments compatible.
 
-#### Configuring `server.auth`
+#### Configuring `server.embedded_auth`
 
-When the bundled build is enabled, the node configuration (`config.toml`) can inline
-authentication settings under `network.server.auth`. The schema matches `mero-auth`
-configuration; for example:
+When embedded mode is active you can inline authentication settings under
+`network.server.embedded_auth`. The schema matches `mero-auth` configuration; for example:
 
 ```toml
-[network.server.auth]
+[network.server.embedded_auth]
 listen_addr = "0.0.0.0:3001"
 
-[network.server.auth.jwt]
+[network.server.embedded_auth.jwt]
 issuer = "calimero-auth"
 access_token_expiry = 3600
 refresh_token_expiry = 2_592_000
 
-[network.server.auth.storage]
+[network.server.embedded_auth.storage]
 type = "rocksdb"
 path = "data/auth"
 
-[network.server.auth.providers]
+[network.server.embedded_auth.providers]
 near_wallet = true
 user_password = false
 ```
@@ -98,16 +97,15 @@ unchanged while opting in environment by environment.
 
 #### CI/CD expectations
 
-- Build both targets:
-  - `cargo build -p calimero-server` (external-auth binary)
-  - `cargo build -p calimero-server --features bundled-auth` (embedded-auth binary)
-- Publish or package both artefacts; downstream infrastructure selects the variant.
+- Build the node once: `cargo build -p calimero-server`.
+- Publish or package the single artefact; operators select the mode through
+  configuration or the CLI flag.
 - For the bundled build, ensure the environment exposes the frontend assets:
   - `CALIMERO_AUTH_FRONTEND_SRC` pointing to a release archive or local build, or
   - `CALIMERO_AUTH_FRONTEND_PATH` pointing to a prebuilt directory.
-- When running integration suites, exercise at least one smoke test against each
-  binary to confirm `/auth` endpoints are reachable in the embedded build and that
-  the external build still reaches the standalone auth service.
+- When running integration suites, exercise at least one smoke test in each mode to
+  confirm `/auth` endpoints are reachable in embedded mode and that the proxy mode
+  continues to rely on the external service.
 
 ### 1. Admin API
 

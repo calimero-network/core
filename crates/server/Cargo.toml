@@ -36,7 +36,7 @@ calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-store = { workspace = true, features = ["serde"] }
-mero-auth = { path = "../auth", optional = true }
+mero-auth = { path = "../auth" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 configfs-tsm.workspace = true
@@ -56,7 +56,3 @@ reqwest = { workspace = true, features = ["blocking"] }
 reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-
-[features]
-default = []
-bundled-auth = ["mero-auth"]

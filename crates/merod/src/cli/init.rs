@@ -21,6 +21,7 @@ use calimero_network_primitives::config::{
     SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
+use calimero_server::config::AuthMode;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
@@ -42,6 +43,7 @@ use tokio::fs::{self, create_dir, create_dir_all};
 use tracing::{info, warn};
 use url::Url;
 
+use super::auth_mode::AuthModeArg;
 use crate::{cli, defaults};
 
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
@@ -147,6 +149,10 @@ pub struct InitCommand {
     #[clap(long, value_name = "PORT")]
     #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
     pub server_port: u16,
+
+    /// Authentication mode for server endpoints
+    #[clap(long, value_enum)]
+    pub auth_mode: Option<AuthModeArg>,
 
     /// URL of the relayer for submitting NEAR transactions
     #[clap(long, value_name = "URL")]
@@ -321,35 +327,20 @@ impl InitCommand {
             params: client_params,
         };
 
-        let server_config = {
-            #[cfg(feature = "bundled-auth")]
-            {
-                ServerConfig::with_bundled_auth(
-                    self.server_host
-                        .into_iter()
-                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
-                        .collect(),
-                    Some(AdminConfig::new(true)),
-                    Some(JsonRpcConfig::new(true)),
-                    Some(WsConfig::new(true)),
-                    Some(SseConfig::new(true)),
-                    None,
-                )
-            }
-            #[cfg(not(feature = "bundled-auth"))]
-            {
-                ServerConfig::new(
-                    self.server_host
-                        .into_iter()
-                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
-                        .collect(),
-                    Some(AdminConfig::new(true)),
-                    Some(JsonRpcConfig::new(true)),
-                    Some(WsConfig::new(true)),
-                    Some(SseConfig::new(true)),
-                )
-            }
-        };
+        let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
+
+        let server_config = ServerConfig::with_auth(
+            self.server_host
+                .into_iter()
+                .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
+                .collect(),
+            Some(AdminConfig::new(true)),
+            Some(JsonRpcConfig::new(true)),
+            Some(WsConfig::new(true)),
+            Some(SseConfig::new(true)),
+            auth_mode,
+            None,
+        );
 
         let config = ConfigFile::new(
             identity,

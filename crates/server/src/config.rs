@@ -8,14 +8,22 @@ use crate::jsonrpc::JsonRpcConfig;
 use crate::sse::SseConfig;
 use crate::ws::WsConfig;
 
-#[cfg(feature = "bundled-auth")]
-use mero_auth::config::AuthConfig as BundledAuthConfig;
+use mero_auth::config::AuthConfig;
+use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PORT: u16 = 2528; // (CHAT in T9) + 100
 pub const DEFAULT_ADDRS: [IpAddr; 2] = [
     IpAddr::V4(Ipv4Addr::LOCALHOST),
     IpAddr::V6(Ipv6Addr::LOCALHOST),
 ];
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    #[default]
+    Proxy,
+    Embedded,
+}
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -32,8 +40,9 @@ pub struct ServerConfig {
 
     pub sse: Option<SseConfig>,
 
-    #[cfg(feature = "bundled-auth")]
-    pub bundled_auth: Option<BundledAuthConfig>,
+    pub auth_mode: AuthMode,
+
+    pub embedded_auth: Option<AuthConfig>,
 }
 
 impl ServerConfig {
@@ -53,21 +62,21 @@ impl ServerConfig {
             jsonrpc,
             websocket,
             sse,
-            #[cfg(feature = "bundled-auth")]
-            bundled_auth: None,
+            auth_mode: AuthMode::Proxy,
+            embedded_auth: None,
         }
     }
 
-    #[cfg(feature = "bundled-auth")]
     #[must_use]
-    pub const fn with_bundled_auth(
+    pub const fn with_auth(
         listen: Vec<Multiaddr>,
         identity: Keypair,
         admin: Option<AdminConfig>,
         jsonrpc: Option<JsonRpcConfig>,
         websocket: Option<WsConfig>,
         sse: Option<SseConfig>,
-        bundled_auth: Option<BundledAuthConfig>,
+        auth_mode: AuthMode,
+        embedded_auth: Option<AuthConfig>,
     ) -> Self {
         Self {
             listen,
@@ -76,14 +85,19 @@ impl ServerConfig {
             jsonrpc,
             websocket,
             sse,
-            bundled_auth,
+            auth_mode,
+            embedded_auth,
         }
     }
 
-    #[cfg(feature = "bundled-auth")]
     #[must_use]
-    pub fn bundled_auth(&self) -> Option<&BundledAuthConfig> {
-        self.bundled_auth.as_ref()
+    pub fn use_embedded_auth(&self) -> bool {
+        matches!(self.auth_mode, AuthMode::Embedded)
+    }
+
+    #[must_use]
+    pub fn embedded_auth_config(&self) -> Option<&AuthConfig> {
+        self.embedded_auth.as_ref()
     }
 }
 
