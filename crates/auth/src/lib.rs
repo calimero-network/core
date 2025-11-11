@@ -5,6 +5,7 @@ use thiserror::Error;
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod embedded;
 pub mod providers;
 pub mod secrets;
 pub mod server;
