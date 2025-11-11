@@ -1,7 +1,3 @@
-use core::net::IpAddr;
-use core::time::Duration;
-use std::collections::BTreeMap;
-
 use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
@@ -21,6 +17,7 @@ use calimero_network_primitives::config::{
     SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
+use calimero_server::config::AuthMode;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
@@ -28,20 +25,26 @@ use calimero_store::config::StoreConfig;
 use calimero_store::Store;
 use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, ValueEnum};
+use core::net::IpAddr;
+use core::time::Duration;
 use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use hex::encode;
 use ic_agent::export::Principal;
 use ic_agent::identity::{BasicIdentity, Identity};
 use libp2p::identity::Keypair;
+use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig};
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
 use starknet::signers::SigningKey;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use tokio::fs::{self, create_dir, create_dir_all};
 use tracing::{info, warn};
 use url::Url;
 
+use super::auth_mode::AuthModeArg;
 use crate::{cli, defaults};
 
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
@@ -115,6 +118,12 @@ pub enum ConfigProtocol {
     Ethereum,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum AuthStorageArg {
+    Persistent,
+    Memory,
+}
+
 /// Initialize node configuration
 #[derive(Debug, Parser)]
 pub struct InitCommand {
@@ -147,6 +156,18 @@ pub struct InitCommand {
     #[clap(long, value_name = "PORT")]
     #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
     pub server_port: u16,
+
+    /// Authentication mode for server endpoints
+    #[clap(long, value_enum)]
+    pub auth_mode: Option<AuthModeArg>,
+
+    /// Embedded auth storage implementation (only used when auth mode is embedded)
+    #[clap(long, value_enum)]
+    pub auth_storage: Option<AuthStorageArg>,
+
+    /// Embedded auth storage path (only used with persistent storage)
+    #[clap(long, value_name = "PATH")]
+    pub auth_storage_path: Option<PathBuf>,
 
     /// URL of the relayer for submitting NEAR transactions
     #[clap(long, value_name = "URL")]
@@ -321,6 +342,46 @@ impl InitCommand {
             params: client_params,
         };
 
+        let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
+        let embedded_auth = if matches!(auth_mode, AuthMode::Embedded) {
+            let mut auth_cfg: EmbeddedAuthConfig = mero_auth::embedded::default_config();
+            let storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
+            let storage_path = self.auth_storage_path.clone();
+
+            match storage_choice {
+                AuthStorageArg::Persistent => {
+                    let path = storage_path.unwrap_or_else(|| PathBuf::from("auth"));
+                    auth_cfg.storage = AuthStorageConfig::RocksDB { path };
+                }
+                AuthStorageArg::Memory => {
+                    if let Some(path) = storage_path {
+                        warn!(
+                            "Ignoring --auth-storage-path={} because in-memory storage is selected",
+                            path.display()
+                        );
+                    }
+                    auth_cfg.storage = AuthStorageConfig::Memory;
+                }
+            }
+
+            Some(auth_cfg)
+        } else {
+            None
+        };
+
+        let server_config = ServerConfig::with_auth(
+            self.server_host
+                .into_iter()
+                .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
+                .collect(),
+            Some(AdminConfig::new(true)),
+            Some(JsonRpcConfig::new(true)),
+            Some(WsConfig::new(true)),
+            Some(SseConfig::new(true)),
+            auth_mode,
+            embedded_auth,
+        );
+
         let config = ConfigFile::new(
             identity,
             NetworkConfig::new(
@@ -333,16 +394,7 @@ impl InitCommand {
                     RelayConfig::new(self.relay_registrations_limit),
                     AutonatConfig::new(self.autonat_confidence_threshold),
                 ),
-                ServerConfig::new(
-                    self.server_host
-                        .into_iter()
-                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
-                        .collect(),
-                    Some(AdminConfig::new(true)),
-                    Some(JsonRpcConfig::new(true)),
-                    Some(WsConfig::new(true)),
-                    Some(SseConfig::new(true)),
-                ),
+                server_config,
             ),
             SyncConfig {
                 timeout: DEFAULT_SYNC_TIMEOUT,
