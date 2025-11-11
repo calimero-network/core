@@ -15,7 +15,7 @@ use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::warn;
+use tracing::{error, info, warn};
 
 use crate::admin::service::{setup, site};
 
@@ -59,6 +59,12 @@ pub async fn start(
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
+    let requested_listen = config.listen.clone();
+    info!(
+        ?requested_listen,
+        "calimero_server: requested listen multiaddrs"
+    );
+
     let mut want_listeners = config.listen.into_iter().peekable();
 
     while let Some(addr) = want_listeners.next() {
@@ -74,16 +80,28 @@ pub async fn start(
             bail!("Invalid multiaddr, expected TCP component");
         };
 
-        match TcpListener::bind(SocketAddr::from((host, port))).await {
+        let socket = SocketAddr::from((host, port));
+
+        info!(%socket, "calimero_server: attempting to bind HTTP listener");
+
+        match TcpListener::bind(socket).await {
             Ok(listener) => {
                 let local_port = listener.local_addr()?.port();
                 addrs.push(
                     addr.replace(1, |_| Some(Protocol::Tcp(local_port)))
                         .unwrap(), // safety: we know the index is valid
                 );
+
+                info!(
+                    original = %socket,
+                    bound = %listener.local_addr()?,
+                    "calimero_server: HTTP listener bound successfully"
+                );
                 listeners.push(listener);
             }
             Err(err) => {
+                error!(%socket, error = %err, "calimero_server: failed to bind HTTP listener");
+
                 if want_listeners.peek().is_none() {
                     bail!(err);
                 }
@@ -91,6 +109,11 @@ pub async fn start(
         }
     }
     config.listen = addrs;
+
+    if listeners.is_empty() {
+        error!("calimero_server: no HTTP listeners were bound; aborting startup");
+        bail!("no HTTP listeners bound");
+    }
 
     let mut app = Router::new();
 
@@ -178,6 +201,11 @@ pub async fn start(
         return Ok(());
     }
 
+    info!(
+        service_count,
+        "calimero_server: building HTTP application with enabled services"
+    );
+
     app = app.layer(
         CorsLayer::new()
             .allow_origin(Any)
@@ -196,7 +224,21 @@ pub async fn start(
 
     for listener in listeners {
         let app = app.clone();
-        drop(set.spawn(async move { axum::serve(listener, app).await }));
+        drop(set.spawn(async move {
+            let local_addr = listener
+                .local_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|_| "<unknown>".to_string());
+            info!(%local_addr, "calimero_server: starting HTTP service task");
+
+            if let Err(err) = axum::serve(listener, app).await {
+                error!(%local_addr, error = %err, "calimero_server: HTTP service exited with error");
+                return Err(err);
+            }
+
+            warn!(%local_addr, "calimero_server: HTTP service completed unexpectedly");
+            Ok(())
+        }));
     }
 
     while let Some(result) = set.join_next().await {
