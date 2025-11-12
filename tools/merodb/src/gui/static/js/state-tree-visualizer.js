@@ -567,9 +567,30 @@ export class StateTreeVisualizer {
             return date.toLocaleString();
         };
 
-        const formatHash = (hash) => {
+        const formatHash = (hash, label) => {
             if (!hash) return 'N/A';
-            return `${hash.substring(0, 8)}...${hash.substring(hash.length - 8)}`;
+            const shortHash = `${hash.substring(0, 8)}...${hash.substring(hash.length - 8)}`;
+            const id = `hash-${label.replace(/\s+/g, '-').toLowerCase()}-${Math.random().toString(36).substring(2, 11)}`;
+            return `
+                <span class="hash-preview">
+                    <span class="hash-short" id="${id}">${shortHash}</span>
+                    <span class="hash-full hidden" id="${id}-full">${hash}</span>
+                    <button class="hash-toggle" onclick="
+                        const short = document.getElementById('${id}');
+                        const full = document.getElementById('${id}-full');
+                        const isExpanded = full.classList.contains('hidden');
+                        if (isExpanded) {
+                            short.classList.add('hidden');
+                            full.classList.remove('hidden');
+                            this.textContent = '▼';
+                        } else {
+                            short.classList.remove('hidden');
+                            full.classList.add('hidden');
+                            this.textContent = '▶';
+                        }
+                    ">▶</button>
+                </span>
+            `;
         };
 
         let html = '<div class="visualization__tooltip-section">';
@@ -625,22 +646,22 @@ export class StateTreeVisualizer {
         html += `<div class="visualization__tooltip-title">Hashes</div>`;
         html += `<div class="visualization__tooltip-row">`;
         html += `  <span class="visualization__tooltip-label">ID:</span>`;
-        html += `  <span class="visualization__tooltip-value">${formatHash(data.id)}</span>`;
+        html += `  <span class="visualization__tooltip-value">${formatHash(data.id, 'ID')}</span>`;
         html += `</div>`;
         html += `<div class="visualization__tooltip-row">`;
         html += `  <span class="visualization__tooltip-label">Full Hash:</span>`;
-        html += `  <span class="visualization__tooltip-value">${formatHash(data.full_hash)}</span>`;
+        html += `  <span class="visualization__tooltip-value">${formatHash(data.full_hash, 'Full Hash')}</span>`;
         html += `</div>`;
         html += `<div class="visualization__tooltip-row">`;
         html += `  <span class="visualization__tooltip-label">Own Hash:</span>`;
-        html += `  <span class="visualization__tooltip-value">${formatHash(data.own_hash)}</span>`;
+        html += `  <span class="visualization__tooltip-value">${formatHash(data.own_hash, 'Own Hash')}</span>`;
         html += `</div>`;
         // Use the parent node's ID from the D3 hierarchy instead of data.parent_id
         // This ensures the displayed parent ID matches what's shown in the tree
         if (node.parent) {
             html += `<div class="visualization__tooltip-row">`;
             html += `  <span class="visualization__tooltip-label">Parent ID:</span>`;
-            html += `  <span class="visualization__tooltip-value">${formatHash(node.parent.data.id)}</span>`;
+            html += `  <span class="visualization__tooltip-value">${formatHash(node.parent.data.id, 'Parent ID')}</span>`;
             html += `</div>`;
         }
         html += `</div>`;

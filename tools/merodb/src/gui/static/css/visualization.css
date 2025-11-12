@@ -158,6 +158,47 @@
     user-select: text;
 }
 
+/* Hash Preview with Expand/Collapse */
+.hash-preview {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+.hash-short,
+.hash-full {
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+}
+
+.hash-full {
+    word-break: break-all;
+    max-width: 300px;
+}
+
+.hash-toggle {
+    background: transparent;
+    border: none;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    line-height: 1;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-base);
+    flex-shrink: 0;
+}
+
+.hash-toggle:hover {
+    background: var(--color-bg-secondary);
+    color: var(--color-primary);
+}
+
 /* Pinned Tooltip Styles */
 .state-tooltip-pinned {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
