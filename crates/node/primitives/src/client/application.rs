@@ -595,7 +595,7 @@ impl NodeClient {
         bundle_data: &[u8],
         _manifest: &BundleManifest,
         extract_dir: &Utf8Path,
-        blobstore_root: &Utf8Path,
+        node_root: &Utf8Path,
         package: &str,
         current_version: &str,
     ) -> eyre::Result<()> {
@@ -644,7 +644,7 @@ impl NodeClient {
 
             // Check for duplicates in other versions at the same relative path
             if let Some(duplicate_path) = Self::find_duplicate_artifact(
-                blobstore_root,
+                node_root,
                 package,
                 current_version,
                 &hash_array,
