@@ -1,16 +1,96 @@
 use borsh::to_vec;
 use core::cell::RefCell;
+use core::mem;
 use serde::Serialize;
+use std::cell::Cell;
 use tracing::{debug, error, info, trace, warn};
 
+use crate::store::Storage as RuntimeStorage;
 use crate::{
     errors::{HostError, Location, PanicContext},
     logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult},
 };
 use calimero_primitives::common::DIGEST_SIZE;
+use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::{
     address::Id, entities::Metadata, index::Index, interface::Interface, store::MainStorage,
 };
+use std::rc::Rc;
+
+/// Construct a `RuntimeEnv` that forwards storage calls from the storage crate
+/// back into the VM's current `RuntimeStorage`.
+///
+/// The storage crate keeps its own thread-local accessors (used by both the WASM
+/// stubs and the mock in-process tests). When the JS runtime calls into
+/// `Interface::<MainStorage>::save_raw`/`find_by_id_raw` we need those calls to
+/// hit the per-execution storage handle (`logic.storage`) rather than the
+/// default mock store.  We cannot hand that trait object across the boundary
+/// directly, so we expose a set of closures that capture the data and vtable
+/// pointers of the current storage instance.  While the runtime call is in
+/// flight we install this `RuntimeEnv` via `with_runtime_env`, allowing the
+/// storage crate to resolve reads/writes against the live context storage.
+pub(super) fn build_runtime_env(
+    storage: &mut dyn RuntimeStorage,
+    context_id: [u8; DIGEST_SIZE],
+    executor_id: [u8; DIGEST_SIZE],
+) -> RuntimeEnv {
+    let raw_ptr: *mut dyn RuntimeStorage = storage;
+    let (data_ptr, vtable_ptr): (*mut (), *mut ()) = unsafe { mem::transmute(raw_ptr) };
+    let storage_cell = Rc::new(Cell::new((data_ptr as usize, vtable_ptr as usize)));
+
+    let reader_cell = Rc::clone(&storage_cell);
+    let reader = Rc::new(move |key: &calimero_storage::store::Key| {
+        let (data_addr, vtable_addr) = reader_cell.get();
+        if data_addr == 0 {
+            return None;
+        }
+
+        let key_vec = key.to_bytes().to_vec();
+        let raw = (data_addr as *mut (), vtable_addr as *mut ());
+        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        unsafe { (&*ptr).get(&key_vec) }
+    });
+
+    let writer_cell = Rc::clone(&storage_cell);
+    let writer = Rc::new(move |key: calimero_storage::store::Key, value: &[u8]| {
+        let (data_addr, vtable_addr) = writer_cell.get();
+        if data_addr == 0 {
+            return false;
+        }
+
+        let key_vec = key.to_bytes().to_vec();
+        let raw = (data_addr as *mut (), vtable_addr as *mut ());
+        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        unsafe { (&mut *ptr).set(key_vec, value.to_vec()).is_some() }
+    });
+
+    let remover_cell = Rc::clone(&storage_cell);
+    let remover = Rc::new(move |key: &calimero_storage::store::Key| {
+        let (data_addr, vtable_addr) = remover_cell.get();
+        if data_addr == 0 {
+            return false;
+        }
+
+        let key_vec = key.to_bytes().to_vec();
+        let raw = (data_addr as *mut (), vtable_addr as *mut ());
+        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        unsafe { (&mut *ptr).remove(&key_vec).is_some() }
+    });
+
+    // Safety notes:
+    //
+    // * The closures below capture the data and vtable pointers of `storage`
+    //   at the time `build_runtime_env` is called.  While the host function is
+    //   executing the VM guarantees exclusivity over `logic.storage`, so it is
+    //   safe to dereference those pointers inside the closures.
+    // * The pointers are stored in a `Cell` to keep the closures `Fn` (instead
+    //   of `FnMut`) which matches the storage crate’s expectations.
+    // * When the host function returns the `RuntimeEnv` drops out of scope and
+    //   the storage crate falls back to its default environment, so subsequent
+    //   calls that do not install an override will continue to use the mock /
+    //   WASM backends.
+    RuntimeEnv::new(reader, writer, remover, context_id, executor_id)
+}
 
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
@@ -219,10 +299,12 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
     pub fn context_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic
                 .registers
                 .set(logic.limits, dest_register_id, logic.context.context_id)
+                .map_err(VMLogicError::from)?;
+            Ok(())
         })?;
 
         trace!(
@@ -297,7 +379,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
     pub fn executor_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic.registers.set(
                 logic.limits,
                 dest_register_id,
@@ -324,7 +406,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
     pub fn input(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic
                 .registers
                 .set(logic.limits, dest_register_id, &*logic.context.input)
@@ -497,13 +579,14 @@ impl VMHostFunctions<'_> {
         // Read callback handler name from thread-local storage
         let handler = CURRENT_CALLBACK_HANDLER.with(|name| name.borrow().clone());
 
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic.events.push(Event {
                 kind,
                 data,
                 handler,
             });
-        });
+            Ok(())
+        })?;
 
         debug!(
             target: "runtime::host::system",
@@ -707,14 +790,61 @@ impl VMHostFunctions<'_> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_doc_ptr)? };
         let payload = self.read_guest_memory_slice(&buffer).to_vec();
 
-        let metadata = Metadata::new(created_at, updated_at.max(created_at));
+        fn hlc_to_nanos(ts: calimero_storage::logical_clock::HybridTimestamp) -> u64 {
+            let ntp = ts.get_time().as_u64();
+            let secs = ntp >> 32;
+            let frac = ntp & 0xFFFF_FFFF;
+            let nanos = (frac.saturating_mul(1_000_000_000)) >> 32;
+            secs.saturating_mul(1_000_000_000).saturating_add(nanos)
+        }
 
-        Interface::<MainStorage>::save_raw(Id::root(), payload, metadata).map_err(|err| {
-            VMLogicError::from(HostError::Panic {
-                context: PanicContext::Host,
-                message: format!("persist_root_state failed: {err}"),
-                location: Location::Unknown,
+        let logical_time = calimero_storage::env::hlc_timestamp();
+        let host_updated_at = hlc_to_nanos(logical_time);
+
+        let base_created_at = if created_at == 0 {
+            host_updated_at
+        } else {
+            created_at
+        };
+
+        let previous_updated = updated_at.max(base_created_at);
+        let monotonic_updated = host_updated_at.max(previous_updated.saturating_add(1));
+
+        let final_created_at = base_created_at;
+        let final_updated_at = monotonic_updated;
+        let mut payload_opt = Some(payload);
+
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            debug!(
+                target: "runtime::host::system",
+                "apply_storage_delta using context id"
+            );
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
+            );
+
+            let payload = payload_opt
+                .take()
+                .expect("persist_root_state payload already consumed");
+
+            with_runtime_env(env, move || {
+                Interface::<MainStorage>::save_raw(
+                    Id::root(),
+                    payload,
+                    Metadata::new(final_created_at, final_updated_at),
+                )
             })
+            .map_err(|err| {
+                VMLogicError::from(HostError::Panic {
+                    context: PanicContext::Host,
+                    message: format!("persist_root_state failed: {err}"),
+                    location: Location::Unknown,
+                })
+            })?;
+
+            Ok(())
         })?;
 
         Ok(())
@@ -724,24 +854,47 @@ impl VMHostFunctions<'_> {
     ///
     /// Returns `1` if the state exists, `0` otherwise.
     pub fn read_root_state(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
-        if let Some(bytes) = Interface::<MainStorage>::find_by_id_raw(Id::root()) {
-            let value_len = bytes.len();
-            self.with_logic_mut(|logic| {
-                let _ = logic.registers.set(logic.limits, dest_register_id, bytes);
-                Ok::<(), HostError>(())
-            })?;
-
-            debug!(
-                target: "runtime::host::system",
-                value_len,
-                dest_register_id,
-                "read_root_state"
+        self.with_logic_mut(|logic| -> VMLogicResult<i32> {
+            let context_hex: String = logic
+                .context
+                .context_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
             );
 
-            return Ok(1);
-        }
+            let maybe_bytes =
+                with_runtime_env(env, || Interface::<MainStorage>::find_by_id_raw(Id::root()));
 
-        Ok(0)
+            if let Some(bytes) = maybe_bytes {
+                let value_len = bytes.len();
+                logic
+                    .registers
+                    .set(logic.limits, dest_register_id, bytes)
+                    .map_err(VMLogicError::from)?;
+
+                info!(
+                    target: "runtime::host::system",
+                    value_len,
+                    dest_register_id,
+                    context_id = %context_hex,
+                    "read_root_state returned payload"
+                );
+
+                Ok(1)
+            } else {
+                info!(
+                    target: "runtime::host::system",
+                    context_id = %context_hex,
+                    "read_root_state returned no payload"
+                );
+                Ok(0)
+            }
+        })
     }
 
     /// Applies a serialized storage delta produced by another executor.
@@ -752,13 +905,63 @@ impl VMHostFunctions<'_> {
     pub fn apply_storage_delta(&mut self, src_delta_ptr: u64) -> VMLogicResult<()> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_delta_ptr)? };
         let payload = self.read_guest_memory_slice(&buffer).to_vec();
+        let delta_len = payload.len();
 
-        calimero_storage::collections::Root::<Vec<u8>>::sync(&payload).map_err(|err| {
-            VMLogicError::from(HostError::Panic {
-                context: PanicContext::Host,
-                message: format!("apply_storage_delta failed: {err}"),
-                location: Location::Unknown,
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            let context_hex: String = logic
+                .context
+                .context_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            info!(
+                target: "runtime::host::system",
+                delta_len,
+                context_id = %context_hex,
+                "apply_storage_delta start"
+            );
+
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
+            );
+
+            with_runtime_env(env.clone(), || {
+                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload)
             })
+            .map_err(|err| {
+                VMLogicError::from(HostError::Panic {
+                    context: PanicContext::Host,
+                    message: format!("apply_storage_delta failed: {err}"),
+                    location: Location::Unknown,
+                })
+            })?;
+
+            let root_hash =
+                with_runtime_env(env, || Index::<MainStorage>::get_hashes_for(Id::root()))
+                    .map_err(|err| {
+                        VMLogicError::from(HostError::Panic {
+                            context: PanicContext::Host,
+                            message: format!(
+                                "apply_storage_delta failed to fetch root hash: {err}"
+                            ),
+                            location: Location::Unknown,
+                        })
+                    })?
+                    .map(|(full_hash, _)| full_hash)
+                    .unwrap_or([0; 32]);
+
+            logic.root_hash = Some(root_hash);
+
+            info!(
+                target: "runtime::host::system",
+                delta_len,
+                context_id = %context_hex,
+                "apply_storage_delta completed"
+            );
+
+            Ok(())
         })?;
 
         Ok(())
@@ -772,7 +975,16 @@ impl VMHostFunctions<'_> {
     /// this automatically when collections mutate; the JS SDK does it manually.
     /// Returns `1` if a delta was emitted, `0` if there was nothing to commit.
     pub fn flush_delta(&mut self) -> VMLogicResult<i32> {
-        let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())
+        self.with_logic_mut(|logic| -> VMLogicResult<i32> {
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
+            );
+
+            let root_hash = with_runtime_env(env.clone(), || {
+                Index::<MainStorage>::get_hashes_for(Id::root())
+            })
             .map_err(|err| HostError::Panic {
                 context: PanicContext::Host,
                 message: format!("failed to fetch root hash: {err}"),
@@ -781,59 +993,59 @@ impl VMHostFunctions<'_> {
             .map(|(full_hash, _)| full_hash)
             .unwrap_or([0; 32]);
 
-        match calimero_storage::delta::commit_causal_delta(&root_hash) {
-            Ok(Some(delta)) => {
-                use calimero_storage::interface::Action;
+            let commit_result = with_runtime_env(env, || {
+                calimero_storage::delta::commit_causal_delta(&root_hash)
+            })
+            .map_err(|err| {
+                VMLogicError::from(HostError::Panic {
+                    context: PanicContext::Host,
+                    message: format!("commit_causal_delta failed: {err}"),
+                    location: Location::Unknown,
+                })
+            })?;
 
-                let action_ids: Vec<String> = delta
-                    .actions
-                    .iter()
-                    .map(|action| match action {
-                        Action::Add { id, .. }
-                        | Action::Update { id, .. }
-                        | Action::DeleteRef { id, .. }
-                        | Action::Compare { id } => format!("{id:?}"),
-                    })
-                    .collect();
+            match commit_result {
+                Some(delta) => {
+                    use calimero_storage::interface::Action;
 
-                debug!(
-                    target: "runtime::host::system",
-                    action_count = delta.actions.len(),
-                    parent_count = delta.parents.len(),
-                    action_ids = ?action_ids,
-                    "flush_delta emitting causal delta"
-                );
-                let storage_delta =
-                    calimero_storage::delta::StorageDelta::Actions(delta.actions.clone());
-                let artifact = to_vec(&storage_delta).map_err(|err| {
-                    VMLogicError::from(HostError::Panic {
-                        context: PanicContext::Host,
-                        message: format!("failed to serialize causal delta: {err}"),
-                        location: Location::Unknown,
-                    })
-                })?;
+                    let action_ids: Vec<String> = delta
+                        .actions
+                        .iter()
+                        .map(|action| match action {
+                            Action::Add { id, .. }
+                            | Action::Update { id, .. }
+                            | Action::DeleteRef { id, .. }
+                            | Action::Compare { id } => format!("{id:?}"),
+                        })
+                        .collect();
 
-                self.with_logic_mut(|logic| {
+                    debug!(
+                        target: "runtime::host::system",
+                        action_count = delta.actions.len(),
+                        parent_count = delta.parents.len(),
+                        action_ids = ?action_ids,
+                        "flush_delta emitting causal delta"
+                    );
+                    let storage_delta =
+                        calimero_storage::delta::StorageDelta::Actions(delta.actions.clone());
+                    let artifact = to_vec(&storage_delta).map_err(|err| {
+                        VMLogicError::from(HostError::Panic {
+                            context: PanicContext::Host,
+                            message: format!("failed to serialize causal delta: {err}"),
+                            location: Location::Unknown,
+                        })
+                    })?;
+
                     logic.root_hash = Some(root_hash);
                     logic.artifact = artifact;
-                    Ok::<(), HostError>(())
-                })?;
-                Ok(1)
-            }
-            Ok(None) => {
-                self.with_logic_mut(|logic| {
+                    Ok(1)
+                }
+                None => {
                     logic.root_hash = Some(root_hash);
-                    Ok::<(), HostError>(())
-                })?;
-                Ok(0)
+                    Ok(0)
+                }
             }
-            Err(err) => Err(HostError::Panic {
-                context: PanicContext::Host,
-                message: format!("commit_causal_delta failed: {err}"),
-                location: Location::Unknown,
-            }
-            .into()),
-        }
+        })
     }
 }
 
