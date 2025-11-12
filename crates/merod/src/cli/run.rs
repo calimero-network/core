@@ -3,11 +3,12 @@ use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
 use calimero_node::{start, NodeConfig};
-use calimero_server::config::ServerConfig;
+use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
-use mero_auth::config::StorageConfig as AuthStorageConfig;
+use mero_auth::config::{AuthConfig, StorageConfig as AuthStorageConfig};
+use mero_auth::embedded::default_config;
 
 use super::auth_mode::AuthModeArg;
 use crate::cli::RootArgs;
@@ -37,11 +38,28 @@ impl RunCommand {
         let network = config.network;
         let mut server_source = network.server;
 
-        if let Some(cfg) = server_source.embedded_auth.as_mut() {
+        // Ensure embedded_auth config exists with resolved paths when embedded mode is active
+        if matches!(server_source.auth_mode, AuthMode::Embedded) {
+            let mut auth_config = server_source
+                .embedded_auth
+                .take()
+                .unwrap_or_else(default_config);
+
+            // Resolve relative RocksDB paths against the node's home directory
+            if let AuthStorageConfig::RocksDB { path: storage_path } = &mut auth_config.storage {
+                if storage_path.is_relative() {
+                    let joined = path.as_std_path().join(&*storage_path);
+                    *storage_path = joined.try_into().expect("Invalid UTF-8 path");
+                }
+            }
+
+            server_source.embedded_auth = Some(auth_config);
+        } else if let Some(cfg) = server_source.embedded_auth.as_mut() {
+            // Also resolve paths for proxy mode if config exists
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut cfg.storage {
                 if storage_path.is_relative() {
                     let joined = path.as_std_path().join(&*storage_path);
-                    *storage_path = joined;
+                    *storage_path = joined.try_into().expect("Invalid UTF-8 path");
                 }
             }
         }
