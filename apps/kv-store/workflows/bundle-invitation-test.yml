@@ -1,0 +1,171 @@
+description: Test bundle installation and invitation flow - User 1 installs bundle, creates context, invites User 2, User 2 automatically gets bundle
+name: Bundle Invitation Flow Test
+
+# Use local Docker image (set to false since we're testing locally)
+force_pull_image: false
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: merod:latest
+  prefix: calimero-node
+
+steps:
+  # ============================================
+  # Setup Phase: Build bundle and install on Node 1
+  # ============================================
+  
+  # Step 1: Install bundle application on Node 1
+  # Note: The bundle (.mpk) should be created by build.sh and placed in res/
+  # Path is relative to the workflow file location (apps/kv-store/workflows/)
+  - name: Install Bundle Application on Node 1
+    type: install_application
+    node: calimero-node-1
+    path: /Users/xilosada/dev/calimero/core/apps/kv-store/res/kv-store-1.0.0.mpk
+    dev: true
+    outputs:
+      bundle_app_id: applicationId
+
+  - name: Assert Bundle Application Installed
+    type: assert
+    statements:
+      - "is_set({{bundle_app_id}})"
+
+  # Step 2: Verify bundle was installed correctly on Node 1
+  # (Application installation is verified by successful context creation)
+
+  # ============================================
+  # Context Creation Phase: User 1 creates context with bundle
+  # ============================================
+  
+  # Step 3: Create context with bundle application on Node 1
+  - name: Create Context with Bundle on Node 1
+    type: create_context
+    node: calimero-node-1
+    application_id: "{{bundle_app_id}}"
+    outputs:
+      context_id: contextId
+      inviter_public_key: memberPublicKey
+
+  - name: Assert Context Created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{inviter_public_key}})"
+
+  # ============================================
+  # Invitation Phase: User 1 invites User 2
+  # ============================================
+  
+  # Step 4: Create identity for User 2 on Node 2
+  - name: Create Identity for User 2 on Node 2
+    type: create_identity
+    node: calimero-node-2
+    outputs:
+      invitee_public_key: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 5
+
+  # Step 5: User 1 invites User 2 to context
+  - name: Invite User 2 to Context
+    type: invite_identity
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{invitee_public_key}}"
+    granter_id: "{{inviter_public_key}}"
+    capability: member
+    outputs:
+      invitation: invitation
+
+  - name: Assert Invitation Created
+    type: assert
+    statements:
+      - "is_set({{invitation}})"
+
+  # ============================================
+  # Join Phase: User 2 joins context (triggers sync_context_config)
+  # ============================================
+  
+  # Step 6: User 2 joins context (this triggers sync_context_config which should install bundle)
+  - name: User 2 Joins Context
+    type: join_context
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{invitee_public_key}}"
+    invitation: "{{invitation}}"
+
+  - name: Wait for Context Join and Bundle Installation
+    type: wait
+    seconds: 10
+
+  # ============================================
+  # Verification Phase: Verify User 2 has bundle installed and can use it
+  # ============================================
+  
+  # Step 7: Verify User 2 can execute methods from bundle WASM
+  # If User 2 can execute methods, it means:
+  # 1. Bundle was automatically installed via sync_context_config
+  # 2. ApplicationId is consistent (otherwise context creation would fail)
+  # 3. WASM was extracted correctly from bundle
+  - name: Call Set Method on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee_public_key}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "test_value"
+    outputs:
+      set_result: result
+
+  - name: Assert Set Method Succeeded
+    type: json_assert
+    statements:
+      - 'json_equal({{set_result}}, {"output": null})'
+
+  - name: Wait for State Sync
+    type: wait
+    seconds: 5
+
+  # Step 10: Verify User 2 can read the value
+  - name: Call Get Method on Node 2
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee_public_key}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      get_result: result
+
+  - name: Assert Get Method Returns Correct Value
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result}}, {"output": "test_value"})'
+
+  # Step 11: Verify User 1 can also read the value (state sync verification)
+  - name: Call Get Method on Node 1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_public_key}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      get_result_node1: result
+
+  - name: Assert User 1 Can Read Value Set by User 2
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_node1}}, {"output": "test_value"})'
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
+

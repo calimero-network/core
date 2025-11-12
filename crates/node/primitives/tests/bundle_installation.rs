@@ -1143,11 +1143,32 @@ async fn test_simple_wasm_installation_still_works() {
     );
 }
 
-/// Integration test simulating the full flow:
+/// Integration test simulating the bundle blob sharing flow:
 /// User 1 installs bundle → User 2 receives blob → User 2 installs automatically
+///
 /// This test verifies that when a bundle blob is shared between nodes,
 /// the receiving node can correctly detect and install it, maintaining
 /// ApplicationId consistency across nodes.
+///
+/// NOTE: This test simulates the blob sharing part of the invitation flow.
+/// The full invitation flow would require:
+/// 1. User 1 installs bundle
+/// 2. User 1 creates context with bundle application
+/// 3. User 1 invites User 2 (stores context config on external chain/contract)
+/// 4. User 2 receives invitation
+/// 5. User 2 calls sync_context_config (which fetches context config from external)
+/// 6. sync_context_config detects bundle blob exists locally
+/// 7. sync_context_config calls install_application_from_bundle_blob
+/// 8. User 2 can now use the context
+///
+/// To test the full flow, we would need to:
+/// - Set up ContextClient instances (requires external client mocking)
+/// - Mock external config client methods (application(), application_revision(), members_revision(), members())
+/// - Simulate context creation and invitation
+///
+/// The current test verifies the critical integration point: when a bundle blob
+/// exists locally, install_application_from_bundle_blob correctly installs it
+/// with the same ApplicationId as the original installation.
 #[tokio::test]
 async fn test_bundle_blob_sharing_integration() {
     let temp_dir = TempDir::new().unwrap();

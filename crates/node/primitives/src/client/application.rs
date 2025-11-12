@@ -103,34 +103,27 @@ impl NodeClient {
                 // Fallback: re-extract from bundle blob if extracted files missing
                 warn!(
                     wasm_path = %wasm_path,
-                    "extracted WASM not found, attempting to re-extract from bundle"
+                    "extracted WASM not found, attempting to re-extract from bundle and persist to disk"
                 );
 
-                // Extract WASM from bundle
-                if let Some(wasm_artifact) = manifest.wasm {
-                    let tar = GzDecoder::new(blob_bytes.as_ref());
-                    let mut archive = Archive::new(tar);
+                // Re-extract entire bundle to disk (not just WASM) so future calls don't need to re-extract
+                // This handles the case where sync_context_config installed the app before blob arrived
+                Self::extract_bundle_artifacts(
+                    &blob_bytes,
+                    &manifest,
+                    &extract_dir,
+                    node_root,
+                    package,
+                    version,
+                )?;
 
-                    for entry_result in archive.entries()? {
-                        let mut entry = entry_result?;
-                        let entry_path = match entry.path() {
-                            Ok(path) => path,
-                            Err(_) => continue, // Skip entries with invalid paths
-                        };
-                        let Some(entry_path_str) = entry_path.to_str() else {
-                            continue; // Skip entries with non-UTF-8 paths
-                        };
-
-                        // Match by full relative path from manifest
-                        if entry_path_str == wasm_artifact.path {
-                            let mut wasm_content = Vec::new();
-                            entry.read_to_end(&mut wasm_content)?;
-                            return Ok(Some(wasm_content.into()));
-                        }
-                    }
+                // Now read the WASM file that was just extracted
+                if wasm_path.exists() {
+                    let wasm_bytes = tokio::fs::read(&wasm_path).await?;
+                    return Ok(Some(wasm_bytes.into()));
                 }
 
-                bail!("WASM file not found in bundle");
+                bail!("WASM file not found in bundle after extraction");
             }
         }
 
@@ -370,6 +363,9 @@ impl NodeClient {
             "install_bundle_from_path started"
         );
 
+        // Clone path for deletion after installation
+        let bundle_path = path.clone();
+
         // Read bundle file
         let bundle_data = tokio::fs::read(&path).await?;
         let bundle_size = bundle_data.len() as u64;
@@ -420,14 +416,31 @@ impl NodeClient {
 
         // Install application with bundle blob_id
         // No metadata needed - bundle detection happens via is_bundle_blob()
-        self.install_application(
+        let application_id = self.install_application(
             &bundle_blob_id,
             stored_size,
             &uri.as_str().parse()?,
             vec![], // Empty metadata - bundles don't need metadata
             package,
             version,
-        )
+        )?;
+
+        // Delete bundle file after successful installation (it's now stored as a blob)
+        if let Err(e) = tokio::fs::remove_file(&bundle_path).await {
+            warn!(
+                path = %bundle_path,
+                error = %e,
+                "Failed to delete bundle file after installation"
+            );
+            // Don't fail installation if deletion fails - bundle is already installed
+        } else {
+            debug!(
+                path = %bundle_path,
+                "Deleted bundle file after successful installation"
+            );
+        }
+
+        Ok(application_id)
     }
 
     /// Extract and parse bundle manifest from bundle archive data
@@ -615,8 +628,8 @@ impl NodeClient {
                 path_str.to_string()
             };
 
-            // Skip manifest.json (already parsed)
-            if relative_path == "manifest.json" {
+            // Skip macOS resource fork files (._* files)
+            if relative_path.starts_with("._") {
                 continue;
             }
 
