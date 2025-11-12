@@ -140,7 +140,6 @@ impl ContextClient {
                                             .install_application_from_bundle_blob(
                                                 &blob_id,
                                                 &source.into(),
-                                                metadata,
                                             )
                                             .await?
                                     } else {

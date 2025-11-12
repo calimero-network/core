@@ -62,98 +62,75 @@ impl NodeClient {
             return Ok(None);
         };
 
-        // Check if this is a bundle installation
-        let metadata_json: Result<serde_json::Value, _> =
-            serde_json::from_slice(&application.metadata);
-        if let Ok(meta) = metadata_json {
-            if meta
-                .get("bundle")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                // This is a bundle, extract WASM from extracted directory
-                // Validate bundle manifest has required fields
-                let manifest = meta
-                    .get("manifest")
-                    .ok_or_else(|| eyre::eyre!("bundle metadata missing manifest field"))?;
+        // Get blob bytes to check if it's a bundle
+        let Some(blob_bytes) = self
+            .get_blob_bytes(&application.bytecode.blob_id(), None)
+            .await?
+        else {
+            bail!("fatal: application points to dangling blob");
+        };
 
-                let package = manifest
-                    .get("package")
-                    .and_then(|p| p.as_str())
-                    .ok_or_else(|| {
-                        eyre::eyre!("bundle manifest missing required 'package' field")
-                    })?;
-                let version = manifest
-                    .get("appVersion")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        eyre::eyre!("bundle manifest missing required 'appVersion' field")
-                    })?;
+        // Check if this is a bundle by inspecting the blob
+        if Self::is_bundle_blob(&blob_bytes) {
+            // This is a bundle, extract WASM from extracted directory or bundle
+            let manifest = Self::extract_bundle_manifest(&blob_bytes)?;
+            let package = &manifest.package;
+            let version = &manifest.app_version;
 
-                // Resolve relative path against node root
-                let blobstore_root = self.blobstore.root_path();
-                let node_root = blobstore_root
-                    .parent()
-                    .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
-                let extract_dir_relative =
-                    format!("applications/{}/{}/extracted", package, version);
-                let extract_dir = node_root.join(extract_dir_relative);
+            // Resolve relative path against node root
+            let blobstore_root = self.blobstore.root_path();
+            let node_root = blobstore_root
+                .parent()
+                .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+            let extract_dir = node_root
+                .join("applications")
+                .join(package)
+                .join(version)
+                .join("extracted");
 
-                // Get WASM path from manifest (fallback to "app.wasm" for backward compatibility)
-                let wasm_relative_path = manifest
-                    .get("wasm")
-                    .and_then(|w| w.get("path"))
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("app.wasm");
-                let wasm_path = extract_dir.join(wasm_relative_path);
+            // Get WASM path from manifest (fallback to "app.wasm" for backward compatibility)
+            let wasm_relative_path = manifest
+                .wasm
+                .as_ref()
+                .map(|w| w.path.as_str())
+                .unwrap_or("app.wasm");
+            let wasm_path = extract_dir.join(wasm_relative_path);
 
-                if wasm_path.exists() {
-                    let wasm_bytes = tokio::fs::read(&wasm_path).await?;
-                    return Ok(Some(wasm_bytes.into()));
-                } else {
-                    // Fallback: re-extract from bundle blob if extracted files missing
-                    warn!(
-                        wasm_path = %wasm_path,
-                        "extracted WASM not found, attempting to re-extract from bundle"
-                    );
+            if wasm_path.exists() {
+                let wasm_bytes = tokio::fs::read(&wasm_path).await?;
+                return Ok(Some(wasm_bytes.into()));
+            } else {
+                // Fallback: re-extract from bundle blob if extracted files missing
+                warn!(
+                    wasm_path = %wasm_path,
+                    "extracted WASM not found, attempting to re-extract from bundle"
+                );
 
-                    // Get bundle blob and re-extract
-                    let Some(bundle_bytes) = self
-                        .get_blob_bytes(&application.bytecode.blob_id(), None)
-                        .await?
-                    else {
-                        bail!("fatal: bundle blob not found");
-                    };
+                // Extract WASM from bundle
+                if let Some(wasm_artifact) = manifest.wasm {
+                    let tar = GzDecoder::new(blob_bytes.as_ref());
+                    let mut archive = Archive::new(tar);
 
-                    // Parse manifest to find WASM path
-                    let manifest: BundleManifest = Self::extract_bundle_manifest(&bundle_bytes)?;
-                    if let Some(wasm_artifact) = manifest.wasm {
-                        // Extract WASM from bundle
-                        // Compare full relative paths, not just filenames
-                        let tar = GzDecoder::new(bundle_bytes.as_ref());
-                        let mut archive = Archive::new(tar);
+                    for entry_result in archive.entries()? {
+                        let mut entry = entry_result?;
+                        let entry_path = match entry.path() {
+                            Ok(path) => path,
+                            Err(_) => continue, // Skip entries with invalid paths
+                        };
+                        let Some(entry_path_str) = entry_path.to_str() else {
+                            continue; // Skip entries with non-UTF-8 paths
+                        };
 
-                        for entry_result in archive.entries()? {
-                            let mut entry = entry_result?;
-                            let entry_path = match entry.path() {
-                                Ok(path) => path,
-                                Err(_) => continue, // Skip entries with invalid paths
-                            };
-                            let Some(entry_path_str) = entry_path.to_str() else {
-                                continue; // Skip entries with non-UTF-8 paths
-                            };
-
-                            // Match by full relative path from manifest
-                            if entry_path_str == wasm_artifact.path {
-                                let mut wasm_content = Vec::new();
-                                entry.read_to_end(&mut wasm_content)?;
-                                return Ok(Some(wasm_content.into()));
-                            }
+                        // Match by full relative path from manifest
+                        if entry_path_str == wasm_artifact.path {
+                            let mut wasm_content = Vec::new();
+                            entry.read_to_end(&mut wasm_content)?;
+                            return Ok(Some(wasm_content.into()));
                         }
                     }
-
-                    bail!("WASM file not found in bundle");
                 }
+
+                bail!("WASM file not found in bundle");
             }
         }
 
@@ -356,22 +333,13 @@ impl NodeClient {
                 version,
             )?;
 
-            // Store bundle manifest in metadata
-            // extract_dir is derived from manifest.package and manifest.appVersion when needed
-            // Bundle metadata is deterministic - always extract from bundle manifest
-            let bundle_metadata_obj = serde_json::json!({
-                "bundle": true,
-                "manifest": manifest,
-            });
-
-            let combined_metadata = serde_json::to_vec(&bundle_metadata_obj)?;
-
             // Install application with bundle blob_id
+            // No metadata needed - bundle detection happens via is_bundle_blob()
             return self.install_application(
                 &bundle_blob_id,
                 stored_size,
                 &uri,
-                combined_metadata,
+                vec![], // Empty metadata - bundles don't need metadata
                 package,
                 version,
             );
@@ -452,26 +420,17 @@ impl NodeClient {
             version,
         )?;
 
-        // Store bundle manifest in metadata
-        // extract_dir is derived from manifest.package and manifest.appVersion when needed
-        // Bundle metadata is deterministic - always extract from bundle manifest
-        let bundle_metadata_obj = serde_json::json!({
-            "bundle": true,
-            "manifest": manifest,
-        });
-
-        let combined_metadata = serde_json::to_vec(&bundle_metadata_obj)?;
-
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")
         };
 
         // Install application with bundle blob_id
+        // No metadata needed - bundle detection happens via is_bundle_blob()
         self.install_application(
             &bundle_blob_id,
             stored_size,
             &uri.as_str().parse()?,
-            combined_metadata,
+            vec![], // Empty metadata - bundles don't need metadata
             package,
             version,
         )
@@ -534,11 +493,11 @@ impl NodeClient {
 
     /// Install an application from a bundle blob that's already in the blobstore.
     /// This is used when a bundle blob is received via blob sharing or discovery.
+    /// No metadata needed - bundle detection happens via is_bundle_blob()
     pub async fn install_application_from_bundle_blob(
         &self,
         blob_id: &BlobId,
         source: &ApplicationSource,
-        metadata: Vec<u8>,
     ) -> eyre::Result<ApplicationId> {
         debug!(
             %blob_id,
@@ -550,62 +509,8 @@ impl NodeClient {
             bail!("bundle blob not found");
         };
 
-        // Check if provided metadata is already valid bundle metadata
-        let combined_metadata = if !metadata.is_empty() {
-            // Try to parse as JSON and check if it's valid bundle metadata
-            if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&metadata) {
-                if meta_json
-                    .get("bundle")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    // Valid bundle metadata - use it directly (from external config)
-                    debug!(
-                        %blob_id,
-                        "Using provided bundle metadata from external config"
-                    );
-                    metadata
-                } else {
-                    // Not bundle metadata, regenerate from manifest
-                    debug!(
-                        %blob_id,
-                        "Provided metadata is not bundle metadata, regenerating from manifest"
-                    );
-                    let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
-                    let bundle_metadata_obj = serde_json::json!({
-                        "bundle": true,
-                        "manifest": manifest,
-                    });
-                    serde_json::to_vec(&bundle_metadata_obj)?
-                }
-            } else {
-                // Not valid JSON, regenerate from manifest
-                debug!(
-                    %blob_id,
-                    "Provided metadata is not valid JSON, regenerating from manifest"
-                );
-                let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
-                let bundle_metadata_obj = serde_json::json!({
-                    "bundle": true,
-                    "manifest": manifest,
-                });
-                serde_json::to_vec(&bundle_metadata_obj)?
-            }
-        } else {
-            // No metadata provided, regenerate from manifest (fallback for tests)
-            debug!(
-                %blob_id,
-                "No metadata provided, regenerating from manifest"
-            );
-            let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
-            let bundle_metadata_obj = serde_json::json!({
-                "bundle": true,
-                "manifest": manifest,
-            });
-            serde_json::to_vec(&bundle_metadata_obj)?
-        };
-
         // Extract manifest for package/version (needed for extraction path)
+        // No metadata needed - bundle detection happens via is_bundle_blob()
         let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
         let package = &manifest.package;
         let version = &manifest.app_version;
@@ -640,7 +545,8 @@ impl NodeClient {
         );
 
         // Install application
-        self.install_application(blob_id, size, source, combined_metadata, package, version)
+        // No metadata needed - bundle detection happens via is_bundle_blob()
+        self.install_application(blob_id, size, source, vec![], package, version)
     }
 
     /// Find duplicate artifact in other versions by hash and relative path

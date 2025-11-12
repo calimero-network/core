@@ -570,7 +570,7 @@ async fn test_bundle_custom_wasm_path() {
 }
 
 #[tokio::test]
-async fn test_bundle_metadata_deterministic() {
+async fn test_bundle_no_metadata() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
 
@@ -584,32 +584,21 @@ async fn test_bundle_metadata_deterministic() {
         vec![],
     );
 
-    // Install bundle (metadata will be ignored for bundles, regenerated from manifest)
+    // Install bundle (no metadata needed - bundle detection happens via is_bundle_blob())
     let application_id = node_client
         .install_application_from_path(bundle_path, vec![])
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify metadata is deterministic bundle metadata (no user metadata)
+    // Verify metadata is empty (bundles don't need metadata)
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
-    let metadata_json: serde_json::Value =
-        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
-    assert_eq!(
-        metadata_json.get("bundle"),
-        Some(&serde_json::Value::Bool(true)),
-        "Bundle flag should be present"
-    );
     assert!(
-        metadata_json.get("manifest").is_some(),
-        "Manifest should be present"
-    );
-    assert!(
-        metadata_json.get("userMetadata").is_none(),
-        "User metadata should not be present (removed)"
+        application.metadata.is_empty(),
+        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
     );
 }
 
@@ -863,36 +852,15 @@ async fn test_bundle_extract_dir_derived_from_manifest() {
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify extract_dir is derived from manifest package/version, not stored in metadata
+    // Verify metadata is empty (bundles don't need metadata)
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
-    let metadata_json: serde_json::Value =
-        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
-
-    // Verify extract_dir is NOT stored in metadata
     assert!(
-        metadata_json.get("extract_dir").is_none(),
-        "extract_dir should not be stored in metadata"
-    );
-
-    // Verify manifest has package and appVersion
-    let manifest = metadata_json
-        .get("manifest")
-        .expect("Manifest should be present");
-    assert_eq!(
-        manifest.get("package"),
-        Some(&serde_json::Value::String(
-            "com.example.derived".to_string()
-        )),
-        "Package should be in manifest"
-    );
-    assert_eq!(
-        manifest.get("appVersion"),
-        Some(&serde_json::Value::String("2.5.0".to_string())),
-        "appVersion should be in manifest"
+        application.metadata.is_empty(),
+        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
     );
 
     // Verify files were extracted to correct location derived from manifest
@@ -1019,7 +987,7 @@ async fn test_install_application_from_bundle_blob() {
     // Install application from bundle blob
     let source = "file:///test/bundle.mpk".parse().unwrap();
     let application_id = node_client
-        .install_application_from_bundle_blob(&blob_id, &source, vec![])
+        .install_application_from_bundle_blob(&blob_id, &source)
         .await
         .expect("Should install from bundle blob");
 
@@ -1062,7 +1030,7 @@ async fn test_install_application_from_bundle_blob() {
 }
 
 #[tokio::test]
-async fn test_install_application_from_bundle_blob_with_valid_metadata() {
+async fn test_install_application_from_bundle_blob_no_metadata() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
 
@@ -1084,55 +1052,21 @@ async fn test_install_application_from_bundle_blob_with_valid_metadata() {
         .await
         .expect("Should add bundle blob");
 
-    // Create valid bundle metadata (simulating external config)
-    let manifest = serde_json::json!({
-        "version": "1.0",
-        "package": "com.example.metadata",
-        "appVersion": "1.0.0",
-        "wasm": {
-            "path": "app.wasm",
-            "size": 12
-        },
-        "migrations": []
-    });
-    let valid_bundle_metadata = serde_json::json!({
-        "bundle": true,
-        "manifest": manifest,
-    });
-    let metadata_bytes = serde_json::to_vec(&valid_bundle_metadata).unwrap();
-
     let source = "file:///test/bundle.mpk".parse().unwrap();
     let application_id = node_client
-        .install_application_from_bundle_blob(&blob_id, &source, metadata_bytes.clone())
+        .install_application_from_bundle_blob(&blob_id, &source)
         .await
-        .expect("Should install from bundle blob with valid metadata");
+        .expect("Should install from bundle blob without metadata");
 
-    // Verify metadata was used directly (from external config)
+    // Verify metadata is empty (bundles don't need metadata)
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
-    let metadata_json: serde_json::Value =
-        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
-    assert_eq!(
-        metadata_json.get("bundle"),
-        Some(&serde_json::Value::Bool(true)),
-        "Bundle flag should be present"
-    );
     assert!(
-        metadata_json.get("manifest").is_some(),
-        "Manifest should be present"
-    );
-    assert!(
-        metadata_json.get("userMetadata").is_none(),
-        "User metadata should not be present (removed)"
-    );
-
-    // Verify metadata matches what was provided (from external config)
-    assert_eq!(
-        application.metadata, metadata_bytes,
-        "Metadata should match provided external config metadata"
+        application.metadata.is_empty(),
+        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
     );
 }
 
@@ -1151,7 +1085,7 @@ async fn test_install_application_from_bundle_blob_missing_blob() {
 
     let source = "file:///test/bundle.mpk".parse().unwrap();
     let result = node_client
-        .install_application_from_bundle_blob(&fake_blob_id, &source, vec![])
+        .install_application_from_bundle_blob(&fake_blob_id, &source)
         .await;
 
     assert!(result.is_err(), "Should fail when blob doesn't exist");
@@ -1254,7 +1188,6 @@ async fn test_bundle_blob_sharing_integration() {
     let bundle_blob_id = app_user1.blob.bytecode;
     let bundle_size = app_user1.size;
     let bundle_source = app_user1.source;
-    let bundle_metadata = app_user1.metadata.clone(); // Clone for use in Step 4
 
     // Step 2: User 2 receives the bundle blob (simulating blob sharing)
     // Read bundle from User 1's installation
@@ -1285,22 +1218,20 @@ async fn test_bundle_blob_sharing_integration() {
     // Step 4: Simulate sync_context_config by manually installing from blob
     // This simulates what happens when sync_context_config detects the blob
     // In real scenario, sync_context_config would call install_application_from_bundle_blob
-    // with metadata from external config. When valid bundle metadata is provided,
-    // it's used directly, ensuring ApplicationId consistency.
+    // No metadata needed - bundle detection happens via is_bundle_blob()
     let application_id_user2 = node_client_2
         .install_application_from_bundle_blob(
             &bundle_blob_id,
-            &bundle_source,  // Use same source as User 1
-            bundle_metadata, // Use metadata from external config (simulated)
+            &bundle_source, // Use same source as User 1
         )
         .await
         .expect("User 2 should install from bundle blob");
 
     // Step 5: Verify ApplicationId consistency
-    // When metadata is provided from external config, ApplicationId should be identical
+    // Same blob_id + size + source + empty metadata = same ApplicationId
     assert_eq!(
         application_id_user1, application_id_user2,
-        "ApplicationId should be identical when metadata comes from external config"
+        "ApplicationId should be identical (same blob_id, size, source, empty metadata)"
     );
 
     // Verify both can access their applications
@@ -1330,21 +1261,17 @@ async fn test_bundle_blob_sharing_integration() {
     );
     assert_eq!(
         app_user1_final.metadata, app_user2_final.metadata,
-        "Metadata should be identical (from external config)"
+        "Metadata should be identical (both empty for bundles)"
     );
 
-    // Both should be bundles
-    let meta1: serde_json::Value = serde_json::from_slice(&app_user1_final.metadata).unwrap();
-    let meta2: serde_json::Value = serde_json::from_slice(&app_user2_final.metadata).unwrap();
-    assert_eq!(
-        meta1.get("bundle"),
-        Some(&serde_json::Value::Bool(true)),
-        "User 1 should have bundle flag"
+    // Both should have empty metadata (bundles don't need metadata)
+    assert!(
+        app_user1_final.metadata.is_empty(),
+        "User 1 should have empty metadata (bundles don't need metadata)"
     );
-    assert_eq!(
-        meta2.get("bundle"),
-        Some(&serde_json::Value::Bool(true)),
-        "User 2 should have bundle flag"
+    assert!(
+        app_user2_final.metadata.is_empty(),
+        "User 2 should have empty metadata (bundles don't need metadata)"
     );
 
     // Step 6: Verify User 2 can get application bytes (WASM)
@@ -1378,5 +1305,67 @@ async fn test_bundle_blob_sharing_integration() {
     assert_eq!(
         extracted_wasm_2, wasm_content,
         "Extracted WASM content should match"
+    );
+}
+
+// Note: install_application_from_url tests require HTTP/HTTPS URLs and would need
+// a mock HTTP server or real server. The URL installation logic is covered by
+// integration tests. Path-based installation (which covers the same code paths
+// for bundle detection and extraction) is tested below.
+
+#[tokio::test]
+async fn test_bundle_get_application_bytes_fallback() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+
+    // Create a test bundle
+    let wasm_content = b"fallback test wasm bytecode";
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.fallback",
+        "1.0.0",
+        wasm_content,
+        None,
+        vec![],
+    );
+
+    // Install the bundle
+    let application_id = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await
+        .expect("Bundle installation should succeed");
+
+    // Verify extracted WASM exists initially
+    let node_root = blob_dir.path().parent().unwrap();
+    let extract_dir = node_root
+        .join("applications")
+        .join("com.example.fallback")
+        .join("1.0.0")
+        .join("extracted");
+    let wasm_path = extract_dir.join("app.wasm");
+    assert!(wasm_path.exists(), "Extracted WASM should exist initially");
+
+    // Delete extracted WASM to trigger fallback
+    fs::remove_file(&wasm_path).expect("Should delete extracted WASM");
+    assert!(!wasm_path.exists(), "WASM should be deleted");
+
+    // Get application bytes - should fallback to re-extract from bundle blob
+    // Note: fallback extracts from bundle blob but doesn't write back to disk
+    let bytes = node_client
+        .get_application_bytes(&application_id)
+        .await
+        .expect("Should get application bytes via fallback")
+        .expect("Application bytes should exist");
+
+    assert_eq!(
+        bytes.as_ref(),
+        wasm_content,
+        "Application bytes should match WASM content (re-extracted from bundle blob)"
+    );
+
+    // Verify WASM file still doesn't exist (fallback doesn't write back to disk)
+    assert!(
+        !wasm_path.exists(),
+        "WASM file should still not exist (fallback extracts from blob, doesn't write to disk)"
     );
 }
