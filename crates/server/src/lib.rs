@@ -15,7 +15,7 @@ use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::admin::service::{setup, site};
 
@@ -75,9 +75,7 @@ pub async fn start(
             bail!("Invalid multiaddr, expected TCP component");
         };
 
-        let socket = SocketAddr::from((host, port));
-
-        match TcpListener::bind(socket).await {
+        match TcpListener::bind(SocketAddr::from((host, port))).await {
             Ok(listener) => {
                 let local_port = listener.local_addr()?.port();
                 addrs.push(
@@ -87,17 +85,13 @@ pub async fn start(
                 listeners.push(listener);
             }
             Err(err) => {
-                error!(%socket, error = %err, "calimero_server: failed to bind HTTP listener");
-                // Continue to next listener - we'll check if any succeeded after the loop
+                if want_listeners.peek().is_none() {
+                    bail!(err);
+                }
             }
         }
     }
     config.listen = addrs;
-
-    if listeners.is_empty() {
-        error!("calimero_server: no HTTP listeners were bound; aborting startup");
-        bail!("no HTTP listeners bound");
-    }
 
     let mut app = Router::new();
 
@@ -203,29 +197,11 @@ pub async fn start(
 
     for listener in listeners {
         let app = app.clone();
-        let local_addr = listener
-            .local_addr()
-            .map(|addr| addr.to_string())
-            .unwrap_or_else(|_| "<unknown>".to_string());
-        set.spawn(async move {
-            if let Err(err) = axum::serve(listener, app).await {
-                error!(%local_addr, error = %err, "calimero_server: HTTP service exited with error");
-                return Err(err);
-            }
-
-            warn!("calimero_server: HTTP service completed unexpectedly");
-            Ok(())
-        });
+        drop(set.spawn(async move { axum::serve(listener, app).await }));
     }
 
-    // Keep the server running even if one listener fails
-    // Log errors but don't crash the entire server
     while let Some(result) = set.join_next().await {
-        if let Err(e) = result {
-            error!(error = %e, "calimero_server: HTTP service task panicked");
-        } else if let Err(e) = result.unwrap() {
-            error!(error = %e, "calimero_server: HTTP service task returned error");
-        }
+        result??;
     }
 
     Ok(())
