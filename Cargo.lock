@@ -2158,6 +2158,7 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "async-stream",
+ "base64 0.22.1",
  "borsh",
  "calimero-blobstore",
  "calimero-crypto",

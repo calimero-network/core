@@ -2,6 +2,8 @@ use std::io::{self, ErrorKind, Read};
 use std::sync::Arc;
 
 use crate::bundle::BundleManifest;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use calimero_primitives::application::{
     Application, ApplicationBlob, ApplicationId, ApplicationSource,
 };
@@ -72,13 +74,23 @@ impl NodeClient {
                 .unwrap_or(false)
             {
                 // This is a bundle, extract WASM from extracted directory
-                if let Some(extract_dir_str) = meta.get("extract_dir").and_then(|v| v.as_str()) {
+                // Derive extract_dir from manifest (package and version)
+                if let (Some(package), Some(version)) = (
+                    meta.get("manifest")
+                        .and_then(|m| m.get("package"))
+                        .and_then(|p| p.as_str()),
+                    meta.get("manifest")
+                        .and_then(|m| m.get("appVersion"))
+                        .and_then(|v| v.as_str()),
+                ) {
                     // Resolve relative path against node root
                     let blobstore_root = self.blobstore.root_path();
                     let node_root = blobstore_root
                         .parent()
                         .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
-                    let extract_dir = node_root.join(extract_dir_str);
+                    let extract_dir_relative =
+                        format!("applications/{}/{}/extracted", package, version);
+                    let extract_dir = node_root.join(extract_dir_relative);
 
                     // Get WASM path from manifest (fallback to "app.wasm" for backward compatibility)
                     let wasm_relative_path = meta
@@ -212,14 +224,10 @@ impl NodeClient {
         &self,
         path: Utf8PathBuf,
         metadata: Vec<u8>,
-        package: &str,
-        version: &str,
     ) -> eyre::Result<ApplicationId> {
         let metadata_len = metadata.len();
         debug!(
             path = %path,
-            package,
-            version,
             metadata_len,
             "install_application_from_path started"
         );
@@ -235,10 +243,12 @@ impl NodeClient {
 
         // Detect bundle vs single WASM
         if Self::is_bundle_archive(&path) {
-            return self
-                .install_bundle_from_path(path, metadata, package, version)
-                .await;
+            return self.install_bundle_from_path(path, metadata).await;
         }
+
+        // For non-bundle installations, use defaults (package/version are not part of ApplicationId)
+        let package = "unknown";
+        let version = "0.0.0";
 
         // Existing single WASM installation path
         let file = match File::open(&path).await {
@@ -286,8 +296,6 @@ impl NodeClient {
         url: Url,
         metadata: Vec<u8>,
         expected_hash: Option<&Hash>,
-        package: &str,
-        version: &str,
     ) -> eyre::Result<ApplicationId> {
         let uri = url.as_str().parse()?;
 
@@ -318,21 +326,9 @@ impl NodeClient {
             // Extract bundle to parse manifest and extract artifacts
             let manifest = Self::extract_bundle_manifest(&bundle_data)?;
 
-            // Validate manifest matches provided package/version
-            if manifest.package != package {
-                bail!(
-                    "manifest package '{}' does not match provided package '{}'",
-                    manifest.package,
-                    package
-                );
-            }
-            if manifest.app_version != version {
-                bail!(
-                    "manifest version '{}' does not match provided version '{}'",
-                    manifest.app_version,
-                    version
-                );
-            }
+            // Extract package and version from manifest
+            let package = &manifest.package;
+            let version = &manifest.app_version;
 
             // Extract artifacts with deduplication
             // Use node root (parent of blobstore) instead of blobstore root
@@ -340,9 +336,12 @@ impl NodeClient {
             let node_root = blobstore_root
                 .parent()
                 .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
-            // Use relative path for extract_dir so all nodes get the same ApplicationId
-            let extract_dir_relative = format!("applications/{}/{}/extracted", package, version);
-            let extract_dir = node_root.join(&extract_dir_relative);
+            // Extract directory is derived from package and version
+            let extract_dir = node_root
+                .join("applications")
+                .join(package)
+                .join(version)
+                .join("extracted");
 
             Self::extract_bundle_artifacts(
                 &bundle_data,
@@ -354,21 +353,33 @@ impl NodeClient {
             )?;
 
             // Store bundle manifest in metadata
-            // Use relative path so ApplicationId is consistent across nodes
-            let bundle_metadata = serde_json::to_vec(&serde_json::json!({
+            // extract_dir is derived from manifest.package and manifest.appVersion when needed
+            let mut bundle_metadata_obj = serde_json::json!({
                 "bundle": true,
                 "manifest": manifest,
-                "extract_dir": extract_dir_relative,
-            }))?;
+            });
 
-            // Combine user metadata with bundle metadata
-            let combined_metadata = if metadata.is_empty() {
-                bundle_metadata
-            } else {
-                let mut combined = bundle_metadata;
-                combined.extend_from_slice(&metadata);
-                combined
-            };
+            // Merge user metadata into bundle metadata if provided
+            // This ensures valid JSON and preserves user metadata
+            if !metadata.is_empty() {
+                // Try to parse user metadata as JSON and merge it
+                if let Ok(user_meta_json) = serde_json::from_slice::<serde_json::Value>(&metadata) {
+                    if let Some(obj) = bundle_metadata_obj.as_object_mut() {
+                        obj.insert("userMetadata".to_string(), user_meta_json);
+                    }
+                } else {
+                    // If not valid JSON, store as base64-encoded string
+                    let encoded = BASE64_STANDARD.encode(&metadata);
+                    if let Some(obj) = bundle_metadata_obj.as_object_mut() {
+                        obj.insert(
+                            "userMetadata".to_string(),
+                            serde_json::Value::String(encoded),
+                        );
+                    }
+                }
+            }
+
+            let combined_metadata = serde_json::to_vec(&bundle_metadata_obj)?;
 
             // Install application with bundle blob_id
             return self.install_application(
@@ -382,6 +393,10 @@ impl NodeClient {
         }
 
         // Single WASM installation (existing behavior)
+        // For non-bundle installations, use defaults (package/version are not part of ApplicationId)
+        let package = "unknown";
+        let version = "0.0.0";
+
         let (blob_id, size) = self
             .add_blob(
                 response
@@ -401,13 +416,9 @@ impl NodeClient {
         &self,
         path: Utf8PathBuf,
         metadata: Vec<u8>,
-        package: &str,
-        version: &str,
     ) -> eyre::Result<ApplicationId> {
         debug!(
             path = %path,
-            package,
-            version,
             "install_bundle_from_path started"
         );
 
@@ -429,21 +440,9 @@ impl NodeClient {
         // Extract bundle to parse manifest and extract artifacts
         let manifest = Self::extract_bundle_manifest(&bundle_data)?;
 
-        // Validate manifest matches provided package/version
-        if manifest.package != package {
-            bail!(
-                "manifest package '{}' does not match provided package '{}'",
-                manifest.package,
-                package
-            );
-        }
-        if manifest.app_version != version {
-            bail!(
-                "manifest version '{}' does not match provided version '{}'",
-                manifest.app_version,
-                version
-            );
-        }
+        // Extract package and version from manifest (ignore provided values)
+        let package = &manifest.package;
+        let version = &manifest.app_version;
 
         // Extract artifacts with deduplication
         // Use node root (parent of blobstore) instead of blobstore root
@@ -451,9 +450,12 @@ impl NodeClient {
         let node_root = blobstore_root
             .parent()
             .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
-        // Use relative path for extract_dir so all nodes get the same ApplicationId
-        let extract_dir_relative = format!("applications/{}/{}/extracted", package, version);
-        let extract_dir = node_root.join(&extract_dir_relative);
+        // Extract directory is derived from package and version
+        let extract_dir = node_root
+            .join("applications")
+            .join(package)
+            .join(version)
+            .join("extracted");
 
         Self::extract_bundle_artifacts(
             &bundle_data,
@@ -465,22 +467,33 @@ impl NodeClient {
         )?;
 
         // Store bundle manifest in metadata
-        // Use relative path so ApplicationId is consistent across nodes
-        let bundle_metadata = serde_json::to_vec(&serde_json::json!({
+        // extract_dir is derived from manifest.package and manifest.appVersion when needed
+        let mut bundle_metadata_obj = serde_json::json!({
             "bundle": true,
             "manifest": manifest,
-            "extract_dir": extract_dir_relative,
-        }))?;
+        });
 
-        // Combine user metadata with bundle metadata
-        let combined_metadata = if metadata.is_empty() {
-            bundle_metadata
-        } else {
-            // Prepend bundle metadata to user metadata
-            let mut combined = bundle_metadata;
-            combined.extend_from_slice(&metadata);
-            combined
-        };
+        // Merge user metadata into bundle metadata if provided
+        // This ensures valid JSON and preserves user metadata
+        if !metadata.is_empty() {
+            // Try to parse user metadata as JSON and merge it
+            if let Ok(user_meta_json) = serde_json::from_slice::<serde_json::Value>(&metadata) {
+                if let Some(obj) = bundle_metadata_obj.as_object_mut() {
+                    obj.insert("userMetadata".to_string(), user_meta_json);
+                }
+            } else {
+                // If not valid JSON, store as base64-encoded string
+                let encoded = BASE64_STANDARD.encode(&metadata);
+                if let Some(obj) = bundle_metadata_obj.as_object_mut() {
+                    obj.insert(
+                        "userMetadata".to_string(),
+                        serde_json::Value::String(encoded),
+                    );
+                }
+            }
+        }
+
+        let combined_metadata = serde_json::to_vec(&bundle_metadata_obj)?;
 
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")
@@ -770,7 +783,6 @@ impl NodeClient {
         // For now, we'll use the source URL to download the application
         // In a real implementation, you might want to resolve the package/version to a URL
         let url = source.to_string().parse()?;
-        self.install_application_from_url(url, metadata, None, package, version)
-            .await
+        self.install_application_from_url(url, metadata, None).await
     }
 }

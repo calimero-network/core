@@ -143,7 +143,7 @@ async fn test_bundle_detection() {
     let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(wasm_path_utf8, vec![], "test", "1.0.0")
+        .install_application_from_path(wasm_path_utf8, vec![])
         .await;
     assert!(result.is_ok(), "Single WASM installation should work");
 
@@ -158,7 +158,7 @@ async fn test_bundle_detection() {
     );
 
     let result = node_client
-        .install_application_from_path(bundle_path, vec![], "com.example.bundle", "1.0.0")
+        .install_application_from_path(bundle_path, vec![])
         .await;
     assert!(result.is_ok(), "Bundle installation should work");
 }
@@ -189,7 +189,7 @@ async fn test_bundle_installation() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path.clone(), vec![], "com.example.test", "1.0.0")
+        .install_application_from_path(bundle_path.clone(), vec![])
         .await
         .expect("Bundle installation should succeed");
 
@@ -259,7 +259,7 @@ async fn test_bundle_get_application_bytes() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![], "com.example.runtime", "2.0.0")
+        .install_application_from_path(bundle_path, vec![])
         .await
         .expect("Bundle installation should succeed");
 
@@ -295,7 +295,7 @@ async fn test_bundle_deduplication() {
 
     // Install first version
     let _app_id_v1 = node_client
-        .install_application_from_path(bundle_path_v1, vec![], "com.example.shared", "1.0.0")
+        .install_application_from_path(bundle_path_v1, vec![])
         .await
         .expect("First bundle installation should succeed");
 
@@ -312,7 +312,7 @@ async fn test_bundle_deduplication() {
 
     // Install second version
     let _app_id_v2 = node_client
-        .install_application_from_path(bundle_path_v2, vec![], "com.example.shared", "2.0.0")
+        .install_application_from_path(bundle_path_v2, vec![])
         .await
         .expect("Second bundle installation should succeed");
 
@@ -363,18 +363,16 @@ async fn test_bundle_manifest_validation() {
         vec![],
     );
 
-    // Try to install with different package name (should fail)
+    // Install bundle - package/version will be extracted from manifest
+    // Since we're extracting from manifest, this test no longer makes sense
+    // The package/version will always match because they come from the manifest
     let result = node_client
-        .install_application_from_path(bundle_path, vec![], "com.example.correct", "1.0.0")
+        .install_application_from_path(bundle_path, vec![])
         .await;
 
     assert!(
-        result.is_err(),
-        "Should fail when package name doesn't match manifest"
-    );
-    assert!(
-        result.unwrap_err().to_string().contains("package"),
-        "Error should mention package mismatch"
+        result.is_ok(),
+        "Bundle installation should succeed when extracting from manifest"
     );
 }
 
@@ -389,7 +387,7 @@ async fn test_bundle_backward_compatibility() {
     let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
 
     let application_id = node_client
-        .install_application_from_path(wasm_path_utf8, vec![], "com.example.single", "1.0.0")
+        .install_application_from_path(wasm_path_utf8, vec![])
         .await
         .expect("Single WASM installation should work");
 
