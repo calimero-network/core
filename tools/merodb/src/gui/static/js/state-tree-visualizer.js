@@ -531,7 +531,7 @@ export class StateTreeVisualizer {
         if (this.tooltipPinned) {
             // Check if we already created a tooltip for this node in this hover session
             if (!this.pinnedDuringHover) {
-                this.createPinnedTooltip(event, d.data);
+                this.createPinnedTooltip(event, d);
                 this.pinnedDuringHover = true;
             }
             return;
@@ -545,7 +545,7 @@ export class StateTreeVisualizer {
                 .style('pointer-events', 'none');
         }
 
-        const html = this.formatTooltipContent(d.data);
+        const html = this.formatTooltipContent(d);
         this.currentTooltip
             .html(html)
             .style('left', `${event.pageX + 10}px`)
@@ -555,10 +555,12 @@ export class StateTreeVisualizer {
 
     /**
      * Format tooltip content HTML
-     * @param {Object} data - Node data
+     * @param {Object} node - D3 hierarchy node object with data and parent properties
      * @returns {string} HTML content
      */
-    formatTooltipContent(data) {
+    formatTooltipContent(node) {
+        const data = node.data;
+
         const formatTimestamp = (ts) => {
             if (!ts) return 'N/A';
             const date = new Date(ts / 1000000);
@@ -633,10 +635,12 @@ export class StateTreeVisualizer {
         html += `  <span class="visualization__tooltip-label">Own Hash:</span>`;
         html += `  <span class="visualization__tooltip-value">${formatHash(data.own_hash)}</span>`;
         html += `</div>`;
-        if (data.parent_id) {
+        // Use the parent node's ID from the D3 hierarchy instead of data.parent_id
+        // This ensures the displayed parent ID matches what's shown in the tree
+        if (node.parent) {
             html += `<div class="visualization__tooltip-row">`;
             html += `  <span class="visualization__tooltip-label">Parent ID:</span>`;
-            html += `  <span class="visualization__tooltip-value">${formatHash(data.parent_id)}</span>`;
+            html += `  <span class="visualization__tooltip-value">${formatHash(node.parent.data.id)}</span>`;
             html += `</div>`;
         }
         html += `</div>`;
@@ -665,9 +669,9 @@ export class StateTreeVisualizer {
     /**
      * Create a pinned, draggable tooltip
      * @param {MouseEvent} event - Mouse event
-     * @param {Object} data - Node data
+     * @param {Object} node - D3 hierarchy node object
      */
-    createPinnedTooltip(event, data) {
+    createPinnedTooltip(event, node) {
         const tooltipId = `tooltip-${this.tooltipCounter++}`;
 
         const tooltip = d3.select('body').append('div')
@@ -691,7 +695,7 @@ export class StateTreeVisualizer {
         // Add content
         tooltip.append('div')
             .attr('class', 'tooltip-content')
-            .html(this.formatTooltipContent(data));
+            .html(this.formatTooltipContent(node));
 
         // Make draggable
         this.makeDraggable(tooltip);
