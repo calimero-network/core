@@ -74,81 +74,87 @@ impl NodeClient {
                 .unwrap_or(false)
             {
                 // This is a bundle, extract WASM from extracted directory
-                // Derive extract_dir from manifest (package and version)
-                if let (Some(package), Some(version)) = (
-                    meta.get("manifest")
-                        .and_then(|m| m.get("package"))
-                        .and_then(|p| p.as_str()),
-                    meta.get("manifest")
-                        .and_then(|m| m.get("appVersion"))
-                        .and_then(|v| v.as_str()),
-                ) {
-                    // Resolve relative path against node root
-                    let blobstore_root = self.blobstore.root_path();
-                    let node_root = blobstore_root
-                        .parent()
-                        .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
-                    let extract_dir_relative =
-                        format!("applications/{}/{}/extracted", package, version);
-                    let extract_dir = node_root.join(extract_dir_relative);
+                // Validate bundle manifest has required fields
+                let manifest = meta
+                    .get("manifest")
+                    .ok_or_else(|| eyre::eyre!("bundle metadata missing manifest field"))?;
 
-                    // Get WASM path from manifest (fallback to "app.wasm" for backward compatibility)
-                    let wasm_relative_path = meta
-                        .get("manifest")
-                        .and_then(|m| m.get("wasm"))
-                        .and_then(|w| w.get("path"))
-                        .and_then(|p| p.as_str())
-                        .unwrap_or("app.wasm");
-                    let wasm_path = extract_dir.join(wasm_relative_path);
+                let package = manifest
+                    .get("package")
+                    .and_then(|p| p.as_str())
+                    .ok_or_else(|| {
+                        eyre::eyre!("bundle manifest missing required 'package' field")
+                    })?;
+                let version = manifest
+                    .get("appVersion")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        eyre::eyre!("bundle manifest missing required 'appVersion' field")
+                    })?;
 
-                    if wasm_path.exists() {
-                        let wasm_bytes = tokio::fs::read(&wasm_path).await?;
-                        return Ok(Some(wasm_bytes.into()));
-                    } else {
-                        // Fallback: re-extract from bundle blob if extracted files missing
-                        warn!(
-                            wasm_path = %wasm_path,
-                            "extracted WASM not found, attempting to re-extract from bundle"
-                        );
+                // Resolve relative path against node root
+                let blobstore_root = self.blobstore.root_path();
+                let node_root = blobstore_root
+                    .parent()
+                    .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+                let extract_dir_relative =
+                    format!("applications/{}/{}/extracted", package, version);
+                let extract_dir = node_root.join(extract_dir_relative);
 
-                        // Get bundle blob and re-extract
-                        let Some(bundle_bytes) = self
-                            .get_blob_bytes(&application.bytecode.blob_id(), None)
-                            .await?
-                        else {
-                            bail!("fatal: bundle blob not found");
-                        };
+                // Get WASM path from manifest (fallback to "app.wasm" for backward compatibility)
+                let wasm_relative_path = manifest
+                    .get("wasm")
+                    .and_then(|w| w.get("path"))
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("app.wasm");
+                let wasm_path = extract_dir.join(wasm_relative_path);
 
-                        // Parse manifest to find WASM path
-                        let manifest: BundleManifest =
-                            Self::extract_bundle_manifest(&bundle_bytes)?;
-                        if let Some(wasm_artifact) = manifest.wasm {
-                            // Extract WASM from bundle
-                            // Compare full relative paths, not just filenames
-                            let tar = GzDecoder::new(bundle_bytes.as_ref());
-                            let mut archive = Archive::new(tar);
+                if wasm_path.exists() {
+                    let wasm_bytes = tokio::fs::read(&wasm_path).await?;
+                    return Ok(Some(wasm_bytes.into()));
+                } else {
+                    // Fallback: re-extract from bundle blob if extracted files missing
+                    warn!(
+                        wasm_path = %wasm_path,
+                        "extracted WASM not found, attempting to re-extract from bundle"
+                    );
 
-                            for entry_result in archive.entries()? {
-                                let mut entry = entry_result?;
-                                let entry_path = match entry.path() {
-                                    Ok(path) => path,
-                                    Err(_) => continue, // Skip entries with invalid paths
-                                };
-                                let Some(entry_path_str) = entry_path.to_str() else {
-                                    continue; // Skip entries with non-UTF-8 paths
-                                };
+                    // Get bundle blob and re-extract
+                    let Some(bundle_bytes) = self
+                        .get_blob_bytes(&application.bytecode.blob_id(), None)
+                        .await?
+                    else {
+                        bail!("fatal: bundle blob not found");
+                    };
 
-                                // Match by full relative path from manifest
-                                if entry_path_str == wasm_artifact.path {
-                                    let mut wasm_content = Vec::new();
-                                    entry.read_to_end(&mut wasm_content)?;
-                                    return Ok(Some(wasm_content.into()));
-                                }
+                    // Parse manifest to find WASM path
+                    let manifest: BundleManifest = Self::extract_bundle_manifest(&bundle_bytes)?;
+                    if let Some(wasm_artifact) = manifest.wasm {
+                        // Extract WASM from bundle
+                        // Compare full relative paths, not just filenames
+                        let tar = GzDecoder::new(bundle_bytes.as_ref());
+                        let mut archive = Archive::new(tar);
+
+                        for entry_result in archive.entries()? {
+                            let mut entry = entry_result?;
+                            let entry_path = match entry.path() {
+                                Ok(path) => path,
+                                Err(_) => continue, // Skip entries with invalid paths
+                            };
+                            let Some(entry_path_str) = entry_path.to_str() else {
+                                continue; // Skip entries with non-UTF-8 paths
+                            };
+
+                            // Match by full relative path from manifest
+                            if entry_path_str == wasm_artifact.path {
+                                let mut wasm_content = Vec::new();
+                                entry.read_to_end(&mut wasm_content)?;
+                                return Ok(Some(wasm_content.into()));
                             }
                         }
-
-                        bail!("WASM file not found in bundle");
                     }
+
+                    bail!("WASM file not found in bundle");
                 }
             }
         }
@@ -522,8 +528,18 @@ impl NodeClient {
             if path.file_name().and_then(|n| n.to_str()) == Some("manifest.json") {
                 let mut manifest_json = String::new();
                 entry.read_to_string(&mut manifest_json)?;
-                return serde_json::from_str(&manifest_json)
-                    .map_err(|e| eyre::eyre!("failed to parse manifest.json: {}", e));
+                let manifest: BundleManifest = serde_json::from_str(&manifest_json)
+                    .map_err(|e| eyre::eyre!("failed to parse manifest.json: {}", e))?;
+
+                // Validate required fields
+                if manifest.package.is_empty() {
+                    bail!("bundle manifest 'package' field is empty");
+                }
+                if manifest.app_version.is_empty() {
+                    bail!("bundle manifest 'appVersion' field is empty");
+                }
+
+                return Ok(manifest);
             }
         }
 
@@ -775,8 +791,8 @@ impl NodeClient {
     /// Install application by package and version
     pub async fn install_by_package_version(
         &self,
-        package: &str,
-        version: &str,
+        _package: &str,
+        _version: &str,
         source: &ApplicationSource,
         metadata: Vec<u8>,
     ) -> eyre::Result<ApplicationId> {

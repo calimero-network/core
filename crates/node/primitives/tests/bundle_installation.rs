@@ -377,6 +377,70 @@ async fn test_bundle_manifest_validation() {
 }
 
 #[tokio::test]
+async fn test_bundle_validation_missing_fields() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create a bundle with missing package field in manifest
+    let bundle_path = temp_dir.path().join("invalid-bundle.mpk");
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    // Create manifest.json with missing package field
+    // Use a raw JSON string to ensure package field is truly missing
+    let invalid_manifest_json = r#"{
+        "version": "1.0",
+        "appVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 10
+        },
+        "migrations": []
+    }"#;
+    let manifest_json = invalid_manifest_json.as_bytes();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_json.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_json).unwrap();
+
+    // Add a dummy WASM file
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(10);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, &b"fake wasm"[..]).unwrap();
+
+    tar.finish().unwrap();
+    drop(tar); // Ensure tar is dropped and file is flushed
+    let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
+
+    // Installation should fail with validation error
+    let result = node_client
+        .install_application_from_path(bundle_path_utf8, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail for invalid manifest"
+    );
+    let error_msg = result.unwrap_err().to_string();
+    // BundleManifest deserialization will fail if package field is missing
+    // The error could be "missing field 'package'" from serde or "package field is empty" from validation
+    // Or it could be a tar parsing error if the archive is malformed
+    assert!(
+        error_msg.contains("package")
+            || error_msg.contains("missing field")
+            || error_msg.contains("empty")
+            || error_msg.contains("manifest")
+            || error_msg.contains("parse"),
+        "Error should mention missing package field, manifest issue, or parse error, got: {}",
+        error_msg
+    );
+}
+
+#[tokio::test]
 async fn test_bundle_backward_compatibility() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
@@ -408,4 +472,545 @@ async fn test_bundle_backward_compatibility() {
         .expect("Application bytes should exist");
 
     assert_eq!(bytes.as_ref(), b"single wasm content", "Bytes should match");
+}
+
+/// Create a test bundle with custom WASM path
+fn create_test_bundle_custom_wasm_path(
+    temp_dir: &TempDir,
+    package: &str,
+    version: &str,
+    wasm_path: &str,
+    wasm_content: &[u8],
+) -> Utf8PathBuf {
+    let bundle_path = temp_dir.path().join(format!("{}-{}.mpk", package, version));
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    // Create manifest.json with custom WASM path
+    let manifest = BundleManifest {
+        version: "1.0".to_string(),
+        package: package.to_string(),
+        app_version: version.to_string(),
+        wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
+            path: wasm_path.to_string(),
+            hash: None,
+            size: wasm_content.len() as u64,
+        }),
+        abi: None,
+        migrations: vec![],
+    };
+
+    let manifest_json = serde_json::to_vec(&manifest).unwrap();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_json.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_json.as_slice())
+        .unwrap();
+
+    // Add WASM file at custom path
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path(wasm_path).unwrap();
+    wasm_header.set_size(wasm_content.len() as u64);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, wasm_content).unwrap();
+
+    tar.finish().unwrap();
+    bundle_path.try_into().unwrap()
+}
+
+#[tokio::test]
+async fn test_bundle_custom_wasm_path() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+
+    // Create bundle with WASM at custom path
+    let wasm_content = b"custom path wasm bytecode";
+    let bundle_path = create_test_bundle_custom_wasm_path(
+        &temp_dir,
+        "com.example.custom",
+        "1.0.0",
+        "src/main.wasm",
+        wasm_content,
+    );
+
+    // Install the bundle
+    let application_id = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await
+        .expect("Bundle installation should succeed");
+
+    // Verify WASM was extracted at custom path
+    let node_root = blob_dir.path().parent().unwrap();
+    let extract_dir = node_root
+        .join("applications")
+        .join("com.example.custom")
+        .join("1.0.0")
+        .join("extracted");
+    let wasm_path = extract_dir.join("src/main.wasm");
+    assert!(
+        wasm_path.exists(),
+        "WASM should be extracted at custom path"
+    );
+
+    // Verify get_application_bytes reads from custom path
+    let bytes = node_client
+        .get_application_bytes(&application_id)
+        .await
+        .expect("Should get application bytes")
+        .expect("Application bytes should exist");
+
+    assert_eq!(
+        bytes.as_ref(),
+        wasm_content,
+        "Application bytes should match WASM content from custom path"
+    );
+}
+
+#[tokio::test]
+async fn test_bundle_user_metadata_json() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create bundle
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.metadata",
+        "1.0.0",
+        b"wasm content",
+        None,
+        vec![],
+    );
+
+    // Install with JSON user metadata
+    let user_metadata = serde_json::json!({
+        "author": "test",
+        "description": "test bundle"
+    });
+    let metadata_bytes = serde_json::to_vec(&user_metadata).unwrap();
+
+    let application_id = node_client
+        .install_application_from_path(bundle_path, metadata_bytes)
+        .await
+        .expect("Bundle installation should succeed");
+
+    // Verify metadata was merged correctly
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json.get("bundle"),
+        Some(&serde_json::Value::Bool(true)),
+        "Bundle flag should be present"
+    );
+    assert!(
+        metadata_json.get("userMetadata").is_some(),
+        "User metadata should be merged"
+    );
+    let user_meta = metadata_json.get("userMetadata").unwrap();
+    assert_eq!(
+        user_meta.get("author"),
+        Some(&serde_json::Value::String("test".to_string())),
+        "User metadata author should be preserved"
+    );
+}
+
+#[tokio::test]
+async fn test_bundle_user_metadata_non_json() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create bundle
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.metadata2",
+        "1.0.0",
+        b"wasm content",
+        None,
+        vec![],
+    );
+
+    // Install with non-JSON user metadata (should be base64 encoded)
+    let user_metadata = b"raw binary metadata\x00\x01\x02";
+
+    let application_id = node_client
+        .install_application_from_path(bundle_path, user_metadata.to_vec())
+        .await
+        .expect("Bundle installation should succeed");
+
+    // Verify metadata was base64 encoded
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json.get("bundle"),
+        Some(&serde_json::Value::Bool(true)),
+        "Bundle flag should be present"
+    );
+    let user_meta = metadata_json
+        .get("userMetadata")
+        .expect("User metadata should be present");
+    assert!(
+        user_meta.is_string(),
+        "Non-JSON metadata should be stored as base64 string"
+    );
+    let encoded = user_meta.as_str().unwrap();
+    // Verify it's valid base64
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine;
+    let decoded = BASE64_STANDARD
+        .decode(encoded)
+        .expect("Should be valid base64");
+    assert_eq!(
+        decoded, user_metadata,
+        "Decoded metadata should match original"
+    );
+}
+
+#[tokio::test]
+async fn test_bundle_validation_empty_package() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create bundle with empty package field
+    let bundle_path = temp_dir.path().join("empty-package.mpk");
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    let invalid_manifest_json = r#"{
+        "version": "1.0",
+        "package": "",
+        "appVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 10
+        },
+        "migrations": []
+    }"#;
+    let manifest_json = invalid_manifest_json.as_bytes();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_json.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_json).unwrap();
+
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(10);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, &b"fake wasm"[..]).unwrap();
+
+    tar.finish().unwrap();
+    drop(tar);
+    let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
+
+    let result = node_client
+        .install_application_from_path(bundle_path_utf8, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail for empty package"
+    );
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("package") && error_msg.contains("empty"),
+        "Error should mention empty package field, got: {}",
+        error_msg
+    );
+}
+
+#[tokio::test]
+async fn test_bundle_validation_empty_app_version() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create bundle with empty appVersion field
+    let bundle_path = temp_dir.path().join("empty-version.mpk");
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    let invalid_manifest_json = r#"{
+        "version": "1.0",
+        "package": "com.example.test",
+        "appVersion": "",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 10
+        },
+        "migrations": []
+    }"#;
+    let manifest_json = invalid_manifest_json.as_bytes();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_json.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_json).unwrap();
+
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(10);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, &b"fake wasm"[..]).unwrap();
+
+    tar.finish().unwrap();
+    drop(tar);
+    let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
+
+    let result = node_client
+        .install_application_from_path(bundle_path_utf8, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail for empty appVersion"
+    );
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("appVersion") || error_msg.contains("version"),
+        "Error should mention empty appVersion field, got: {}",
+        error_msg
+    );
+}
+
+#[tokio::test]
+async fn test_bundle_validation_missing_app_version() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create bundle with missing appVersion field
+    let bundle_path = temp_dir.path().join("missing-version.mpk");
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    let invalid_manifest_json = r#"{
+        "version": "1.0",
+        "package": "com.example.test",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 10
+        },
+        "migrations": []
+    }"#;
+    let manifest_json = invalid_manifest_json.as_bytes();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_json.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_json).unwrap();
+
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(10);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, &b"fake wasm"[..]).unwrap();
+
+    tar.finish().unwrap();
+    drop(tar);
+    let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
+
+    let result = node_client
+        .install_application_from_path(bundle_path_utf8, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail for missing appVersion"
+    );
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("appVersion")
+            || error_msg.contains("missing field")
+            || error_msg.contains("version")
+            || error_msg.contains("parse"),
+        "Error should mention missing appVersion field, got: {}",
+        error_msg
+    );
+}
+
+#[tokio::test]
+async fn test_bundle_deduplication_different_paths() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+
+    // Create first bundle with WASM at one path
+    let wasm_content = b"shared wasm";
+    let bundle_path_v1 = create_test_bundle_custom_wasm_path(
+        &temp_dir,
+        "com.example.paths",
+        "1.0.0",
+        "src/app.wasm",
+        wasm_content,
+    );
+
+    let _app_id_v1 = node_client
+        .install_application_from_path(bundle_path_v1, vec![])
+        .await
+        .expect("First bundle installation should succeed");
+
+    // Create second bundle with WASM at different path but same content
+    let bundle_path_v2 = create_test_bundle_custom_wasm_path(
+        &temp_dir,
+        "com.example.paths",
+        "2.0.0",
+        "lib/app.wasm", // Different path
+        wasm_content,   // Same content
+    );
+
+    let _app_id_v2 = node_client
+        .install_application_from_path(bundle_path_v2, vec![])
+        .await
+        .expect("Second bundle installation should succeed");
+
+    // Verify both paths exist (should NOT be deduplicated because paths differ)
+    let node_root = blob_dir.path().parent().unwrap();
+    let extract_dir_v1 = node_root
+        .join("applications")
+        .join("com.example.paths")
+        .join("1.0.0")
+        .join("extracted");
+    let extract_dir_v2 = node_root
+        .join("applications")
+        .join("com.example.paths")
+        .join("2.0.0")
+        .join("extracted");
+
+    let wasm_path_v1 = extract_dir_v1.join("src/app.wasm");
+    let wasm_path_v2 = extract_dir_v2.join("lib/app.wasm");
+
+    assert!(
+        wasm_path_v1.exists(),
+        "V1 WASM should exist at src/app.wasm"
+    );
+    assert!(
+        wasm_path_v2.exists(),
+        "V2 WASM should exist at lib/app.wasm"
+    );
+
+    // Both should have same content but be separate files (not deduplicated due to different paths)
+    let content_v1 = fs::read(&wasm_path_v1).unwrap();
+    let content_v2 = fs::read(&wasm_path_v2).unwrap();
+    assert_eq!(content_v1, content_v2, "Both should have same content");
+    assert_eq!(content_v1, wasm_content, "Content should match original");
+}
+
+#[tokio::test]
+async fn test_bundle_extract_dir_derived_from_manifest() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+
+    // Install bundle
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.derived",
+        "2.5.0",
+        b"wasm content",
+        None,
+        vec![],
+    );
+
+    let application_id = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await
+        .expect("Bundle installation should succeed");
+
+    // Verify extract_dir is derived from manifest package/version, not stored in metadata
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+
+    // Verify extract_dir is NOT stored in metadata
+    assert!(
+        metadata_json.get("extract_dir").is_none(),
+        "extract_dir should not be stored in metadata"
+    );
+
+    // Verify manifest has package and appVersion
+    let manifest = metadata_json
+        .get("manifest")
+        .expect("Manifest should be present");
+    assert_eq!(
+        manifest.get("package"),
+        Some(&serde_json::Value::String(
+            "com.example.derived".to_string()
+        )),
+        "Package should be in manifest"
+    );
+    assert_eq!(
+        manifest.get("appVersion"),
+        Some(&serde_json::Value::String("2.5.0".to_string())),
+        "appVersion should be in manifest"
+    );
+
+    // Verify files were extracted to correct location derived from manifest
+    let node_root = blob_dir.path().parent().unwrap();
+    let extract_dir = node_root
+        .join("applications")
+        .join("com.example.derived")
+        .join("2.5.0")
+        .join("extracted");
+    assert!(
+        extract_dir.exists(),
+        "Extract dir should exist at derived path"
+    );
+}
+
+#[tokio::test]
+async fn test_bundle_package_version_extracted_from_manifest() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create bundle with specific package/version
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.extracted",
+        "3.7.2",
+        b"wasm content",
+        None,
+        vec![],
+    );
+
+    // Install without providing package/version (should extract from manifest)
+    let application_id = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await
+        .expect("Bundle installation should succeed");
+
+    // Verify application metadata has correct package/version from manifest
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    // Package/version should be stored in ApplicationMeta (for query functions)
+    // We can't directly access ApplicationMeta, but we can verify via list_packages/list_versions
+    let packages = node_client.list_packages().expect("Should list packages");
+    assert!(
+        packages.contains(&"com.example.extracted".to_string()),
+        "Package should be listed"
+    );
+
+    let versions = node_client
+        .list_versions("com.example.extracted")
+        .expect("Should list versions");
+    assert!(
+        versions.contains(&"3.7.2".to_string()),
+        "Version should be listed"
+    );
 }
