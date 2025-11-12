@@ -1,7 +1,9 @@
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use tokio::sync::oneshot;
+use tracing::debug;
 use url::Url;
 
 use super::ContextClient;
@@ -100,10 +102,11 @@ impl ContextClient {
 
             if !self.node_client.has_application(&application.id)? {
                 let source: Url = application.source.into();
-
                 let metadata = application.metadata;
+                let blob_id = application.blob.bytecode;
 
                 let derived_application_id = {
+                    // Try URL installation first (for HTTP/HTTPS sources)
                     let app_id = match source.scheme() {
                         "http" | "https" => self
                             .node_client
@@ -115,14 +118,79 @@ impl ContextClient {
 
                     match app_id {
                         Some(id) => id,
-                        None => self.node_client.install_application(
-                            &application.blob.bytecode,
-                            application.size,
-                            &source.into(),
-                            metadata,
-                            "unknown",
-                            "0.0.0",
-                        )?,
+                        None => {
+                            // URL installation failed or not applicable
+                            // Check if blob exists locally (might have been received via blob sharing)
+                            if self.node_client.has_blob(&blob_id)? {
+                                debug!(
+                                    blob_id = %blob_id,
+                                    "Blob exists locally, checking if it's a bundle"
+                                );
+                                // Blob exists, check if it's a bundle
+                                if let Ok(Some(blob_bytes)) =
+                                    self.node_client.get_blob_bytes(&blob_id, None).await
+                                {
+                                    if NodeClient::is_bundle_blob(&blob_bytes) {
+                                        debug!(
+                                            blob_id = %blob_id,
+                                            "Blob is a bundle, installing from bundle blob"
+                                        );
+                                        // Install from bundle blob
+                                        self.node_client
+                                            .install_application_from_bundle_blob(
+                                                &blob_id,
+                                                &source.into(),
+                                                metadata,
+                                            )
+                                            .await?
+                                    } else {
+                                        debug!(
+                                            blob_id = %blob_id,
+                                            "Blob is not a bundle, using regular installation"
+                                        );
+                                        // Not a bundle, use regular installation
+                                        self.node_client.install_application(
+                                            &blob_id,
+                                            application.size,
+                                            &source.into(),
+                                            metadata,
+                                            "unknown",
+                                            "0.0.0",
+                                        )?
+                                    }
+                                } else {
+                                    debug!(
+                                        blob_id = %blob_id,
+                                        "Failed to read blob, falling back to regular installation"
+                                    );
+                                    // Failed to read blob, fall back to regular installation
+                                    self.node_client.install_application(
+                                        &blob_id,
+                                        application.size,
+                                        &source.into(),
+                                        metadata,
+                                        "unknown",
+                                        "0.0.0",
+                                    )?
+                                }
+                            } else {
+                                debug!(
+                                    blob_id = %blob_id,
+                                    "Blob doesn't exist locally, using regular installation"
+                                );
+                                // Blob doesn't exist yet - create ApplicationMeta entry anyway
+                                // The blob will be shared later in initiate_sync_inner
+                                // When blob arrives, get_application_bytes will handle extraction on-demand
+                                self.node_client.install_application(
+                                    &blob_id,
+                                    application.size,
+                                    &source.into(),
+                                    metadata,
+                                    "unknown",
+                                    "0.0.0",
+                                )?
+                            }
+                        }
                     }
                 };
 

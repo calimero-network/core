@@ -13,6 +13,7 @@ use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use futures_util::io::Cursor;
 use serde_json;
 use tar::Builder;
 use tempfile::TempDir;
@@ -569,7 +570,7 @@ async fn test_bundle_custom_wasm_path() {
 }
 
 #[tokio::test]
-async fn test_bundle_user_metadata_json() {
+async fn test_bundle_metadata_deterministic() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
 
@@ -583,19 +584,13 @@ async fn test_bundle_user_metadata_json() {
         vec![],
     );
 
-    // Install with JSON user metadata
-    let user_metadata = serde_json::json!({
-        "author": "test",
-        "description": "test bundle"
-    });
-    let metadata_bytes = serde_json::to_vec(&user_metadata).unwrap();
-
+    // Install bundle (metadata will be ignored for bundles, regenerated from manifest)
     let application_id = node_client
-        .install_application_from_path(bundle_path, metadata_bytes)
+        .install_application_from_path(bundle_path, vec![])
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify metadata was merged correctly
+    // Verify metadata is deterministic bundle metadata (no user metadata)
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
@@ -609,70 +604,12 @@ async fn test_bundle_user_metadata_json() {
         "Bundle flag should be present"
     );
     assert!(
-        metadata_json.get("userMetadata").is_some(),
-        "User metadata should be merged"
+        metadata_json.get("manifest").is_some(),
+        "Manifest should be present"
     );
-    let user_meta = metadata_json.get("userMetadata").unwrap();
-    assert_eq!(
-        user_meta.get("author"),
-        Some(&serde_json::Value::String("test".to_string())),
-        "User metadata author should be preserved"
-    );
-}
-
-#[tokio::test]
-async fn test_bundle_user_metadata_non_json() {
-    let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
-
-    // Create bundle
-    let bundle_path = create_test_bundle(
-        &temp_dir,
-        "com.example.metadata2",
-        "1.0.0",
-        b"wasm content",
-        None,
-        vec![],
-    );
-
-    // Install with non-JSON user metadata (should be base64 encoded)
-    let user_metadata = b"raw binary metadata\x00\x01\x02";
-
-    let application_id = node_client
-        .install_application_from_path(bundle_path, user_metadata.to_vec())
-        .await
-        .expect("Bundle installation should succeed");
-
-    // Verify metadata was base64 encoded
-    let application = node_client
-        .get_application(&application_id)
-        .expect("Application should exist")
-        .expect("Application should be found");
-
-    let metadata_json: serde_json::Value =
-        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
-    assert_eq!(
-        metadata_json.get("bundle"),
-        Some(&serde_json::Value::Bool(true)),
-        "Bundle flag should be present"
-    );
-    let user_meta = metadata_json
-        .get("userMetadata")
-        .expect("User metadata should be present");
     assert!(
-        user_meta.is_string(),
-        "Non-JSON metadata should be stored as base64 string"
-    );
-    let encoded = user_meta.as_str().unwrap();
-    // Verify it's valid base64
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-    use base64::Engine;
-    let decoded = BASE64_STANDARD
-        .decode(encoded)
-        .expect("Should be valid base64");
-    assert_eq!(
-        decoded, user_metadata,
-        "Decoded metadata should match original"
+        metadata_json.get("userMetadata").is_none(),
+        "User metadata should not be present (removed)"
     );
 }
 
@@ -993,7 +930,7 @@ async fn test_bundle_package_version_extracted_from_manifest() {
         .expect("Bundle installation should succeed");
 
     // Verify application metadata has correct package/version from manifest
-    let application = node_client
+    let _application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
@@ -1012,5 +949,434 @@ async fn test_bundle_package_version_extracted_from_manifest() {
     assert!(
         versions.contains(&"3.7.2".to_string()),
         "Version should be listed"
+    );
+}
+
+#[tokio::test]
+async fn test_is_bundle_blob() {
+    let temp_dir = TempDir::new().unwrap();
+    let (_node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create a bundle
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.test",
+        "1.0.0",
+        b"wasm content",
+        None,
+        vec![],
+    );
+
+    // Read bundle bytes
+    let bundle_bytes = fs::read(&bundle_path).unwrap();
+
+    // Test bundle detection
+    assert!(
+        NodeClient::is_bundle_blob(&bundle_bytes),
+        "Bundle blob should be detected as bundle"
+    );
+
+    // Test non-bundle detection (regular WASM)
+    let wasm_bytes = b"fake wasm bytecode";
+    assert!(
+        !NodeClient::is_bundle_blob(wasm_bytes),
+        "Regular WASM should not be detected as bundle"
+    );
+
+    // Test non-bundle detection (random bytes)
+    let random_bytes = b"random bytes that are not a bundle";
+    assert!(
+        !NodeClient::is_bundle_blob(random_bytes),
+        "Random bytes should not be detected as bundle"
+    );
+}
+
+#[tokio::test]
+async fn test_install_application_from_bundle_blob() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+
+    // Create a bundle
+    let wasm_content = b"bundle wasm bytecode";
+    let abi_content = b"{\"types\": []}";
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.blob",
+        "1.0.0",
+        wasm_content,
+        Some(abi_content),
+        vec![],
+    );
+
+    // Read bundle and store as blob (simulating blob sharing)
+    let bundle_data = fs::read(&bundle_path).unwrap();
+    let cursor = Cursor::new(bundle_data.as_slice());
+    let (blob_id, _size) = node_client
+        .add_blob(cursor, Some(bundle_data.len() as u64), None)
+        .await
+        .expect("Should add bundle blob");
+
+    // Install application from bundle blob
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let application_id = node_client
+        .install_application_from_bundle_blob(&blob_id, &source, vec![])
+        .await
+        .expect("Should install from bundle blob");
+
+    // Verify application was installed
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist");
+    assert!(application.is_some(), "Application should be found");
+
+    // Verify bundle was extracted
+    let node_root = blob_dir.path().parent().unwrap();
+    let extract_dir = node_root
+        .join("applications")
+        .join("com.example.blob")
+        .join("1.0.0")
+        .join("extracted");
+
+    let wasm_path = extract_dir.join("app.wasm");
+    assert!(wasm_path.exists(), "Extracted WASM should exist");
+
+    let abi_path = extract_dir.join("abi.json");
+    assert!(abi_path.exists(), "Extracted ABI should exist");
+
+    // Verify file contents
+    let extracted_wasm = fs::read(&wasm_path).unwrap();
+    assert_eq!(extracted_wasm, wasm_content, "WASM content should match");
+
+    // Verify we can get application bytes
+    let bytes = node_client
+        .get_application_bytes(&application_id)
+        .await
+        .expect("Should get application bytes")
+        .expect("Application bytes should exist");
+
+    assert_eq!(
+        bytes.as_ref(),
+        wasm_content,
+        "Application bytes should match WASM"
+    );
+}
+
+#[tokio::test]
+async fn test_install_application_from_bundle_blob_with_valid_metadata() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Create a bundle
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.metadata",
+        "1.0.0",
+        b"wasm content",
+        None,
+        vec![],
+    );
+
+    // Read bundle and store as blob
+    let bundle_data = fs::read(&bundle_path).unwrap();
+    let cursor = Cursor::new(bundle_data.as_slice());
+    let (blob_id, _size) = node_client
+        .add_blob(cursor, Some(bundle_data.len() as u64), None)
+        .await
+        .expect("Should add bundle blob");
+
+    // Create valid bundle metadata (simulating external config)
+    let manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.metadata",
+        "appVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 12
+        },
+        "migrations": []
+    });
+    let valid_bundle_metadata = serde_json::json!({
+        "bundle": true,
+        "manifest": manifest,
+    });
+    let metadata_bytes = serde_json::to_vec(&valid_bundle_metadata).unwrap();
+
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let application_id = node_client
+        .install_application_from_bundle_blob(&blob_id, &source, metadata_bytes.clone())
+        .await
+        .expect("Should install from bundle blob with valid metadata");
+
+    // Verify metadata was used directly (from external config)
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json.get("bundle"),
+        Some(&serde_json::Value::Bool(true)),
+        "Bundle flag should be present"
+    );
+    assert!(
+        metadata_json.get("manifest").is_some(),
+        "Manifest should be present"
+    );
+    assert!(
+        metadata_json.get("userMetadata").is_none(),
+        "User metadata should not be present (removed)"
+    );
+
+    // Verify metadata matches what was provided (from external config)
+    assert_eq!(
+        application.metadata, metadata_bytes,
+        "Metadata should match provided external config metadata"
+    );
+}
+
+#[tokio::test]
+async fn test_install_application_from_bundle_blob_missing_blob() {
+    let (_temp_dir, node_client, _data_dir, _blob_dir) = (
+        TempDir::new().unwrap(),
+        create_test_node_client().await.0,
+        create_test_node_client().await.1,
+        create_test_node_client().await.2,
+    );
+
+    // Create a non-existent blob ID
+    use calimero_primitives::blobs::BlobId;
+    let fake_blob_id = BlobId::from([1; 32]);
+
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let result = node_client
+        .install_application_from_bundle_blob(&fake_blob_id, &source, vec![])
+        .await;
+
+    assert!(result.is_err(), "Should fail when blob doesn't exist");
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("not found") || error_msg.contains("fatal"),
+        "Error should mention blob not found, got: {}",
+        error_msg
+    );
+}
+
+#[tokio::test]
+async fn test_simple_wasm_installation_still_works() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    // Test that simple WASM installation still works (backward compatibility)
+    let wasm_path = temp_dir.path().join("app.wasm");
+    fs::write(&wasm_path, b"simple wasm bytecode").unwrap();
+    let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
+
+    let application_id = node_client
+        .install_application_from_path(wasm_path_utf8, vec![])
+        .await
+        .expect("Single WASM installation should work");
+
+    // Verify it was installed correctly
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist");
+    assert!(
+        application.is_some(),
+        "Single WASM application should be found"
+    );
+
+    // Verify we can get bytes
+    let bytes = node_client
+        .get_application_bytes(&application_id)
+        .await
+        .expect("Should get application bytes")
+        .expect("Application bytes should exist");
+
+    assert_eq!(
+        bytes.as_ref(),
+        b"simple wasm bytecode",
+        "Bytes should match"
+    );
+
+    // Verify it's not detected as a bundle
+    let app = application.unwrap();
+    let blob_bytes = node_client
+        .get_blob_bytes(&app.blob.bytecode, None)
+        .await
+        .expect("Should get blob bytes")
+        .expect("Blob bytes should exist");
+
+    assert!(
+        !NodeClient::is_bundle_blob(&blob_bytes),
+        "Simple WASM should not be detected as bundle"
+    );
+}
+
+/// Integration test simulating the full flow:
+/// User 1 installs bundle → User 2 receives blob → User 2 installs automatically
+/// This test verifies that when a bundle blob is shared between nodes,
+/// the receiving node can correctly detect and install it, maintaining
+/// ApplicationId consistency across nodes.
+#[tokio::test]
+async fn test_bundle_blob_sharing_integration() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create User 1's node client
+    let (node_client_1, _data_dir_1, _blob_dir_1) = create_test_node_client().await;
+
+    // Create User 2's node client (separate instance)
+    let (node_client_2, _data_dir_2, blob_dir_2) = create_test_node_client().await;
+
+    // Step 1: User 1 installs bundle
+    let wasm_content = b"integration test wasm bytecode";
+    let bundle_path = create_test_bundle(
+        &temp_dir,
+        "com.example.integration",
+        "1.0.0",
+        wasm_content,
+        None,
+        vec![],
+    );
+
+    let application_id_user1 = node_client_1
+        .install_application_from_path(bundle_path.clone(), vec![])
+        .await
+        .expect("User 1 should install bundle successfully");
+
+    // Verify User 1 has the application
+    let app_user1 = node_client_1
+        .get_application(&application_id_user1)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let bundle_blob_id = app_user1.blob.bytecode;
+    let bundle_size = app_user1.size;
+    let bundle_source = app_user1.source;
+    let bundle_metadata = app_user1.metadata.clone(); // Clone for use in Step 4
+
+    // Step 2: User 2 receives the bundle blob (simulating blob sharing)
+    // Read bundle from User 1's installation
+    let bundle_data = fs::read(&bundle_path).unwrap();
+    let cursor = Cursor::new(bundle_data.as_slice());
+    let (received_blob_id, received_size) = node_client_2
+        .add_blob(cursor, Some(bundle_data.len() as u64), None)
+        .await
+        .expect("User 2 should receive bundle blob");
+
+    assert_eq!(
+        received_blob_id, bundle_blob_id,
+        "Received blob ID should match original bundle blob ID"
+    );
+    assert_eq!(
+        received_size, bundle_size,
+        "Received blob size should match original bundle size"
+    );
+
+    // Step 3: User 2 doesn't have the application yet
+    assert!(
+        !node_client_2
+            .has_application(&application_id_user1)
+            .unwrap(),
+        "User 2 should not have application before sync"
+    );
+
+    // Step 4: Simulate sync_context_config by manually installing from blob
+    // This simulates what happens when sync_context_config detects the blob
+    // In real scenario, sync_context_config would call install_application_from_bundle_blob
+    // with metadata from external config. When valid bundle metadata is provided,
+    // it's used directly, ensuring ApplicationId consistency.
+    let application_id_user2 = node_client_2
+        .install_application_from_bundle_blob(
+            &bundle_blob_id,
+            &bundle_source,  // Use same source as User 1
+            bundle_metadata, // Use metadata from external config (simulated)
+        )
+        .await
+        .expect("User 2 should install from bundle blob");
+
+    // Step 5: Verify ApplicationId consistency
+    // When metadata is provided from external config, ApplicationId should be identical
+    assert_eq!(
+        application_id_user1, application_id_user2,
+        "ApplicationId should be identical when metadata comes from external config"
+    );
+
+    // Verify both can access their applications
+    let app_user1_final = node_client_1
+        .get_application(&application_id_user1)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let app_user2_final = node_client_2
+        .get_application(&application_id_user2)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    // Critical: All fields should match (blob ID, size, source, metadata)
+    assert_eq!(
+        app_user1_final.blob.bytecode, app_user2_final.blob.bytecode,
+        "Blob IDs should be identical (same bundle content)"
+    );
+    assert_eq!(
+        app_user1_final.size, app_user2_final.size,
+        "Sizes should be identical"
+    );
+    assert_eq!(
+        app_user1_final.source.to_string(),
+        app_user2_final.source.to_string(),
+        "Sources should be identical"
+    );
+    assert_eq!(
+        app_user1_final.metadata, app_user2_final.metadata,
+        "Metadata should be identical (from external config)"
+    );
+
+    // Both should be bundles
+    let meta1: serde_json::Value = serde_json::from_slice(&app_user1_final.metadata).unwrap();
+    let meta2: serde_json::Value = serde_json::from_slice(&app_user2_final.metadata).unwrap();
+    assert_eq!(
+        meta1.get("bundle"),
+        Some(&serde_json::Value::Bool(true)),
+        "User 1 should have bundle flag"
+    );
+    assert_eq!(
+        meta2.get("bundle"),
+        Some(&serde_json::Value::Bool(true)),
+        "User 2 should have bundle flag"
+    );
+
+    // Step 6: Verify User 2 can get application bytes (WASM)
+    let bytes_user2 = node_client_2
+        .get_application_bytes(&application_id_user2)
+        .await
+        .expect("Should get application bytes")
+        .expect("Application bytes should exist");
+
+    assert_eq!(
+        bytes_user2.as_ref(),
+        wasm_content,
+        "User 2 should be able to read WASM from bundle"
+    );
+
+    // Step 7: Verify bundle was extracted on User 2's node
+    let node_root_2 = blob_dir_2.path().parent().unwrap();
+    let extract_dir_2 = node_root_2
+        .join("applications")
+        .join("com.example.integration")
+        .join("1.0.0")
+        .join("extracted");
+
+    let wasm_path_2 = extract_dir_2.join("app.wasm");
+    assert!(
+        wasm_path_2.exists(),
+        "User 2 should have extracted WASM file"
+    );
+
+    let extracted_wasm_2 = fs::read(&wasm_path_2).unwrap();
+    assert_eq!(
+        extracted_wasm_2, wasm_content,
+        "Extracted WASM content should match"
     );
 }

@@ -2,8 +2,6 @@ use std::io::{self, ErrorKind, Read};
 use std::sync::Arc;
 
 use crate::bundle::BundleManifest;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine;
 use calimero_primitives::application::{
     Application, ApplicationBlob, ApplicationId, ApplicationSource,
 };
@@ -360,30 +358,11 @@ impl NodeClient {
 
             // Store bundle manifest in metadata
             // extract_dir is derived from manifest.package and manifest.appVersion when needed
-            let mut bundle_metadata_obj = serde_json::json!({
+            // Bundle metadata is deterministic - always extract from bundle manifest
+            let bundle_metadata_obj = serde_json::json!({
                 "bundle": true,
                 "manifest": manifest,
             });
-
-            // Merge user metadata into bundle metadata if provided
-            // This ensures valid JSON and preserves user metadata
-            if !metadata.is_empty() {
-                // Try to parse user metadata as JSON and merge it
-                if let Ok(user_meta_json) = serde_json::from_slice::<serde_json::Value>(&metadata) {
-                    if let Some(obj) = bundle_metadata_obj.as_object_mut() {
-                        obj.insert("userMetadata".to_string(), user_meta_json);
-                    }
-                } else {
-                    // If not valid JSON, store as base64-encoded string
-                    let encoded = BASE64_STANDARD.encode(&metadata);
-                    if let Some(obj) = bundle_metadata_obj.as_object_mut() {
-                        obj.insert(
-                            "userMetadata".to_string(),
-                            serde_json::Value::String(encoded),
-                        );
-                    }
-                }
-            }
 
             let combined_metadata = serde_json::to_vec(&bundle_metadata_obj)?;
 
@@ -418,10 +397,11 @@ impl NodeClient {
     }
 
     /// Install a bundle archive (.mpk - Mero Package Kit) containing WASM, ABI, and migrations
+    /// Note: metadata parameter is ignored for bundles - metadata is always extracted from manifest
     async fn install_bundle_from_path(
         &self,
         path: Utf8PathBuf,
-        metadata: Vec<u8>,
+        _metadata: Vec<u8>,
     ) -> eyre::Result<ApplicationId> {
         debug!(
             path = %path,
@@ -474,30 +454,11 @@ impl NodeClient {
 
         // Store bundle manifest in metadata
         // extract_dir is derived from manifest.package and manifest.appVersion when needed
-        let mut bundle_metadata_obj = serde_json::json!({
+        // Bundle metadata is deterministic - always extract from bundle manifest
+        let bundle_metadata_obj = serde_json::json!({
             "bundle": true,
             "manifest": manifest,
         });
-
-        // Merge user metadata into bundle metadata if provided
-        // This ensures valid JSON and preserves user metadata
-        if !metadata.is_empty() {
-            // Try to parse user metadata as JSON and merge it
-            if let Ok(user_meta_json) = serde_json::from_slice::<serde_json::Value>(&metadata) {
-                if let Some(obj) = bundle_metadata_obj.as_object_mut() {
-                    obj.insert("userMetadata".to_string(), user_meta_json);
-                }
-            } else {
-                // If not valid JSON, store as base64-encoded string
-                let encoded = BASE64_STANDARD.encode(&metadata);
-                if let Some(obj) = bundle_metadata_obj.as_object_mut() {
-                    obj.insert(
-                        "userMetadata".to_string(),
-                        serde_json::Value::String(encoded),
-                    );
-                }
-            }
-        }
 
         let combined_metadata = serde_json::to_vec(&bundle_metadata_obj)?;
 
@@ -544,6 +505,142 @@ impl NodeClient {
         }
 
         bail!("manifest.json not found in bundle")
+    }
+
+    /// Check if a blob contains a bundle archive by peeking at the first few entries.
+    /// This is a lightweight check that only reads the archive structure, not the full content.
+    pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
+        // Quick check: try to parse as gzip/tar and look for manifest.json
+        let tar = GzDecoder::new(blob_bytes);
+        let mut archive = Archive::new(tar);
+
+        // Only check first 10 entries to avoid reading entire archive
+        if let Ok(entries) = archive.entries() {
+            for (i, entry_result) in entries.enumerate() {
+                if i > 10 {
+                    break; // Give up after 10 entries
+                }
+                if let Ok(entry) = entry_result {
+                    if let Ok(path) = entry.path() {
+                        if path.file_name().and_then(|n| n.to_str()) == Some("manifest.json") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Install an application from a bundle blob that's already in the blobstore.
+    /// This is used when a bundle blob is received via blob sharing or discovery.
+    pub async fn install_application_from_bundle_blob(
+        &self,
+        blob_id: &BlobId,
+        source: &ApplicationSource,
+        metadata: Vec<u8>,
+    ) -> eyre::Result<ApplicationId> {
+        debug!(
+            %blob_id,
+            "install_application_from_bundle_blob started"
+        );
+
+        // Get bundle bytes from blobstore
+        let Some(bundle_bytes) = self.get_blob_bytes(blob_id, None).await? else {
+            bail!("bundle blob not found");
+        };
+
+        // Check if provided metadata is already valid bundle metadata
+        let combined_metadata = if !metadata.is_empty() {
+            // Try to parse as JSON and check if it's valid bundle metadata
+            if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&metadata) {
+                if meta_json
+                    .get("bundle")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    // Valid bundle metadata - use it directly (from external config)
+                    debug!(
+                        %blob_id,
+                        "Using provided bundle metadata from external config"
+                    );
+                    metadata
+                } else {
+                    // Not bundle metadata, regenerate from manifest
+                    debug!(
+                        %blob_id,
+                        "Provided metadata is not bundle metadata, regenerating from manifest"
+                    );
+                    let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
+                    let bundle_metadata_obj = serde_json::json!({
+                        "bundle": true,
+                        "manifest": manifest,
+                    });
+                    serde_json::to_vec(&bundle_metadata_obj)?
+                }
+            } else {
+                // Not valid JSON, regenerate from manifest
+                debug!(
+                    %blob_id,
+                    "Provided metadata is not valid JSON, regenerating from manifest"
+                );
+                let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
+                let bundle_metadata_obj = serde_json::json!({
+                    "bundle": true,
+                    "manifest": manifest,
+                });
+                serde_json::to_vec(&bundle_metadata_obj)?
+            }
+        } else {
+            // No metadata provided, regenerate from manifest (fallback for tests)
+            debug!(
+                %blob_id,
+                "No metadata provided, regenerating from manifest"
+            );
+            let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
+            let bundle_metadata_obj = serde_json::json!({
+                "bundle": true,
+                "manifest": manifest,
+            });
+            serde_json::to_vec(&bundle_metadata_obj)?
+        };
+
+        // Extract manifest for package/version (needed for extraction path)
+        let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
+        let package = &manifest.package;
+        let version = &manifest.app_version;
+
+        // Extract artifacts with deduplication
+        let blobstore_root = self.blobstore.root_path();
+        let node_root = blobstore_root
+            .parent()
+            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+        let extract_dir = node_root
+            .join("applications")
+            .join(package)
+            .join(version)
+            .join("extracted");
+
+        Self::extract_bundle_artifacts(
+            &bundle_bytes,
+            &manifest,
+            &extract_dir,
+            node_root,
+            package,
+            version,
+        )?;
+        let size = bundle_bytes.len() as u64;
+
+        debug!(
+            %blob_id,
+            package,
+            version,
+            size,
+            "bundle extracted and ready for installation"
+        );
+
+        // Install application
+        self.install_application(blob_id, size, source, combined_metadata, package, version)
     }
 
     /// Find duplicate artifact in other versions by hash and relative path
