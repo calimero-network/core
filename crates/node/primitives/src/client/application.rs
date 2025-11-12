@@ -135,14 +135,8 @@ impl NodeClient {
         }
 
         // Single WASM installation (existing behavior)
-        let Some(bytes) = self
-            .get_blob_bytes(&application.bytecode.blob_id(), None)
-            .await?
-        else {
-            bail!("fatal: application points to dangling blob");
-        };
-
-        Ok(Some(bytes))
+        // Reuse blob_bytes that were already fetched for bundle detection
+        Ok(Some(blob_bytes))
     }
 
     pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {
