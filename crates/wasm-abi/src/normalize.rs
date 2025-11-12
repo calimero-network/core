@@ -302,6 +302,10 @@ fn normalize_generic_type(
             };
             normalize_type(ty, wasm32, resolver)
         }
+        // TODO: add custom handler for the `UserStorage` and `FrozenStorage`.
+        //"UserStorage" | "FrozenStorage" => {
+        //    todo!();
+        //}
         _ => Err(NormalizeError::TypePathError(format!(
             "unknown generic type: {ident}"
         ))),

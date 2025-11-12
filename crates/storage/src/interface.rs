@@ -40,12 +40,13 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
-use borsh::{from_slice, to_vec};
+use borsh::{from_slice, to_vec, BorshDeserialize};
+use ed25519_dalek::Verifier;
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 
-use crate::address::{Id, Path};
-use crate::entities::{ChildInfo, Data, Metadata};
+use crate::address::Id;
+use crate::entities::{ChildInfo, Data, Element, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
@@ -61,6 +62,12 @@ pub type MainInterface = Interface<MainStorage>;
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
+
+#[derive(BorshDeserialize)]
+struct FrozenEntryPartial {
+    item: ([u8; 32], Vec<u8>),
+    _storage: Element,
+}
 
 impl<S: StorageAdaptor> Interface<S> {
     /// Adds a child entity to a parent's collection.
@@ -82,10 +89,10 @@ impl<S: StorageAdaptor> Interface<S> {
 
         <Index<S>>::add_child_to(
             parent_id,
-            ChildInfo::new(child.id(), own_hash, child.element().metadata),
+            ChildInfo::new(child.id(), own_hash, child.element().metadata.clone()),
         )?;
 
-        let Some(hash) = Self::save_raw(child.id(), data, child.element().metadata)? else {
+        let Some(hash) = Self::save_raw(child.id(), data, child.element().metadata.clone())? else {
             return Ok(false);
         };
 
@@ -105,6 +112,124 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `ActionNotAllowed` if Compare action is passed directly
     ///
     pub fn apply_action(action: Action) -> Result<(), StorageError> {
+        // TODO: refactor to a separate function.
+        // Run verification logic before applying
+        match &action {
+            Action::Add {
+                metadata, data, id, ..
+            }
+            | Action::Update {
+                metadata, data, id, ..
+            } => {
+                match &metadata.storage_type {
+                    StorageType::User {
+                        owner,
+                        signature_data,
+                    } => {
+                        let sig_data = signature_data.as_ref().ok_or(StorageError::InvalidData(
+                            "Remote User action must be signed".to_owned(),
+                        ))?;
+
+                        // Replay protection check
+                        let new_nonce = sig_data.nonce;
+                        let last_nonce = <Index<S>>::get_metadata(*id)?
+                            .map(|m| *m.updated_at)
+                            .unwrap_or(0);
+
+                        if new_nonce <= last_nonce {
+                            return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
+                        }
+
+                        let signature = ed25519_dalek::Signature::from_bytes(&sig_data.signature);
+
+                        let dalek_pk = ed25519_dalek::VerifyingKey::from_bytes(owner.as_ref())
+                            .map_err(|_| {
+                                StorageError::InvalidData("Invalid owner public key".to_owned())
+                            })?;
+
+                        let payload = action.payload_for_signing();
+                        dalek_pk
+                            .verify(&payload, &signature)
+                            .map_err(|_| StorageError::InvalidSignature)?;
+                    }
+                    StorageType::Frozen => {
+                        verify_frozen_action_upsert(&action, data)?;
+                    }
+                    StorageType::Public => { /* No special checks */ }
+                }
+            }
+            Action::DeleteRef { id, metadata, .. } => {
+                // Get the metadata of the item being deleted to check its domain
+                let existing_metadata =
+                    <Index<S>>::get_metadata(*id)?.ok_or(StorageError::IndexNotFound(*id))?;
+
+                match existing_metadata.storage_type {
+                    StorageType::Frozen => {
+                        return Err(StorageError::ActionNotAllowed(
+                            "Frozen data cannot be deleted".to_owned(),
+                        ));
+                    }
+                    StorageType::User {
+                        owner: existing_owner,
+                        ..
+                    } => {
+                        // Verify the action's metadata, which contains the signature
+                        match &metadata.storage_type {
+                            StorageType::User {
+                                owner,
+                                signature_data,
+                            } => {
+                                // Check it matches the owner on record
+                                if *owner != existing_owner {
+                                    return Err(StorageError::InvalidSignature);
+                                }
+
+                                let sig_data =
+                                    signature_data.as_ref().ok_or(StorageError::InvalidData(
+                                        "Remote User delete must be signed".to_owned(),
+                                    ))?;
+
+                                // TODO: refactor to a separate function.
+                                // Replay protection check
+                                let new_nonce = sig_data.nonce;
+                                // The nonce is the `deleted_at` time. We check it against the
+                                // last `updated_at` time stored in the index.
+                                let last_nonce = *existing_metadata.updated_at;
+
+                                if new_nonce <= last_nonce {
+                                    return Err(StorageError::NonceReplay(Box::new((
+                                        *owner, new_nonce,
+                                    ))));
+                                }
+
+                                let signature =
+                                    ed25519_dalek::Signature::from_bytes(&sig_data.signature);
+
+                                let dalek_pk =
+                                    ed25519_dalek::VerifyingKey::from_bytes(owner.as_ref())
+                                        .map_err(|_| {
+                                            StorageError::InvalidData(
+                                                "Invalid owner public key".to_owned(),
+                                            )
+                                        })?;
+
+                                let payload = action.payload_for_signing();
+                                dalek_pk
+                                    .verify(&payload, &signature)
+                                    .map_err(|_| StorageError::InvalidSignature)?;
+                            }
+                            _ => {
+                                // Action metadata is not User, but existing is.
+                                return Err(StorageError::InvalidSignature);
+                            }
+                        }
+                    }
+                    StorageType::Public => { /* No special checks */ }
+                }
+            }
+            Action::Compare { .. } => { /* No checks needed */ }
+        }
+
         match action {
             Action::Add {
                 id,
@@ -129,31 +254,32 @@ impl<S: StorageAdaptor> Interface<S> {
                     }
 
                     let Some(parent) = parent else {
-                        <Index<S>>::add_root(*this)?;
+                        <Index<S>>::add_root(this.clone())?;
 
                         continue;
                     };
 
                     // Set up parent-child relationship
-                    <Index<S>>::add_child_to(parent.id(), *this)?;
+                    <Index<S>>::add_child_to(parent.id(), this.clone())?;
                 }
 
                 // For new entities, create a minimal index entry first to avoid orphan errors
                 if !<Index<S>>::has_index(id) {
                     if id.is_root() {
-                        <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata))?;
+                        <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata.clone()))?;
                     } else if let Some(parent) = parent {
                         // Create minimal index entry with placeholder hash
                         let placeholder_hash = Sha256::digest(&data).into();
                         <Index<S>>::add_child_to(
                             parent.id(),
-                            ChildInfo::new(id, placeholder_hash, metadata),
+                            ChildInfo::new(id, placeholder_hash, metadata.clone()),
                         )?;
                     }
                 }
 
                 // Save data (might merge, producing different hash)
-                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata)? else {
+                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata.clone())?
+                else {
                     // we didn't save anything, so we skip updating the ancestors
                     return Ok(());
                 };
@@ -165,7 +291,10 @@ impl<S: StorageAdaptor> Interface<S> {
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
                     // Update parent relationship with the actual hash after any merging
-                    <Index<S>>::add_child_to(parent.id(), ChildInfo::new(id, own_hash, metadata))?;
+                    <Index<S>>::add_child_to(
+                        parent.id(),
+                        ChildInfo::new(id, own_hash, metadata.clone()),
+                    )?;
                 }
 
                 crate::delta::push_action(Action::Compare { id });
@@ -173,7 +302,7 @@ impl<S: StorageAdaptor> Interface<S> {
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
-            Action::DeleteRef { id, deleted_at } => {
+            Action::DeleteRef { id, deleted_at, .. } => {
                 Self::apply_delete_ref_action(id, deleted_at)?;
             }
         };
@@ -555,16 +684,37 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
+        // This will act as our nonce
         let deleted_at = time_now();
+
+        // Get metadata before removing index
+        let mut metadata =
+            <Index<S>>::get_metadata(child_id)?.ok_or(StorageError::IndexNotFound(child_id))?;
+
+        // If this is a local user action, set the nonce
+        if let StorageType::User { owner, .. } = metadata.storage_type {
+            if *owner == crate::env::executor_id() {
+                // Use the deletion timestamp as the nonce
+                metadata.storage_type = StorageType::User {
+                    owner,
+                    signature_data: Some(SignatureData {
+                        signature: [0; 64], // Placeholder, added by signer
+                        nonce: deleted_at,
+                    }),
+                };
+            }
+        }
 
         <Index<S>>::remove_child_from(parent_id, child_id)?;
 
-        // Use DeleteRef for efficient tombstone-based deletion
-        // More efficient than Delete: only sends ID + timestamp vs full ancestor tree
-        // The tombstone is created by remove_child_from, we just broadcast the deletion
+        // Use DeleteRef for efficient tombstone-based deletion.
+        // More efficient than Delete: only sends ID + timestamp + metadata vs full ancestor tree.
+        // The tombstone is created by remove_child_from, we just broadcast the deletion.
         crate::delta::push_action(Action::DeleteRef {
             id: child_id,
             deleted_at,
+            // Pass the full metadata
+            metadata,
         });
 
         Ok(true)
@@ -601,7 +751,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
             let data = to_vec(&root).map_err(|e| StorageError::SerializationError(e.into()))?;
 
-            Self::save_raw(id, data, root.element().metadata)?
+            Self::save_raw(id, data, root.element().metadata.clone())?
         } else {
             <Index<S>>::get_hashes_for(id)?.map(|(full_hash, _)| full_hash)
         };
@@ -639,7 +789,8 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let data = to_vec(entity).map_err(|e| StorageError::SerializationError(e.into()))?;
 
-        let Some(hash) = Self::save_raw(entity.id(), data, entity.element().metadata)? else {
+        let Some(hash) = Self::save_raw(entity.id(), data, entity.element().metadata.clone())?
+        else {
             return Ok(false);
         };
 
@@ -700,7 +851,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         } else {
             if id.is_root() {
-                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata))?;
+                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
             }
             data.to_vec()
         };
@@ -756,7 +907,28 @@ impl<S: StorageAdaptor> Interface<S> {
             return Err(StorageError::CannotCreateOrphan(id));
         }
 
-        let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata)? else {
+        let mut metadata = metadata.clone();
+        // If this is a local user action, set the nonce
+        if let StorageType::User {
+            owner,
+            signature_data,
+        } = metadata.storage_type
+        {
+            if *owner == crate::env::executor_id() && signature_data.is_none() {
+                // This is a new local action. Set the nonce.
+                // Use the `updated_at` timestamp as the nonce.
+                let nonce = *metadata.updated_at;
+                metadata.storage_type = StorageType::User {
+                    owner,
+                    signature_data: Some(SignatureData {
+                        signature: [0; 64], // Placeholder, added by signer
+                        nonce,
+                    }),
+                };
+            }
+        }
+
+        let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata.clone())? else {
             return Ok(None);
         };
 
@@ -793,4 +965,39 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
+}
+
+/// Verifies an incoming `Frozen` action.
+fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), StorageError> {
+    // Block all Updates.
+    if let Action::Update { .. } = action {
+        return Err(StorageError::ActionNotAllowed(
+            "Frozen data cannot be updated".to_owned(),
+        ));
+    }
+
+    // Verify the content-addressing.
+    match from_slice::<FrozenEntryPartial>(data) {
+        Ok(partial_entry) => {
+            let key_from_entry = partial_entry.item.0;
+            let value_bytes = &partial_entry.item.1;
+
+            // Re-calculate the hash of the value.
+            let calculated_hash: [u8; 32] = Sha256::digest(value_bytes).into();
+
+            // Check 1: The key inside the Entry
+            // must match the hash of the value inside the Entry.
+            if key_from_entry != calculated_hash {
+                return Err(StorageError::InvalidData(
+                    "Frozen data corruption: Entry key does not match hash of Entry value."
+                        .to_owned(),
+                ));
+            }
+        }
+        Err(e) => {
+            // This means the data blob isn't even a valid Entry.
+            return Err(StorageError::DeserializationError(e));
+        }
+    }
+    Ok(())
 }

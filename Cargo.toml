@@ -49,6 +49,7 @@ members = [
     "./crates/network/primitives",
     "./crates/node",
     "./crates/node/primitives",
+    "./crates/prelude",
     "./crates/primitives",
     "./crates/runtime",
     "./crates/sdk",

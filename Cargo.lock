@@ -2173,6 +2173,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-prelude"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "serde",
+]
+
+[[package]]
 name = "calimero-primitives"
 version = "0.0.0"
 dependencies = [
@@ -2224,6 +2232,7 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
+ "calimero-primitives",
  "calimero-sdk-macros",
  "calimero-sys",
  "calimero-wasm-abi",
@@ -2316,6 +2325,7 @@ name = "calimero-storage"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-primitives",
  "calimero-sdk",
  "calimero-storage-macros",
  "claims",

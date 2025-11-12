@@ -10,7 +10,9 @@ publish = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
+calimero-primitives = { workspace = true, features = ["borsh"] }
 eyre.workspace = true
+ed25519-dalek.workspace = true
 fixedstr = { workspace = true, features = ["flex-str", "serde", "std"] }
 hex.workspace = true
 indexmap.workspace = true

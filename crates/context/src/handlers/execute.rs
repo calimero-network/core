@@ -20,8 +20,13 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
+use calimero_storage::{
+    action::Action,
+    delta::{CausalDelta, StorageDelta},
+    entities::StorageType,
+};
 use calimero_store::{key, types, Store};
 use calimero_utils_actix::global_runtime;
 use either::Either;
@@ -109,12 +114,15 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
-        let sender_key = match self.context_client.get_identity(&context_id, &executor) {
-            Ok(Some(ContextIdentity {
-                private_key: Some(_),
-                sender_key: Some(sender_key),
-                ..
-            })) => sender_key,
+        // Fetch the full identity, not just the sender_key
+        let identity = match self.context_client.get_identity(&context_id, &executor) {
+            Ok(Some(
+                identity @ ContextIdentity {
+                    private_key: Some(_),
+                    sender_key: Some(_),
+                    ..
+                },
+            )) => identity, // Keep the whole identity
             Ok(_) => {
                 return ActorResponse::reply(Err(ExecuteError::Unauthorized {
                     context_id,
@@ -127,6 +135,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                 return ActorResponse::reply(Err(ExecuteError::InternalError));
             }
         };
+
+        // Extract the private key so it could be moved later into the closure
+        // without having ownership errors.
+        let private_key = identity.private_key.expect(
+            "infallible (verified before): missing private key in ContextIdentity for signing",
+        );
+
+        // Get the private key we know we have
+        let sender_key = identity.sender_key.expect(
+            "infallible (verified before): missing sender key in ContextIdentity for signing",
+        );
 
         let payload =
             match substitute_aliases_in_payload(&self.node_client, context_id, payload, &aliases) {
@@ -183,6 +202,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     method.clone().into(),
                     payload.into(),
                     is_state_op,
+                    &private_key,
                 )
                 .await?;
 
@@ -588,10 +608,11 @@ async fn internal_execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     is_state_op: bool,
-) -> eyre::Result<(Outcome, Option<calimero_storage::delta::CausalDelta>)> {
+    identity_private_key: &PrivateKey,
+) -> eyre::Result<(Outcome, Option<CausalDelta>)> {
     let storage = ContextStorage::from(datastore, context.id);
 
-    let (outcome, storage) = execute(
+    let (mut outcome, storage) = execute(
         guard,
         module,
         executor,
@@ -663,11 +684,8 @@ async fn internal_execute(
 
         // Create causal delta for non-state ops with non-empty artifacts
         if !is_state_op && !outcome.artifact.is_empty() {
-            // Create causal delta with DAG metadata
-            use calimero_storage::delta::{CausalDelta, StorageDelta};
-
             // Extract actions from artifact for DAG persistence
-            let actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
+            let mut actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
                 Ok(StorageDelta::Actions(actions)) => actions,
                 Ok(_) => {
                     warn!("Unexpected StorageDelta variant, using empty actions");
@@ -681,6 +699,22 @@ async fn internal_execute(
                     vec![]
                 }
             };
+
+            // The artifact was `StorageDelta::Actions`.
+            if actions.len() != 0 {
+                // Sign the actions
+                info!(
+                    context_id = %context.id,
+                    actions_count = actions.len(),
+                    "Signing user actions..."
+                );
+                sign_user_actions(&mut actions, &identity_private_key)
+                    .wrap_err("Failed to sign user actions")?;
+
+                // Re-serialize the *signed* actions into a new artifact
+                let new_artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone()))?;
+                outcome.artifact = new_artifact;
+            }
 
             // Use current DAG heads as parents, verifying they exist in RocksDB
             let parents = if context.dag_heads.is_empty() {
@@ -844,6 +878,7 @@ pub async fn execute(
     let context_id = **context;
 
     // Run WASM execution in blocking context
+    // TODO(ctx)
     global_runtime()
         .spawn_blocking(move || {
             let outcome = module.run(
@@ -897,4 +932,74 @@ fn substitute_aliases_in_payload(
     result.extend_from_slice(remaining);
 
     Ok(result)
+}
+
+/// Helper function to sign user actions
+/// Iterates over actions and signs any that are local, user-owned, and unsigned.
+fn sign_user_actions(
+    actions: &mut [Action],
+    identity_private_key: &PrivateKey,
+) -> eyre::Result<()> {
+    for action in actions.iter_mut() {
+        let action_id = action.id();
+        let payload_for_signing = action.payload_for_signing();
+
+        // The nonce was already set by `calimero-storage`:
+        // * For Add/Update, it's `metadata.updated_at`.
+        // * For DeleteRef, it's `deleted_at`.
+        // We just need to ensure the action's nonce field matches
+        let (metadata, nonce) = match action {
+            Action::Add { metadata, .. } => {
+                let nonce = *metadata.updated_at;
+                (metadata, nonce)
+            }
+            Action::Update { metadata, .. } => {
+                let nonce = *metadata.updated_at;
+                (metadata, nonce)
+            }
+            Action::DeleteRef {
+                metadata,
+                deleted_at,
+                ..
+            } => {
+                let nonce = *deleted_at;
+                (metadata, nonce)
+            }
+            Action::Compare { .. } => continue,
+        };
+
+        if let StorageType::User {
+            owner,
+            signature_data: Some(sig_data),
+        } = &mut metadata.storage_type
+        {
+            debug!(
+                action_id = ?action_id,
+                owner = %owner,
+                nonce = %nonce,
+                "Received user action from the outcome"
+            );
+
+            // Check if it's ours and is currently unsigned (placeholder signature)
+            if *owner == identity_private_key.public_key() && sig_data.signature == [0; 64] {
+                // Re-set the nonce in sig_data just in case
+                sig_data.nonce = nonce;
+
+                // Sign the payload
+                //let payload = action.payload_for_signing();
+
+                // TODO: Add `.map_err`.
+                let signature = identity_private_key.sign(&payload_for_signing)?;
+                sig_data.signature = signature.to_bytes();
+
+                debug!(
+                    action_id = ?action_id,
+                    owner = %owner,
+                    nonce = %nonce,
+                    "Signed user action"
+                );
+            }
+        }
+    }
+    Ok(())
 }

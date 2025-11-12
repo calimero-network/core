@@ -3,9 +3,10 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata};
+use crate::entities::{ChildInfo, Metadata, StorageType};
 
 /// Actions to be taken during synchronisation.
 ///
@@ -77,6 +78,9 @@ pub enum Action {
 
         /// Timestamp when deletion occurred (for conflict resolution).
         deleted_at: u64,
+
+        /// Metadata required for verification.
+        metadata: Metadata,
     },
 
     /// Update the entity with the given ID and type to have the supplied data.
@@ -121,4 +125,90 @@ pub struct ComparisonData {
 
     /// Metadata of the entity.
     pub metadata: Metadata,
+}
+
+impl Action {
+    /// Helper to get ID from Action enum.
+    pub fn id(&self) -> Id {
+        match self {
+            Action::Add { id, .. } => *id,
+            Action::Update { id, .. } => *id,
+            Action::DeleteRef { id, .. } => *id,
+            Action::Compare { id, .. } => *id,
+        }
+    }
+
+    /// Helper function to create a verifiable payload
+    /// Hashes the content-addressable parts of an action for signature verification.
+    pub fn payload_for_signing(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        match self {
+            Action::Add {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+            | Action::Update {
+                id,
+                data,
+                ancestors,
+                metadata,
+            } => {
+                // Add version prefix
+                hasher.update(b"v1_upsert");
+                hasher.update(id.as_bytes());
+                hasher.update(data);
+
+                for child in ancestors {
+                    hasher.update(child.id().as_bytes());
+                    hasher.update(child.merkle_hash());
+                }
+
+                // Hash metadata fields except the signature itself
+                hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
+                hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
+                hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
+
+                // Extract nonce from within `StorageType`
+                if let StorageType::User {
+                    signature_data: Some(sig_data),
+                    ..
+                } = metadata.storage_type
+                {
+                    hasher.update(borsh::to_vec(&sig_data.nonce).unwrap_or_default());
+                }
+            }
+            Action::DeleteRef {
+                id,
+                deleted_at,
+                metadata,
+            } => {
+                // Add version prefix
+                hasher.update(b"v1_delete");
+                hasher.update(id.as_bytes());
+                hasher.update(deleted_at.to_le_bytes());
+
+                // Hash metadata fields except the signature
+                hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
+                hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
+                hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
+
+                // Extract nonce from within StorageType
+                if let StorageType::User {
+                    signature_data: Some(sig_data),
+                    ..
+                } = metadata.storage_type
+                {
+                    hasher.update(borsh::to_vec(&sig_data.nonce).unwrap_or_default());
+                }
+            }
+            Action::Compare { id } => {
+                // Compare actions are not signed
+                hasher.update(b"v1_compare");
+                hasher.update(id.as_bytes());
+            }
+        }
+        hasher.finalize().into()
+    }
 }
