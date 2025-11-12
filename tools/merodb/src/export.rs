@@ -527,31 +527,45 @@ fn build_tree_from_root(
                 } else {
                     // Child element_id not found in mapping - it might be a data entry
                     // Try to look up this child as a data entry directly using the element_id as state_key
-                    let child_state_key_bytes = hex::decode(&child_element_id).unwrap_or_default();
+                    match hex::decode(&child_element_id) {
+                        Ok(child_state_key_bytes) if child_state_key_bytes.len() == 32 => {
+                            let mut child_key = Vec::with_capacity(64);
+                            child_key.extend_from_slice(context_id);
+                            child_key.extend_from_slice(&child_state_key_bytes);
 
-                    if child_state_key_bytes.len() == 32 {
-                        let mut child_key = Vec::with_capacity(64);
-                        child_key.extend_from_slice(context_id);
-                        child_key.extend_from_slice(&child_state_key_bytes);
-
-                        if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
-                            // Try to decode as data entry
-                            if let Some(decoded) = decode_state_entry(&child_value, manifest) {
-                                child_nodes.push(json!({
-                                    "id": child_element_id,
-                                    "type": decoded.get("type").and_then(|v| v.as_str()).unwrap_or("DataEntry"),
-                                    "data": decoded
-                                }));
-                                continue;
+                            if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                                // Try to decode as data entry
+                                if let Some(decoded) = decode_state_entry(&child_value, manifest) {
+                                    child_nodes.push(json!({
+                                        "id": child_element_id,
+                                        "type": decoded.get("type").and_then(|v| v.as_str()).unwrap_or("DataEntry"),
+                                        "data": decoded
+                                    }));
+                                    continue;
+                                }
                             }
+
+                            child_nodes.push(json!({
+                                "id": child_element_id,
+                                "type": "missing",
+                                "note": "Child element_id not found in state mapping"
+                            }));
+                        }
+                        Ok(_) => {
+                            child_nodes.push(json!({
+                                "id": child_element_id,
+                                "type": "error",
+                                "note": "Child element_id has invalid length (expected 32 bytes)"
+                            }));
+                        }
+                        Err(e) => {
+                            child_nodes.push(json!({
+                                "id": child_element_id,
+                                "type": "error",
+                                "note": format!("Failed to decode child element_id: {}", e)
+                            }));
                         }
                     }
-
-                    child_nodes.push(json!({
-                        "id": child_element_id,
-                        "type": "missing",
-                        "note": "Child element_id not found in state mapping"
-                    }));
                 }
             }
             child_nodes

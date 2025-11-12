@@ -99,6 +99,11 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     };
 
+    // Validate path to prevent traversal attacks
+    if let Err(e) = validate_db_path(&db_path) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+
     // Check if database path exists
     if !db_path.exists() {
         return (
@@ -223,6 +228,11 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     };
 
+    // Validate path to prevent traversal attacks
+    if let Err(e) = validate_db_path(&db_path) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+
     // Check if database path exists
     if !db_path.exists() {
         return (
@@ -341,6 +351,30 @@ async fn handle_validate_abi(mut multipart: Multipart) -> impl IntoResponse {
     };
 
     (StatusCode::OK, Json(response)).into_response()
+}
+
+/// Validate database path to prevent path traversal attacks
+fn validate_db_path(path: &std::path::Path) -> Result<(), String> {
+    // Check for parent directory references
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(
+                "Invalid path: parent directory references (..) are not allowed".to_string(),
+            );
+        }
+    }
+
+    // Canonicalize path to resolve symlinks and get absolute path
+    // This helps detect attempts to escape via symlinks
+    match path.canonicalize() {
+        Ok(canonical_path) => {
+            // Optionally: Add additional checks here if you want to restrict
+            // to specific directories. For now, we just ensure the path is valid.
+            drop(canonical_path);
+            Ok(())
+        }
+        Err(e) => Err(format!("Invalid path: {e}")),
+    }
 }
 
 fn open_database(path: &PathBuf) -> eyre::Result<DBWithThreadMode<SingleThreaded>> {
