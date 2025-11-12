@@ -25,23 +25,38 @@ export class DAGVisualizer {
         }
 
         const data = this.state.jsonData;
-        if (!data || !data.Meta || !data.Delta) {
+        if (!data || !data.data || !data.data.Meta || !data.data.Delta) {
             throw new Error('No Meta or Delta data found in database export');
         }
 
         // Extract contexts and build node list
-        const contexts = Object.keys(data.Delta);
+        const deltaEntries = data.data.Delta.entries || [];
+
+        // Group deltas by context_id
+        const deltasByContext = {};
+        deltaEntries.forEach(entry => {
+            const contextId = entry.key?.context_id;
+            if (contextId) {
+                if (!deltasByContext[contextId]) {
+                    deltasByContext[contextId] = [];
+                }
+                deltasByContext[contextId].push(entry);
+            }
+        });
+
+        const contexts = Object.keys(deltasByContext);
         const nodes = [];
         const links = [];
 
         // Create nodes from deltas
         contexts.forEach(contextId => {
-            const deltas = data.Delta[contextId] || [];
-            deltas.forEach((delta, idx) => {
+            const deltas = deltasByContext[contextId] || [];
+            deltas.forEach((entry, idx) => {
                 nodes.push({
                     id: `${contextId}-${idx}`,
                     context: contextId,
-                    delta: delta,
+                    delta: entry.value,
+                    deltaId: entry.key?.delta_id,
                     index: idx
                 });
             });

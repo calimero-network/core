@@ -476,6 +476,12 @@ fn find_and_build_tree_for_context(
 }
 
 /// Find data entry associated with a given element ID by iterating through state entries
+///
+/// Note: EntityIndex nodes do not contain actual application data - they only contain
+/// metadata (hashes, timestamps, parent/child relationships). The actual data is stored
+/// separately as Entry/ScalarEntry objects. These data entries have an `element_id` field
+/// that references the EntityIndex node they belong to. This function searches for such
+/// data entries by matching element IDs.
 #[cfg(feature = "gui")]
 fn find_data_for_element(
     db: &DBWithThreadMode<SingleThreaded>,
