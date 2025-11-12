@@ -101,10 +101,7 @@ pub async fn start(
             }
             Err(err) => {
                 error!(%socket, error = %err, "calimero_server: failed to bind HTTP listener");
-
-                if want_listeners.peek().is_none() {
-                    bail!(err);
-                }
+                // Continue to next listener - we'll check if any succeeded after the loop
             }
         }
     }
@@ -224,7 +221,7 @@ pub async fn start(
 
     for listener in listeners {
         let app = app.clone();
-        drop(set.spawn(async move {
+        set.spawn(async move {
             let local_addr = listener
                 .local_addr()
                 .map(|addr| addr.to_string())
@@ -238,11 +235,17 @@ pub async fn start(
 
             warn!(%local_addr, "calimero_server: HTTP service completed unexpectedly");
             Ok(())
-        }));
+        });
     }
 
+    // Keep the server running even if one listener fails
+    // Log errors but don't crash the entire server
     while let Some(result) = set.join_next().await {
-        result??;
+        if let Err(e) = result {
+            error!(error = %e, "calimero_server: HTTP service task panicked");
+        } else if let Err(e) = result.unwrap() {
+            error!(error = %e, "calimero_server: HTTP service task returned error");
+        }
     }
 
     Ok(())
