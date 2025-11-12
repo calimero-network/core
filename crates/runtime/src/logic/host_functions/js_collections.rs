@@ -639,7 +639,6 @@ impl VMHostFunctions<'_> {
         match set.remove(&value) {
             Ok(removed) => {
                 if !removed {
-                    self.clear_register(0)?;
                     return Ok(0);
                 }
                 if let Err(message) = save_js_set_instance(&mut set) {
@@ -752,9 +751,6 @@ impl VMHostFunctions<'_> {
         match outcome {
             Ok(Ok(mut register)) => {
                 self.write_register_bytes(dest_register_id, register.id().as_bytes())?;
-                if let Err(message) = save_js_lww_instance(&mut register) {
-                    return self.write_error_message(dest_register_id, message);
-                }
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
@@ -787,14 +783,11 @@ impl VMHostFunctions<'_> {
         };
 
         let previous_value = register.get();
+        let values_equal = previous_value.as_deref() == value.as_deref();
         register.set(value.as_deref());
 
-        if previous_value.as_deref() == value.as_deref() {
-            return Ok(0);
-        }
-
         match save_js_lww_instance(&mut register) {
-            Ok(()) => Ok(1),
+            Ok(()) => Ok(i32::from(!values_equal)),
             Err(message) => self.write_error_message(0, message),
         }
     }

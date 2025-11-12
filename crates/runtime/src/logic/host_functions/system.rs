@@ -815,6 +815,10 @@ impl VMHostFunctions<'_> {
         let mut payload_opt = Some(payload);
 
         self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            debug!(
+                target: "runtime::host::system",
+                "apply_storage_delta using context id"
+            );
             let env = build_runtime_env(
                 logic.storage,
                 logic.context.context_id,
@@ -851,6 +855,12 @@ impl VMHostFunctions<'_> {
     /// Returns `1` if the state exists, `0` otherwise.
     pub fn read_root_state(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
         self.with_logic_mut(|logic| -> VMLogicResult<i32> {
+            let context_hex: String = logic
+                .context
+                .context_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
             let env = build_runtime_env(
                 logic.storage,
                 logic.context.context_id,
@@ -867,15 +877,21 @@ impl VMHostFunctions<'_> {
                     .set(logic.limits, dest_register_id, bytes)
                     .map_err(VMLogicError::from)?;
 
-                debug!(
+                info!(
                     target: "runtime::host::system",
                     value_len,
                     dest_register_id,
-                    "read_root_state"
+                    context_id = %context_hex,
+                    "read_root_state returned payload"
                 );
 
                 Ok(1)
             } else {
+                info!(
+                    target: "runtime::host::system",
+                    context_id = %context_hex,
+                    "read_root_state returned no payload"
+                );
                 Ok(0)
             }
         })
@@ -889,15 +905,29 @@ impl VMHostFunctions<'_> {
     pub fn apply_storage_delta(&mut self, src_delta_ptr: u64) -> VMLogicResult<()> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_delta_ptr)? };
         let payload = self.read_guest_memory_slice(&buffer).to_vec();
+        let delta_len = payload.len();
 
         self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            let context_hex: String = logic
+                .context
+                .context_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            info!(
+                target: "runtime::host::system",
+                delta_len,
+                context_id = %context_hex,
+                "apply_storage_delta start"
+            );
+
             let env = build_runtime_env(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
             );
 
-            with_runtime_env(env, || {
+            with_runtime_env(env.clone(), || {
                 calimero_storage::collections::Root::<Vec<u8>>::sync(&payload)
             })
             .map_err(|err| {
@@ -907,6 +937,29 @@ impl VMHostFunctions<'_> {
                     location: Location::Unknown,
                 })
             })?;
+
+            let root_hash =
+                with_runtime_env(env, || Index::<MainStorage>::get_hashes_for(Id::root()))
+                    .map_err(|err| {
+                        VMLogicError::from(HostError::Panic {
+                            context: PanicContext::Host,
+                            message: format!(
+                                "apply_storage_delta failed to fetch root hash: {err}"
+                            ),
+                            location: Location::Unknown,
+                        })
+                    })?
+                    .map(|(full_hash, _)| full_hash)
+                    .unwrap_or([0; 32]);
+
+            logic.root_hash = Some(root_hash);
+
+            info!(
+                target: "runtime::host::system",
+                delta_len,
+                context_id = %context_hex,
+                "apply_storage_delta completed"
+            );
 
             Ok(())
         })?;
