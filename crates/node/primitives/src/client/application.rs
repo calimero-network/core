@@ -470,7 +470,7 @@ impl NodeClient {
         // Only check first 10 entries to avoid reading entire archive
         if let Ok(entries) = archive.entries() {
             for (i, entry_result) in entries.enumerate() {
-                if i > 10 {
+                if i >= 10 {
                     break; // Give up after 10 entries
                 }
                 if let Ok(entry) = entry_result {
