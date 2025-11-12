@@ -421,8 +421,10 @@ fn find_and_build_tree_for_context(
     use rocksdb::IteratorMode;
     use std::collections::HashMap;
 
-    // First pass: build a mapping of element_id -> state_key for all EntityIndex nodes
+    // Single pass: build mappings and find root node
     let mut element_to_state: HashMap<String, String> = HashMap::new();
+    let mut element_to_data: HashMap<String, Value> = HashMap::new();
+    let mut root_state_key: Option<String> = None;
     let iter = db.iterator_cf(state_cf, IteratorMode::Start);
 
     for item in iter {
@@ -434,37 +436,34 @@ fn find_and_build_tree_for_context(
             if let Ok(index) = borsh::from_slice::<EntityIndex>(&value) {
                 let element_id = hex::encode(index.id.as_bytes());
                 let state_key = hex::encode(&key[32..64]);
-                element_to_state.insert(element_id, state_key);
+                element_to_state.insert(element_id, state_key.clone());
+
+                // Check if this is the root node (parent_id is None)
+                if index.parent_id.is_none() {
+                    root_state_key = Some(state_key);
+                }
+            } else if let Some(decoded) = decode_state_entry(&value, manifest) {
+                // Store data entries by their element_id for O(1) lookup
+                if let Some(element) = decoded.get("element") {
+                    if let Some(element_id) = element.get("id").and_then(|v| v.as_str()) {
+                        element_to_data.insert(element_id.to_string(), decoded);
+                    }
+                }
             }
         }
     }
 
-    // Second pass: find the root node and build the tree
-    let iter = db.iterator_cf(state_cf, IteratorMode::Start);
-
-    for item in iter {
-        let (key, value) = item.wrap_err("Failed to read State entry")?;
-
-        // Check if this key belongs to our context (first 32 bytes match context_id)
-        if key.len() == 64 && &key[0..32] == context_id {
-            // Try to decode as EntityIndex to check if it's a root node
-            if let Ok(index) = borsh::from_slice::<EntityIndex>(&value) {
-                // Found a root node (parent_id is None)
-                if index.parent_id.is_none() {
-                    // Extract state_key (last 32 bytes) and convert to hex
-                    let state_key_hex = hex::encode(&key[32..64]);
-                    // Build the tree from this root with the element_id mapping
-                    return build_tree_from_root(
-                        db,
-                        state_cf,
-                        context_id,
-                        &state_key_hex,
-                        manifest,
-                        &element_to_state,
-                    );
-                }
-            }
-        }
+    // Build tree from root node if found
+    if let Some(root_key) = root_state_key {
+        return build_tree_from_root(
+            db,
+            state_cf,
+            context_id,
+            &root_key,
+            manifest,
+            &element_to_state,
+            &element_to_data,
+        );
     }
 
     // No root node found for this context
@@ -473,52 +472,6 @@ fn find_and_build_tree_for_context(
         "type": "missing",
         "note": "No root node (parent_id == null) found in State column for this context"
     }))
-}
-
-/// Find data entry associated with a given element ID by iterating through state entries
-///
-/// Note: EntityIndex nodes do not contain actual application data - they only contain
-/// metadata (hashes, timestamps, parent/child relationships). The actual data is stored
-/// separately as Entry/ScalarEntry objects. These data entries have an `element_id` field
-/// that references the EntityIndex node they belong to. This function searches for such
-/// data entries by matching element IDs.
-#[cfg(feature = "gui")]
-fn find_data_for_element(
-    db: &DBWithThreadMode<SingleThreaded>,
-    state_cf: &rocksdb::ColumnFamily,
-    context_id: &[u8],
-    element_id: &Id,
-    manifest: &Manifest,
-) -> Option<Value> {
-    use rocksdb::IteratorMode;
-
-    let element_id_bytes = element_id.as_bytes();
-
-    // Iterate through all state entries for this context looking for a data entry
-    // that has this element_id
-    let iter = db.iterator_cf(state_cf, IteratorMode::Start);
-
-    for item in iter {
-        if let Ok((key, value)) = item {
-            // Check if this key belongs to our context
-            if key.len() == 64 && &key[0..32] == context_id {
-                // Try to decode as a data entry
-                if let Some(decoded) = decode_state_entry(&value, manifest) {
-                    // Check if this entry has an element field matching our ID
-                    if let Some(element) = decoded.get("element") {
-                        if let Some(entry_element_id) = element.get("id").and_then(|v| v.as_str()) {
-                            // Compare hex-encoded IDs
-                            if entry_element_id == hex::encode(element_id_bytes) {
-                                return Some(decoded);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 /// Recursively build tree structure from a given root hash
@@ -530,6 +483,7 @@ fn build_tree_from_root(
     node_id: &str,
     manifest: &Manifest,
     element_to_state: &std::collections::HashMap<String, String>,
+    element_to_data: &std::collections::HashMap<String, Value>,
 ) -> Result<Value> {
     // Decode the node_id (state key) from hex string
     let state_key = hex::decode(node_id).wrap_err("Failed to decode node_id from hex")?;
@@ -567,6 +521,7 @@ fn build_tree_from_root(
                         child_state_key,
                         manifest,
                         element_to_state,
+                        element_to_data,
                     )?;
                     child_nodes.push(child_tree);
                 } else {
@@ -604,9 +559,9 @@ fn build_tree_from_root(
             Vec::new()
         };
 
-        // Try to find data entry associated with this EntityIndex by searching for entries
-        // where the element_id field matches this index's id
-        let associated_data = find_data_for_element(db, state_cf, context_id, &index.id, manifest);
+        // Look up data entry associated with this EntityIndex using O(1) HashMap lookup
+        let element_id_hex = hex::encode(index.id.as_bytes());
+        let associated_data = element_to_data.get(&element_id_hex).cloned();
 
         return Ok(json!({
             "id": node_id,
