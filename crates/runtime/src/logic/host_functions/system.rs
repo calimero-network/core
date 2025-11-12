@@ -29,7 +29,7 @@ use std::rc::Rc;
 /// pointers of the current storage instance.  While the runtime call is in
 /// flight we install this `RuntimeEnv` via `with_runtime_env`, allowing the
 /// storage crate to resolve reads/writes against the live context storage.
-fn build_runtime_env(
+pub(super) fn build_runtime_env(
     storage: &mut dyn RuntimeStorage,
     context_id: [u8; DIGEST_SIZE],
     executor_id: [u8; DIGEST_SIZE],
