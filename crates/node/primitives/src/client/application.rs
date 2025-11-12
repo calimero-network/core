@@ -79,7 +79,15 @@ impl NodeClient {
                         .parent()
                         .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
                     let extract_dir = node_root.join(extract_dir_str);
-                    let wasm_path = extract_dir.join("app.wasm");
+
+                    // Get WASM path from manifest (fallback to "app.wasm" for backward compatibility)
+                    let wasm_relative_path = meta
+                        .get("manifest")
+                        .and_then(|m| m.get("wasm"))
+                        .and_then(|w| w.get("path"))
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("app.wasm");
+                    let wasm_path = extract_dir.join(wasm_relative_path);
 
                     if wasm_path.exists() {
                         let wasm_bytes = tokio::fs::read(&wasm_path).await?;
@@ -104,16 +112,22 @@ impl NodeClient {
                             Self::extract_bundle_manifest(&bundle_bytes)?;
                         if let Some(wasm_artifact) = manifest.wasm {
                             // Extract WASM from bundle
+                            // Compare full relative paths, not just filenames
                             let tar = GzDecoder::new(bundle_bytes.as_ref());
                             let mut archive = Archive::new(tar);
 
-                            for entry in archive.entries()? {
-                                let mut entry = entry?;
-                                let path = entry.path()?;
-                                let file_name =
-                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            for entry_result in archive.entries()? {
+                                let mut entry = entry_result?;
+                                let entry_path = match entry.path() {
+                                    Ok(path) => path,
+                                    Err(_) => continue, // Skip entries with invalid paths
+                                };
+                                let Some(entry_path_str) = entry_path.to_str() else {
+                                    continue; // Skip entries with non-UTF-8 paths
+                                };
 
-                                if file_name == wasm_artifact.path || file_name == "app.wasm" {
+                                // Match by full relative path from manifest
+                                if entry_path_str == wasm_artifact.path {
                                     let mut wasm_content = Vec::new();
                                     entry.read_to_end(&mut wasm_content)?;
                                     return Ok(Some(wasm_content.into()));
