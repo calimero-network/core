@@ -572,8 +572,7 @@ fn build_tree_from_root(
                 } else {
                     // Child element_id not found in mapping - it might be a data entry
                     // Try to look up this child as a data entry directly using the element_id as state_key
-                    let child_state_key_bytes = hex::decode(&child_element_id)
-                        .unwrap_or_default();
+                    let child_state_key_bytes = hex::decode(&child_element_id).unwrap_or_default();
 
                     if child_state_key_bytes.len() == 32 {
                         let mut child_key = Vec::with_capacity(64);
