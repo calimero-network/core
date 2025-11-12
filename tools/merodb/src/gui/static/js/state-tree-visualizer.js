@@ -43,6 +43,15 @@ export class StateTreeVisualizer {
     }
 
     /**
+     * Check if a node has decoded state data
+     * @param {Object} d - D3 node data
+     * @returns {boolean} True if node has decoded data
+     */
+    hasDecodedData(d) {
+        return d.data.data && (d.data.data.key || d.data.data.value || d.data.data.field);
+    }
+
+    /**
      * Load state tree data from backend
      */
     async load() {
@@ -110,14 +119,25 @@ export class StateTreeVisualizer {
             // Create a virtual root that contains all contexts as children
             // Deep clone to prevent mutation of original stateTreeData
             const allContextTrees = this.state.stateTreeData.contexts.map((context, index) => {
-                const clonedTree = JSON.parse(JSON.stringify(context.tree));
-                return {
-                    ...clonedTree,
-                    id: `context-${index}-${context.tree.id}`,
-                    type: 'ContextRoot',
-                    context_id: context.context_id,
-                    context_index: index
-                };
+                try {
+                    const clonedTree = JSON.parse(JSON.stringify(context.tree));
+                    return {
+                        ...clonedTree,
+                        id: `context-${index}-${context.tree.id}`,
+                        type: 'ContextRoot',
+                        context_id: context.context_id,
+                        context_index: index
+                    };
+                } catch (error) {
+                    console.error(`Failed to clone context tree ${index}:`, error);
+                    return {
+                        id: `context-${index}-error`,
+                        type: 'Error',
+                        context_id: context.context_id,
+                        context_index: index,
+                        error: 'Failed to clone tree data'
+                    };
+                }
             });
 
             return {
@@ -131,13 +151,27 @@ export class StateTreeVisualizer {
         const index = parseInt(selectedValue, 10);
         const tree = this.state.stateTreeData.contexts[index]?.tree;
         // Deep clone to prevent mutation of original stateTreeData
-        return tree ? JSON.parse(JSON.stringify(tree)) : null;
+        if (!tree) return null;
+
+        try {
+            return JSON.parse(JSON.stringify(tree));
+        } catch (error) {
+            console.error(`Failed to clone tree for context ${index}:`, error);
+            return {
+                id: 'clone-error',
+                type: 'Error',
+                error: 'Failed to clone tree data'
+            };
+        }
     }
 
     /**
      * Render tree based on selected layout
      */
     render() {
+        // Clean up existing tooltips before re-render to prevent memory leaks
+        this.cleanupTooltips();
+
         const layout = document.getElementById('state-layout-select')?.value || 'tree';
 
         if (layout === 'tree') {
@@ -147,6 +181,19 @@ export class StateTreeVisualizer {
         }
 
         this.updateStats();
+    }
+
+    /**
+     * Clean up all active tooltips
+     */
+    cleanupTooltips() {
+        this.activeTooltips.forEach(tooltip => {
+            if (tooltip.element && tooltip.element.parentNode) {
+                tooltip.element.parentNode.removeChild(tooltip.element);
+            }
+        });
+        this.activeTooltips = [];
+        this.currentTooltip = null;
     }
 
     /**
@@ -230,10 +277,7 @@ export class StateTreeVisualizer {
             nodeEnter.append('circle')
                 .attr('r', 6)
                 .attr('class', d => {
-                    // Check if node has decoded state data
-                    const hasDecodedData = d.data.data && (d.data.data.key || d.data.data.value || d.data.data.field);
-
-                    if (hasDecodedData) return 'has-data';
+                    if (this.hasDecodedData(d)) return 'has-data';
                     if (!d.children && !d._children) return 'leaf';
                     return '';
                 });
@@ -260,10 +304,7 @@ export class StateTreeVisualizer {
 
             nodeUpdate.select('circle')
                 .attr('class', d => {
-                    // Check if node has decoded state data
-                    const hasDecodedData = d.data.data && (d.data.data.key || d.data.data.value || d.data.data.field);
-
-                    if (hasDecodedData) return 'has-data';
+                    if (this.hasDecodedData(d)) return 'has-data';
                     if (!d.children && !d._children) return 'leaf';
                     if (d._children) return 'collapsed';
                     return '';
@@ -376,10 +417,7 @@ export class StateTreeVisualizer {
         nodes.append('circle')
             .attr('r', 4)
             .attr('class', d => {
-                // Check if node has decoded state data
-                const hasDecodedData = d.data.data && (d.data.data.key || d.data.data.value || d.data.data.field);
-
-                if (hasDecodedData) return 'has-data';
+                if (this.hasDecodedData(d)) return 'has-data';
                 if (!d.children) return 'leaf';
                 return '';
             })
