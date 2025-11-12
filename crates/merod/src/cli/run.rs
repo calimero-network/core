@@ -7,7 +7,7 @@ use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
-use mero_auth::config::{AuthConfig, StorageConfig as AuthStorageConfig};
+use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
 
 use super::auth_mode::AuthModeArg;
