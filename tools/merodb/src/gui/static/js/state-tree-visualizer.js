@@ -574,6 +574,43 @@ export class StateTreeVisualizer {
         html += `</div>`;
         html += `</div>`;
 
+        // Display decoded state data if available
+        if (data.data) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Decoded State</div>`;
+
+            const stateData = data.data;
+
+            // Display field name if available
+            if (stateData.field) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Field:</span>`;
+                html += `  <span class="visualization__tooltip-value">${stateData.field}</span>`;
+                html += `</div>`;
+            }
+
+            // Display key-value for Entry types
+            if (stateData.key && stateData.value) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Key:</span>`;
+                html += `  <span class="visualization__tooltip-value"><pre>${JSON.stringify(stateData.key.parsed, null, 2)}</pre></span>`;
+                html += `</div>`;
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Value:</span>`;
+                html += `  <span class="visualization__tooltip-value"><pre>${JSON.stringify(stateData.value.parsed, null, 2)}</pre></span>`;
+                html += `</div>`;
+            }
+            // Display value for ScalarEntry types
+            else if (stateData.value) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Value:</span>`;
+                html += `  <span class="visualization__tooltip-value"><pre>${JSON.stringify(stateData.value.parsed, null, 2)}</pre></span>`;
+                html += `</div>`;
+            }
+
+            html += `</div>`;
+        }
+
         html += '<div class="visualization__tooltip-section">';
         html += `<div class="visualization__tooltip-title">Hashes</div>`;
         html += `<div class="visualization__tooltip-row">`;

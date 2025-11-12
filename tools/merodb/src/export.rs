@@ -475,6 +475,46 @@ fn find_and_build_tree_for_context(
     }))
 }
 
+/// Find data entry associated with a given element ID by iterating through state entries
+#[cfg(feature = "gui")]
+fn find_data_for_element(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    element_id: &Id,
+    manifest: &Manifest,
+) -> Option<Value> {
+    use rocksdb::IteratorMode;
+
+    let element_id_bytes = element_id.as_bytes();
+
+    // Iterate through all state entries for this context looking for a data entry
+    // that has this element_id
+    let iter = db.iterator_cf(state_cf, IteratorMode::Start);
+
+    for item in iter {
+        if let Ok((key, value)) = item {
+            // Check if this key belongs to our context
+            if key.len() == 64 && &key[0..32] == context_id {
+                // Try to decode as a data entry
+                if let Some(decoded) = decode_state_entry(&value, manifest) {
+                    // Check if this entry has an element field matching our ID
+                    if let Some(element) = decoded.get("element") {
+                        if let Some(entry_element_id) = element.get("id").and_then(|v| v.as_str()) {
+                            // Compare hex-encoded IDs
+                            if entry_element_id == hex::encode(element_id_bytes) {
+                                return Some(decoded);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Recursively build tree structure from a given root hash
 #[cfg(feature = "gui")]
 fn build_tree_from_root(
@@ -525,6 +565,28 @@ fn build_tree_from_root(
                     child_nodes.push(child_tree);
                 } else {
                     // Child element_id not found in mapping - it might be a data entry
+                    // Try to look up this child as a data entry directly using the element_id as state_key
+                    let child_state_key_bytes = hex::decode(&child_element_id)
+                        .unwrap_or_default();
+
+                    if child_state_key_bytes.len() == 32 {
+                        let mut child_key = Vec::with_capacity(64);
+                        child_key.extend_from_slice(context_id);
+                        child_key.extend_from_slice(&child_state_key_bytes);
+
+                        if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                            // Try to decode as data entry
+                            if let Some(decoded) = decode_state_entry(&child_value, manifest) {
+                                child_nodes.push(json!({
+                                    "id": child_element_id,
+                                    "type": decoded.get("type").and_then(|v| v.as_str()).unwrap_or("DataEntry"),
+                                    "data": decoded
+                                }));
+                                continue;
+                            }
+                        }
+                    }
+
                     child_nodes.push(json!({
                         "id": child_element_id,
                         "type": "missing",
@@ -537,6 +599,10 @@ fn build_tree_from_root(
             Vec::new()
         };
 
+        // Try to find data entry associated with this EntityIndex by searching for entries
+        // where the element_id field matches this index's id
+        let associated_data = find_data_for_element(db, state_cf, context_id, &index.id, manifest);
+
         return Ok(json!({
             "id": node_id,
             "type": "EntityIndex",
@@ -547,7 +613,8 @@ fn build_tree_from_root(
             "updated_at": *index.metadata.updated_at,
             "deleted_at": index.deleted_at,
             "children": children_info,
-            "children_count": children_info.len()
+            "children_count": children_info.len(),
+            "data": associated_data
         }));
     }
 
@@ -555,7 +622,7 @@ fn build_tree_from_root(
     if let Some(decoded) = decode_state_entry(&value_bytes, manifest) {
         return Ok(json!({
             "id": node_id,
-            "type": "DataEntry",
+            "type": decoded.get("type").and_then(|v| v.as_str()).unwrap_or("DataEntry"),
             "data": decoded
         }));
     }
