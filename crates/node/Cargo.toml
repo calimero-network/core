@@ -16,7 +16,11 @@ calimero-dag.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 ed25519-dalek.workspace = true
 eyre.workspace = true
+flate2.workspace = true
 futures-util = { workspace = true, features = ["io"] }
+hex.workspace = true
+sha2.workspace = true
+tar.workspace = true
 libp2p.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true

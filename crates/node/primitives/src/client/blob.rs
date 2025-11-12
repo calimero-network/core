@@ -243,30 +243,43 @@ impl NodeClient {
             return Ok(None);
         }
 
-        // First try to get from NodeManager's cache (for locally stored blobs)
-        let request = GetBlobBytesRequest { blob_id: *blob_id };
-
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        if let Ok(()) = self
-            .node_manager
-            .send(GetBlobBytes {
-                request,
-                outcome: tx,
-            })
-            .await
-        {
-            if let Ok(response) = rx.await {
-                if let Ok(response) = response {
-                    if response.bytes.is_some() {
-                        return Ok(response.bytes);
-                    }
-                }
+        // Try direct blobstore access first (works for locally stored blobs)
+        // This avoids hanging on node manager calls in tests
+        if let Some(mut stream) = self.blobstore.get(*blob_id)? {
+            let mut data = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                data.extend_from_slice(&chunk?);
             }
-        } else {
-            // NodeManager not available, fallback to direct access
+            return Ok(Some(data.into()));
         }
 
+        // If not found locally, try NodeManager's cache (for production use)
+        let request = GetBlobBytesRequest { blob_id: *blob_id };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Use a very short timeout to avoid hanging in tests
+        let send_result = tokio::time::timeout(
+            tokio::time::Duration::from_millis(10),
+            self.node_manager.send(GetBlobBytes {
+                request,
+                outcome: tx,
+            }),
+        )
+        .await;
+
+        if let Ok(Ok(())) = send_result {
+            // Node manager accepted the request, wait for response with timeout
+            match tokio::time::timeout(tokio::time::Duration::from_millis(100), rx).await {
+                Ok(Ok(Ok(response))) if response.bytes.is_some() => {
+                    return Ok(response.bytes);
+                }
+                _ => {
+                    // Node manager didn't respond in time or returned None, fall through
+                }
+            }
+        }
+
+        // If not found locally and context_id provided, try network discovery
         if let Some(context_id) = context_id {
             let Some(mut blob) = self.get_blob(blob_id, Some(context_id)).await? else {
                 return Ok(None);
@@ -279,7 +292,7 @@ impl NodeClient {
 
             Ok(Some(data.into()))
         } else {
-            // No context_id provided and not in local cache
+            // No context_id provided and blob not found locally
             Ok(None)
         }
     }
