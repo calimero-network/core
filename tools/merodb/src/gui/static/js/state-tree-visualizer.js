@@ -421,12 +421,20 @@ export class StateTreeVisualizer {
     expandAll() {
         if (!this.root) return;
 
-        this.root.descendants().forEach(d => {
+        // Recursive function to expand a node and all its descendants
+        const expandNode = (d) => {
             if (d._children) {
                 d.children = d._children;
                 d._children = null;
             }
-        });
+            // Recursively expand all children
+            if (d.children) {
+                d.children.forEach(expandNode);
+            }
+        };
+
+        // Start expanding from root
+        expandNode(this.root);
 
         if (this.updateFn) {
             this.updateFn(this.root);
