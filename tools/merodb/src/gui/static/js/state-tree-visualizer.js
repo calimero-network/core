@@ -108,13 +108,17 @@ export class StateTreeVisualizer {
 
         if (selectedValue === 'all') {
             // Create a virtual root that contains all contexts as children
-            const allContextTrees = this.state.stateTreeData.contexts.map((context, index) => ({
-                ...context.tree,
-                id: `context-${index}-${context.tree.id}`,
-                type: 'ContextRoot',
-                context_id: context.context_id,
-                context_index: index
-            }));
+            // Deep clone to prevent mutation of original stateTreeData
+            const allContextTrees = this.state.stateTreeData.contexts.map((context, index) => {
+                const clonedTree = JSON.parse(JSON.stringify(context.tree));
+                return {
+                    ...clonedTree,
+                    id: `context-${index}-${context.tree.id}`,
+                    type: 'ContextRoot',
+                    context_id: context.context_id,
+                    context_index: index
+                };
+            });
 
             return {
                 id: 'all-contexts-root',
@@ -125,7 +129,9 @@ export class StateTreeVisualizer {
         }
 
         const index = parseInt(selectedValue, 10);
-        return this.state.stateTreeData.contexts[index]?.tree || null;
+        const tree = this.state.stateTreeData.contexts[index]?.tree;
+        // Deep clone to prevent mutation of original stateTreeData
+        return tree ? JSON.parse(JSON.stringify(tree)) : null;
     }
 
     /**
