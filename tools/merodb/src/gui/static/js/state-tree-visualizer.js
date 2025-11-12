@@ -223,7 +223,14 @@ export class StateTreeVisualizer {
 
             nodeEnter.append('circle')
                 .attr('r', 6)
-                .attr('class', d => (!d.children && !d._children) ? 'leaf' : '');
+                .attr('class', d => {
+                    // Check if node has decoded state data
+                    const hasDecodedData = d.data.data && (d.data.data.key || d.data.data.value || d.data.data.field);
+
+                    if (hasDecodedData) return 'has-data';
+                    if (!d.children && !d._children) return 'leaf';
+                    return '';
+                });
 
             // Add node ID labels
             nodeEnter.append('text')
@@ -247,6 +254,10 @@ export class StateTreeVisualizer {
 
             nodeUpdate.select('circle')
                 .attr('class', d => {
+                    // Check if node has decoded state data
+                    const hasDecodedData = d.data.data && (d.data.data.key || d.data.data.value || d.data.data.field);
+
+                    if (hasDecodedData) return 'has-data';
                     if (!d.children && !d._children) return 'leaf';
                     if (d._children) return 'collapsed';
                     return '';
@@ -358,7 +369,14 @@ export class StateTreeVisualizer {
 
         nodes.append('circle')
             .attr('r', 4)
-            .attr('class', d => d.children ? '' : 'leaf')
+            .attr('class', d => {
+                // Check if node has decoded state data
+                const hasDecodedData = d.data.data && (d.data.data.key || d.data.data.value || d.data.data.field);
+
+                if (hasDecodedData) return 'has-data';
+                if (!d.children) return 'leaf';
+                return '';
+            })
             .on('mouseover', (event, d) => {
                 this.showTooltip(event, d);
             })

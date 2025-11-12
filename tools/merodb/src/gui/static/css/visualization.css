@@ -108,6 +108,12 @@
     stroke-width: 3px;
 }
 
+.state-node circle.has-data {
+    fill: #4a90e2;
+    stroke: #357abd;
+    stroke-width: 2px;
+}
+
 .state-node text {
     fill: var(--color-text-secondary);
     font-size: var(--font-size-xs);
