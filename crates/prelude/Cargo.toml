@@ -11,6 +11,3 @@ publish = true
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
-
-[lints]
-workspace = true
