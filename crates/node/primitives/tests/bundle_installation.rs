@@ -29,9 +29,7 @@ fn create_test_bundle(
     abi_content: Option<&[u8]>,
     migrations: Vec<(&str, &[u8])>,
 ) -> Utf8PathBuf {
-    let bundle_path = temp_dir
-        .path()
-        .join(format!("{}-{}.tar.gz", package, version));
+    let bundle_path = temp_dir.path().join(format!("{}-{}.mpk", package, version));
     let bundle_file = fs::File::create(&bundle_path).unwrap();
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);

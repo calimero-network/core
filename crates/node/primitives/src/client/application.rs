@@ -189,12 +189,9 @@ impl NodeClient {
         Ok(application_id)
     }
 
-    /// Check if a path points to a bundle archive (tar.gz)
+    /// Check if a path points to a bundle archive (.mpk - Mero Package Kit)
     fn is_bundle_archive(path: &Utf8Path) -> bool {
-        path.extension()
-            .map(|ext| matches!(ext, "gz" | "tgz"))
-            .unwrap_or(false)
-            || path.as_str().ends_with(".tar.gz")
+        path.extension().map(|ext| ext == "mpk").unwrap_or(false)
     }
 
     pub async fn install_application_from_path(
@@ -284,16 +281,8 @@ impl NodeClient {
 
         let expected_size = response.content_length();
 
-        // Check if URL indicates a bundle archive
-        let is_bundle = url.path().ends_with(".tar.gz")
-            || url.path().ends_with(".tgz")
-            || url.path().ends_with(".gz")
-            || response
-                .headers()
-                .get("content-type")
-                .and_then(|ct| ct.to_str().ok())
-                .map(|ct| ct.contains("gzip") || ct.contains("tar"))
-                .unwrap_or(false);
+        // Check if URL indicates a bundle archive (.mpk - Mero Package Kit)
+        let is_bundle = url.path().ends_with(".mpk");
 
         if is_bundle {
             // Download entire bundle into memory
@@ -393,7 +382,7 @@ impl NodeClient {
         self.install_application(&blob_id, size, &uri, metadata, package, version)
     }
 
-    /// Install a bundle archive (tar.gz) containing WASM, ABI, and migrations
+    /// Install a bundle archive (.mpk - Mero Package Kit) containing WASM, ABI, and migrations
     async fn install_bundle_from_path(
         &self,
         path: Utf8PathBuf,
@@ -494,7 +483,7 @@ impl NodeClient {
         )
     }
 
-    /// Extract and parse bundle manifest from tar.gz data
+    /// Extract and parse bundle manifest from bundle archive data
     fn extract_bundle_manifest(bundle_data: &[u8]) -> eyre::Result<BundleManifest> {
         let tar = GzDecoder::new(bundle_data);
         let mut archive = Archive::new(tar);
@@ -514,16 +503,17 @@ impl NodeClient {
         bail!("manifest.json not found in bundle")
     }
 
-    /// Find duplicate artifact in other versions by hash
+    /// Find duplicate artifact in other versions by hash and relative path
+    /// Only matches files with the same relative path within the bundle to avoid
+    /// collisions between files with the same name in different directories
     fn find_duplicate_artifact(
         node_root: &Utf8Path,
         package: &str,
         current_version: &str,
         hash: &[u8; 32],
-        file_name: &str,
+        relative_path: &str,
     ) -> Option<Utf8PathBuf> {
-        // Check other versions for the same hash
-        // For now, we'll check all versions in the package directory
+        // Check other versions for the same hash at the same relative path
         let package_dir = node_root.join("applications").join(package);
 
         if let Ok(entries) = fs::read_dir(package_dir.as_std_path()) {
@@ -533,9 +523,9 @@ impl NodeClient {
                         continue; // Skip current version
                     }
 
-                    // Check extracted directory in this version
+                    // Check extracted directory in this version at the same relative path
                     let extracted_dir = package_dir.join(&version_name).join("extracted");
-                    let candidate_path = extracted_dir.join(file_name);
+                    let candidate_path = extracted_dir.join(relative_path);
 
                     if candidate_path.exists() {
                         // Compute hash of candidate file
@@ -606,26 +596,20 @@ impl NodeClient {
             let hash = Sha256::digest(&content);
             let hash_array: [u8; 32] = hash.into();
 
-            // Get file name for deduplication (use just the filename, not full path)
-            let file_name = std::path::Path::new(&relative_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&relative_path);
-
-            // Check for duplicates in other versions
+            // Check for duplicates in other versions at the same relative path
             if let Some(duplicate_path) = Self::find_duplicate_artifact(
                 blobstore_root,
                 package,
                 current_version,
                 &hash_array,
-                file_name,
+                &relative_path,
             ) {
                 // Create hardlink to duplicate file
                 if let Err(e) = fs::hard_link(duplicate_path.as_std_path(), dest_path.as_std_path())
                 {
                     // If hardlink fails (e.g., cross-filesystem), fall back to copying
                     warn!(
-                        file = %file_name,
+                        file = %relative_path,
                         duplicate = %duplicate_path,
                         error = %e,
                         "hardlink failed, copying instead"
