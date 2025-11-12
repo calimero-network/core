@@ -59,7 +59,6 @@ pub async fn start(
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
-
     let mut want_listeners = config.listen.into_iter().peekable();
 
     while let Some(addr) = want_listeners.next() {
