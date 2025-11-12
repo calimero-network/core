@@ -1072,12 +1072,7 @@ async fn test_install_application_from_bundle_blob_no_metadata() {
 
 #[tokio::test]
 async fn test_install_application_from_bundle_blob_missing_blob() {
-    let (_temp_dir, node_client, _data_dir, _blob_dir) = (
-        TempDir::new().unwrap(),
-        create_test_node_client().await.0,
-        create_test_node_client().await.1,
-        create_test_node_client().await.2,
-    );
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
 
     // Create a non-existent blob ID
     use calimero_primitives::blobs::BlobId;
