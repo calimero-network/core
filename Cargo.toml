@@ -83,6 +83,7 @@ members = [
     "./e2e-tests",
     "./tools/calimero-abi",
     "./tools/merodb",
+    "./crates/storage-wasm",
 ]
 
 [workspace.dependencies]
@@ -229,11 +230,14 @@ e2e-tests = { path = "./e2e-tests" }
 kv-store = { path = "./apps/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }
 
+[profile.dev]
+panic = "unwind"
+
 [profile.release]
-strip = "symbols"
 lto = "fat"
 codegen-units = 1
 opt-level = "z"
+strip = "symbols"
 panic = "abort"
 
 [profile.app-release]
@@ -242,154 +246,6 @@ codegen-units = 1
 opt-level = "z"
 lto = true
 debug = false
-panic = "abort"
+strip = "symbols"
 overflow-checks = true
 
-[workspace.lints.rust]
-# Future compatibility lints
-future_incompatible = { level = "deny", priority = -1 }
-
-# Deprecated approach lints
-rust_2018_compatibility = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "warn", priority = -1 }
-rust_2021_compatibility = { level = "deny", priority = -1 }
-
-# Unused code lints
-unused = { level = "warn", priority = -1 }
-
-# Cherry-picked lints
-## Forbid
-#unsafe_code = "forbid" TODO: Unsafe code is needed at present
-#unsafe_op_in_unsafe_fn = "forbid" TODO: Unsafe code is needed at present
-## Deny
-deprecated = "deny"
-deprecated_where_clause_location = "deny"
-incomplete_features = "deny"
-internal_features = "deny"
-macro_use_extern_crate = "deny"
-unknown_lints = "deny"
-unnameable_test_items = "deny"
-#unreachable_pub = "deny" TODO: Enable later
-## Warn
-let_underscore_drop = "warn"
-meta_variable_misuse = "warn"
-missing_copy_implementations = "warn"
-missing_debug_implementations = "warn"
-#missing_docs = "warn" TODO: Enable later once documentation has been added
-single_use_lifetimes = "warn"
-trivial_casts = "warn"
-trivial_numeric_casts = "warn"
-unused_crate_dependencies = "warn"
-unused_import_braces = "warn"
-unused_lifetimes = "warn"
-unused_qualifications = "warn"
-unused_results = "warn"
-variant_size_differences = "warn"
-
-[workspace.lints.clippy]
-# Clippy lint categories
-#cargo = { level = "warn", priority = -1 } TODO: Enable later
-nursery = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-
-# Clippy cargo lints
-#negative_feature_names = "deny" TODO: Enable later
-#wildcard_dependencies = "deny" TODO: Enable later
-
-# Clippy pedantic lints
-## Deny
-pub_underscore_fields = "deny"
-## Allow
-module_name_repetitions = "allow"
-
-# Clippy restriction lints
-## Forbid TODO: Make these forbid ASAP
-allow_attributes_without_reason = "deny"
-dbg_macro = "deny"
-exit = "deny"
-infinite_loop = "deny"
-missing_assert_message = "deny"
-#missing_docs_in_private_items = "forbid" TODO: Enable later once documentation has been added
-mod_module_files = "warn"          # Allow for sync/ directory with submodules
-panic_in_result_fn = "deny"
-str_to_string = "deny"
-string_to_string = "deny"
-tests_outside_test_module = "deny"
-#unimplemented = "forbid" TODO: Enable as soon as possible, once first release is stable
-unwrap_in_result = "deny" # TODO: Change to "forbid" once all unwraps have been removed
-## Deny
-# clone_on_ref_ptr = "deny"
-empty_enum_variants_with_brackets = "deny"
-empty_structs_with_brackets = "deny"
-error_impl_error = "deny"
-#expect_used = "deny" TODO: Enable as soon as possible
-float_cmp_const = "deny"
-fn_to_numeric_cast_any = "deny"
-format_push_string = "deny"
-get_unwrap = "deny"
-# impl_trait_in_params = "deny"
-integer_division = "deny"
-lossy_float_literal = "deny"
-mem_forget = "deny"
-multiple_inherent_impl = "deny"
-#panic = "deny" TODO: Enable as soon as possible
-rc_mutex = "deny"
-try_err = "deny"
-#unwrap_used = "deny" TODO: Enable as soon as possible
-## Warn
-absolute_paths = "warn"
-allow_attributes = "warn"
-arithmetic_side_effects = "warn"
-as_underscore = "warn"
-decimal_literal_representation = "warn"
-default_numeric_fallback = "warn"
-deref_by_slicing = "warn"
-empty_drop = "warn"
-#field_scoped_visibility_modifiers = "warn" TODO: Enable later
-filetype_is_file = "warn"
-if_then_some_else_none = "warn"
-#indexing_slicing = "warn" TODO: Enable this later when dealing with unwraps
-iter_over_hash_type = "warn"
-let_underscore_must_use = "warn"
-#let_underscore_untyped = "warn" TODO: Consider enabling later
-#map_err_ignore = "warn" TODO: Consider enabling later
-missing_asserts_for_indexing = "warn"
-mixed_read_write_in_expression = "warn"
-mutex_atomic = "warn"
-#pattern_type_mismatch = "warn" TODO: Consider enabling later
-pub_without_shorthand = "warn"
-rc_buffer = "warn"
-redundant_type_annotations = "warn"
-rest_pat_in_fully_bound_structs = "warn"
-#same_name_method = "warn" TODO: Consider enabling later
-semicolon_inside_block = "warn"
-#shadow_reuse = "warn" TODO: Consider enabling later
-#shadow_same = "warn" TODO: Consider enabling later
-#shadow_unrelated = "warn" TODO: Consider enabling later
-std_instead_of_core = "warn"
-string_lit_chars_any = "warn"
-string_slice = "warn"
-suspicious_xor_used_as_pow = "warn"
-#todo = "warn" TODO: Enable once all implemented
-unnecessary_safety_comment = "warn"
-unnecessary_safety_doc = "warn"
-unneeded_field_pattern = "warn"
-#unreachable = "warn" TODO: Consider enabling later
-unseparated_literal_suffix = "warn"
-#use_debug = "warn" TODO: Consider enabling later
-verbose_file_reads = "warn"
-
-# Clippy suspicious lints
-const_is_empty = "deny"
-deprecated_clippy_cfg_attr = "deny"
-incompatible_msrv = "deny"
-multiple_bound_locations = "deny"
-unconditional_recursion = "deny"
-unnecessary_clippy_cfg = "deny"
-
-# Lint customisations
-doc_markdown = "allow"            # Annoying number of false positives
-multiple_crate_versions = "allow" # Cannot resolve all these
-missing_errors_doc = "allow"      # TODO: Remove later once documentation has been added
-missing_panics_doc = "allow"      # TODO: Remove later once documentation has been added
-future_not_send = "allow"         # TODO: Remove later once Send is implemented

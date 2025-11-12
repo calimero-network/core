@@ -6,6 +6,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr;
 
 use borsh::{from_slice, BorshDeserialize, BorshSerialize};
+use tracing::debug;
 
 use super::{Collection, ROOT_ID};
 use crate::address::Id;
@@ -130,7 +131,7 @@ where
         match artifact {
             StorageDelta::Actions(actions) => {
                 for action in actions {
-                    let _ignored = match action {
+                    match action {
                         Action::Compare { id } => {
                             push_comparison(Comparison {
                                 data: <Interface<S>>::find_by_id_raw(id),

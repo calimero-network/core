@@ -1,0 +1,48 @@
+# jq Transformation Migration
+#
+# This example shows how to use jq expressions to transform values during
+# migration, such as removing sensitive fields or restructuring data.
+#
+# Usage:
+#   merodb migrate --plan examples/04-jq-transform.yaml --apply
+
+version: 1
+name: jq-transform-migration
+description: Transform state values using jq expressions
+
+source:
+  db_path: /path/to/source/db
+  wasm_file: /path/to/contract.wasm
+
+target:
+  db_path: /path/to/target/db
+  backup_dir: /path/to/backups
+
+defaults:
+  decode_with_abi: true  # Decode to JSON first
+
+steps:
+  - type: copy
+    name: remove-sensitive-fields
+    column: State
+    transform:
+      # decode_with_abi inherited from defaults
+      jq: ".value.parsed | del(.password, .api_key, .internal_data)"
+    guards:
+      requires_empty_target: true
+
+  - type: copy
+    name: filter-active-only
+    column: State
+    filters:
+      context_ids: ["1122334455667788990011223344556677889900112233445566778899001122"]
+    transform:
+      jq: ".value.parsed | select(.status == \"active\")"
+    guards:
+      requires_validation: true
+
+  - type: verify
+    name: verify-transformed-data
+    column: State
+    assertion:
+      min_count: 1

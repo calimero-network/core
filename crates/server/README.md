@@ -2,6 +2,9 @@
 
 - [Node Server](#node-server)
   - [Introduction](#introduction)
+  - [Build Modes](#build-modes)
+    - [Default mode (external auth)](#default-mode-external-auth)
+    - [Embedded auth mode](#embedded-auth-mode)
     - [1. Admin API](#1-admin-api)
     - [2. JSON rpc](#2-json-rpc)
       - [Query Method](#query-method)
@@ -37,6 +40,73 @@ Node Server component is split into 4 parts:
 2.  [JSON rpc](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/jsonrpc.rs)
 3.  [Websocket](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/ws.rs)
 4.  [SSE](https://github.com/calimero-network/core/blob/master/crates/server/src/sse.rs)
+
+## Build Modes
+
+Two build outputs are supported so operators can choose whether the authentication
+service runs alongside the node or inside it.
+
+### Default mode (external auth)
+
+- `calimero-server` is built with default Cargo features.
+- The node expects an external `mero-auth` deployment and continues to forward
+  authentication traffic to it, matching the current production setup.
+- Existing configuration files work without modification.
+
+### Embedded auth mode
+
+- Choose the mode at runtime: `merod run --auth-mode embedded` or set
+  `network.server.auth_mode = "embedded"` in `config.toml`.
+- The node boots the embedded `mero-auth` service, mounts its `/auth` and `/admin`
+  routes, and guards the JSON-RPC, admin, WebSocket, and SSE endpoints with the
+  bundled JWT middleware.
+- When `auth_mode = "embedded"` but there is no `[network.server.embedded_auth]`
+  block, the service defaults to a local RocksDB store under the node’s home
+  directory (`auth/`) and enables only the `user_password` provider.
+- `merod init --auth-mode embedded` writes those defaults during node
+  initialization; use `--auth-storage-path <dir>` to move the RocksDB data or
+  `--auth-storage memory` for an ephemeral setup.
+- Switching back to proxy mode is as simple as running with
+  `--auth-mode proxy` (or removing the `auth_mode` line), keeping existing
+  deployments compatible.
+
+#### Configuring `server.embedded_auth`
+
+When embedded mode is active you can inline authentication settings under
+`network.server.embedded_auth`. The schema matches `mero-auth` configuration; for example:
+
+```toml
+[network.server.embedded_auth]
+listen_addr = "0.0.0.0:3001"
+
+[network.server.embedded_auth.jwt]
+issuer = "calimero-auth"
+access_token_expiry = 3600
+refresh_token_expiry = 2_592_000
+
+[network.server.embedded_auth.storage]
+type = "rocksdb"
+path = "data/auth"
+
+[network.server.embedded_auth.providers]
+user_password = true
+```
+
+Omitting the block leaves the embedded defaults in place (RocksDB storage at
+`auth/`, username/password authentication). External deployments can keep existing
+configs unchanged while opting in environment by environment.
+
+#### CI/CD expectations
+
+- Build the node once: `cargo build -p calimero-server`.
+- Publish or package the single artefact; operators select the mode through
+  configuration or the CLI flag.
+- For the bundled build, ensure the environment exposes the frontend assets:
+  - `CALIMERO_AUTH_FRONTEND_SRC` pointing to a release archive or local build, or
+  - `CALIMERO_AUTH_FRONTEND_PATH` pointing to a prebuilt directory.
+- When running integration suites, exercise at least one smoke test in each mode to
+  confirm `/auth` endpoints are reachable in embedded mode and that the proxy mode
+  continues to rely on the external service.
 
 ### 1. Admin API
 

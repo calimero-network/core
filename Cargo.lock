@@ -1913,6 +1913,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -1948,6 +1949,7 @@ dependencies = [
  "camino",
  "eyre",
  "libp2p-identity",
+ "mero-auth",
  "multiaddr",
  "serde",
  "tokio",
@@ -2208,6 +2210,7 @@ dependencies = [
  "bytes",
  "calimero-node-primitives",
  "calimero-primitives",
+ "calimero-storage",
  "calimero-sys",
  "eyre",
  "fragile",
@@ -2286,6 +2289,7 @@ dependencies = [
  "futures-util",
  "hex",
  "libp2p",
+ "mero-auth",
  "multiaddr",
  "prometheus-client",
  "rand 0.8.5",
@@ -2338,6 +2342,7 @@ dependencies = [
  "serial_test",
  "sha2 0.10.9",
  "thiserror 1.0.69",
+ "tracing",
  "velcro",
 ]
 
@@ -2401,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.16"
+version = "0.10.0-rc.17"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
@@ -2549,6 +2554,15 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "chumsky"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eebd66744a15ded14960ab4ccdbfb51ad3b81f51f3f04a80adac98c985396c9"
+dependencies = [
+ "hashbrown 0.14.5",
 ]
 
 [[package]]
@@ -4523,6 +4537,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hifijson"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a7763b98ba8a24f59e698bf9ab197e7676c640d6455d1580b4ce7dc560f0f0d"
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5282,6 +5302,40 @@ name = "itoa"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+
+[[package]]
+name = "jaq-interpret"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fe95ec3c24af3fd9f3dd1091593f5e49b003a66c496a8aa39d764d0a06ae17b"
+dependencies = [
+ "ahash 0.8.12",
+ "dyn-clone",
+ "hifijson",
+ "indexmap 2.12.0",
+ "jaq-syn",
+ "once_cell",
+ "serde_json",
+]
+
+[[package]]
+name = "jaq-parse"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0346d7d3146cdda8acd929581f3d6626a332356c74d5c95aeaffaac2eb6dee82"
+dependencies = [
+ "chumsky",
+ "jaq-syn",
+]
+
+[[package]]
+name = "jaq-syn"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ba44fe4428c71304604261ecbae047ee9cfb60c4f1a6bd222ebbb31726d3948"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "jni"
@@ -6429,6 +6483,7 @@ dependencies = [
  "hex",
  "ic-agent",
  "libp2p",
+ "mero-auth",
  "multiaddr",
  "near-crypto",
  "rand 0.8.5",
@@ -6448,15 +6503,23 @@ name = "merodb"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
+ "base64 0.22.1",
  "borsh",
+ "calimero-primitives",
  "calimero-store",
  "calimero-wasm-abi",
  "clap",
  "eyre",
  "hex",
+ "jaq-interpret",
+ "jaq-parse",
+ "jaq-syn",
+ "once_cell",
  "rocksdb",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "tempfile",
  "tokio",
  "wasmparser 0.118.2",
 ]
@@ -9830,6 +9893,16 @@ dependencies = [
  "cfg-if",
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "storage-wasm"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "calimero-sdk",
+ "calimero-storage",
+ "once_cell",
 ]
 
 [[package]]

@@ -1,0 +1,45 @@
+# Combined Transformations Migration
+#
+# This example shows how to combine all three transformation features:
+# - decode_with_abi: Convert binary to JSON
+# - jq: Transform the JSON data
+# - write_if_missing: Skip existing keys (idempotent)
+#
+# Usage:
+#   merodb migrate --plan examples/06-combined-transformations.yaml --apply
+
+version: 1
+name: combined-transformations
+description: Use all transformation features together
+
+source:
+  db_path: /path/to/source/db
+  wasm_file: /path/to/contract.wasm
+
+target:
+  db_path: /path/to/target/db
+  backup_dir: /path/to/backups
+
+defaults:
+  decode_with_abi: true
+  write_if_missing: true
+  batch_size: 1000
+
+steps:
+  - type: copy
+    name: transform-and-copy-idempotently
+    column: State
+    transform:
+      # All three transformations combined:
+      # 1. Check if key exists (write_if_missing from defaults)
+      # 2. Decode binary to JSON (decode_with_abi from defaults)
+      # 3. Transform JSON with jq
+      jq: ".value.parsed | del(.temporary_data, .cache) | .updated_at = now"
+    guards:
+      requires_validation: true  # Ensure target DB is valid
+
+  - type: verify
+    name: verify-migrated-data
+    column: State
+    assertion:
+      min_count: 1

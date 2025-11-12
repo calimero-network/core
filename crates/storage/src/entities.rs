@@ -348,6 +348,35 @@ pub struct Metadata {
     pub storage_type: StorageType,
 }
 
+impl Metadata {
+    /// Creates new metadata with the provided timestamps.
+    #[must_use]
+    pub fn new(created_at: u64, updated_at: u64) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+        }
+    }
+
+    /// Updates the `updated_at` timestamp.
+    pub fn set_updated_at(&mut self, timestamp: u64) {
+        self.updated_at = timestamp.into();
+    }
+
+    /// Returns the creation timestamp.
+    #[must_use]
+    pub const fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    /// Returns the last update timestamp.
+    #[must_use]
+    pub fn updated_at(&self) -> u64 {
+        *self.updated_at
+    }
+}
+
 /// Update timestamp (PartialEq always true for CRDT semantics).
 #[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialOrd)]
 pub struct UpdatedAt(u64);

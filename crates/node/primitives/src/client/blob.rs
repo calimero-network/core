@@ -9,6 +9,7 @@ use calimero_store::layer::LayerExt;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
+use tracing::{debug, error, trace};
 
 use super::NodeClient;
 use crate::messages::get_blob_bytes::GetBlobBytesRequest;
@@ -25,10 +26,31 @@ impl NodeClient {
         expected_size: Option<u64>,
         expected_hash: Option<&Hash>,
     ) -> eyre::Result<(BlobId, u64)> {
-        let (blob_id, hash, size) = self
+        debug!(
+            expected_size,
+            has_expected_hash = expected_hash.is_some(),
+            "add_blob invoked"
+        );
+
+        let (blob_id, hash, size) = match self
             .blobstore
             .put_sized(expected_size.map(Size::Exact), stream)
-            .await?;
+            .await
+        {
+            Ok(result) => {
+                trace!(
+                    blob_id = %result.0,
+                    stored_size = result.2,
+                    hash = ?result.1,
+                    "blobstore.put_sized completed"
+                );
+                result
+            }
+            Err(err) => {
+                error!(error = ?err, "blobstore.put_sized failed");
+                return Err(err);
+            }
+        };
 
         if matches!(expected_hash, Some(expected_hash) if hash != *expected_hash) {
             bail!("fatal: blob hash mismatch");
@@ -37,6 +59,12 @@ impl NodeClient {
         if matches!(expected_size, Some(expected_size) if size != expected_size) {
             bail!("fatal: blob size mismatch");
         }
+
+        debug!(
+            %blob_id,
+            stored_size = size,
+            "add_blob completed successfully"
+        );
 
         Ok((blob_id, size))
     }

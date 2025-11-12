@@ -14,6 +14,3 @@ proc-macro = true
 [dependencies]
 quote = "1.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
-
-[lints]
-workspace = true

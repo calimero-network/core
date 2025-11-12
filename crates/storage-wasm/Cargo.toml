@@ -1,0 +1,19 @@
+[package]
+name = "storage-wasm"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-storage = { path = "../storage" }
+borsh.workspace = true
+once_cell.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+calimero-sdk = { path = "../sdk" }

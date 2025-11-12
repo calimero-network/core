@@ -20,6 +20,3 @@ calimero-wasm-abi.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true
-
-[lints]
-workspace = true

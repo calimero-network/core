@@ -20,6 +20,7 @@ use tracing::warn;
 use crate::admin::service::{setup, site};
 
 pub mod admin;
+mod auth;
 pub mod config;
 pub mod jsonrpc;
 mod metrics;
@@ -93,7 +94,17 @@ pub async fn start(
 
     let mut app = Router::new();
 
-    let mut serviced = false;
+    let mut embedded_auth = if config.use_embedded_auth() {
+        Some(auth::initialise(&config).await?)
+    } else {
+        None
+    };
+
+    let auth_service = embedded_auth
+        .as_ref()
+        .map(|auth| Arc::new(auth.auth_service()));
+
+    let mut service_count = 0usize;
 
     let shared_state = Arc::new(AdminState::new(
         datastore.clone(),
@@ -102,36 +113,66 @@ pub async fn start(
     ));
 
     if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
+        let router = if let Some(service) = auth_service.clone() {
+            router.layer(auth::guard_layer(service))
+        } else {
+            router
+        };
+
         app = app.nest(&path, router);
-        serviced = true;
+        service_count += 1;
     }
 
     if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
-        app = app.route(&path, handler);
+        let handler = if let Some(service) = auth_service.clone() {
+            handler.layer(auth::guard_layer(service))
+        } else {
+            handler
+        };
 
-        serviced = true;
+        app = app.route(&path, handler);
+        service_count += 1;
     }
 
     if let Some((path, router)) = sse::service(&config, node_client.clone(), datastore.clone()) {
+        let router = if let Some(service) = auth_service.clone() {
+            router.layer(auth::guard_layer(service))
+        } else {
+            router
+        };
+
         app = app.nest(&path, router);
-        serviced = true;
+        service_count += 1;
     }
 
-    if let Some((api_path, router)) = setup(&config, shared_state) {
+    if let Some((api_path, protected_router, public_router)) = setup(&config, shared_state) {
         if let Some((site_path, serve_dir)) = site(&config) {
             app = app.nest_service(site_path.as_str(), serve_dir);
         }
 
-        app = app.nest(&api_path, router);
-        serviced = true;
+        let protected_router = if let Some(service) = auth_service.clone() {
+            protected_router.layer(auth::guard_layer(service))
+        } else {
+            protected_router
+        };
+
+        let admin_router = protected_router.merge(public_router);
+
+        app = app.nest(&api_path, admin_router);
+        service_count += 1;
     }
 
     if let Some((path, router)) = metrics::service(&config, prom_registry) {
         app = app.nest(path, router);
-        serviced = true;
+        service_count += 1;
     }
 
-    if !serviced {
+    if let Some(bundled_auth) = embedded_auth.take() {
+        app = app.merge(bundled_auth.into_router());
+        service_count += 1;
+    }
+
+    if service_count == 0 {
         warn!("No services enabled, enable at least one service to start the server");
 
         return Ok(());

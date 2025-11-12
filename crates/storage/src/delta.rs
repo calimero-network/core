@@ -6,13 +6,12 @@
 use core::cell::RefCell;
 use std::io;
 
-use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
-
 use crate::action::Action;
 use crate::env;
 use crate::integration::Comparison;
-use crate::logical_clock::HybridTimestamp;
+use crate::logical_clock::{logical_counter, HybridTimestamp};
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 
 /// A causal delta in the DAG representing a set of CRDT actions.
 ///

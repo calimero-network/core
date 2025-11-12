@@ -73,6 +73,14 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             .await
             .map_err(|e| ApplyError::Application(format!("WASM execution failed: {}", e)))?;
 
+        debug!(
+            context_id = %self.context_id,
+            delta_id = ?delta.id,
+            root_hash = ?outcome.root_hash,
+            return_registers = ?outcome.returns,
+            "WASM sync completed execution"
+        );
+
         if outcome.returns.is_err() {
             return Err(ApplyError::Application(format!(
                 "WASM sync returned error: {:?}",
@@ -88,7 +96,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             warn!(
                 context_id = %self.context_id,
                 delta_id = ?delta.id,
-                computed_hash = ?computed_hash,
+                computed_hash = ?computed_hash.as_ref(),
                 expected_hash = ?delta.expected_root_hash,
                 "Root hash mismatch - using expected hash for consistency"
             );

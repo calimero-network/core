@@ -44,6 +44,7 @@ use borsh::{from_slice, to_vec, BorshDeserialize};
 use ed25519_dalek::Verifier;
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
+use tracing::debug;
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, Metadata, SignatureData, StorageType};
@@ -245,31 +246,59 @@ impl<S: StorageAdaptor> Interface<S> {
                 ancestors,
                 metadata,
             } => {
+                debug!(
+                    %id,
+                    ancestor_ids = ?ancestors.iter().map(|a| a.id()).collect::<Vec<_>>(),
+                    created_at = metadata.created_at,
+                    updated_at = metadata.updated_at(),
+                    data_len = data.len(),
+                    "Interface::apply_action preparing to upsert entity"
+                );
                 let mut parent = None;
                 for this in ancestors.iter().rev() {
                     let parent = parent.replace(this);
 
                     if <Index<S>>::has_index(this.id()) {
+                        debug!(
+                            ancestor = %this.id(),
+                            "Ancestor already present in index - skipping creation"
+                        );
                         continue;
                     }
 
                     let Some(parent) = parent else {
+                        debug!(
+                            ancestor = %this.id(),
+                            "Creating ancestor as root index entry (no parent yet)"
+                        );
                         <Index<S>>::add_root(this.clone())?;
 
                         continue;
                     };
 
                     // Set up parent-child relationship
+                    debug!(
+                        parent = %parent.id(),
+                        child = %this.id(),
+                        "Linking ancestor to parent in index"
+                    );
                     <Index<S>>::add_child_to(parent.id(), this.clone())?;
                 }
 
                 // For new entities, create a minimal index entry first to avoid orphan errors
                 if !<Index<S>>::has_index(id) {
                     if id.is_root() {
+                        debug!(%id, "Creating root index entry for entity");
                         <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata.clone()))?;
                     } else if let Some(parent) = parent {
                         // Create minimal index entry with placeholder hash
                         let placeholder_hash = Sha256::digest(&data).into();
+                        debug!(
+                            %id,
+                            parent = %parent.id(),
+                            placeholder_hash = ?placeholder_hash,
+                            "Creating placeholder child entry pending save"
+                        );
                         <Index<S>>::add_child_to(
                             parent.id(),
                             ChildInfo::new(id, placeholder_hash, metadata.clone()),
@@ -280,9 +309,19 @@ impl<S: StorageAdaptor> Interface<S> {
                 // Save data (might merge, producing different hash)
                 let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata.clone())?
                 else {
+                    debug!(
+                        %id,
+                        "Remote action produced no storage change (save_internal returned None)"
+                    );
                     // we didn't save anything, so we skip updating the ancestors
                     return Ok(());
                 };
+
+                debug!(
+                    %id,
+                    ancestor_count = ancestors.len(),
+                    "Applied Add/Update action to storage"
+                );
 
                 // ALWAYS update parent with correct hash after save (handles merging)
                 // save_internal calls update_hash_for which updates child_index.own_hash
@@ -291,6 +330,12 @@ impl<S: StorageAdaptor> Interface<S> {
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
                     // Update parent relationship with the actual hash after any merging
+                    debug!(
+                        %id,
+                        parent = %parent.id(),
+                        own_hash = ?own_hash,
+                        "Updating parent child info with final hash"
+                    );
                     <Index<S>>::add_child_to(
                         parent.id(),
                         ChildInfo::new(id, own_hash, metadata.clone()),
@@ -298,14 +343,18 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
 
                 crate::delta::push_action(Action::Compare { id });
+                debug!(%id, "Queued compare action after apply");
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
             Action::DeleteRef { id, deleted_at, .. } => {
+                debug!(%id, deleted_at, "Applying DeleteRef action");
                 Self::apply_delete_ref_action(id, deleted_at)?;
             }
         };
+
+        debug!("Interface::apply_action completed");
 
         Ok(())
     }
@@ -322,6 +371,11 @@ impl<S: StorageAdaptor> Interface<S> {
         if <Index<S>>::is_deleted(id)? {
             // Already has tombstone, use later deletion timestamp
             let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+            debug!(
+                %id,
+                deleted_at,
+                "DeleteRef ignored because entity already tombstoned"
+            );
             return Ok(());
         }
 
@@ -333,18 +387,30 @@ impl<S: StorageAdaptor> Interface<S> {
             // - Storage efficiency: Avoid bloat from phantom deletions
             // - CRDT convergence: If entity never existed, all peers agree (empty set)
             // - Idempotency: Safe to call remove_child_from multiple times
+            debug!(%id, deleted_at, "DeleteRef ignored because entity metadata missing");
             return Ok(());
         };
 
         // Guard: Local update is newer, deletion loses
         if deleted_at < *metadata.updated_at {
             // Local update wins, ignore older deletion
+            debug!(
+                %id,
+                deleted_at,
+                local_updated_at = metadata.updated_at(),
+                "DeleteRef ignored because local update is newer"
+            );
             return Ok(());
         }
 
         // Deletion wins - apply it
         let _ignored = S::storage_remove(Key::Entry(id));
         let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+        debug!(
+            %id,
+            deleted_at,
+            "DeleteRef applied - entity removed and tombstone updated"
+        );
 
         Ok(())
     }
@@ -740,6 +806,7 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn commit_root<D: Data>(root: Option<D>) -> Result<(), StorageError> {
         let id: Id = Id::root();
 
+        debug!(%id, has_root = root.is_some(), "commit_root invoked");
         let hash = if let Some(root) = root {
             if root.id() != id {
                 return Err(StorageError::UnexpectedId(root.id()));
@@ -760,6 +827,7 @@ impl<S: StorageAdaptor> Interface<S> {
             crate::delta::commit_root(&hash)?;
         }
 
+        debug!(%id, ?hash, "commit_root completed");
         Ok(())
     }
 
@@ -812,11 +880,12 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: Metadata,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
-        let last_metadata = <Index<S>>::get_metadata(id)?;
+        let incoming_created_at = metadata.created_at;
+        let incoming_updated_at = metadata.updated_at();
 
+        let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
             if last_metadata.updated_at > metadata.updated_at {
-                // Incoming is older - skip completely
                 return Ok(None);
             } else if id.is_root() {
                 // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
@@ -903,6 +972,13 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
+        debug!(
+            %id,
+            data_len = data.len(),
+            created_at = metadata.created_at,
+            updated_at = metadata.updated_at(),
+            "save_raw called"
+        );
         if !id.is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
             return Err(StorageError::CannotCreateOrphan(id));
         }
@@ -935,6 +1011,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let ancestors = <Index<S>>::get_ancestors_of(id)?;
 
         let action = if is_new {
+            debug!(%id, "save_raw emitting Add action for entity");
             Action::Add {
                 id,
                 data,
@@ -942,6 +1019,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 metadata,
             }
         } else {
+            debug!(%id, "save_raw emitting Update action for entity");
             Action::Update {
                 id,
                 data,
@@ -951,6 +1029,8 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         crate::delta::push_action(action);
+
+        debug!(%id, ?full_hash, is_new, "save_raw completed");
 
         Ok(Some(full_hash))
     }
