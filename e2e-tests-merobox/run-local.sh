@@ -240,6 +240,7 @@ if [ "$BUILD_APPS" = true ]; then
     chmod +x ./apps/nested-crdt-test/build.sh
     chmod +x ./apps/private_data/build.sh
     chmod +x ./apps/team-metrics-macro/build.sh
+    chmod +x ./apps/xcall-example/build.sh
     
     if ./apps/kv-store/build.sh; then
         echo -e "${GREEN}✓ KV store app built successfully${NC}"
@@ -294,6 +295,13 @@ if [ "$BUILD_APPS" = true ]; then
         echo -e "${GREEN}✓ Team Metrics app built successfully${NC}"
     else
         echo -e "${RED}Error: Failed to build team-metrics-macro app${NC}"
+        exit 1
+    fi
+
+    if ./apps/xcall-example/build.sh; then
+        echo -e "${GREEN}✓ XCall example app built successfully${NC}"
+    else
+        echo -e "${RED}Error: Failed to build xcall-example app${NC}"
         exit 1
     fi
     echo ""
