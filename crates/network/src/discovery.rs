@@ -203,27 +203,27 @@ impl NetworkManager {
 
     // We unregister from a rendezvous peer if we were previously registered.
     // This function expectes that the rendezvous peer is already connected.
-    // pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
-    //     let peer_info = self
-    //         .discovery
-    //         .state
-    //         .get_peer_info(rendezvous_peer)
-    //         .wrap_err("Failed to get peer info")?
-    //         .rendezvous()
-    //         .wrap_err("Peer isn't rendezvous")?;
+    pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
+        let peer_info = self
+            .discovery
+            .state
+            .get_peer_info(rendezvous_peer)
+            .wrap_err("Failed to get peer info")?
+            .rendezvous()
+            .wrap_err("Peer isn't rendezvous")?;
 
-    //     if matches!(
-    //         peer_info.registration_status(),
-    //         RendezvousRegistrationStatus::Registered
-    //     ) {
-    //         self.swarm.behaviour_mut().rendezvous.unregister(
-    //             self.discovery.rendezvous_config.namespace.clone(),
-    //             *rendezvous_peer,
-    //         );
-    //     }
+        if matches!(
+            peer_info.registration_status(),
+            RendezvousRegistrationStatus::Registered
+        ) {
+            self.swarm.behaviour_mut().rendezvous.unregister(
+                self.discovery.rendezvous_config.namespace.clone(),
+                *rendezvous_peer,
+            );
+        }
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     // Finds a new rendezvous peer for registration.
     // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
@@ -299,29 +299,4 @@ impl NetworkManager {
 
         Ok(())
     }
-
-    // TODO: Revisit AutoNAT protocol integration
-    // // Add a peer to the list of servers that may be used for determining our NAT status.
-    // // These peers are used for dial-request even if they are currently not connected,
-    // // in which case a connection will be established before sending the dial-request.
-    // pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
-    //     let peer_info = self
-    //         .discovery
-    //         .state
-    //         .get_peer_info(autonat_peer)
-    //         .wrap_err("Failed to get peer info")?;
-
-    //     debug!(
-    //         %autonat_peer,
-    //         ?peer_info,
-    //         "Adding peer to the list of autonat servers"
-    //     );
-
-    //     self.swarm
-    //         .behaviour_mut()
-    //         .autonat
-    //         .add_server(*autonat_peer, None);
-
-    //     Ok(())
-    // }
 }
