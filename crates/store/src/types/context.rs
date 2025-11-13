@@ -141,6 +141,7 @@ impl ContextDagDelta {
     /// # Errors
     ///
     /// Returns an error if the events cannot be deserialized
+    #[cfg(feature = "serde")]
     pub fn deserialize_events(&self) -> Result<Option<Vec<serde_json::Value>>, eyre::Report> {
         if let Some(ref events_bytes) = self.events {
             let events: Vec<serde_json::Value> = serde_json::from_slice(events_bytes)

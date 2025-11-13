@@ -461,6 +461,7 @@ fn find_and_build_tree_for_context(
 
     // Build tree from root node if found
     if let Some(root_key) = root_state_keys.first() {
+        let mut visited = std::collections::HashSet::new();
         return build_tree_from_root(
             db,
             state_cf,
@@ -469,6 +470,7 @@ fn find_and_build_tree_for_context(
             manifest,
             &element_to_state,
             &element_to_data,
+            &mut visited,
         );
     }
 
@@ -480,7 +482,7 @@ fn find_and_build_tree_for_context(
     }))
 }
 
-/// Recursively build tree structure from a given root hash
+/// Recursively build tree structure from a given root hash with cycle detection
 #[cfg(feature = "gui")]
 fn build_tree_from_root(
     db: &DBWithThreadMode<SingleThreaded>,
@@ -490,7 +492,16 @@ fn build_tree_from_root(
     manifest: &Manifest,
     element_to_state: &std::collections::HashMap<String, String>,
     element_to_data: &std::collections::HashMap<String, Value>,
+    visited: &mut std::collections::HashSet<String>,
 ) -> Result<Value> {
+    // Detect cycles: if we've already visited this node, return an error
+    if !visited.insert(node_id.to_string()) {
+        return Ok(json!({
+            "id": node_id,
+            "type": "cycle_detected",
+            "error": format!("Circular reference detected: node {} references an ancestor", node_id)
+        }));
+    }
     // Decode the node_id (state key) from hex string
     let state_key = hex::decode(node_id).wrap_err("Failed to decode node_id from hex")?;
 
@@ -528,6 +539,7 @@ fn build_tree_from_root(
                         manifest,
                         element_to_state,
                         element_to_data,
+                        visited,
                     )?;
                     child_nodes.push(child_tree);
                 } else {
