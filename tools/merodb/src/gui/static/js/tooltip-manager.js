@@ -29,6 +29,13 @@ export class TooltipManager {
                 this.tooltipPinned = false;
             }
         });
+
+        // Additional handler to catch cases where key is released while another modifier is held
+        window.addEventListener('keyup', (e) => {
+            if (!e.ctrlKey && !e.metaKey) {
+                this.tooltipPinned = false;
+            }
+        });
     }
 
     /**
@@ -38,10 +45,22 @@ export class TooltipManager {
         this.activeTooltips.forEach(tooltip => {
             // tooltip.element is a D3 selection, not a DOM node
             if (tooltip.element) {
+                // Remove global event listeners for this tooltip
+                const tooltipId = tooltip.element.attr('id');
+                if (tooltipId) {
+                    d3.select(document)
+                        .on('mousemove.drag-' + tooltipId, null)
+                        .on('mouseup.drag-' + tooltipId, null);
+                }
                 tooltip.element.remove();
             }
         });
         this.activeTooltips = [];
+
+        // Remove the DOM element from currentTooltip
+        if (this.currentTooltip) {
+            this.currentTooltip.remove();
+        }
         this.currentTooltip = null;
     }
 
