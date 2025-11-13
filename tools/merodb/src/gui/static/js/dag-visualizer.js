@@ -5,6 +5,7 @@
  */
 
 import { UIManager } from './ui-manager.js';
+import { TooltipManager } from './tooltip-manager.js';
 
 export class DAGVisualizer {
     /**
@@ -13,6 +14,7 @@ export class DAGVisualizer {
     constructor(state) {
         this.state = state;
         this.currentZoom = null;
+        this.tooltipManager = new TooltipManager();
     }
 
     /**
@@ -118,6 +120,9 @@ export class DAGVisualizer {
      * Render the DAG based on selected layout
      */
     render() {
+        // Clean up existing tooltips before re-render to prevent memory leaks
+        this.tooltipManager.cleanupTooltips();
+
         const layout = document.getElementById('layout-select')?.value || 'hierarchical';
 
         if (layout === 'hierarchical') {
@@ -191,7 +196,18 @@ export class DAGVisualizer {
 
             const nodeGroup = g.append('g')
                 .attr('class', 'dag-node')
-                .attr('transform', `translate(${pos.x},${pos.y})`);
+                .attr('transform', `translate(${pos.x},${pos.y})`)
+                .style('cursor', 'pointer')
+                .on('mouseover', (event) => {
+                    const content = this.formatTooltipContent(node);
+                    this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
+                })
+                .on('mousemove', (event) => {
+                    this.tooltipManager.moveTooltip(event);
+                })
+                .on('mouseout', () => {
+                    this.tooltipManager.hideTooltip();
+                });
 
             nodeGroup.append('circle')
                 .attr('r', 20)
@@ -264,6 +280,17 @@ export class DAGVisualizer {
             .attr('stroke', '#007acc')
             .attr('stroke-width', 2)
             .attr('class', 'dag-node')
+            .style('cursor', 'pointer')
+            .on('mouseover', (event, d) => {
+                const content = this.formatTooltipContent(d);
+                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
+            })
+            .on('mousemove', (event) => {
+                this.tooltipManager.moveTooltip(event);
+            })
+            .on('mouseout', () => {
+                this.tooltipManager.hideTooltip();
+            })
             .call(d3.drag()
                 .on('start', dragStarted)
                 .on('drag', dragged)
@@ -370,5 +397,125 @@ export class DAGVisualizer {
         link.click();
 
         URL.revokeObjectURL(url);
+    }
+
+    /**
+     * Format tooltip content HTML
+     * @param {Object} node - DAG node object
+     * @returns {string} HTML content
+     */
+    formatTooltipContent(node) {
+        let html = '<div class="visualization__tooltip-section">';
+        html += `<div class="visualization__tooltip-title">Node Information</div>`;
+        html += `<div class="visualization__tooltip-row">`;
+        html += `  <span class="visualization__tooltip-label">Delta ID:</span>`;
+        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(node.delta_id || node.id, 'Delta ID')}</span>`;
+        html += `</div>`;
+        html += `<div class="visualization__tooltip-row">`;
+        html += `  <span class="visualization__tooltip-label">Context:</span>`;
+        html += `  <span class="visualization__tooltip-value">${node.context_id ? TooltipManager.formatHash(node.context_id, 'Context') : 'N/A'}</span>`;
+        html += `</div>`;
+
+        if (node.is_genesis !== undefined) {
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">Genesis Node:</span>`;
+            html += `  <span class="visualization__tooltip-value">${node.is_genesis ? 'Yes' : 'No'}</span>`;
+            html += `</div>`;
+        }
+
+        if (node.is_dag_head !== undefined) {
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">DAG Head:</span>`;
+            html += `  <span class="visualization__tooltip-value">${node.is_dag_head ? 'Yes' : 'No'}</span>`;
+            html += `</div>`;
+        }
+
+        if (node.applied !== undefined) {
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">Applied:</span>`;
+            html += `  <span class="visualization__tooltip-value">${node.applied ? 'Yes' : 'No'}</span>`;
+            html += `</div>`;
+        }
+
+        if (node.actions_size !== undefined) {
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">Actions Size:</span>`;
+            html += `  <span class="visualization__tooltip-value">${node.actions_size} bytes</span>`;
+            html += `</div>`;
+        }
+
+        html += `</div>`;
+
+        // Hybrid Logical Clock section
+        if (node.hlc || node.logical_counter !== undefined || node.physical_time !== undefined) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Hybrid Logical Clock</div>`;
+
+            if (node.hlc) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">HLC:</span>`;
+                html += `  <span class="visualization__tooltip-value">${node.hlc}</span>`;
+                html += `</div>`;
+            }
+
+            if (node.physical_time !== undefined) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Physical Time:</span>`;
+                html += `  <span class="visualization__tooltip-value">${node.physical_time}</span>`;
+                html += `</div>`;
+            }
+
+            if (node.logical_counter !== undefined) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Logical Counter:</span>`;
+                html += `  <span class="visualization__tooltip-value">${node.logical_counter}</span>`;
+                html += `</div>`;
+            }
+
+            html += `</div>`;
+        }
+
+        // Parent relationships section
+        if (node.previous_delta_ids && node.previous_delta_ids.length > 0) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Parents (${node.parent_count || node.previous_delta_ids.length})</div>`;
+            node.previous_delta_ids.forEach((prevId, idx) => {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Parent ${idx + 1}:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(prevId, `Parent-${idx}`)}</span>`;
+                html += `</div>`;
+            });
+            html += `</div>`;
+        } else if (node.parent_count !== undefined) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Parents</div>`;
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">Parent Count:</span>`;
+            html += `  <span class="visualization__tooltip-value">${node.parent_count}</span>`;
+            html += `</div>`;
+            html += `</div>`;
+        }
+
+        // Timestamps section
+        html += '<div class="visualization__tooltip-section">';
+        html += `<div class="visualization__tooltip-title">Timestamps</div>`;
+
+        if (node.timestamp !== undefined) {
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">Timestamp:</span>`;
+            html += `  <span class="visualization__tooltip-value">${node.timestamp === 0 ? '0 (Genesis)' : node.timestamp}</span>`;
+            html += `</div>`;
+        }
+
+        if (node.created_at !== undefined) {
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">Created:</span>`;
+            html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(node.created_at)}</span>`;
+            html += `</div>`;
+        }
+
+        html += `</div>`;
+
+        return html;
     }
 }
