@@ -154,4 +154,31 @@ export class ApiService {
 
         return response.json();
     }
+
+    /**
+     * Load detailed information about a specific delta (on-demand for tooltips)
+     * @param {string} dbPath - Path to the database directory
+     * @param {string} contextId - Context ID
+     * @param {string} deltaId - Delta ID
+     * @returns {Promise<{context_id: string, delta_id: string, actions?: Array, events?: Array}>}
+     * @throws {Error} If the request fails
+     */
+    static async loadDeltaDetails(dbPath, contextId, deltaId) {
+        const formData = new FormData();
+        formData.append('db_path', dbPath);
+        formData.append('context_id', contextId);
+        formData.append('delta_id', deltaId);
+
+        const response = await fetch('/api/dag/delta-details', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to load delta details');
+        }
+
+        return response.json();
+    }
 }

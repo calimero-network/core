@@ -200,6 +200,16 @@ export class TooltipManager {
     }
 
     /**
+     * Update the content of the current tooltip
+     * @param {string} content - New HTML content
+     */
+    updateTooltipContent(content) {
+        if (this.currentTooltip) {
+            this.currentTooltip.html(content);
+        }
+    }
+
+    /**
      * Format timestamp for display
      * @param {number} ts - Timestamp in nanoseconds
      * @returns {string} Formatted timestamp

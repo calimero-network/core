@@ -42,6 +42,7 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
         .route("/", get(render_app))
         .route("/api/export", post(handle_export))
         .route("/api/dag", post(handle_dag))
+        .route("/api/dag/delta-details", post(handle_dag_delta_details))
         .route("/api/state-tree", post(handle_state_tree))
         .route("/api/contexts", post(handle_list_contexts))
         .route("/api/context-tree", post(handle_context_tree))
@@ -617,6 +618,113 @@ async fn handle_dag(mut multipart: Multipart) -> impl IntoResponse {
     };
 
     (StatusCode::OK, Json(dag_data)).into_response()
+}
+
+/// Get detailed information about a specific delta (on-demand loading for tooltips)
+async fn handle_dag_delta_details(mut multipart: Multipart) -> impl IntoResponse {
+    let mut db_path: Option<PathBuf> = None;
+    let mut context_id: Option<String> = None;
+    let mut delta_id: Option<String> = None;
+
+    // Parse multipart form data
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_owned();
+        match name.as_str() {
+            "db_path" => {
+                if let Ok(value) = field.text().await {
+                    db_path = Some(PathBuf::from(value));
+                }
+            }
+            "context_id" => {
+                if let Ok(value) = field.text().await {
+                    context_id = Some(value);
+                }
+            }
+            "delta_id" => {
+                if let Ok(value) = field.text().await {
+                    delta_id = Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Validate inputs
+    let Some(db_path) = db_path else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Database path is required".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+
+    let Some(context_id) = context_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Context ID is required".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+
+    let Some(delta_id) = delta_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Delta ID is required".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Check if database path exists
+    if !db_path.exists() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Database path does not exist: {}", db_path.display()),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate path to prevent traversal attacks
+    if let Err(e) = validate_db_path(&db_path) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+
+    // Open database
+    let db = match open_database(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to open database: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Get delta details
+    let details = match dag::get_delta_details(&db, &context_id, &delta_id) {
+        Ok(data) => data,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get delta details: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(details)).into_response()
 }
 
 async fn handle_validate_abi(mut multipart: Multipart) -> impl IntoResponse {
