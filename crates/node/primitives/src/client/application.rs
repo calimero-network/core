@@ -711,8 +711,14 @@ impl NodeClient {
             };
 
             // Skip macOS resource fork files (._* files)
-            if relative_path.starts_with("._") {
-                continue;
+            // Check filename component, not full path, to catch files in subdirectories
+            if let Some(file_name) = std::path::Path::new(&relative_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+            {
+                if file_name.starts_with("._") {
+                    continue;
+                }
             }
 
             // Read content (header borrow is dropped)
