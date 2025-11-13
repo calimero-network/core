@@ -446,6 +446,88 @@ export class DAGVisualizer {
 
         html += `</div>`;
 
+        // Actions section (deserialized)
+        if (node.actions && Array.isArray(node.actions) && node.actions.length > 0) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Actions (${node.actions.length})</div>`;
+            node.actions.forEach((action, idx) => {
+                html += `<div class="visualization__tooltip-subsection">`;
+                html += `<div class="visualization__tooltip-subtitle">Action ${idx + 1}: ${action.type}</div>`;
+
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Entity ID:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(action.id, `Action-${idx}-ID`)}</span>`;
+                html += `</div>`;
+
+                if (action.type === 'Add' || action.type === 'Update') {
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Data Size:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${action.data_size} bytes</span>`;
+                    html += `</div>`;
+
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Ancestors:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${action.ancestors_count}</span>`;
+                    html += `</div>`;
+
+                    if (action.metadata) {
+                        html += `<div class="visualization__tooltip-row">`;
+                        html += `  <span class="visualization__tooltip-label">Created At:</span>`;
+                        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(action.metadata.created_at)}</span>`;
+                        html += `</div>`;
+
+                        html += `<div class="visualization__tooltip-row">`;
+                        html += `  <span class="visualization__tooltip-label">Updated At:</span>`;
+                        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(action.metadata.updated_at)}</span>`;
+                        html += `</div>`;
+                    }
+                } else if (action.type === 'DeleteRef') {
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Deleted At:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(action.deleted_at)}</span>`;
+                    html += `</div>`;
+                }
+
+                html += `</div>`;
+            });
+            html += `</div>`;
+        }
+
+        // Events section (deserialized)
+        if (node.events && Array.isArray(node.events) && node.events.length > 0) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Events (${node.events.length})</div>`;
+            node.events.forEach((event, idx) => {
+                html += `<div class="visualization__tooltip-subsection">`;
+                html += `<div class="visualization__tooltip-subtitle">Event ${idx + 1}</div>`;
+
+                if (event.kind) {
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Kind:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${event.kind}</span>`;
+                    html += `</div>`;
+                }
+
+                if (event.handler) {
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Handler:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${event.handler}</span>`;
+                    html += `</div>`;
+                }
+
+                if (event.data) {
+                    const dataSize = Array.isArray(event.data) ? event.data.length : JSON.stringify(event.data).length;
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Data Size:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${dataSize} bytes</span>`;
+                    html += `</div>`;
+                }
+
+                html += `</div>`;
+            });
+            html += `</div>`;
+        }
+
         // Hybrid Logical Clock section
         if (node.hlc || node.logical_counter !== undefined || node.physical_time !== undefined) {
             html += '<div class="visualization__tooltip-section">';

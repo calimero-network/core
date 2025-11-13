@@ -6496,6 +6496,7 @@ dependencies = [
  "base64 0.22.1",
  "borsh",
  "calimero-primitives",
+ "calimero-storage",
  "calimero-store",
  "calimero-wasm-abi",
  "clap",

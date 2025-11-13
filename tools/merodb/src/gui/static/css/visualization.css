@@ -164,6 +164,21 @@
     user-select: text;
 }
 
+.visualization__tooltip-subsection {
+    margin-top: var(--space-sm);
+    padding: var(--space-sm);
+    background: var(--color-bg-secondary);
+    border-radius: 4px;
+    border-left: 3px solid var(--color-primary);
+}
+
+.visualization__tooltip-subtitle {
+    color: var(--color-primary);
+    font-weight: var(--font-weight-semibold);
+    margin-bottom: var(--space-xs);
+    font-size: var(--font-size-sm);
+}
+
 /* Hash Preview with Expand/Collapse */
 .hash-preview {
     display: inline-flex;
