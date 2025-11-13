@@ -497,17 +497,25 @@ impl NodeClient {
         )?;
 
         // Delete bundle file after successful installation (it's now stored as a blob)
-        if let Err(e) = tokio::fs::remove_file(&bundle_path).await {
-            warn!(
-                path = %bundle_path,
-                error = %e,
-                "Failed to delete bundle file after installation"
-            );
-            // Don't fail installation if deletion fails - bundle is already installed
+        // Only attempt deletion if file exists to avoid "No such file" errors
+        if bundle_path.exists() {
+            if let Err(e) = tokio::fs::remove_file(&bundle_path).await {
+                warn!(
+                    path = %bundle_path,
+                    error = %e,
+                    "Failed to delete bundle file after installation"
+                );
+                // Don't fail installation if deletion fails - bundle is already installed
+            } else {
+                debug!(
+                    path = %bundle_path,
+                    "Deleted bundle file after successful installation"
+                );
+            }
         } else {
             debug!(
                 path = %bundle_path,
-                "Deleted bundle file after successful installation"
+                "Bundle file already removed or doesn't exist, skipping deletion"
             );
         }
 
