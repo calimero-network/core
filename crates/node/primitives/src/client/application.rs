@@ -13,6 +13,7 @@ use eyre::bail;
 use flate2::read::GzDecoder;
 use futures_util::{io::Cursor, TryStreamExt};
 use reqwest::Url;
+use semver::Version;
 use serde_json;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -974,12 +975,35 @@ impl NodeClient {
         for (id, app) in iter.entries() {
             let (id, app) = (id?, app?);
             if app.package.as_ref() == package {
-                let version = app.version.to_string();
+                let version_str = app.version.to_string();
                 match &latest_version {
-                    None => latest_version = Some((version, id.application_id())),
-                    Some((current_version, _)) => {
-                        if version > *current_version {
-                            latest_version = Some((version, id.application_id()));
+                    None => latest_version = Some((version_str, id.application_id())),
+                    Some((current_version_str, _)) => {
+                        // Try semantic version comparison first
+                        let is_newer = match (
+                            Version::parse(&version_str),
+                            Version::parse(current_version_str),
+                        ) {
+                            (Ok(new_version), Ok(current_version)) => {
+                                // Both are valid semantic versions - use proper comparison
+                                new_version > current_version
+                            }
+                            (Ok(_), Err(_)) => {
+                                // New version is valid semver, current is not - prefer semver
+                                true
+                            }
+                            (Err(_), Ok(_)) => {
+                                // Current version is valid semver, new is not - keep current
+                                false
+                            }
+                            (Err(_), Err(_)) => {
+                                // Neither is valid semver - fall back to lexicographic comparison
+                                version_str > *current_version_str
+                            }
+                        };
+
+                        if is_newer {
+                            latest_version = Some((version_str, id.application_id()));
                         }
                     }
                 }

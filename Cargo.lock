@@ -2177,6 +2177,7 @@ dependencies = [
  "libp2p",
  "rand 0.8.5",
  "reqwest 0.12.24",
+ "semver 1.0.27",
  "serde",
  "serde_json",
  "sha2 0.10.9",

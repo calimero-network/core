@@ -1389,3 +1389,88 @@ async fn test_bundle_get_application_bytes_fallback() {
         "WASM file should exist after fallback (fallback extracts bundle to disk)"
     );
 }
+
+#[tokio::test]
+async fn test_get_latest_version_semantic_ordering() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    let package = "com.example.versioning";
+
+    // Install multiple versions in non-sequential order
+    // This tests that semantic version comparison works correctly
+    let versions = vec!["1.0.0", "2.0.0", "10.0.0", "1.5.0", "1.10.0", "2.5.0"];
+
+    let mut application_ids = Vec::new();
+    for version in &versions {
+        let bundle_path =
+            create_test_bundle(&temp_dir, package, version, b"wasm content", None, vec![]);
+
+        let app_id = node_client
+            .install_application_from_path(bundle_path, vec![])
+            .await
+            .expect("Bundle installation should succeed");
+
+        application_ids.push((version.to_string(), app_id));
+    }
+
+    // Get latest version - should be "10.0.0" (not "2.5.0" which would be lexicographically latest)
+    let latest_app_id = node_client
+        .get_latest_version(package)
+        .expect("Should get latest version")
+        .expect("Latest version should exist");
+
+    // Find which version this corresponds to
+    let latest_version_str = application_ids
+        .iter()
+        .find(|(_, app_id)| *app_id == latest_app_id)
+        .map(|(v, _)| v)
+        .expect("Should find version for latest app_id");
+
+    assert_eq!(
+        latest_version_str, "10.0.0",
+        "Latest version should be 10.0.0 (semantic), not 2.5.0 (lexicographic)"
+    );
+}
+
+#[tokio::test]
+async fn test_get_latest_version_mixed_semver_and_non_semver() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+
+    let package = "com.example.mixed";
+
+    // Install mix of semantic versions and non-semantic versions
+    let versions = vec!["1.0.0", "invalid-version", "2.0.0", "also-invalid"];
+
+    let mut application_ids = Vec::new();
+    for version in &versions {
+        let bundle_path =
+            create_test_bundle(&temp_dir, package, version, b"wasm content", None, vec![]);
+
+        let app_id = node_client
+            .install_application_from_path(bundle_path, vec![])
+            .await
+            .expect("Bundle installation should succeed");
+
+        application_ids.push((version.to_string(), app_id));
+    }
+
+    // Get latest version - should prefer semantic versions over non-semantic
+    let latest_app_id = node_client
+        .get_latest_version(package)
+        .expect("Should get latest version")
+        .expect("Latest version should exist");
+
+    let latest_version_str = application_ids
+        .iter()
+        .find(|(_, app_id)| *app_id == latest_app_id)
+        .map(|(v, _)| v)
+        .expect("Should find version for latest app_id");
+
+    // Should be "2.0.0" (latest semantic version), not "invalid-version" or "also-invalid"
+    assert_eq!(
+        latest_version_str, "2.0.0",
+        "Latest version should be 2.0.0 (semantic), preferring semantic versions over non-semantic"
+    );
+}
