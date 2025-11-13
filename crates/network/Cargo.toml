@@ -54,6 +54,3 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 libp2p-swarm-test.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-
-[lints]
-workspace = true
