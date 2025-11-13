@@ -240,7 +240,7 @@ impl<S: StorageAdaptor> Counter<false, S> {
     /// Returns error if storage operation fails or if counter sum overflows u64::MAX
     pub fn value(&self) -> Result<u64, StoreError> {
         let mut total = 0u64;
-        for (_, count) in self.positive.entries()? {
+        for (_key, count) in self.positive.entries()? {
             // Safe addition: check for overflow
             total = total.checked_add(count).ok_or_else(|| {
                 StorageError::InvalidData("Counter sum overflow: exceeded u64::MAX".to_owned())

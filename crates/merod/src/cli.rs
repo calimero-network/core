@@ -6,6 +6,7 @@ use eyre::Result as EyreResult;
 
 use crate::defaults;
 
+mod auth_mode;
 mod config;
 mod init;
 mod run;

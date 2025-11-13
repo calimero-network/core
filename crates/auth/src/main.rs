@@ -1,14 +1,11 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
 use eyre::Result;
 use mero_auth::auth::token::TokenManager;
-use mero_auth::config::{
-    load_config, AuthConfig, ContentSecurityPolicyConfig, DevelopmentConfig, JwtConfig,
-    NearWalletConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
-};
+use mero_auth::config::load_config;
+use mero_auth::embedded::default_config;
 use mero_auth::secrets::SecretManager;
 use mero_auth::server::{shutdown_signal, start_server};
 use mero_auth::storage::{create_storage, Storage};
@@ -32,55 +29,6 @@ struct Cli {
     /// Enable verbose logging (can be specified multiple times)
     #[clap(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
-}
-
-/// Create a default configuration for when no config file is provided
-fn create_default_config() -> AuthConfig {
-    let mut providers = HashMap::new();
-    providers.insert("near_wallet".to_string(), true);
-
-    AuthConfig {
-        listen_addr: "127.0.0.1:3001".parse().unwrap(),
-        jwt: JwtConfig {
-            issuer: "calimero-auth".to_string(),
-            access_token_expiry: 3600,
-            refresh_token_expiry: 2592000,
-        },
-        storage: StorageConfig::Memory,
-        cors: Default::default(),
-        security: SecurityConfig {
-            max_body_size: 1024 * 1024, // 1MB
-            headers: SecurityHeadersConfig {
-                enabled: true,
-                hsts_max_age: 31536000, // 1 year
-                hsts_include_subdomains: true,
-                frame_options: "DENY".to_string(),
-                content_type_options: "nosniff".to_string(),
-                referrer_policy: "strict-origin-when-cross-origin".to_string(),
-                csp: ContentSecurityPolicyConfig {
-                    enabled: true,
-                    default_src: vec!["'self'".to_string()],
-                    script_src: vec![
-                        "'self'".to_string(),
-                        "'unsafe-inline'".to_string(),
-                        "'unsafe-eval'".to_string(),
-                    ],
-                    style_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
-                    connect_src: vec![
-                        "'self'".to_string(),
-                        "http://localhost:*".to_string(),
-                        "http://host.docker.internal:*".to_string(),
-                        "http://*.nip.io:*".to_string(),
-                        "https://*.nip.io:*".to_string(),
-                    ],
-                },
-            },
-        },
-        providers,
-        near: NearWalletConfig::default(),
-        user_password: UserPasswordConfig::default(),
-        development: DevelopmentConfig::default(),
-    }
 }
 
 #[tokio::main]
@@ -109,12 +57,12 @@ async fn main() -> Result<()> {
             Err(err) => {
                 warn!("Failed to load configuration: {}", err);
                 warn!("Using default configuration instead");
-                create_default_config()
+                default_config()
             }
         }
     } else {
         info!("Using default configuration");
-        create_default_config()
+        default_config()
     };
 
     // Override configuration with command line arguments

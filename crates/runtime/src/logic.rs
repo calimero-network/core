@@ -175,6 +175,8 @@ pub struct VMLogic<'a> {
     root_hash: Option<[u8; DIGEST_SIZE]>,
     /// A binary artifact produced by the execution.
     artifact: Vec<u8>,
+    /// Tracks whether the guest has explicitly called `env.commit`.
+    commit_called: bool,
     /// A map of proposals created during execution, having proposal ID as a key.
     proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
     /// A list of approvals submitted during execution.
@@ -223,6 +225,7 @@ impl<'a> VMLogic<'a> {
             xcalls: vec![],
             root_hash: None,
             artifact: vec![],
+            commit_called: false,
             proposals: BTreeMap::new(),
             approvals: vec![],
 
