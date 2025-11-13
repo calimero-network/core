@@ -636,15 +636,34 @@ impl NodeClient {
         let marker_file_path = extract_dir.join(".extracted");
 
         // Check if extraction is already complete
-        // Only skip if marker exists - if files were deleted, marker will be stale
-        // and we'll re-extract (marker is removed in fallback path if WASM is missing)
+        // Only skip if marker exists AND the expected WASM file exists
+        // This handles the case where files were deleted but marker remains
         if marker_file_path.exists() {
-            debug!(
-                package,
-                version = current_version,
-                "Bundle already extracted (marker file exists), skipping"
-            );
-            return Ok(());
+            // Check if WASM file exists (using manifest to determine path)
+            // If marker exists but WASM doesn't, marker is stale - remove it and re-extract
+            let wasm_relative_path = _manifest
+                .wasm
+                .as_ref()
+                .map(|w| w.path.as_str())
+                .unwrap_or("app.wasm");
+            let wasm_path = extract_dir.join(wasm_relative_path);
+
+            if wasm_path.exists() {
+                debug!(
+                    package,
+                    version = current_version,
+                    "Bundle already extracted (marker file and WASM exist), skipping"
+                );
+                return Ok(());
+            } else {
+                // Marker exists but WASM doesn't - remove stale marker and re-extract
+                debug!(
+                    package,
+                    version = current_version,
+                    "Marker file exists but WASM not found, removing stale marker"
+                );
+                let _ = fs::remove_file(&marker_file_path);
+            }
         }
 
         // Try to acquire exclusive lock by creating lock file atomically
