@@ -106,6 +106,12 @@ impl NodeClient {
                     "extracted WASM not found, attempting to re-extract from bundle and persist to disk"
                 );
 
+                // Remove marker file if it exists (files were deleted, marker is stale)
+                let marker_file_path = extract_dir.join(".extracted");
+                if marker_file_path.exists() {
+                    let _ = fs::remove_file(&marker_file_path);
+                }
+
                 // Re-extract entire bundle to disk (not just WASM) so future calls don't need to re-extract
                 // This handles the case where sync_context_config installed the app before blob arrived
                 Self::extract_bundle_artifacts(
@@ -630,11 +636,13 @@ impl NodeClient {
         let marker_file_path = extract_dir.join(".extracted");
 
         // Check if extraction is already complete
+        // Only skip if marker exists - if files were deleted, marker will be stale
+        // and we'll re-extract (marker is removed in fallback path if WASM is missing)
         if marker_file_path.exists() {
             debug!(
                 package,
                 version = current_version,
-                "Bundle already extracted, skipping"
+                "Bundle already extracted (marker file exists), skipping"
             );
             return Ok(());
         }
