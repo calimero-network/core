@@ -152,6 +152,7 @@ impl NodeClient {
         metadata: Vec<u8>,
         package: &str,
         version: &str,
+        is_bundle: bool,
     ) -> eyre::Result<ApplicationId> {
         let application = types::ApplicationMeta::new(
             key::BlobMeta::new(*blob_id),
@@ -163,14 +164,20 @@ impl NodeClient {
             version.to_owned().into_boxed_str(),
         );
 
-        let application_id = {
+        let application_id = if is_bundle {
+            // For bundles: use only package and version for deterministic ApplicationId
+            // This allows overwriting apps and supports multi-version installations
+            let components = (&application.package, &application.version);
+            ApplicationId::from(*Hash::hash_borsh(&components)?)
+        } else {
+            // For single WASM: use current logic (blob_id, size, source, metadata)
+            // Maintains backward compatibility for non-bundle installations
             let components = (
                 application.bytecode,
                 application.size,
                 &application.source,
                 &application.metadata,
             );
-
             ApplicationId::from(*Hash::hash_borsh(&components)?)
         };
 
@@ -256,6 +263,7 @@ impl NodeClient {
             metadata,
             package,
             version,
+            false, // is_bundle: false for single WASM
         )
     }
 
@@ -329,6 +337,7 @@ impl NodeClient {
                 vec![], // Empty metadata - bundles don't need metadata
                 package,
                 version,
+                true, // is_bundle: true for bundles
             );
         }
 
@@ -348,7 +357,8 @@ impl NodeClient {
             )
             .await?;
 
-        self.install_application(&blob_id, size, &uri, metadata, package, version)
+        self.install_application(&blob_id, size, &uri, metadata, package, version, false)
+        // is_bundle: false for single WASM
     }
 
     /// Install a bundle archive (.mpk - Mero Package Kit) containing WASM, ABI, and migrations
@@ -423,6 +433,7 @@ impl NodeClient {
             vec![], // Empty metadata - bundles don't need metadata
             package,
             version,
+            true, // is_bundle: true for bundles
         )?;
 
         // Delete bundle file after successful installation (it's now stored as a blob)
@@ -553,7 +564,8 @@ impl NodeClient {
 
         // Install application
         // No metadata needed - bundle detection happens via is_bundle_blob()
-        self.install_application(blob_id, size, source, vec![], package, version)
+        self.install_application(blob_id, size, source, vec![], package, version, true)
+        // is_bundle: true for bundles
     }
 
     /// Find duplicate artifact in other versions by hash and relative path
@@ -695,7 +707,77 @@ impl NodeClient {
 
         let key = key::ApplicationMeta::new(*application_id);
 
+        // Get application metadata before deleting to check if it's a bundle
+        let application_meta = handle.get(&key)?;
+
+        // Delete the ApplicationMeta entry
         handle.delete(&key)?;
+
+        // Clean up extracted bundle files if this is a bundle
+        if let Some(application) = application_meta {
+            // Check if this is a bundle by checking package/version
+            // Bundles have meaningful package/version (not "unknown"/"0.0.0")
+            let is_bundle = application.package.as_ref() != "unknown"
+                && application.version.as_ref() != "0.0.0";
+
+            if is_bundle {
+                // Construct path to extracted bundle directory
+                let blobstore_root = self.blobstore.root_path();
+                let node_root = blobstore_root
+                    .parent()
+                    .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+                let bundle_dir = node_root
+                    .join("applications")
+                    .join(application.package.as_ref())
+                    .join(application.version.as_ref());
+
+                // Delete the entire version directory (includes extracted/ subdirectory)
+                if bundle_dir.exists() {
+                    debug!(
+                        package = %application.package,
+                        version = %application.version,
+                        path = %bundle_dir,
+                        "Removing extracted bundle directory"
+                    );
+                    if let Err(e) = fs::remove_dir_all(bundle_dir.as_std_path()) {
+                        warn!(
+                            package = %application.package,
+                            version = %application.version,
+                            path = %bundle_dir,
+                            error = %e,
+                            "Failed to remove extracted bundle directory"
+                        );
+                        // Don't fail uninstallation if cleanup fails - metadata is already deleted
+                    } else {
+                        debug!(
+                            package = %application.package,
+                            version = %application.version,
+                            "Successfully removed extracted bundle directory"
+                        );
+                    }
+
+                    // Also try to remove parent package directory if it's empty
+                    let package_dir = node_root
+                        .join("applications")
+                        .join(application.package.as_ref());
+                    if package_dir.exists() {
+                        // Check if package directory is empty
+                        if let Ok(mut entries) = fs::read_dir(package_dir.as_std_path()) {
+                            if entries.next().is_none() {
+                                // Directory is empty, remove it
+                                if let Err(e) = fs::remove_dir(package_dir.as_std_path()) {
+                                    debug!(
+                                        package = %application.package,
+                                        error = %e,
+                                        "Failed to remove empty package directory (non-fatal)"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }

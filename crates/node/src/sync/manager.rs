@@ -14,7 +14,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::{InitPayload, StreamMessage};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
+use eyre::{bail, eyre};
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
@@ -520,8 +520,24 @@ impl SyncManager {
             .sync_context_config(context_id, None)
             .await?;
 
-        let Some(application) = self.node_client.get_application(&context.application_id)? else {
-            bail!("application not found: {}", context.application_id);
+        // Get application - if not found, we'll try to install it after blob sharing
+        let mut application = self.node_client.get_application(&context.application_id)?;
+
+        // Get blob_id and app config for later use
+        let (blob_id, app_config_opt) = if let Some(ref app) = application {
+            (app.blob.bytecode, None)
+        } else {
+            // Application not found - get blob_id from context config
+            let context_config = self
+                .context_client
+                .context_config(&context_id)?
+                .ok_or_else(|| eyre::eyre!("context config not found"))?;
+            let external_client = self
+                .context_client
+                .external_client(&context_id, &context_config)?;
+            let config_client = external_client.config();
+            let app_config = config_client.application().await?;
+            (app_config.blob.bytecode, Some(app_config))
         };
 
         let identities = self
@@ -540,16 +556,66 @@ impl SyncManager {
         self.initiate_key_share_process(&mut context, our_identity, &mut stream)
             .await?;
 
-        if !self.node_client.has_blob(&application.blob.bytecode)? {
-            self.initiate_blob_share_process(
-                &context,
-                our_identity,
-                application.blob.bytecode,
-                application.size,
-                &mut stream,
-            )
-            .await?;
+        if !self.node_client.has_blob(&blob_id)? {
+            // Get size from application config if we don't have application yet
+            let size = if let Some(ref app) = application {
+                app.size
+            } else if let Some(ref app_config) = app_config_opt {
+                app_config.size
+            } else {
+                let context_config = self
+                    .context_client
+                    .context_config(&context_id)?
+                    .ok_or_else(|| eyre::eyre!("context config not found"))?;
+                let external_client = self
+                    .context_client
+                    .external_client(&context_id, &context_config)?;
+                let config_client = external_client.config();
+                let app_config = config_client.application().await?;
+                app_config.size
+            };
+
+            self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
+                .await?;
+
+            // After blob sharing, try to install application if it doesn't exist
+            if application.is_none() && self.node_client.has_blob(&blob_id)? {
+                // Check if blob is a bundle and install it
+                if let Ok(Some(blob_bytes)) = self.node_client.get_blob_bytes(&blob_id, None).await
+                {
+                    if NodeClient::is_bundle_blob(&blob_bytes) {
+                        // Get source from context config (use cached if available, otherwise fetch)
+                        let source = if let Some(ref app_config) = app_config_opt {
+                            app_config.source.clone()
+                        } else {
+                            let context_config =
+                                self.context_client
+                                    .context_config(&context_id)?
+                                    .ok_or_else(|| eyre::eyre!("context config not found"))?;
+                            let external_client = self
+                                .context_client
+                                .external_client(&context_id, &context_config)?;
+                            let config_client = external_client.config();
+                            let app_config = config_client.application().await?;
+                            app_config.source.clone()
+                        };
+
+                        // Install bundle
+                        let _ = self
+                            .node_client
+                            .install_application_from_bundle_blob(&blob_id, &source.into())
+                            .await;
+
+                        // Re-fetch application
+                        application = self.node_client.get_application(&context.application_id)?;
+                    }
+                }
+            }
         }
+
+        let Some(application) = application else {
+            bail!("application not found: {}", context.application_id);
+        };
 
         // Check if we need to catch up on deltas
         let is_uninitialized = *context.root_hash == [0; 32];
