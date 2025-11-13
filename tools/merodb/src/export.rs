@@ -320,7 +320,8 @@ pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -
                             },
                             "timestamp": timestamp_raw,
                             "hlc": hlc_json,
-                            "applied": delta.applied
+                            "applied": delta.applied,
+                            "expected_root_hash": hex::encode(delta.expected_root_hash)
                         }));
                     }
                 }
@@ -336,7 +337,8 @@ pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -
                     },
                     "timestamp": timestamp_raw,
                     "hlc": hlc_json,
-                    "applied": delta.applied
+                    "applied": delta.applied,
+                    "expected_root_hash": hex::encode(delta.expected_root_hash)
                 }));
             }
 
