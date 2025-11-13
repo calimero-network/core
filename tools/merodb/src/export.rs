@@ -504,6 +504,7 @@ fn build_tree_from_root(
             "error": format!("Circular reference detected: node {} references an ancestor", node_id)
         }));
     }
+
     // Decode the node_id (state key) from hex string
     let state_key = hex::decode(node_id).wrap_err("Failed to decode node_id from hex")?;
 
@@ -516,6 +517,8 @@ fn build_tree_from_root(
         .wrap_err("Failed to query State column")?;
 
     let Some(value_bytes) = value_bytes else {
+        // Remove from visited before returning to allow siblings to visit this node
+        visited.remove(node_id);
         return Ok(json!({
             "id": node_id,
             "type": "missing",
@@ -523,8 +526,8 @@ fn build_tree_from_root(
         }));
     };
 
-    // Try to decode as EntityIndex
-    if let Ok(index) = borsh::from_slice::<EntityIndex>(&value_bytes) {
+    // Build the result based on the node type
+    let result = if let Ok(index) = borsh::from_slice::<EntityIndex>(&value_bytes) {
         let children_info: Vec<Value> = if let Some(children) = &index.children {
             let mut child_nodes = Vec::new();
             for child in children {
@@ -597,7 +600,7 @@ fn build_tree_from_root(
         let element_id_hex = hex::encode(index.id.as_bytes());
         let associated_data = element_to_data.get(&element_id_hex).cloned();
 
-        return Ok(json!({
+        json!({
             "id": node_id,
             "type": "EntityIndex",
             "parent_id": index.parent_id.map(|id| hex::encode(id.as_bytes())),
@@ -609,25 +612,30 @@ fn build_tree_from_root(
             "children": children_info,
             "children_count": children_info.len(),
             "data": associated_data
-        }));
-    }
-
-    // Try to decode as data entry
-    if let Some(decoded) = decode_state_entry(&value_bytes, manifest) {
-        return Ok(json!({
+        })
+    } else if let Some(decoded) = decode_state_entry(&value_bytes, manifest) {
+        // Try to decode as data entry
+        json!({
             "id": node_id,
             "type": decoded.get("type").and_then(|v| v.as_str()).unwrap_or("DataEntry"),
             "data": decoded
-        }));
-    }
+        })
+    } else {
+        // Fallback for unknown format
+        json!({
+            "id": node_id,
+            "type": "Unknown",
+            "size": value_bytes.len(),
+            "raw": String::from_utf8_lossy(&value_bytes)
+        })
+    };
 
-    // Fallback for unknown format
-    Ok(json!({
-        "id": node_id,
-        "type": "Unknown",
-        "size": value_bytes.len(),
-        "raw": String::from_utf8_lossy(&value_bytes)
-    }))
+    // Remove from visited after processing to allow siblings to visit this node
+    // This ensures cycle detection works (nodes in current path) while allowing
+    // the same node to appear in different branches of the tree
+    visited.remove(node_id);
+
+    Ok(result)
 }
 
 /// Export data without ABI manifest
