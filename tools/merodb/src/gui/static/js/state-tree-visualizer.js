@@ -68,8 +68,8 @@ export class StateTreeVisualizer {
         const select = document.getElementById('state-context-select');
         if (!select || !this.state.stateTreeData?.contexts) return;
 
-        // Clear existing options except "All Contexts"
-        select.innerHTML = '<option value="all">All Contexts</option>';
+        // Clear existing options
+        select.innerHTML = '';
 
         // Add option for each context
         this.state.stateTreeData.contexts.forEach((context, index) => {
@@ -79,8 +79,10 @@ export class StateTreeVisualizer {
             select.appendChild(option);
         });
 
-        // Select "All Contexts" by default to show all state items
-        select.value = 'all';
+        // Select the first context by default
+        if (this.state.stateTreeData.contexts.length > 0) {
+            select.value = '0';
+        }
     }
 
     /**
@@ -93,41 +95,9 @@ export class StateTreeVisualizer {
         const select = document.getElementById('state-context-select');
         const selectedValue = select?.value || '0';
 
-        if (selectedValue === 'all') {
-            // Create a virtual root that contains all contexts as children
-            // Deep clone to prevent mutation of original stateTreeData
-            const allContextTrees = this.state.stateTreeData.contexts.map((context, index) => {
-                try {
-                    const clonedTree = JSON.parse(JSON.stringify(context.tree));
-                    return {
-                        ...clonedTree,
-                        id: `context-${index}-${context.tree.id}`,
-                        type: 'ContextRoot',
-                        context_id: context.context_id,
-                        context_index: index
-                    };
-                } catch (error) {
-                    console.error(`Failed to clone context tree ${index}:`, error);
-                    return {
-                        id: `context-${index}-error`,
-                        type: 'Error',
-                        context_id: context.context_id,
-                        context_index: index,
-                        error: 'Failed to clone tree data'
-                    };
-                }
-            });
-
-            return {
-                id: 'all-contexts-root',
-                type: 'VirtualRoot',
-                children: allContextTrees,
-                children_count: allContextTrees.length
-            };
-        }
-
         const index = parseInt(selectedValue, 10);
         const tree = this.state.stateTreeData.contexts[index]?.tree;
+
         // Deep clone to prevent mutation of original stateTreeData
         if (!tree) return null;
 

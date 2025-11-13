@@ -76,13 +76,18 @@ export class DAGVisualizer {
         const select = document.getElementById('context-select');
         if (!select) return;
 
-        select.innerHTML = '<option value="all">All Contexts</option>';
+        select.innerHTML = '';
         contexts.forEach(context => {
             const option = document.createElement('option');
             option.value = context;
             option.textContent = context.substring(0, 8) + '...';
             select.appendChild(option);
         });
+
+        // Select the first context by default
+        if (contexts.length > 0) {
+            select.value = contexts[0];
+        }
     }
 
     /**
@@ -91,13 +96,10 @@ export class DAGVisualizer {
      */
     getFilteredData() {
         const contextSelect = document.getElementById('context-select');
-        const selectedContext = contextSelect?.value || 'all';
+        const selectedContext = contextSelect?.value;
 
-        if (selectedContext === 'all') {
-            return {
-                nodes: this.state.dagData.nodes,
-                links: this.state.dagData.links
-            };
+        if (!selectedContext) {
+            return { nodes: [], links: [] };
         }
 
         // Filter nodes for the selected context
