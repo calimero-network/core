@@ -12,7 +12,6 @@ nodes:
   prefix: near-prop
 
 steps:
-
   # ============================================================================
   # Phase 1: Setup - Install blockchain integration app
   # ============================================================================
@@ -128,6 +127,11 @@ steps:
         field: result
         path: output
 
+  - name: Assert Proposal 1 Created
+    type: assert
+    statements:
+      - "is_set({{prop1_id}})"
+
   - name: Wait After Proposal 1
     type: wait
     seconds: 2
@@ -149,6 +153,11 @@ steps:
         field: result
         path: output
 
+  - name: Assert Proposal 2 Created
+    type: assert
+    statements:
+      - "is_set({{prop2_id}})"
+
   - name: Wait After Proposal 2
     type: wait
     seconds: 2
@@ -169,6 +178,11 @@ steps:
         field: result
         path: output
 
+  - name: Assert Proposal 3 Created
+    type: assert
+    statements:
+      - "is_set({{prop3_id}})"
+
   - name: Wait After Proposal 3
     type: wait
     seconds: 2
@@ -184,6 +198,11 @@ steps:
       proposal_id: "{{prop3_id}}"
     outputs:
       approve3_result: result
+
+  - name: Assert Proposal 3 Approval Result
+    type: json_assert
+    statements:
+      - 'json_equal({{approve3_result}}, {"output": null})'
 
   - name: Wait for Proposal 3 Execution
     type: wait
@@ -205,6 +224,11 @@ steps:
       prop4_id:
         field: result
         path: output
+
+  - name: Assert Proposal 4 Created
+    type: assert
+    statements:
+      - "is_set({{prop4_id}})"
 
   - name: Wait for All Proposals to Propagate
     type: wait
@@ -271,7 +295,7 @@ steps:
     proposal_id: "{{prop2_id}}"
 
   # ============================================================================
-  # Phase 9: Test Proposal Messages 
+  # Phase 9: Test Proposal Messages
   # ============================================================================
   - name: Send Message to Proposal 1
     type: call
@@ -290,6 +314,11 @@ steps:
     outputs:
       send_msg_result: result
 
+  - name: Assert Proposal Message Sent
+    type: json_assert
+    statements:
+      - 'json_equal({{send_msg_result}}, {"output": null})'
+
   - name: Wait for Message Broadcast
     type: wait
     seconds: 5
@@ -305,6 +334,8 @@ steps:
     outputs:
       messages_result: result
 
+  # TODO: message payload assertions temporarily disabled (engine needs nested JSON helpers).
+
   - name: Get Proposal Messages from Node 3
     type: call
     node: near-prop-3
@@ -315,6 +346,8 @@ steps:
       proposal_id: "{{prop1_id}}"
     outputs:
       messages_result_node3: result
+
+  # TODO: message payload assertions temporarily disabled (engine needs nested JSON helpers).
 
   # ============================================================================
   # Phase 10: Approve Remaining Proposals from Different Nodes
@@ -330,6 +363,11 @@ steps:
     outputs:
       approve1_result: result
 
+  - name: Assert Proposal 1 Approval Result
+    type: json_assert
+    statements:
+      - 'json_equal({{approve1_result}}, {"output": null})'
+
   - name: Approve Proposal 2 from Node 3
     type: call
     node: near-prop-3
@@ -341,6 +379,11 @@ steps:
     outputs:
       approve2_result: result
 
+  - name: Assert Proposal 2 Approval Result
+    type: json_assert
+    statements:
+      - 'json_equal({{approve2_result}}, {"output": null})'
+
   - name: Approve Proposal 4 from Node 2 (First Approval)
     type: call
     node: near-prop-2
@@ -351,6 +394,11 @@ steps:
       proposal_id: "{{prop4_id}}"
     outputs:
       approve4_result: result
+
+  - name: Assert Proposal 4 First Approval Result
+    type: json_assert
+    statements:
+      - 'json_equal({{approve4_result}}, {"output": null})'
 
   - name: Wait for First Approval to Propagate
     type: wait
@@ -382,6 +430,11 @@ steps:
       proposal_id: "{{prop4_id}}"
     outputs:
       approve4_result_node3: result
+
+  - name: Assert Proposal 4 Second Approval Result
+    type: json_assert
+    statements:
+      - 'json_equal({{approve4_result_node3}}, {"output": null})'
 
   - name: Wait for Proposal 4 Execution
     type: wait

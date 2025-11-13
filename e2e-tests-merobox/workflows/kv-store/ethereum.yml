@@ -122,6 +122,11 @@ steps:
     outputs:
       set_result_1: result
 
+  - name: Assert Initial Set Result on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{set_result_1}}, {"output": null})'
+
   - name: Wait for Set Operation
     type: wait
     seconds: 3
@@ -137,6 +142,11 @@ steps:
     outputs:
       get_result_1: result
 
+  - name: Assert Initial Get Result on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_1}}, {"output": "test_value"})'
+
   - name: Get Value from Node 2
     type: call
     node: kv-eth-2
@@ -148,6 +158,11 @@ steps:
     outputs:
       get_result_2: result
 
+  - name: Assert Initial Get Result on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_2}}, {"output": "test_value"})'
+
   - name: Get Value from Node 3
     type: call
     node: kv-eth-3
@@ -158,6 +173,11 @@ steps:
       key: "test_key"
     outputs:
       get_result_3: result
+
+  - name: Assert Initial Get Result on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_3}}, {"output": "test_value"})'
 
   # ============================================================================
   # Phase 6: Update and Verify Propagation
@@ -174,6 +194,11 @@ steps:
     outputs:
       update_result: result
 
+  - name: Assert Update Result on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{update_result}}, {"output": null})'
+
   - name: Wait for Update Broadcast
     type: wait
     seconds: 3
@@ -189,6 +214,11 @@ steps:
     outputs:
       updated_result_1: result
 
+  - name: Assert Updated Value on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{updated_result_1}}, {"output": "updated_value"})'
+
   - name: Verify Updated Value on Node 3
     type: call
     node: kv-eth-3
@@ -199,6 +229,11 @@ steps:
       key: "test_key"
     outputs:
       updated_result_3: result
+
+  - name: Assert Updated Value on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{updated_result_3}}, {"output": "updated_value"})'
 
   # ============================================================================
   # Phase 7: Test Remove Operation with Repeat
@@ -222,6 +257,11 @@ steps:
         outputs:
           iter_set_result: result
 
+      - name: Assert Iteration Set Result
+        type: json_assert
+        statements:
+          - 'json_equal({{iter_set_result}}, {"output": null})'
+
       - name: Wait for Consensus
         type: wait
         seconds: 2
@@ -237,6 +277,11 @@ steps:
         outputs:
           iter_get_result: result
 
+      - name: Assert Iteration Get Result
+        type: json_assert
+        statements:
+          - 'json_equal({{iter_get_result}}, {"output": "value_{{current_iteration}}"})'
+
       - name: Remove Key from Node 2
         type: call
         node: kv-eth-2
@@ -247,6 +292,11 @@ steps:
           key: "key_{{current_iteration}}"
         outputs:
           iter_remove_result: result
+
+      - name: Assert Iteration Remove Result
+        type: json_assert
+        statements:
+          - 'json_equal({{iter_remove_result}}, {"output": "value_{{current_iteration}}"})'
 
       - name: Wait for Removal Broadcast
         type: wait
@@ -263,6 +313,11 @@ steps:
         outputs:
           iter_removed_result: result
 
+      - name: Assert Iteration Removed Value
+        type: json_assert
+        statements:
+          - 'json_equal({{iter_removed_result}}, {"output": null})'
+
   # ============================================================================
   # Phase 8: Final Verification
   # ============================================================================
@@ -277,6 +332,11 @@ steps:
       value: "final_value"
     outputs:
       final_set_result: result
+
+  - name: Assert Final Set Result
+    type: json_assert
+    statements:
+      - 'json_equal({{final_set_result}}, {"output": null})'
 
   - name: Wait for Final Consensus
     type: wait
@@ -293,6 +353,11 @@ steps:
     outputs:
       final_result_1: result
 
+  - name: Assert Final Key on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{final_result_1}}, {"output": "final_value"})'
+
   - name: Verify Final Key on All Nodes - Node 2
     type: call
     node: kv-eth-2
@@ -304,6 +369,11 @@ steps:
     outputs:
       final_result_2: result
 
+  - name: Assert Final Key on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{final_result_2}}, {"output": "final_value"})'
+
   - name: Verify Final Key on All Nodes - Node 3
     type: call
     node: kv-eth-3
@@ -314,6 +384,11 @@ steps:
       key: "final_key"
     outputs:
       final_result_3: result
+
+  - name: Assert Final Key on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{final_result_3}}, {"output": "final_value"})'
 
 # Configuration options
 stop_all_nodes: true

@@ -58,6 +58,11 @@ steps:
     outputs:
       initial_len: result
 
+  - name: Assert Initial Length on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_len}}, {"output": 3})'
+
   - name: Verify Welcome Key from init()
     type: call
     node: kv-init-near-1
@@ -68,6 +73,11 @@ steps:
       key: "welcome"
     outputs:
       welcome_value: result
+
+  - name: Assert Welcome Key Value on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{welcome_value}}, {"output": "Welcome to KvStoreInit!"})'
 
   - name: Verify init_key_1 from init()
     type: call
@@ -80,6 +90,11 @@ steps:
     outputs:
       init_key_1_value: result
 
+  - name: Assert init_key_1 Value on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{init_key_1_value}}, {"output": "Initial value 1"})'
+
   - name: Verify init_key_2 from init()
     type: call
     node: kv-init-near-1
@@ -90,6 +105,11 @@ steps:
       key: "init_key_2"
     outputs:
       init_key_2_value: result
+
+  - name: Assert init_key_2 Value on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{init_key_2_value}}, {"output": "Initial value 2"})'
 
   # ============================================================================
   # Phase 4: Generate Identities for Invitees
@@ -170,6 +190,11 @@ steps:
     outputs:
       node2_initial_len: result
 
+  - name: Assert Initial Length on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_initial_len}}, {"output": 3})'
+
   - name: Verify init_key_1 on Node 2
     type: call
     node: kv-init-near-2
@@ -180,6 +205,11 @@ steps:
       key: "init_key_1"
     outputs:
       node2_init_key_1: result
+
+  - name: Assert init_key_1 Value on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_init_key_1}}, {"output": "Initial value 1"})'
 
   - name: Verify Welcome Key on Node 2
     type: call
@@ -192,6 +222,11 @@ steps:
     outputs:
       node2_welcome: result
 
+  - name: Assert Welcome Key Value on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_welcome}}, {"output": "Welcome to KvStoreInit!"})'
+
   - name: Check Length on Node 3 (should have synced 3 items)
     type: call
     node: kv-init-near-3
@@ -201,6 +236,11 @@ steps:
     args: {}
     outputs:
       node3_initial_len: result
+
+  - name: Assert Initial Length on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{node3_initial_len}}, {"output": 3})'
 
   - name: Verify init_key_2 on Node 3
     type: call
@@ -213,6 +253,11 @@ steps:
     outputs:
       node3_init_key_2: result
 
+  - name: Assert init_key_2 Value on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{node3_init_key_2}}, {"output": "Initial value 2"})'
+
   - name: Verify Welcome Key on Node 3
     type: call
     node: kv-init-near-3
@@ -223,6 +268,11 @@ steps:
       key: "welcome"
     outputs:
       node3_welcome: result
+
+  - name: Assert Welcome Key Value on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{node3_welcome}}, {"output": "Welcome to KvStoreInit!"})'
 
   # ============================================================================
   # Phase 7: Test Runtime Operations - Inviter Adds Data
@@ -239,6 +289,11 @@ steps:
     outputs:
       set_test_result: result
 
+  - name: Assert Set Test Result
+    type: json_assert
+    statements:
+      - 'json_equal({{set_test_result}}, {"output": null})'
+
   - name: Wait for Broadcast
     type: wait
     seconds: 5
@@ -254,6 +309,11 @@ steps:
     outputs:
       node1_test_key: result
 
+  - name: Assert test_key Value on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_test_key}}, {"output": "test_value"})'
+
   - name: Verify New Key on Node 2
     type: call
     node: kv-init-near-2
@@ -265,6 +325,11 @@ steps:
     outputs:
       node2_test_key: result
 
+  - name: Assert test_key Value on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_test_key}}, {"output": "test_value"})'
+
   - name: Verify New Key on Node 3
     type: call
     node: kv-init-near-3
@@ -275,6 +340,11 @@ steps:
       key: "test_key"
     outputs:
       node3_test_key: result
+
+  - name: Assert test_key Value on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{node3_test_key}}, {"output": "test_value"})'
 
   # ============================================================================
   # Phase 8: Test Runtime Operations - Invitee Adds Data
@@ -291,6 +361,11 @@ steps:
     outputs:
       invitee_set_result: result
 
+  - name: Assert Invitee Set Result
+    type: json_assert
+    statements:
+      - 'json_equal({{invitee_set_result}}, {"output": null})'
+
   - name: Wait for Delta Propagation
     type: wait
     seconds: 5
@@ -306,6 +381,11 @@ steps:
     outputs:
       node1_invitee_key: result
 
+  - name: Assert invitee_key Value on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_invitee_key}}, {"output": "invitee_value"})'
+
   - name: Verify Invitee Key on Node 3
     type: call
     node: kv-init-near-3
@@ -316,6 +396,11 @@ steps:
       key: "invitee_key"
     outputs:
       node3_invitee_key: result
+
+  - name: Assert invitee_key Value on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{node3_invitee_key}}, {"output": "invitee_value"})'
 
   # ============================================================================
   # Phase 9: Verify Final Length (3 initial + 2 runtime = 5)
@@ -330,6 +415,11 @@ steps:
     outputs:
       node1_final_len: result
 
+  - name: Assert Final Length on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_final_len}}, {"output": 5})'
+
   - name: Check Final Length on Node 2
     type: call
     node: kv-init-near-2
@@ -340,6 +430,11 @@ steps:
     outputs:
       node2_final_len: result
 
+  - name: Assert Final Length on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_final_len}}, {"output": 5})'
+
   - name: Check Final Length on Node 3
     type: call
     node: kv-init-near-3
@@ -349,6 +444,11 @@ steps:
     args: {}
     outputs:
       node3_final_len: result
+
+  - name: Assert Final Length on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{node3_final_len}}, {"output": 5})'
 
   # ============================================================================
   # Phase 10: Additional Verification - Update Existing Init Key
@@ -365,6 +465,11 @@ steps:
     outputs:
       update_init_key_result: result
 
+  - name: Assert Update init_key_1 Result
+    type: json_assert
+    statements:
+      - 'json_equal({{update_init_key_result}}, {"output": null})'
+
   - name: Wait for Update Propagation
     type: wait
     seconds: 5
@@ -380,6 +485,11 @@ steps:
     outputs:
       node1_updated_init_key: result
 
+  - name: Assert Updated init_key_1 on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_updated_init_key}}, {"output": "Updated value 1"})'
+
   - name: Verify Updated init_key_1 on Node 2
     type: call
     node: kv-init-near-2
@@ -391,6 +501,11 @@ steps:
     outputs:
       node2_updated_init_key: result
 
+  - name: Assert Updated init_key_1 on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_updated_init_key}}, {"output": "Updated value 1"})'
+
   - name: Verify Length Unchanged After Update
     type: call
     node: kv-init-near-1
@@ -400,6 +515,11 @@ steps:
     args: {}
     outputs:
       final_len_after_update: result
+
+  - name: Assert Final Length After Update
+    type: json_assert
+    statements:
+      - 'json_equal({{final_len_after_update}}, {"output": 5})'
 
 # Configuration options
 stop_all_nodes: true

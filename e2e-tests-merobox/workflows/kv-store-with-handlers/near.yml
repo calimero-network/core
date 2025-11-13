@@ -138,6 +138,11 @@ steps:
     outputs:
       handlers_1: result
 
+  - name: Assert Insert Handler Count on Inviter
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_1}}, {"output": 2})'
+
   # ============================================================================
   # Phase 6: Test Update Handler
   # ============================================================================
@@ -168,6 +173,11 @@ steps:
     outputs:
       handlers_2: result
 
+  - name: Assert Update Handler Count on Invitees
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_2}}, {"output": 4})'
+
   # ============================================================================
   # Phase 7: Test Remove Handler
   # ============================================================================
@@ -181,6 +191,11 @@ steps:
       key: "test_key"
     outputs:
       remove_result: result
+
+  - name: Assert Remove Returned Previous Value
+    type: json_assert
+    statements:
+      - 'json_equal({{remove_result}}, {"output": "updated_value"})'
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
@@ -196,6 +211,11 @@ steps:
     args: {}
     outputs:
       handlers_3: result
+
+  - name: Assert Remove Handler Count on Invitees
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_3}}, {"output": 6})'
 
   # ============================================================================
   # Phase 8: Test Clear Handler
@@ -227,6 +247,11 @@ steps:
     outputs:
       clear_result: result
 
+  - name: Assert Clear Returned Null
+    type: json_assert
+    statements:
+      - "json_equal({{clear_result}}, null)"
+
   - name: Wait for Broadcast and Handler Execution
     type: wait
     seconds: 5
@@ -242,6 +267,11 @@ steps:
     outputs:
       handlers_final: result
 
+  - name: Assert Clear Handler Count on Invitees
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_final}}, {"output": 10})'
+
   # ============================================================================
   # Phase 9: Final Verification Across All Nodes
   # ============================================================================
@@ -255,6 +285,11 @@ steps:
     outputs:
       final_handlers_node1: result
 
+  - name: Assert Final Handler Count on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{final_handlers_node1}}, {"output": 10})'
+
   - name: Verify Final State on Node 3
     type: call
     node: near-kvh-3
@@ -264,6 +299,11 @@ steps:
     args: {}
     outputs:
       final_handlers_node3: result
+
+  - name: Assert Final Handler Count on Node 3
+    type: json_assert
+    statements:
+      - 'json_equal({{final_handlers_node3}}, {"output": 10})'
 
 # Configuration options
 stop_all_nodes: true
