@@ -202,8 +202,8 @@ impl ContextClient {
                                     let mut app_id_result = application.id;
 
                                     while retries > 0 && !installed {
-                                        sleep(Duration::from_millis(1000)).await; // Increased wait time to 1 second
-
+                                        // Check first, then sleep only if blob doesn't exist
+                                        // This avoids wasting time if blob is already available
                                         if self.node_client.has_blob(&blob_id)? {
                                             debug!(
                                                 blob_id = %blob_id,
@@ -240,10 +240,18 @@ impl ContextClient {
                                                 }
                                             } else {
                                                 retries -= 1;
+                                                // Sleep after failed check, before next retry
+                                                if retries > 0 {
+                                                    sleep(Duration::from_millis(1000)).await;
+                                                }
                                                 continue;
                                             }
                                         } else {
                                             retries -= 1;
+                                            // Sleep after failed check, before next retry
+                                            if retries > 0 {
+                                                sleep(Duration::from_millis(1000)).await;
+                                            }
                                             continue;
                                         }
                                     }
