@@ -100,12 +100,7 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     };
 
-    // Validate path to prevent traversal attacks
-    if let Err(e) = validate_db_path(&db_path) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-    }
-
-    // Check if database path exists
+    // Check if database path exists first
     if !db_path.exists() {
         return (
             StatusCode::BAD_REQUEST,
@@ -114,6 +109,11 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             }),
         )
             .into_response();
+    }
+
+    // Validate path to prevent traversal attacks (requires path to exist)
+    if let Err(e) = validate_db_path(&db_path) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
     // Extract ABI from WASM bytes (if provided)
@@ -229,12 +229,7 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     };
 
-    // Validate path to prevent traversal attacks
-    if let Err(e) = validate_db_path(&db_path) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-    }
-
-    // Check if database path exists
+    // Check if database path exists first
     if !db_path.exists() {
         return (
             StatusCode::BAD_REQUEST,
@@ -243,6 +238,11 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
             }),
         )
             .into_response();
+    }
+
+    // Validate path to prevent traversal attacks (requires path to exist)
+    if let Err(e) = validate_db_path(&db_path) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
     // WASM is required for state tree extraction
@@ -333,12 +333,7 @@ async fn handle_dag(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     };
 
-    // Validate path to prevent traversal attacks
-    if let Err(e) = validate_db_path(&db_path) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-    }
-
-    // Check if database path exists
+    // Check if database path exists first
     if !db_path.exists() {
         return (
             StatusCode::BAD_REQUEST,
@@ -347,6 +342,11 @@ async fn handle_dag(mut multipart: Multipart) -> impl IntoResponse {
             }),
         )
             .into_response();
+    }
+
+    // Validate path to prevent traversal attacks (requires path to exist)
+    if let Err(e) = validate_db_path(&db_path) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
     // Open database
@@ -426,8 +426,9 @@ async fn handle_validate_abi(mut multipart: Multipart) -> impl IntoResponse {
 }
 
 /// Validate database path to prevent path traversal attacks
+/// Note: This function requires the path to exist so it can resolve symlinks
 fn validate_db_path(path: &std::path::Path) -> Result<(), String> {
-    // Check for parent directory references
+    // Check for parent directory references in the original path
     for component in path.components() {
         if matches!(component, std::path::Component::ParentDir) {
             return Err(
@@ -438,15 +439,15 @@ fn validate_db_path(path: &std::path::Path) -> Result<(), String> {
 
     // Canonicalize path to resolve symlinks and get absolute path
     // This helps detect attempts to escape via symlinks
-    match path.canonicalize() {
-        Ok(canonical_path) => {
-            // Optionally: Add additional checks here if you want to restrict
-            // to specific directories. For now, we just ensure the path is valid.
-            drop(canonical_path);
-            Ok(())
-        }
-        Err(e) => Err(format!("Invalid path: {e}")),
-    }
+    // Note: This requires the path to exist, so the existence check must happen first
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|e| format!("Invalid path: {e}"))?;
+
+    // Optionally: Add additional checks here if you want to restrict
+    // to specific directories. For now, we ensure the path is valid and resolved.
+    drop(canonical_path);
+    Ok(())
 }
 
 fn open_database(path: &PathBuf) -> eyre::Result<DBWithThreadMode<SingleThreaded>> {
