@@ -392,16 +392,15 @@ export class StateTreeVisualizer {
      * @param {d3.Selection} g - Group element
      */
     setupZoom(svg, g) {
-        const width = svg.node().getBoundingClientRect().width;
-        const height = 600;
-        const centerX = width / 2;
-        const centerY = height / 2;
+        // Get the initial transform from the group element
+        const initialTransform = g.attr('transform') || '';
 
         const zoom = d3.zoom()
             .scaleExtent([0.1, 10])
             .on('zoom', (event) => {
-                // Compose the zoom transform with the initial centering transform
-                g.attr('transform', `translate(${centerX},${centerY}) translate(${event.transform.x},${event.transform.y}) scale(${event.transform.k})`);
+                // Apply zoom transform while preserving the initial transform
+                const t = event.transform;
+                g.attr('transform', `${initialTransform} translate(${t.x},${t.y}) scale(${t.k})`);
             });
 
         svg.call(zoom);
