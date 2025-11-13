@@ -712,11 +712,35 @@ impl NodeClient {
             if marker_file_path.exists() {
                 return Ok(());
             }
-            // Create lock file again (should succeed now)
-            std::fs::OpenOptions::new()
+            // Create lock file again - handle race condition where another thread
+            // might have created it between removal and this creation
+            match std::fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
-                .open(lock_file_path.as_std_path())?;
+                .open(lock_file_path.as_std_path())
+            {
+                Ok(_) => {
+                    // Successfully acquired lock, proceed with extraction
+                }
+                Err(_) => {
+                    // Another thread created the lock between removal and creation
+                    // Wait briefly and check if extraction completed
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if marker_file_path.exists() {
+                        debug!(
+                            package,
+                            version = current_version,
+                            "Bundle extraction completed by another process after lock retry"
+                        );
+                        return Ok(());
+                    }
+                    // If marker still doesn't exist, the other thread is still extracting
+                    // Return error to avoid concurrent extraction
+                    bail!(
+                        "Failed to acquire extraction lock after retry - another process is extracting"
+                    );
+                }
+            }
         }
 
         let tar = GzDecoder::new(bundle_data);
