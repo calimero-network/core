@@ -610,6 +610,9 @@ impl NodeClient {
     }
 
     /// Extract bundle artifacts with deduplication
+    ///
+    /// This function is synchronized per package-version to prevent race conditions
+    /// when multiple concurrent calls try to extract the same bundle.
     fn extract_bundle_artifacts(
         bundle_data: &[u8],
         _manifest: &BundleManifest,
@@ -620,6 +623,73 @@ impl NodeClient {
     ) -> eyre::Result<()> {
         // Create extraction directory
         fs::create_dir_all(extract_dir)?;
+
+        // Use a lock file to prevent concurrent extraction of the same bundle version
+        // Lock file path: extract_dir/.extracting.lock
+        let lock_file_path = extract_dir.join(".extracting.lock");
+        let marker_file_path = extract_dir.join(".extracted");
+
+        // Check if extraction is already complete
+        if marker_file_path.exists() {
+            debug!(
+                package,
+                version = current_version,
+                "Bundle already extracted, skipping"
+            );
+            return Ok(());
+        }
+
+        // Try to acquire exclusive lock by creating lock file atomically
+        // create_new() is atomic - fails if file exists (works on Unix and Windows)
+        let lock_acquired = match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(lock_file_path.as_std_path())
+        {
+            Ok(_) => {
+                // Lock file created - we're the first to extract
+                true
+            }
+            Err(_) => {
+                // Lock file already exists - another extraction is in progress
+                // Wait and check if extraction completes
+                for _ in 0..20 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if marker_file_path.exists() {
+                        debug!(
+                            package,
+                            version = current_version,
+                            "Bundle extraction completed by another process"
+                        );
+                        return Ok(());
+                    }
+                }
+                // If marker still doesn't exist after waiting, proceed anyway
+                // (lock file might be stale from crashed process)
+                warn!(
+                    package,
+                    version = current_version,
+                    "Lock file exists but extraction not complete, proceeding anyway"
+                );
+                false
+            }
+        };
+
+        // Only proceed with extraction if we acquired the lock
+        // (or if lock is stale and we're proceeding anyway)
+        if !lock_acquired {
+            // Try to remove stale lock and retry
+            let _ = fs::remove_file(&lock_file_path);
+            // Check marker one more time
+            if marker_file_path.exists() {
+                return Ok(());
+            }
+            // Create lock file again (should succeed now)
+            std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(lock_file_path.as_std_path())?;
+        }
 
         let tar = GzDecoder::new(bundle_data);
         let mut archive = Archive::new(tar);
@@ -698,6 +768,12 @@ impl NodeClient {
                 );
             }
         }
+
+        // Write marker file to indicate extraction is complete
+        fs::write(&marker_file_path, b"extracted")?;
+
+        // Remove lock file
+        let _ = fs::remove_file(&lock_file_path);
 
         Ok(())
     }
