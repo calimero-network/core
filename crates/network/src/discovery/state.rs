@@ -275,7 +275,7 @@ impl DiscoveryState {
     }
 
     pub(crate) fn has_confirmed_external_addresses(&self) -> bool {
-        self.confirmed_external_addresses.is_empty()
+        !self.confirmed_external_addresses.is_empty()
     }
 
     pub(crate) fn add_autonat_server(&mut self, peer_id: &PeerId) {
