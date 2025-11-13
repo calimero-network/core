@@ -1,0 +1,263 @@
+/**
+ * DAG and State Tree Visualization Styles
+ * D3.js-based graph and tree visualizations
+ */
+
+/* SVG Canvas */
+.visualization__svg {
+    background: var(--color-bg-primary);
+    border-radius: var(--radius-md);
+    width: 100%;
+    min-height: 500px;
+}
+
+/* DAG Nodes */
+.dag-node {
+    cursor: pointer;
+}
+
+.dag-node circle {
+    fill: var(--color-node-primary);
+    stroke: var(--color-node-stroke);
+    stroke-width: 2px;
+    transition: all var(--transition-base);
+}
+
+.dag-node:hover circle {
+    stroke-width: 3px;
+}
+
+.dag-node.root circle {
+    fill: var(--color-node-root);
+    stroke: var(--color-node-root-stroke);
+}
+
+.dag-node.detached circle {
+    fill: var(--color-node-detached);
+    stroke: var(--color-node-detached-stroke);
+}
+
+.dag-node.leaf circle {
+    fill: var(--color-node-leaf);
+    stroke: var(--color-node-leaf-stroke);
+}
+
+.dag-node.dag-head circle {
+    fill: var(--color-node-head);
+    stroke: var(--color-node-head-stroke);
+    stroke-width: 3px;
+}
+
+.dag-node.genesis circle {
+    fill: #424242;
+    stroke: #616161;
+    stroke-width: 2px;
+    stroke-dasharray: 4;
+}
+
+.dag-node.selected circle {
+    fill: #ff6b6b;
+    stroke: #ff5252;
+    stroke-width: 3px;
+}
+
+.dag-node text {
+    fill: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-family-mono);
+    pointer-events: none;
+}
+
+/* DAG Links */
+.dag-link {
+    stroke: var(--color-link-default);
+    stroke-width: 2px;
+    fill: none;
+    transition: all var(--transition-base);
+}
+
+.dag-link.highlighted {
+    stroke: var(--color-link-highlighted);
+    stroke-width: 3px;
+}
+
+/* State Tree Nodes */
+.state-node {
+    cursor: pointer;
+}
+
+.state-node circle {
+    fill: var(--color-node-primary);
+    stroke: var(--color-node-stroke);
+    stroke-width: 2px;
+    transition: all var(--transition-base);
+}
+
+.state-node:hover circle {
+    stroke-width: 3px;
+}
+
+.state-node circle.leaf {
+    fill: var(--color-node-root);
+    stroke: var(--color-node-root-stroke);
+}
+
+.state-node circle.collapsed {
+    fill: var(--color-node-leaf);
+    stroke: var(--color-node-leaf-stroke);
+    stroke-width: 3px;
+}
+
+.state-node circle.has-data {
+    fill: #4a90e2;
+    stroke: #357abd;
+    stroke-width: 2px;
+}
+
+.state-node text {
+    fill: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-family-mono);
+    pointer-events: none;
+}
+
+/* State Tree Links */
+.state-link {
+    stroke: var(--color-link-default);
+    stroke-width: 2px;
+    fill: none;
+}
+
+/* Tooltip Specific Styles for Visualizations */
+.visualization__tooltip-section {
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--color-border-default);
+}
+
+.visualization__tooltip-section:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
+.visualization__tooltip-title {
+    color: var(--color-json-boolean);
+    font-weight: var(--font-weight-bold);
+    margin-bottom: 6px;
+}
+
+.visualization__tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: var(--space-xs);
+}
+
+.visualization__tooltip-label {
+    color: var(--color-text-tertiary);
+}
+
+.visualization__tooltip-value {
+    color: var(--color-text-secondary);
+    font-family: var(--font-family-mono);
+    word-break: break-all;
+    user-select: text;
+}
+
+.visualization__tooltip-subsection {
+    margin-top: var(--space-sm);
+    padding: var(--space-sm);
+    background: var(--color-bg-secondary);
+    border-radius: 4px;
+    border-left: 3px solid var(--color-accent-primary);
+}
+
+.visualization__tooltip-subtitle {
+    color: var(--color-accent-primary);
+    font-weight: var(--font-weight-semibold);
+    margin-bottom: var(--space-xs);
+    font-size: var(--font-size-sm);
+}
+
+/* Hash Preview with Expand/Collapse */
+.hash-preview {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+.hash-short,
+.hash-full {
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+}
+
+.hash-full {
+    word-break: break-all;
+    max-width: 300px;
+}
+
+.hash-toggle {
+    background: transparent;
+    border: none;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    line-height: 1;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-base);
+    flex-shrink: 0;
+}
+
+.hash-toggle:hover {
+    background: var(--color-bg-secondary);
+    color: var(--color-accent-primary);
+}
+
+/* Pinned Tooltip Styles */
+.state-tooltip-pinned {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    border: 2px solid var(--color-border-default);
+    z-index: 1000;
+    user-select: none;
+}
+
+.state-tooltip-pinned .tooltip-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-default);
+    color: var(--color-text-primary);
+    font-size: 20px;
+    line-height: 1;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-base);
+}
+
+.state-tooltip-pinned .tooltip-close:hover {
+    background: var(--color-danger);
+    color: white;
+    border-color: var(--color-danger);
+}
+
+.state-tooltip-pinned .tooltip-content {
+    padding-top: 8px;
+}
+
+.state-tooltip-temp {
+    z-index: 999;
+}

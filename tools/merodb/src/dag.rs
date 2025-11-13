@@ -110,8 +110,76 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                     .get(&context_id)
                     .is_some_and(|heads| heads.contains(&delta_id));
 
+                // Deserialize actions for human-readable display
+                let actions_json = match delta.deserialize_actions() {
+                    Ok(actions) => {
+                        let actions_vec: Vec<Value> = actions
+                            .iter()
+                            .map(|action| {
+                                use calimero_storage::action::Action;
+                                match action {
+                                    Action::Add {
+                                        id,
+                                        data,
+                                        ancestors,
+                                        metadata,
+                                    } => json!({
+                                        "type": "Add",
+                                        "id": hex::encode(id.as_bytes()),
+                                        "data_size": data.len(),
+                                        "ancestors_count": ancestors.len(),
+                                        "metadata": {
+                                            "created_at": metadata.created_at(),
+                                            "updated_at": metadata.updated_at(),
+                                        }
+                                    }),
+                                    Action::Update {
+                                        id,
+                                        data,
+                                        ancestors,
+                                        metadata,
+                                    } => json!({
+                                        "type": "Update",
+                                        "id": hex::encode(id.as_bytes()),
+                                        "data_size": data.len(),
+                                        "ancestors_count": ancestors.len(),
+                                        "metadata": {
+                                            "created_at": metadata.created_at(),
+                                            "updated_at": metadata.updated_at(),
+                                        }
+                                    }),
+                                    Action::DeleteRef { id, deleted_at } => json!({
+                                        "type": "DeleteRef",
+                                        "id": hex::encode(id.as_bytes()),
+                                        "deleted_at": deleted_at,
+                                    }),
+                                    Action::Compare { id } => json!({
+                                        "type": "Compare",
+                                        "id": hex::encode(id.as_bytes()),
+                                    }),
+                                }
+                            })
+                            .collect();
+                        Some(actions_vec)
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to deserialize actions for delta {delta_id}: {e}");
+                        None
+                    }
+                };
+
+                // Deserialize events if present
+                let events_json = match delta.deserialize_events() {
+                    Ok(Some(events)) => Some(events),
+                    Ok(None) => None,
+                    Err(e) => {
+                        eprintln!("Failed to deserialize events for delta {delta_id}: {e}");
+                        None
+                    }
+                };
+
                 // Create node
-                let node = json!({
+                let mut node_json = json!({
                     "id": node_id,
                     "context_id": context_id,
                     "delta_id": delta_id,
@@ -124,9 +192,21 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                     "parent_count": delta.parents.len(),
                     "parents": parent_hashes.clone(),
                     "is_dag_head": is_dag_head,
-                    "has_missing_parents": false  // Will be updated later
+                    "has_missing_parents": false,  // Will be updated later
+                    "expected_root_hash": hex::encode(delta.expected_root_hash)
                 });
-                nodes.push(node);
+
+                // Add deserialized actions if available
+                if let Some(actions) = actions_json {
+                    node_json["actions"] = json!(actions);
+                }
+
+                // Add deserialized events if available
+                if let Some(events) = events_json {
+                    node_json["events"] = json!(events);
+                }
+
+                nodes.push(node_json);
 
                 // Store parents for later edge creation
             }
