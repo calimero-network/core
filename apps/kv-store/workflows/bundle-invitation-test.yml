@@ -17,11 +17,11 @@ steps:
   
   # Step 1: Install bundle application on Node 1
   # Note: The bundle (.mpk) should be created by build-bundle.sh and placed in res/
-  # Path is relative to the workflow file location (apps/kv-store/workflows/)
+  # Path is relative to where merobox runs (apps/kv-store/)
   - name: Install Bundle Application on Node 1
     type: install_application
     node: calimero-node-1
-    path: ../res/kv-store-1.0.0.mpk
+    path: res/kv-store-1.0.0.mpk
     dev: true
     outputs:
       bundle_app_id: applicationId
