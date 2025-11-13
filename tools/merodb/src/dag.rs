@@ -192,7 +192,8 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                     "parent_count": delta.parents.len(),
                     "parents": parent_hashes.clone(),
                     "is_dag_head": is_dag_head,
-                    "has_missing_parents": false  // Will be updated later
+                    "has_missing_parents": false,  // Will be updated later
+                    "expected_root_hash": hex::encode(delta.expected_root_hash)
                 });
 
                 // Add deserialized actions if available

@@ -429,7 +429,8 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,
-                "applied": delta.applied
+                "applied": delta.applied,
+                "expected_root_hash": hex::encode(delta.expected_root_hash)
             }))
         }
         Err(e) => {

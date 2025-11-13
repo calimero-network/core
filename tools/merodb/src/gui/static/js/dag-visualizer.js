@@ -444,6 +444,13 @@ export class DAGVisualizer {
             html += `</div>`;
         }
 
+        if (node.expected_root_hash !== undefined) {
+            html += `<div class="visualization__tooltip-row">`;
+            html += `  <span class="visualization__tooltip-label">Expected Root Hash:</span>`;
+            html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(node.expected_root_hash, 'Expected Root Hash')}</span>`;
+            html += `</div>`;
+        }
+
         html += `</div>`;
 
         // Actions section (deserialized)
