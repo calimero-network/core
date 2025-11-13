@@ -607,7 +607,8 @@ impl SyncManager {
                         };
 
                         // Install bundle
-                        self.node_client
+                        let installed_app_id = self
+                            .node_client
                             .install_application_from_bundle_blob(&blob_id, &source.into())
                             .await
                             .map_err(|e| {
@@ -618,8 +619,39 @@ impl SyncManager {
                                 )
                             })?;
 
-                        // Re-fetch application
-                        application = self.node_client.get_application(&context.application_id)?;
+                        // Verify installation succeeded by fetching the installed application
+                        let installed_application = self
+                            .node_client
+                            .get_application(&installed_app_id)
+                            .map_err(|e| {
+                                eyre::eyre!(
+                                    "Failed to verify bundle installation for application {}: {}",
+                                    installed_app_id,
+                                    e
+                                )
+                            })?;
+
+                        let Some(installed_application) = installed_application else {
+                            bail!(
+                                "Bundle installation reported success but application {} is not retrievable",
+                                installed_app_id
+                            );
+                        };
+
+                        // Verify the installed ApplicationId matches the context's ApplicationId
+                        if installed_app_id != context.application_id {
+                            warn!(
+                                installed_app_id = %installed_app_id,
+                                context_app_id = %context.application_id,
+                                "Installed application ID does not match context application ID, using installed ID"
+                            );
+                            // Update context with the installed application ID for consistency
+                            // Note: This updates the local context copy, not the persisted context
+                            context.application_id = installed_app_id;
+                        }
+
+                        // Use the verified installed application
+                        application = Some(installed_application);
                     }
                 }
             }
