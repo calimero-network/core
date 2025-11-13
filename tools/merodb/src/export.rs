@@ -676,7 +676,8 @@ pub fn export_data_without_abi(
                         },
                         "timestamp": timestamp_raw,
                         "hlc": hlc_json,
-                        "applied": delta.applied
+                        "applied": delta.applied,
+                        "expected_root_hash": hex::encode(delta.expected_root_hash)
                     })
                 } else {
                     parse_value(*column, &value)
