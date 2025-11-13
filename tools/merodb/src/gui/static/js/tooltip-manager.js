@@ -36,8 +36,9 @@ export class TooltipManager {
      */
     cleanupTooltips() {
         this.activeTooltips.forEach(tooltip => {
-            if (tooltip.element && tooltip.element.parentNode) {
-                tooltip.element.parentNode.removeChild(tooltip.element);
+            // tooltip.element is a D3 selection, not a DOM node
+            if (tooltip.element) {
+                tooltip.element.remove();
             }
         });
         this.activeTooltips = [];

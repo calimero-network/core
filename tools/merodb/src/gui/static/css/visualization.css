@@ -169,11 +169,11 @@
     padding: var(--space-sm);
     background: var(--color-bg-secondary);
     border-radius: 4px;
-    border-left: 3px solid var(--color-primary);
+    border-left: 3px solid var(--color-accent-primary);
 }
 
 .visualization__tooltip-subtitle {
-    color: var(--color-primary);
+    color: var(--color-accent-primary);
     font-weight: var(--font-weight-semibold);
     margin-bottom: var(--space-xs);
     font-size: var(--font-size-sm);
@@ -217,7 +217,7 @@
 
 .hash-toggle:hover {
     background: var(--color-bg-secondary);
-    color: var(--color-primary);
+    color: var(--color-accent-primary);
 }
 
 /* Pinned Tooltip Styles */
