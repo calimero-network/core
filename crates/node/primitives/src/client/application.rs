@@ -71,18 +71,28 @@ impl NodeClient {
             bail!("fatal: application points to dangling blob");
         };
 
-        // Check if this is a bundle by inspecting the blob
-        if Self::is_bundle_blob(&blob_bytes) {
+        // Check if this is a bundle by inspecting the blob (blocking I/O wrapped in spawn_blocking)
+        let blob_bytes_clone = blob_bytes.clone();
+        let is_bundle =
+            tokio::task::spawn_blocking(move || Self::is_bundle_blob(&blob_bytes_clone)).await?;
+
+        if is_bundle {
             // This is a bundle, extract WASM from extracted directory or bundle
-            let manifest = Self::extract_bundle_manifest(&blob_bytes)?;
+            // Extract manifest (blocking I/O wrapped in spawn_blocking)
+            let blob_bytes_clone = blob_bytes.clone();
+            let manifest = tokio::task::spawn_blocking(move || {
+                Self::extract_bundle_manifest(&blob_bytes_clone)
+            })
+            .await??;
             let package = &manifest.package;
             let version = &manifest.app_version;
 
-            // Resolve relative path against node root
+            // Resolve relative path against node root (must be done before spawn_blocking)
             let blobstore_root = self.blobstore.root_path();
             let node_root = blobstore_root
                 .parent()
-                .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+                .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
+                .to_path_buf();
             let extract_dir = node_root
                 .join("applications")
                 .join(package)
@@ -110,19 +120,29 @@ impl NodeClient {
                 // Remove marker file if it exists (files were deleted, marker is stale)
                 let marker_file_path = extract_dir.join(".extracted");
                 if marker_file_path.exists() {
-                    let _ = fs::remove_file(&marker_file_path);
+                    let _ = tokio::fs::remove_file(&marker_file_path).await;
                 }
 
                 // Re-extract entire bundle to disk (not just WASM) so future calls don't need to re-extract
                 // This handles the case where sync_context_config installed the app before blob arrived
-                Self::extract_bundle_artifacts(
-                    &blob_bytes,
-                    &manifest,
-                    &extract_dir,
-                    node_root,
-                    package,
-                    version,
-                )?;
+                // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+                let blob_bytes_clone = blob_bytes.clone();
+                let manifest_clone = manifest.clone();
+                let extract_dir_clone = extract_dir.to_path_buf();
+                let node_root_clone = node_root.to_path_buf();
+                let package_clone = package.to_string();
+                let version_clone = version.to_string();
+                tokio::task::spawn_blocking(move || {
+                    Self::extract_bundle_artifacts(
+                        &blob_bytes_clone,
+                        &manifest_clone,
+                        &extract_dir_clone,
+                        &node_root_clone,
+                        &package_clone,
+                        &version_clone,
+                    )
+                })
+                .await??;
 
                 // Now read the WASM file that was just extracted
                 if wasm_path.exists() {
@@ -307,7 +327,12 @@ impl NodeClient {
             );
 
             // Extract bundle to parse manifest and extract artifacts
-            let manifest = Self::extract_bundle_manifest(&bundle_data)?;
+            // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+            let bundle_data_clone = bundle_data.clone();
+            let manifest = tokio::task::spawn_blocking(move || {
+                Self::extract_bundle_manifest(&bundle_data_clone)
+            })
+            .await??;
 
             // Extract package and version from manifest
             let package = &manifest.package;
@@ -315,10 +340,12 @@ impl NodeClient {
 
             // Extract artifacts with deduplication
             // Use node root (parent of blobstore) instead of blobstore root
+            // Must be done before spawn_blocking
             let blobstore_root = self.blobstore.root_path();
             let node_root = blobstore_root
                 .parent()
-                .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+                .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
+                .to_path_buf();
             // Extract directory is derived from package and version
             let extract_dir = node_root
                 .join("applications")
@@ -326,14 +353,24 @@ impl NodeClient {
                 .join(version)
                 .join("extracted");
 
-            Self::extract_bundle_artifacts(
-                &bundle_data,
-                &manifest,
-                &extract_dir,
-                node_root,
-                package,
-                version,
-            )?;
+            // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+            let bundle_data_clone = bundle_data.clone();
+            let manifest_clone = manifest.clone();
+            let extract_dir_clone = extract_dir.clone();
+            let node_root_clone = node_root.clone();
+            let package_clone = package.to_string();
+            let version_clone = version.to_string();
+            tokio::task::spawn_blocking(move || {
+                Self::extract_bundle_artifacts(
+                    &bundle_data_clone,
+                    &manifest_clone,
+                    &extract_dir_clone,
+                    &node_root_clone,
+                    &package_clone,
+                    &version_clone,
+                )
+            })
+            .await??;
 
             // Install application with bundle blob_id
             // No metadata needed - bundle detection happens via is_bundle_blob()
@@ -399,7 +436,11 @@ impl NodeClient {
         );
 
         // Extract bundle to parse manifest and extract artifacts
-        let manifest = Self::extract_bundle_manifest(&bundle_data)?;
+        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+        let bundle_data_clone = bundle_data.clone();
+        let manifest =
+            tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_data_clone))
+                .await??;
 
         // Extract package and version from manifest (ignore provided values)
         let package = &manifest.package;
@@ -407,10 +448,12 @@ impl NodeClient {
 
         // Extract artifacts with deduplication
         // Use node root (parent of blobstore) instead of blobstore root
+        // Must be done before spawn_blocking
         let blobstore_root = self.blobstore.root_path();
         let node_root = blobstore_root
             .parent()
-            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
+            .to_path_buf();
         // Extract directory is derived from package and version
         let extract_dir = node_root
             .join("applications")
@@ -418,14 +461,24 @@ impl NodeClient {
             .join(version)
             .join("extracted");
 
-        Self::extract_bundle_artifacts(
-            &bundle_data,
-            &manifest,
-            &extract_dir,
-            node_root,
-            package,
-            version,
-        )?;
+        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+        let bundle_data_clone = bundle_data.clone();
+        let manifest_clone = manifest.clone();
+        let extract_dir_clone = extract_dir.clone();
+        let node_root_clone = node_root.clone();
+        let package_clone = package.to_string();
+        let version_clone = version.to_string();
+        tokio::task::spawn_blocking(move || {
+            Self::extract_bundle_artifacts(
+                &bundle_data_clone,
+                &manifest_clone,
+                &extract_dir_clone,
+                &node_root_clone,
+                &package_clone,
+                &version_clone,
+            )
+        })
+        .await??;
 
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")
@@ -536,29 +589,45 @@ impl NodeClient {
 
         // Extract manifest for package/version (needed for extraction path)
         // No metadata needed - bundle detection happens via is_bundle_blob()
-        let manifest = Self::extract_bundle_manifest(&bundle_bytes)?;
+        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+        let bundle_bytes_clone = bundle_bytes.clone();
+        let manifest =
+            tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_bytes_clone))
+                .await??;
         let package = &manifest.package;
         let version = &manifest.app_version;
 
         // Extract artifacts with deduplication
+        // Must be done before spawn_blocking
         let blobstore_root = self.blobstore.root_path();
         let node_root = blobstore_root
             .parent()
-            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?;
+            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
+            .to_path_buf();
         let extract_dir = node_root
             .join("applications")
             .join(package)
             .join(version)
             .join("extracted");
 
-        Self::extract_bundle_artifacts(
-            &bundle_bytes,
-            &manifest,
-            &extract_dir,
-            node_root,
-            package,
-            version,
-        )?;
+        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+        let bundle_bytes_clone = bundle_bytes.clone();
+        let manifest_clone = manifest.clone();
+        let extract_dir_clone = extract_dir.clone();
+        let node_root_clone = node_root.clone();
+        let package_clone = package.to_string();
+        let version_clone = version.to_string();
+        tokio::task::spawn_blocking(move || {
+            Self::extract_bundle_artifacts(
+                &bundle_bytes_clone,
+                &manifest_clone,
+                &extract_dir_clone,
+                &node_root_clone,
+                &package_clone,
+                &version_clone,
+            )
+        })
+        .await??;
         let size = bundle_bytes.len() as u64;
 
         debug!(

@@ -583,7 +583,13 @@ impl SyncManager {
                 // Check if blob is a bundle and install it
                 if let Ok(Some(blob_bytes)) = self.node_client.get_blob_bytes(&blob_id, None).await
                 {
-                    if NodeClient::is_bundle_blob(&blob_bytes) {
+                    // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+                    let blob_bytes_clone = blob_bytes.clone();
+                    let is_bundle = tokio::task::spawn_blocking(move || {
+                        NodeClient::is_bundle_blob(&blob_bytes_clone)
+                    })
+                    .await?;
+                    if is_bundle {
                         // Get source from context config (use cached if available, otherwise fetch)
                         let source = if let Some(ref app_config) = app_config_opt {
                             app_config.source.clone()

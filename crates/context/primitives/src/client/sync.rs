@@ -135,7 +135,13 @@ impl ContextClient {
                                 if let Ok(Some(blob_bytes)) =
                                     self.node_client.get_blob_bytes(&blob_id, None).await
                                 {
-                                    if NodeClient::is_bundle_blob(&blob_bytes) {
+                                    // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+                                    let blob_bytes_clone = blob_bytes.clone();
+                                    let is_bundle = tokio::task::spawn_blocking(move || {
+                                        NodeClient::is_bundle_blob(&blob_bytes_clone)
+                                    })
+                                    .await?;
+                                    if is_bundle {
                                         debug!(
                                             blob_id = %blob_id,
                                             "Blob is a bundle, installing from bundle blob"
@@ -215,7 +221,16 @@ impl ContextClient {
                                                 .get_blob_bytes(&blob_id, None)
                                                 .await
                                             {
-                                                if NodeClient::is_bundle_blob(&blob_bytes) {
+                                                // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+                                                let blob_bytes_clone = blob_bytes.clone();
+                                                let is_bundle =
+                                                    tokio::task::spawn_blocking(move || {
+                                                        NodeClient::is_bundle_blob(
+                                                            &blob_bytes_clone,
+                                                        )
+                                                    })
+                                                    .await?;
+                                                if is_bundle {
                                                     app_id_result = self
                                                         .node_client
                                                         .install_application_from_bundle_blob(
