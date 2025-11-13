@@ -28,7 +28,6 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub identity: Keypair,
-
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
@@ -185,14 +184,16 @@ impl Default for RelayConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct AutonatConfig {
-    pub confidence_threshold: usize,
+    pub max_candidates: usize,
+    pub probe_interval: Duration,
 }
 
 impl AutonatConfig {
     #[must_use]
-    pub const fn new(confidence_threshold: usize) -> Self {
+    pub const fn new(max_candidates: usize, probe_interval: Duration) -> Self {
         Self {
-            confidence_threshold,
+            max_candidates,
+            probe_interval,
         }
     }
 }
@@ -200,7 +201,8 @@ impl AutonatConfig {
 impl Default for AutonatConfig {
     fn default() -> Self {
         Self {
-            confidence_threshold: 2,
+            max_candidates: 5,
+            probe_interval: Duration::from_secs(10),
         }
     }
 }

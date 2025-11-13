@@ -27,13 +27,6 @@ impl EventHandler<Event> for NetworkManager {
                 .state
                 .update_peer_protocols(&peer_id, &protocols);
 
-            // TODO: Revist AutoNAT protocol implementation
-            // if self.discovery.state.is_peer_autonat(&peer_id) {
-            //     if let Err(err) = self.add_autonat_server(&peer_id) {
-            //         error!(%err, "Failed to add autonat server");
-            //     };
-            // }
-
             if let Some(advertise_address) = &self.discovery.advertise {
                 let is_external_addr = observed_addr
                     .iter()

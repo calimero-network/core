@@ -5,15 +5,21 @@ use eyre::WrapErr;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
-    autonat, dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, tcp, tls,
-    yamux, StreamProtocol, SwarmBuilder,
+    dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, tcp, tls, yamux,
+    StreamProtocol, SwarmBuilder,
 };
 use multiaddr::Protocol;
 use tracing::warn;
 
+use crate::autonat;
+
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/kad/1.0.0");
 
+#[expect(
+    missing_debug_implementations,
+    reason = "Swarm behaviours don't implement Debug"
+)]
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
     pub autonat: autonat::Behaviour,
@@ -59,11 +65,9 @@ impl Behaviour {
                 let behaviour = Self {
                     autonat: {
                         autonat::Behaviour::new(
-                            peer_id,
-                            autonat::Config {
-                                boot_delay: Duration::from_secs(5),
-                                ..Default::default()
-                            },
+                            autonat::Config::default()
+                                .with_max_candidates(config.discovery.autonat.max_candidates)
+                                .with_probe_interval(config.discovery.autonat.probe_interval),
                         )
                     },
                     dcutr: dcutr::Behaviour::new(peer_id),

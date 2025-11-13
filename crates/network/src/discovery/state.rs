@@ -7,7 +7,6 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Instant;
 
-use libp2p::autonat::{NatStatus, DEFAULT_PROTOCOL_NAME as AUTONAT_PROTOCOL_NAME};
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
@@ -26,21 +25,7 @@ pub struct DiscoveryState {
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
     autonat_index: BTreeSet<PeerId>,
-    autonat: AutonatStatus,
-}
-#[derive(Debug)]
-pub struct AutonatStatus {
-    status: NatStatus,
-    last_status_public: bool,
-}
-
-impl Default for AutonatStatus {
-    fn default() -> Self {
-        Self {
-            status: NatStatus::Unknown,
-            last_status_public: false,
-        }
-    }
+    confirmed_external_addresses: HashSet<Multiaddr>,
 }
 
 impl DiscoveryState {
@@ -72,12 +57,6 @@ impl DiscoveryState {
 
                 let peer_info = self.peers.entry(*peer_id).or_default();
                 let _ignored = peer_info.rendezvous.get_or_insert_with(Default::default);
-            }
-
-            if protocol == &AUTONAT_PROTOCOL_NAME {
-                let _ = self.autonat_index.insert(*peer_id);
-
-                let _peer_info = self.peers.entry(*peer_id).or_default();
             }
         }
     }
@@ -164,10 +143,22 @@ impl DiscoveryState {
         self.rendezvous_index.contains(peer_id)
     }
 
-    // TOOD: Revisit AutoNAT protocol integration
-    // pub(crate) fn is_peer_autonat(&self, peer_id: &PeerId) -> bool {
-    //     self.autonat_index.contains(peer_id)
-    // }
+    pub(crate) fn add_confirmed_external_address(&mut self, addr: &Multiaddr) {
+        _ = self.confirmed_external_addresses.insert(addr.clone());
+    }
+
+    pub(crate) fn remove_confirmed_external_address(&mut self, addr: &Multiaddr) {
+        _ = self.confirmed_external_addresses.remove(addr);
+    }
+
+    pub(crate) fn has_confirmed_external_addresses(&self) -> bool {
+        self.confirmed_external_addresses.is_empty()
+    }
+
+    pub(crate) fn add_autonat_server(&mut self, peer_id: &PeerId) {
+        _ = self.autonat_index.insert(peer_id.clone());
+        _ = self.peers.entry(*peer_id).or_default();
+    }
 
     #[expect(
         clippy::arithmetic_side_effects,
@@ -210,29 +201,6 @@ impl DiscoveryState {
             });
         sum < max
     }
-
-    pub(crate) fn update_autonat_status(&mut self, status: NatStatus) {
-        if matches!(self.autonat.status, NatStatus::Public(_))
-            && matches!(status, NatStatus::Private)
-        {
-            self.autonat.last_status_public = true;
-        }
-
-        self.autonat.status = status;
-    }
-
-    // TODO: Revisit AutoNAT protocol integration
-    // pub(crate) fn is_autonat_status_public(&self) -> bool {
-    //     matches!(self.autonat.status, NatStatus::Public(_))
-    // }
-
-    // pub(crate) fn is_autonat_status_private(&self) -> bool {
-    //     matches!(self.autonat.status, NatStatus::Private)
-    // }
-
-    // pub(crate) fn autonat_became_private(&self) -> bool {
-    //     self.autonat.last_status_public
-    // }
 }
 
 /// PeerInfo is a struct that holds information about a peer.
