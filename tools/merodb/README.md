@@ -100,12 +100,29 @@ merodb --gui
 The GUI will start a local web server (default port 8080). You can then:
 
 1. Enter your RocksDB database folder path
-2. Upload your instrumented WASM contract file
+2. Upload your instrumented WASM contract file (validated for ABI manifest)
 3. Click "Load Database" to process and view the data
 4. Browse the database structure with an interactive tree view
 5. Run JQ queries to filter and analyze the data
 6. Explore query results in real-time
 7. **View DAG visualization** - Switch to the DAG View tab to see an interactive visualization of Context DAG deltas with hierarchical or force-directed layouts
+8. **View State Tree** - Switch to the State Tree tab to explore the Merkle tree-based state structure with interactive D3.js visualization
+
+#### State Tree Visualization
+
+The State Tree view provides an interactive visualization of your database's Merkle tree structure:
+
+- **Multi-Context Support**: View state trees for all contexts with tab-based navigation
+- **Interactive Nodes**: Click to expand/collapse branches, hover for detailed metadata
+- **Color-Coded Types**:
+  - Blue: EntityIndex nodes (tree structure metadata)
+  - Green: Map entries (key-value pairs)
+  - Orange: Scalar entries (single values)
+  - Red: Missing or unknown nodes
+- **Node Information**: Each node displays ID, type, parent relationships, hashes, timestamps
+- **Navigation**: Zoom and pan controls for exploring large state trees
+
+**Note**: The uploaded WASM file must contain a valid ABI manifest. Files without proper ABI will be rejected with an error notification.
 
 Specify a custom port:
 
