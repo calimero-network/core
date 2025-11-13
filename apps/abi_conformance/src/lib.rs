@@ -80,7 +80,6 @@ pub enum Action {
     Ping,
     SetName(String),
     Update(UpdatePayload),
-    // Add these to showcase enum bugs with multiple fields:
     MultiTuple(u32, String), // Tuple variant with multiple unnamed fields
     MultiStruct { x: u32, y: String }, // Struct variant with multiple named fields
 }
@@ -104,7 +103,6 @@ pub enum Event {
     Data(Vec<u8>),
     PersonUpdated(Person),
     ActionTaken(Action),
-    // Add these to showcase enum bugs with multiple fields:
     TupleEvent(u32, String), // Tuple variant with multiple unnamed fields
     StructEvent { id: u32, name: String }, // Struct variant with multiple named fields
 }
