@@ -824,6 +824,9 @@ impl NodeClient {
             }
         };
 
+        // Track if we created a lock file that needs cleanup
+        let mut lock_created_by_us = lock_acquired;
+
         // Only proceed with extraction if we acquired the lock
         // (or if lock is stale and we're proceeding anyway)
         if !lock_acquired {
@@ -842,6 +845,7 @@ impl NodeClient {
             {
                 Ok(_) => {
                     // Successfully acquired lock, proceed with extraction
+                    lock_created_by_us = true;
                 }
                 Err(_) => {
                     // Another thread created the lock between removal and creation
@@ -863,6 +867,26 @@ impl NodeClient {
                 }
             }
         }
+
+        // Ensure lock file is cleaned up even if extraction fails
+        // Use a guard to clean up on early return or error
+        struct LockGuard {
+            path: Utf8PathBuf,
+            should_remove: std::cell::Cell<bool>,
+        }
+
+        impl Drop for LockGuard {
+            fn drop(&mut self) {
+                if self.should_remove.get() {
+                    let _ = fs::remove_file(&self.path);
+                }
+            }
+        }
+
+        let lock_guard = LockGuard {
+            path: lock_file_path.clone(),
+            should_remove: std::cell::Cell::new(lock_created_by_us),
+        };
 
         let tar = GzDecoder::new(bundle_data);
         let mut archive = Archive::new(tar);
@@ -987,8 +1011,11 @@ impl NodeClient {
         // Write marker file to indicate extraction is complete
         fs::write(&marker_file_path, b"extracted")?;
 
-        // Remove lock file
-        let _ = fs::remove_file(&lock_file_path);
+        // Remove lock file explicitly on success (guard will skip removal if we already did it)
+        if lock_guard.should_remove.get() {
+            let _ = fs::remove_file(&lock_file_path);
+            lock_guard.should_remove.set(false); // Prevent guard from removing it again
+        }
 
         Ok(())
     }
