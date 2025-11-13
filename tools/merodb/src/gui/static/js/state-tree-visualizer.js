@@ -127,11 +127,22 @@ export class StateTreeVisualizer {
         select.removeEventListener('change', this._contextChangeHandler);
         this._contextChangeHandler = async (e) => {
             const contextId = e.target.value;
+
+            // Store the context ID being loaded to handle race conditions
+            this.pendingContextId = contextId;
+
             try {
                 await this.loadContextTree(contextId);
-                this.render();
+
+                // Only render if this is still the selected context (no race condition)
+                if (this.pendingContextId === contextId && e.target.value === contextId) {
+                    this.render();
+                }
             } catch (error) {
-                UIManager.showError('state-error', `Failed to load context tree: ${error.message}`);
+                // Only show error if this is still the selected context
+                if (this.pendingContextId === contextId && e.target.value === contextId) {
+                    UIManager.showError('state-error', `Failed to load context tree: ${error.message}`);
+                }
             }
         };
         select.addEventListener('change', this._contextChangeHandler);
@@ -153,6 +164,11 @@ export class StateTreeVisualizer {
         const selectedContextId = select?.value;
 
         if (!selectedContextId) return null;
+
+        // Verify this matches the pending context (prevent rendering outdated data)
+        if (this.pendingContextId && this.pendingContextId !== selectedContextId) {
+            return null;
+        }
 
         // Get from cache
         const tree = this.state.stateTreeData.loadedTrees?.get(selectedContextId);

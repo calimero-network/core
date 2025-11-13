@@ -10,6 +10,7 @@ export class TooltipManager {
         this.tooltipCounter = 0;
         this.tooltipPinned = false;
         this.currentTooltip = null;
+        this.currentNodeId = null;  // Track which node the tooltip is currently showing
         this.pinnedDuringHover = false;
         this.setupKeyboardListeners();
     }
@@ -69,8 +70,9 @@ export class TooltipManager {
      * @param {MouseEvent} event - Mouse event
      * @param {string} content - HTML content for tooltip
      * @param {string} cssClass - CSS class for tooltip type (e.g., 'state-tooltip-temp', 'dag-tooltip-temp')
+     * @param {string} nodeId - Optional node ID to track which node this tooltip is for
      */
-    showTooltip(event, content, cssClass = 'tooltip-temp') {
+    showTooltip(event, content, cssClass = 'tooltip-temp', nodeId = null) {
         // If Ctrl/Cmd is pressed, create a new pinned tooltip
         if (this.tooltipPinned) {
             if (!this.pinnedDuringHover) {
@@ -79,6 +81,9 @@ export class TooltipManager {
             }
             return;
         }
+
+        // Track which node this tooltip is for
+        this.currentNodeId = nodeId;
 
         // Otherwise, show temporary tooltip
         if (!this.currentTooltip) {
@@ -195,6 +200,8 @@ export class TooltipManager {
         if (!this.tooltipPinned && this.currentTooltip) {
             this.currentTooltip.classed('hidden', true);
         }
+        // Clear the current node ID when hiding tooltip
+        this.currentNodeId = null;
         // Reset the flag when mouse leaves the node
         this.pinnedDuringHover = false;
     }
@@ -207,6 +214,14 @@ export class TooltipManager {
         if (this.currentTooltip) {
             this.currentTooltip.html(content);
         }
+    }
+
+    /**
+     * Get the ID of the node currently shown in the tooltip
+     * @returns {string|null} Current node ID or null
+     */
+    getCurrentTooltipNode() {
+        return this.currentNodeId;
     }
 
     /**

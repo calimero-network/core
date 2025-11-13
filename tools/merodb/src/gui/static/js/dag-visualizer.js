@@ -200,9 +200,15 @@ export class DAGVisualizer {
                 .attr('class', 'dag-node')
                 .attr('transform', `translate(${pos.x},${pos.y})`)
                 .style('cursor', 'pointer')
-                .on('mouseover', (event) => {
+                .on('mouseover', async (event) => {
+                    const nodeId = node.delta_id || node.id;
+
+                    // Show initial tooltip with basic info
                     const content = this.formatTooltipContent(node);
-                    this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
+                    this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
+
+                    // Load detailed info on demand (actions and events)
+                    await this.loadAndUpdateTooltip(event, node);
                 })
                 .on('mousemove', (event) => {
                     this.tooltipManager.moveTooltip(event);
@@ -284,9 +290,11 @@ export class DAGVisualizer {
             .attr('class', 'dag-node')
             .style('cursor', 'pointer')
             .on('mouseover', async (event, d) => {
+                const nodeId = d.delta_id || d.id;
+
                 // Show initial tooltip with basic info
                 const content = this.formatTooltipContent(d);
-                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
+                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
 
                 // Load detailed info on demand (actions and events)
                 await this.loadAndUpdateTooltip(event, d);
@@ -645,8 +653,18 @@ export class DAGVisualizer {
                 return;
             }
 
+            // Store the node ID to check for race conditions
+            const nodeId = node.delta_id || node.id;
+
             // Fetch delta details
             const details = await ApiService.loadDeltaDetails(dbPath, node.context_id, node.delta_id);
+
+            // Check if tooltip is still showing the same node (race condition check)
+            const currentTooltip = this.tooltipManager.getCurrentTooltipNode();
+            if (!currentTooltip || currentTooltip !== nodeId) {
+                // User has moved to a different node, don't update
+                return;
+            }
 
             // Update node with details
             if (details.actions) {
