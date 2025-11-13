@@ -248,25 +248,42 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Apply a delta using the provided applier
+    ///
+    /// This applies a single delta without cascading to pending deltas.
+    /// Use `apply_pending` after calling this to handle cascading.
+    async fn apply_delta_single(
+        &mut self,
+        delta: &CausalDelta<T>,
+        applier: &impl DeltaApplier<T>,
+    ) -> Result<(), DagError> {
+        // Apply via the applier
+        applier.apply(delta).await?;
+
+        // Mark as applied
+        self.applied.insert(delta.id);
+
+        // Update heads: remove parents, add this delta
+        for parent in &delta.parents {
+            self.heads.remove(parent);
+        }
+        self.heads.insert(delta.id);
+
+        Ok(())
+    }
+
+    /// Apply a delta using the provided applier
+    ///
+    /// This applies the delta and then cascades to apply any pending deltas that become ready.
     fn apply_delta<'a>(
         &'a mut self,
         delta: CausalDelta<T>,
         applier: &'a impl DeltaApplier<T>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DagError>> + 'a>> {
         Box::pin(async move {
-            // Apply via the applier
-            applier.apply(&delta).await?;
+            // Apply the single delta
+            self.apply_delta_single(&delta, applier).await?;
 
-            // Mark as applied
-            self.applied.insert(delta.id);
-
-            // Update heads: remove parents, add this delta
-            for parent in &delta.parents {
-                self.heads.remove(parent);
-            }
-            self.heads.insert(delta.id);
-
-            // Try to apply pending deltas
+            // Try to apply pending deltas (iteratively, not recursively)
             self.apply_pending(applier).await?;
 
             Ok(())
@@ -274,26 +291,32 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Apply pending deltas whose parents are now available
+    ///
+    /// This uses an iterative approach to avoid stack overflow with deep chains.
+    /// It processes all ready deltas in batches until no more can be applied.
     async fn apply_pending(&mut self, applier: &impl DeltaApplier<T>) -> Result<(), DagError> {
-        let mut applied_any = true;
-
-        while applied_any {
-            applied_any = false;
-
-            // Find deltas that are now ready
-            let ready: Vec<[u8; 32]> = self
+        loop {
+            // Find IDs of deltas that are now ready
+            let ready_ids: Vec<[u8; 32]> = self
                 .pending
                 .iter()
                 .filter(|(_, pending)| self.can_apply(&pending.delta))
                 .map(|(id, _)| *id)
                 .collect();
 
-            for id in ready {
+            // If no ready deltas, we're done
+            if ready_ids.is_empty() {
+                break;
+            }
+
+            // Remove and apply all ready deltas (without recursive calls to apply_pending)
+            for id in ready_ids {
                 if let Some(pending) = self.pending.remove(&id) {
-                    self.apply_delta(pending.delta, applier).await?;
-                    applied_any = true;
+                    self.apply_delta_single(&pending.delta, applier).await?;
                 }
             }
+
+            // Continue loop to check for newly ready deltas after this batch
         }
 
         Ok(())
