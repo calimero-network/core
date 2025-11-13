@@ -122,7 +122,42 @@ impl NodeClient {
             // Use canonicalize if path exists, otherwise validate components
             if wasm_path.exists() {
                 let canonical_wasm = wasm_path.canonicalize_utf8()?;
-                let canonical_extract = extract_dir.canonicalize_utf8()?;
+
+                // extract_dir might not exist if wasm_relative_path contains subdirectories
+                // Reconstruct canonical extract_dir from wasm_path by removing relative path components
+                let canonical_extract = if extract_dir.exists() {
+                    extract_dir.canonicalize_utf8()?
+                } else {
+                    // Reconstruct extract_dir from wasm_path by removing wasm_relative_path components
+                    // Since we validated wasm_relative_path doesn't contain "..", this is safe
+                    let wasm_parent = wasm_path
+                        .parent()
+                        .ok_or_else(|| eyre::eyre!("WASM path has no parent directory"))?;
+                    let wasm_parent_canonical = wasm_parent.canonicalize_utf8()?;
+
+                    // Count depth of wasm_relative_path (number of path components)
+                    let relative_depth = wasm_relative_path
+                        .split('/')
+                        .filter(|s| !s.is_empty())
+                        .count()
+                        .saturating_sub(1); // Subtract 1 for the filename itself
+
+                    // Go up relative_depth levels from wasm_parent to get extract_dir
+                    let mut canonical_extract_candidate = wasm_parent_canonical.clone();
+                    for _ in 0..relative_depth {
+                        if let Some(parent) = canonical_extract_candidate.parent() {
+                            canonical_extract_candidate = parent.to_path_buf();
+                        } else {
+                            bail!("Cannot reconstruct extract_dir from WASM path");
+                        }
+                    }
+
+                    canonical_extract_candidate.try_into().map_err(|_| {
+                        eyre::eyre!("Failed to convert extract_dir path to Utf8PathBuf")
+                    })?
+                };
+
+                // Ensure canonical_wasm is within canonical_extract
                 if !canonical_wasm.starts_with(&canonical_extract) {
                     bail!(
                         "WASM path traversal detected: {} escapes extraction directory {}",
@@ -768,9 +803,64 @@ impl NodeClient {
                 .as_ref()
                 .map(|w| w.path.as_str())
                 .unwrap_or("app.wasm");
+
+            // Validate WASM path to prevent path traversal attacks before checking existence
+            if wasm_relative_path.contains("..") {
+                bail!(
+                    "WASM path traversal detected in manifest: {} contains '..' component",
+                    wasm_relative_path
+                );
+            }
+
             let wasm_path = extract_dir.join(wasm_relative_path);
 
+            // Additional validation: ensure the resolved path stays within extract_dir
             if wasm_path.exists() {
+                // Validate path traversal even if file exists
+                let canonical_wasm = wasm_path.canonicalize_utf8()?;
+
+                // extract_dir might not exist if wasm_relative_path contains subdirectories
+                // Reconstruct canonical extract_dir from wasm_path by removing relative path components
+                let canonical_extract = if extract_dir.exists() {
+                    extract_dir.canonicalize_utf8()?
+                } else {
+                    // Reconstruct extract_dir from wasm_path by removing wasm_relative_path components
+                    // Since we validated wasm_relative_path doesn't contain "..", this is safe
+                    let wasm_parent = wasm_path
+                        .parent()
+                        .ok_or_else(|| eyre::eyre!("WASM path has no parent directory"))?;
+                    let wasm_parent_canonical = wasm_parent.canonicalize_utf8()?;
+
+                    // Count depth of wasm_relative_path (number of path components)
+                    let relative_depth = wasm_relative_path
+                        .split('/')
+                        .filter(|s| !s.is_empty())
+                        .count()
+                        .saturating_sub(1); // Subtract 1 for the filename itself
+
+                    // Go up relative_depth levels from wasm_parent to get extract_dir
+                    let mut canonical_extract_candidate = wasm_parent_canonical.clone();
+                    for _ in 0..relative_depth {
+                        if let Some(parent) = canonical_extract_candidate.parent() {
+                            canonical_extract_candidate = parent.to_path_buf();
+                        } else {
+                            bail!("Cannot reconstruct extract_dir from WASM path");
+                        }
+                    }
+
+                    canonical_extract_candidate.try_into().map_err(|_| {
+                        eyre::eyre!("Failed to convert extract_dir path to Utf8PathBuf")
+                    })?
+                };
+
+                if !canonical_wasm.starts_with(&canonical_extract) {
+                    bail!(
+                        "WASM path traversal detected: {} escapes extraction directory {}",
+                        wasm_relative_path,
+                        extract_dir
+                    );
+                }
+
                 debug!(
                     package,
                     version = current_version,
