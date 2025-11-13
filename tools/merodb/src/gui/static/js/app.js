@@ -89,6 +89,15 @@ export class App {
      */
     setupControlHandlers() {
         // DAG controls
+        const contextSelect = document.getElementById('context-select');
+        if (contextSelect) {
+            contextSelect.addEventListener('change', () => {
+                if (this.dagVisualizer) {
+                    this.dagVisualizer.render();
+                }
+            });
+        }
+
         const layoutSelect = document.getElementById('layout-select');
         if (layoutSelect) {
             layoutSelect.addEventListener('change', () => {

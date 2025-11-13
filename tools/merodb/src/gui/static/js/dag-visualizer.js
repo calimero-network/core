@@ -16,7 +16,7 @@ export class DAGVisualizer {
     }
 
     /**
-     * Load and process DAG data from JSON
+     * Load and process DAG data using the /api/dag endpoint
      */
     async load() {
         if (this.state.dagData) {
@@ -24,43 +24,36 @@ export class DAGVisualizer {
             return;
         }
 
-        const data = this.state.jsonData;
-        if (!data || !data.data || !data.data.Meta || !data.data.Delta) {
-            throw new Error('No Meta or Delta data found in database export');
+        // Import ApiService
+        const { ApiService } = await import('./api-service.js');
+
+        // Get the database path from app state
+        const dbPath = this.state.currentDbPath;
+        if (!dbPath) {
+            throw new Error('Database path is required');
         }
 
-        // Extract contexts and build node list
-        const deltaEntries = data.data.Delta.entries || [];
+        // Load DAG data from the API
+        const dagData = await ApiService.loadDAG(dbPath);
 
-        // Group deltas by context_id
-        const deltasByContext = {};
-        deltaEntries.forEach(entry => {
-            const contextId = entry.key?.context_id;
-            if (contextId) {
-                if (!deltasByContext[contextId]) {
-                    deltasByContext[contextId] = [];
-                }
-                deltasByContext[contextId].push(entry);
+        // Extract nodes and edges from the API response
+        const nodes = dagData.nodes || [];
+        const edges = dagData.edges || [];
+
+        // Build links from edges (API returns edges with source/target format)
+        const links = edges.map(edge => ({
+            source: edge.source,
+            target: edge.target
+        }));
+
+        // Extract unique contexts from nodes
+        const contextsSet = new Set();
+        nodes.forEach(node => {
+            if (node.context_id) {
+                contextsSet.add(node.context_id);
             }
         });
-
-        const contexts = Object.keys(deltasByContext);
-        const nodes = [];
-        const links = [];
-
-        // Create nodes from deltas
-        contexts.forEach(contextId => {
-            const deltas = deltasByContext[contextId] || [];
-            deltas.forEach((entry, idx) => {
-                nodes.push({
-                    id: `${contextId}-${idx}`,
-                    context: contextId,
-                    delta: entry.value,
-                    deltaId: entry.key?.delta_id,
-                    index: idx
-                });
-            });
-        });
+        const contexts = Array.from(contextsSet);
 
         // Store processed data
         this.state.dagData = { nodes, links, contexts };
@@ -71,6 +64,7 @@ export class DAGVisualizer {
         // Render visualization
         this.render();
     }
+
 
     /**
      * Populate the context dropdown
@@ -87,6 +81,37 @@ export class DAGVisualizer {
             option.textContent = context.substring(0, 8) + '...';
             select.appendChild(option);
         });
+    }
+
+    /**
+     * Get filtered nodes and links based on selected context
+     * @returns {{nodes: Array, links: Array}}
+     */
+    getFilteredData() {
+        const contextSelect = document.getElementById('context-select');
+        const selectedContext = contextSelect?.value || 'all';
+
+        if (selectedContext === 'all') {
+            return {
+                nodes: this.state.dagData.nodes,
+                links: this.state.dagData.links
+            };
+        }
+
+        // Filter nodes for the selected context
+        const filteredNodes = this.state.dagData.nodes.filter(node =>
+            node.context_id === selectedContext
+        );
+
+        // Create a set of node IDs for quick lookup
+        const nodeIds = new Set(filteredNodes.map(node => node.id));
+
+        // Filter links to only include those between filtered nodes
+        const filteredLinks = this.state.dagData.links.filter(link =>
+            nodeIds.has(link.source) && nodeIds.has(link.target)
+        );
+
+        return { nodes: filteredNodes, links: filteredLinks };
     }
 
     /**
@@ -117,14 +142,56 @@ export class DAGVisualizer {
 
         const g = svg.append('g');
 
-        // Simple grid layout for now
-        this.state.dagData.nodes.forEach((node, i) => {
+        // Get filtered data based on selected context
+        const { nodes, links } = this.getFilteredData();
+
+        // Create a node position map for drawing links
+        const nodePositions = new Map();
+        nodes.forEach((node, i) => {
             const x = (i % 10) * 80 + 50;
             const y = Math.floor(i / 10) * 80 + 50;
+            nodePositions.set(node.id, { x, y });
+        });
+
+        // Draw links (arrows) first so they appear behind nodes
+        const linksGroup = g.append('g').attr('class', 'links');
+
+        // Define arrow marker
+        svg.append('defs').append('marker')
+            .attr('id', 'arrowhead')
+            .attr('viewBox', '0 -5 10 10')
+            .attr('refX', 25)  // Position at edge of target node (20 radius + 5 buffer)
+            .attr('refY', 0)
+            .attr('markerWidth', 6)
+            .attr('markerHeight', 6)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M0,-5L10,0L0,5')
+            .attr('fill', '#666');
+
+        links.forEach(link => {
+            const source = nodePositions.get(link.source);
+            const target = nodePositions.get(link.target);
+
+            if (source && target) {
+                linksGroup.append('line')
+                    .attr('x1', source.x)
+                    .attr('y1', source.y)
+                    .attr('x2', target.x)
+                    .attr('y2', target.y)
+                    .attr('stroke', '#666')
+                    .attr('stroke-width', 2)
+                    .attr('marker-end', 'url(#arrowhead)');
+            }
+        });
+
+        // Draw nodes
+        nodes.forEach((node, i) => {
+            const pos = nodePositions.get(node.id);
 
             const nodeGroup = g.append('g')
                 .attr('class', 'dag-node')
-                .attr('transform', `translate(${x},${y})`);
+                .attr('transform', `translate(${pos.x},${pos.y})`);
 
             nodeGroup.append('circle')
                 .attr('r', 20)
@@ -137,7 +204,7 @@ export class DAGVisualizer {
                 .attr('dy', 4)
                 .attr('fill', '#d4d4d4')
                 .attr('font-size', '10px')
-                .text(node.id.substring(0, 8));
+                .text((node.delta_id || node.id).substring(0, 8));
         });
 
         this.setupZoom(svg, g);
@@ -156,14 +223,41 @@ export class DAGVisualizer {
 
         const g = svg.append('g');
 
+        // Get filtered data based on selected context
+        const { nodes, links } = this.getFilteredData();
+
+        // Define arrow marker
+        svg.append('defs').append('marker')
+            .attr('id', 'arrowhead-force')
+            .attr('viewBox', '0 -5 10 10')
+            .attr('refX', 25)
+            .attr('refY', 0)
+            .attr('markerWidth', 6)
+            .attr('markerHeight', 6)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M0,-5L10,0L0,5')
+            .attr('fill', '#666');
+
+        // Draw links first
+        const linkElements = g.append('g')
+            .attr('class', 'links')
+            .selectAll('line')
+            .data(links)
+            .enter().append('line')
+            .attr('stroke', '#666')
+            .attr('stroke-width', 2)
+            .attr('marker-end', 'url(#arrowhead-force)');
+
         // D3 force simulation
-        const simulation = d3.forceSimulation(this.state.dagData.nodes)
+        const simulation = d3.forceSimulation(nodes)
+            .force('link', d3.forceLink(links).id(d => d.id).distance(100))
             .force('charge', d3.forceManyBody().strength(-300))
             .force('center', d3.forceCenter(width / 2, height / 2))
             .force('collision', d3.forceCollide().radius(30));
 
-        const nodes = g.selectAll('circle')
-            .data(this.state.dagData.nodes)
+        const nodeElements = g.selectAll('circle')
+            .data(nodes)
             .enter().append('circle')
             .attr('r', 20)
             .attr('fill', '#0e639c')
@@ -176,7 +270,13 @@ export class DAGVisualizer {
                 .on('end', dragEnded));
 
         simulation.on('tick', () => {
-            nodes
+            linkElements
+                .attr('x1', d => d.source.x)
+                .attr('y1', d => d.source.y)
+                .attr('x2', d => d.target.x)
+                .attr('y2', d => d.target.y);
+
+            nodeElements
                 .attr('cx', d => d.x)
                 .attr('cy', d => d.y);
         });
@@ -236,7 +336,9 @@ export class DAGVisualizer {
         const container = document.getElementById('dag-stats');
         if (!container || !this.state.dagData) return;
 
-        const { nodes, contexts } = this.state.dagData;
+        // Get filtered data for accurate stats
+        const { nodes } = this.getFilteredData();
+        const { contexts } = this.state.dagData;
 
         container.innerHTML = `
             <div class="stats__item">

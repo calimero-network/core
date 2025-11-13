@@ -432,12 +432,19 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
                 "applied": delta.applied
             }))
         }
-        Err(_) => {
+        Err(e) => {
+            // Log the error for debugging
+            tracing::debug!(
+                error = %e,
+                data_len = data.len(),
+                "Failed to parse Generic value as ContextDagDelta"
+            );
             // Fall back to raw bytes for generic values
             Ok(json!({
                 "type": "generic",
                 "raw": String::from_utf8_lossy(data),
-                "size": data.len()
+                "size": data.len(),
+                "parse_error": format!("{e}")
             }))
         }
     }

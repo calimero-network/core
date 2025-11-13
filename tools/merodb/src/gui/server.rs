@@ -11,7 +11,7 @@ use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 use serde::Serialize;
 use tower_http::services::ServeDir;
 
-use crate::{abi, export, types::Column};
+use crate::{abi, dag, export, types::Column};
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
@@ -41,6 +41,7 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
     let app = Router::new()
         .route("/", get(render_app))
         .route("/api/export", post(handle_export))
+        .route("/api/dag", post(handle_dag))
         .route("/api/state-tree", post(handle_state_tree))
         .route("/api/validate-abi", post(handle_validate_abi))
         .nest_service("/static", serve_static);
@@ -306,6 +307,77 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
         }),
     )
         .into_response()
+}
+
+async fn handle_dag(mut multipart: Multipart) -> impl IntoResponse {
+    let mut db_path: Option<PathBuf> = None;
+
+    // Parse multipart form data
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_owned();
+        if name.as_str() == "db_path" {
+            if let Ok(value) = field.text().await {
+                db_path = Some(PathBuf::from(value));
+            }
+        }
+    }
+
+    // Validate inputs
+    let Some(db_path) = db_path else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Database path is required".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Validate path to prevent traversal attacks
+    if let Err(e) = validate_db_path(&db_path) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+
+    // Check if database path exists
+    if !db_path.exists() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Database path does not exist: {}", db_path.display()),
+            }),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let db = match open_database(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to open database: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Export DAG structure
+    let dag_data = match dag::export_dag(&db) {
+        Ok(data) => data,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to export DAG: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(dag_data)).into_response()
 }
 
 async fn handle_validate_abi(mut multipart: Multipart) -> impl IntoResponse {

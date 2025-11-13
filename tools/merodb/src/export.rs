@@ -340,11 +340,8 @@ pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -
                 }));
             }
 
-            Ok(json!({
-                "raw": String::from_utf8_lossy(value),
-                "size": value.len(),
-                "note": "Unable to decode with ABI"
-            }))
+            // Fall back to parse_value which properly handles Generic column entries
+            parse_value(column, value)
         }
         _ => {
             // For other columns, use default parsing
@@ -634,8 +631,30 @@ pub fn export_data_without_abi(
             let key_json = parse_key(*column, &key)
                 .wrap_err_with(|| format!("Failed to parse key in column '{cf_name}'"))?;
 
-            let value_json = parse_value(*column, &value)
-                .wrap_err_with(|| format!("Failed to parse value in column '{cf_name}'"))?;
+            // For Generic column, try to parse ContextDagDelta even without ABI
+            let value_json = if *column == Column::Generic {
+                if let Ok(delta) = StoreContextDagDelta::try_from_slice(&value) {
+                    let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
+                    json!({
+                        "type": "context_dag_delta",
+                        "delta_id": hex::encode(delta.delta_id),
+                        "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                        "actions": {
+                            "raw": String::from_utf8_lossy(&delta.actions),
+                            "note": "Unable to decode actions without ABI"
+                        },
+                        "timestamp": timestamp_raw,
+                        "hlc": hlc_json,
+                        "applied": delta.applied
+                    })
+                } else {
+                    parse_value(*column, &value)
+                        .wrap_err_with(|| format!("Failed to parse value in column '{cf_name}'"))?
+                }
+            } else {
+                parse_value(*column, &value)
+                    .wrap_err_with(|| format!("Failed to parse value in column '{cf_name}'"))?
+            };
 
             entries.push(json!({
                 "key": key_json,

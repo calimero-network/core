@@ -6512,6 +6512,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower-http 0.5.2",
+ "tracing",
  "wasmparser 0.118.2",
 ]
 

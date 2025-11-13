@@ -59,6 +59,29 @@ export class ApiService {
     }
 
     /**
+     * Load DAG visualization data
+     * @param {string} dbPath - Path to the database directory
+     * @returns {Promise<Object>}
+     * @throws {Error} If the request fails
+     */
+    static async loadDAG(dbPath) {
+        const formData = new FormData();
+        formData.append('db_path', dbPath);
+
+        const response = await fetch('/api/dag', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to load DAG');
+        }
+
+        return response.json();
+    }
+
+    /**
      * Validate that a WASM file contains an ABI
      * @param {File} wasmFile - WASM file to validate
      * @returns {Promise<{data: {has_abi: boolean}, warning?: string, info?: string}>}
