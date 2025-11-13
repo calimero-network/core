@@ -567,10 +567,10 @@ export class DAGVisualizer {
         }
 
         // Parent relationships section
-        if (node.previous_delta_ids && node.previous_delta_ids.length > 0) {
+        if (node.parents && node.parents.length > 0) {
             html += '<div class="visualization__tooltip-section">';
-            html += `<div class="visualization__tooltip-title">Parents (${node.parent_count || node.previous_delta_ids.length})</div>`;
-            node.previous_delta_ids.forEach((prevId, idx) => {
+            html += `<div class="visualization__tooltip-title">Parents (${node.parent_count || node.parents.length})</div>`;
+            node.parents.forEach((prevId, idx) => {
                 html += `<div class="visualization__tooltip-row">`;
                 html += `  <span class="visualization__tooltip-label">Parent ${idx + 1}:</span>`;
                 html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(prevId, `Parent-${idx}`)}</span>`;

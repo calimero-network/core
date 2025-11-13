@@ -99,6 +99,12 @@ export class JQManager {
             return;
         }
 
+        // Check if jq-web library is ready
+        if (!this.state.jqReady) {
+            this.showError('JQ library is still loading. Please wait a moment and try again.');
+            return;
+        }
+
         try {
             // Execute query using jq-web library
             const result = await this.state.jqReady.json(this.state.jsonData, query);
