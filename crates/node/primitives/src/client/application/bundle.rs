@@ -10,7 +10,6 @@ use std::fs;
 use std::io::Read;
 
 use crate::bundle::BundleManifest;
-use calimero_primitives::blobs::BlobId;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::bail;
 use flate2::read::GzDecoder;
@@ -404,29 +403,35 @@ pub fn extract_bundle_artifacts(
         }
 
         // Additional validation: ensure the resolved path stays within extract_dir
-        // Use canonicalize if path exists, otherwise validate by checking parent
+        // Always validate by constructing expected path, regardless of whether it exists
+        // This prevents path traversal even when parent directories don't exist yet
+        let canonical_extract = extract_dir.canonicalize_utf8()?;
+
+        // Construct what the canonical dest_path should be
+        // Since we already checked relative_path doesn't contain "..",
+        // joining extract_dir with relative_path is safe
+        let expected_dest = canonical_extract.join(&relative_path);
+
+        // Verify the expected path stays within extract_dir
+        // This works even if the path doesn't exist yet because we're constructing
+        // it from the canonical extract_dir and a validated relative_path
+        if !expected_dest.starts_with(&canonical_extract) {
+            bail!(
+                "Path traversal detected: {} would escape extraction directory {}",
+                relative_path,
+                extract_dir
+            );
+        }
+
+        // If dest_path exists, also verify the actual canonicalized path matches expected
         if dest_path.exists() {
             let canonical_dest = dest_path.canonicalize_utf8()?;
-            let canonical_extract = extract_dir.canonicalize_utf8()?;
             if !canonical_dest.starts_with(&canonical_extract) {
                 bail!(
                     "Path traversal detected: {} escapes extraction directory {}",
                     relative_path,
                     extract_dir
                 );
-            }
-        } else if let Some(parent) = dest_path.parent() {
-            // Path doesn't exist yet, validate parent directory
-            if parent.exists() {
-                let canonical_parent = parent.canonicalize_utf8()?;
-                let canonical_extract = extract_dir.canonicalize_utf8()?;
-                if !canonical_parent.starts_with(&canonical_extract) {
-                    bail!(
-                        "Path traversal detected: parent of {} escapes extraction directory {}",
-                        relative_path,
-                        extract_dir
-                    );
-                }
             }
         }
 
