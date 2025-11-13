@@ -63,18 +63,19 @@ impl NodeClient {
             return Ok(None);
         };
 
-        // Get blob bytes to check if it's a bundle
+        // Determine if this is a bundle by checking package/version
+        // Bundles have real package/version values, non-bundles use "unknown"/"0.0.0"
+        // This avoids repeated decompression on every get_application_bytes call
+        let is_bundle =
+            application.package.as_ref() != "unknown" && application.version.as_ref() != "0.0.0";
+
+        // Get blob bytes
         let Some(blob_bytes) = self
             .get_blob_bytes(&application.bytecode.blob_id(), None)
             .await?
         else {
             bail!("fatal: application points to dangling blob");
         };
-
-        // Check if this is a bundle by inspecting the blob (blocking I/O wrapped in spawn_blocking)
-        let blob_bytes_clone = blob_bytes.clone();
-        let is_bundle =
-            tokio::task::spawn_blocking(move || Self::is_bundle_blob(&blob_bytes_clone)).await?;
 
         if is_bundle {
             // This is a bundle, extract WASM from extracted directory or bundle
@@ -105,7 +106,31 @@ impl NodeClient {
                 .as_ref()
                 .map(|w| w.path.as_str())
                 .unwrap_or("app.wasm");
+
+            // Validate WASM path to prevent path traversal attacks
+            // Check that the relative path doesn't contain ".." components that would escape
+            if wasm_relative_path.contains("..") {
+                bail!(
+                    "WASM path traversal detected: {} contains '..' component",
+                    wasm_relative_path
+                );
+            }
+
             let wasm_path = extract_dir.join(wasm_relative_path);
+
+            // Additional validation: ensure the resolved path stays within extract_dir
+            // Use canonicalize if path exists, otherwise validate components
+            if wasm_path.exists() {
+                let canonical_wasm = wasm_path.canonicalize_utf8()?;
+                let canonical_extract = extract_dir.canonicalize_utf8()?;
+                if !canonical_wasm.starts_with(&canonical_extract) {
+                    bail!(
+                        "WASM path traversal detected: {} escapes extraction directory {}",
+                        wasm_relative_path,
+                        extract_dir
+                    );
+                }
+            }
 
             if wasm_path.exists() {
                 let wasm_bytes = tokio::fs::read(&wasm_path).await?;
@@ -546,23 +571,50 @@ impl NodeClient {
 
     /// Check if a blob contains a bundle archive by peeking at the first few entries.
     /// This is a lightweight check that only reads the archive structure, not the full content.
+    ///
+    /// Returns true if manifest.json is found, false otherwise.
+    /// Logs warnings for parsing errors to help diagnose corrupted bundles.
     pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
         // Quick check: try to parse as gzip/tar and look for manifest.json
         let tar = GzDecoder::new(blob_bytes);
         let mut archive = Archive::new(tar);
 
         // Only check first 10 entries to avoid reading entire archive
-        if let Ok(entries) = archive.entries() {
-            for (i, entry_result) in entries.enumerate() {
-                if i >= 10 {
-                    break; // Give up after 10 entries
-                }
-                if let Ok(entry) = entry_result {
-                    if let Ok(path) = entry.path() {
-                        if path.file_name().and_then(|n| n.to_str()) == Some("manifest.json") {
-                            return true;
+        let entries = match archive.entries() {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!(
+                    "Failed to read tar archive entries (possible corruption): {}",
+                    e
+                );
+                return false;
+            }
+        };
+
+        for (i, entry_result) in entries.enumerate() {
+            if i >= 10 {
+                break; // Give up after 10 entries
+            }
+            match entry_result {
+                Ok(entry) => {
+                    match entry.path() {
+                        Ok(path) => {
+                            if path.file_name().and_then(|n| n.to_str()) == Some("manifest.json") {
+                                return true;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to read entry path in tar archive (possible corruption): {}", e);
+                            // Continue checking other entries
                         }
                     }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to read tar archive entry (possible corruption): {}",
+                        e
+                    );
+                    // Continue checking other entries
                 }
             }
         }
@@ -848,6 +900,42 @@ impl NodeClient {
 
             // Preserve directory structure from bundle
             let dest_path = extract_dir.join(&relative_path);
+
+            // Validate path to prevent path traversal attacks
+            // Check that the relative path doesn't contain ".." components that would escape
+            if relative_path.contains("..") {
+                bail!(
+                    "Path traversal detected: {} contains '..' component",
+                    relative_path
+                );
+            }
+
+            // Additional validation: ensure the resolved path stays within extract_dir
+            // Use canonicalize if path exists, otherwise validate by checking parent
+            if dest_path.exists() {
+                let canonical_dest = dest_path.canonicalize_utf8()?;
+                let canonical_extract = extract_dir.canonicalize_utf8()?;
+                if !canonical_dest.starts_with(&canonical_extract) {
+                    bail!(
+                        "Path traversal detected: {} escapes extraction directory {}",
+                        relative_path,
+                        extract_dir
+                    );
+                }
+            } else if let Some(parent) = dest_path.parent() {
+                // Path doesn't exist yet, validate parent directory
+                if parent.exists() {
+                    let canonical_parent = parent.canonicalize_utf8()?;
+                    let canonical_extract = extract_dir.canonicalize_utf8()?;
+                    if !canonical_parent.starts_with(&canonical_extract) {
+                        bail!(
+                            "Path traversal detected: parent of {} escapes extraction directory {}",
+                            relative_path,
+                            extract_dir
+                        );
+                    }
+                }
+            }
 
             // Create parent directories if needed
             if let Some(parent) = dest_path.parent() {
