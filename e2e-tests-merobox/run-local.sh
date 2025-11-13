@@ -313,7 +313,7 @@ if [ "$CHECK_DEVNETS" = true ]; then
     echo ""
     
     # Check ICP devnet
-    if [[ "$PROTOCOL" == "icp" || "$PROTOCOL" == "all" ]]; then
+    if [[ "$PROTOCOL" == "icp" || "$PROTOCOL" == "icp-proposals" || "$PROTOCOL" == "all" ]]; then
         echo -e "${BLUE}Checking ICP devnet...${NC}"
         
         if pgrep -f "dfx" > /dev/null; then
@@ -334,7 +334,7 @@ if [ "$CHECK_DEVNETS" = true ]; then
     fi
     
     # Check Ethereum devnet
-    if [[ "$PROTOCOL" == "ethereum" || "$PROTOCOL" == "all" ]]; then
+    if [[ "$PROTOCOL" == "ethereum" || "$PROTOCOL" == "ethereum-proposals" || "$PROTOCOL" == "all" ]]; then
         echo -e "${BLUE}Checking Ethereum devnet...${NC}"
         
         if pgrep -f "anvil" > /dev/null; then
@@ -519,13 +519,13 @@ else
     # Run protocol-specific or all tests
     case $PROTOCOL in
         near)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near.yml" "near"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/workflow-near.yml" "near"
             FAILED=$?
             ;;
         near-init)
             echo -e "${YELLOW}Running NEAR KV Store Init test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near-init.yml" "near-init"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/workflow-init.yml" "near-init"
             FAILED=$?
             ;;
         icp)
@@ -545,55 +545,55 @@ else
         near-handlers)
             echo -e "${YELLOW}Running NEAR KV Store with Handlers test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/near.yml" "near-handlers"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/workflow.yml" "near-handlers"
             FAILED=$?
             ;;
         near-blobs)
             echo -e "${YELLOW}Running NEAR Blob API test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/near.yml" "near-blobs"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/workflow.yml" "near-blobs"
             FAILED=$?
             ;;
         near-collab)
             echo -e "${YELLOW}Running NEAR Collaborative Editor test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/collaborative-editor/near.yml" "near-collab"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/collaborative-editor/workflow.yml" "near-collab"
             FAILED=$?
             ;;
         near-nested)
             echo -e "${YELLOW}Running NEAR Nested CRDT test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/nested-crdt/near.yml" "near-nested"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/nested-crdt/workflow.yml" "near-nested"
             FAILED=$?
             ;;
         near-metrics)
             echo -e "${YELLOW}Running NEAR Team Metrics test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/team-metrics/near.yml" "near-metrics"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/team-metrics/workflow.yml" "near-metrics"
             FAILED=$?
             ;;
         near-concurrent)
             echo -e "${YELLOW}Running NEAR Concurrent Mutations test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/concurrent-mutations/near.yml" "near-concurrent"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml" "near-concurrent"
             FAILED=$?
             ;;
         near-open-invitation)
             echo -e "${YELLOW}Running NEAR Open Invitation test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/open-invitation/near.yml" "near-open-invitation"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/open-invitation/workflow.yml" "near-open-invitation"
             FAILED=$?
             ;;
         near-private-data)
             echo -e "${YELLOW}Running NEAR Private Data test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/private-data/near.yml" "near-private-data"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/private-data/workflow.yml" "near-private-data"
             FAILED=$?
             ;;
         near-xcall)
             echo -e "${YELLOW}Running NEAR XCall test...${NC}"
             echo ""
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/xcall-example/near.yml" "near-xcall"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/xcall-example/workflow.yml" "near-xcall"
             FAILED=$?
             ;;
         near-proposals)
@@ -625,11 +625,11 @@ else
             echo ""
             
             # Run NEAR KV Store 
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near.yml" "near"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/workflow-near.yml" "near"
             NEAR_KV_RESULT=$?
             
             # Run NEAR KV Store Init
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/near-init.yml" "near-init"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store/workflow-init.yml" "near-init"
             NEAR_KV_INIT_RESULT=$?
             
             # Check if ICP devnet is available
@@ -656,7 +656,7 @@ else
             echo ""
             
             # Run NEAR Handlers (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/near.yml" "near-handlers"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/kv-store-with-handlers/workflow.yml" "near-handlers"
             NEAR_HANDLERS_RESULT=$?
             
             # === Blob API Tests ===
@@ -665,7 +665,7 @@ else
             echo ""
             
             # Run NEAR Blobs (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/near.yml" "near-blobs"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/blobs/workflow.yml" "near-blobs"
             NEAR_BLOBS_RESULT=$?
             
             # === Collaborative Editor Tests ===
@@ -674,7 +674,7 @@ else
             echo ""
             
             # Run NEAR Collaborative Editor (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/collaborative-editor/near.yml" "near-collab"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/collaborative-editor/workflow.yml" "near-collab"
             NEAR_COLLAB_RESULT=$?
             
             # === Nested CRDT Tests ===
@@ -683,7 +683,7 @@ else
             echo ""
             
             # Run NEAR Nested CRDT (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/nested-crdt/near.yml" "near-nested"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/nested-crdt/workflow.yml" "near-nested"
             NEAR_NESTED_RESULT=$?
             
             # === Team Metrics Tests ===
@@ -692,7 +692,7 @@ else
             echo ""
             
             # Run NEAR Team Metrics (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/team-metrics/near.yml" "near-metrics"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/team-metrics/workflow.yml" "near-metrics"
             NEAR_METRICS_RESULT=$?
             
             # === Concurrent Mutations Tests ===
@@ -701,7 +701,7 @@ else
             echo ""
             
             # Run NEAR Concurrent Mutations (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/concurrent-mutations/near.yml" "near-concurrent"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml" "near-concurrent"
             NEAR_CONCURRENT_RESULT=$?
             
             # === Open Invitation Tests ===
@@ -710,7 +710,7 @@ else
             echo ""
             
             # Run NEAR Open Invitation (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/open-invitation/near.yml" "near-open-invitation"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/open-invitation/workflow.yml" "near-open-invitation"
             NEAR_OPEN_INV_RESULT=$?
             
             # === Private Data Tests ===
@@ -719,7 +719,7 @@ else
             echo ""
 
             # Run NEAR Private Data (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/private-data/near.yml" "near-private-data"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/private-data/workflow.yml" "near-private-data"
             NEAR_PRIVATE_DATA_RESULT=$?
 
             # === XCall Example Tests ===
@@ -728,7 +728,7 @@ else
             echo ""
 
             # Run NEAR XCall Example (doesn't need devnet)
-            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/xcall-example/near.yml" "near-xcall"
+            run_test "${PROJECT_ROOT}/e2e-tests-merobox/workflows/xcall-example/workflow.yml" "near-xcall"
             NEAR_XCALL_RESULT=$?
 
             # === Proposals Tests ===

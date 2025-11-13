@@ -8,30 +8,30 @@ These tests use [Merobox](https://github.com/calimero-network/merobox) for e2e t
 e2e-tests-merobox/
 ├── workflows/
 │   ├── kv-store/           # KV Store test workflows
-│   │   ├── near.yml        # NEAR protocol (basic KV store)
-│   │   ├── near-init.yml   # NEAR protocol (KV store with init())
+│   │   ├── workflow-near.yml # NEAR protocol (basic KV store)
+│   │   ├── workflow-init.yml # NEAR protocol (KV store with init())
 │   │   ├── icp.yml         # ICP protocol
 │   │   └── ethereum.yml    # Ethereum protocol
 │   ├── kv-store-with-handlers/ # KV Store with Handlers workflows
-│   │   └── near.yml        # NEAR protocol (handlers test)
+│   │   └── workflow.yml    # NEAR protocol (handlers test)
 │   ├── blobs/              # Blob API workflows
-│   │   └── near.yml        # NEAR protocol (blob API test)
+│   │   └── workflow.yml    # NEAR protocol (blob API test)
 │   ├── collaborative-editor/ # Collaborative Editor workflows
-│   │   ├── near.yml        # NEAR protocol (CRDT text editing)
+│   │   ├── workflow.yml    # NEAR protocol (CRDT text editing)
 │   ├── nested-crdt/        # Nested CRDT workflows
-│   │   ├── near.yml        # NEAR protocol (nested CRDT compositions)
+│   │   ├── workflow.yml    # NEAR protocol (nested CRDT compositions)
 │   ├── team-metrics/       # Team Metrics workflows
-│   │   └── near.yml        # NEAR protocol (#[derive(Mergeable)] testing)
+│   │   └── workflow.yml    # NEAR protocol (#[derive(Mergeable)] testing)
 │   ├── concurrent-mutations/ # Concurrent Mutations workflows
-│   │   └── near.yml        # NEAR protocol (DAG convergence testing)
+│   │   └── workflow.yml    # NEAR protocol (DAG convergence testing)
 │   ├── open-invitation/    # Open Invitation workflows
-│   │   ├── near.yml        # NEAR protocol (open invitation join)
+│   │   ├── workflow.yml    # NEAR protocol (open invitation join)
 │   │   └── README.md       # Open invitation testing guide
 │   ├── private-data/       # Private Data workflows
-│   │   ├── near.yml        # NEAR protocol (secret sharing & guessing)
+│   │   ├── workflow.yml    # NEAR protocol (secret sharing & guessing)
 │   │   └── README.md       # Private data testing guide
 │   ├── xcall-example/      # Cross-context XCall workflows
-│   │   ├── near.yml        # NEAR protocol (ping-pong between contexts)
+│   │   ├── workflow.yml    # NEAR protocol (ping-pong between contexts)
 │   └── proposals/          # Proposals test workflows
 │       ├── near-proposals.yml  # NEAR proposals comprehensive test
 │       ├── icp-proposals.yml   # ICP proposals comprehensive test
@@ -323,7 +323,7 @@ You can also run merobox directly:
 ```bash
 # Merobox 0.2.0+ command structure
 merobox bootstrap run \
-  e2e-tests-merobox/workflows/kv-store/near.yml \
+  e2e-tests-merobox/workflows/kv-store/workflow-near.yml \
   --no-docker \
   --verbose
 ```
@@ -348,7 +348,7 @@ e2e-tests-merobox/results/{protocol}/
   "total_steps": 48,
   "passed_steps": 48,
   "failed_steps": 0,
-  "workflow": "e2e-tests-merobox/workflows/kv-store/near.yml",
+  "workflow": "e2e-tests-merobox/workflows/kv-store/workflow-near.yml",
   "timestamp": "2025-10-26T12:30:00Z"
 }
 ```
