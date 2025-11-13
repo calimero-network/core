@@ -421,7 +421,7 @@ fn find_and_build_tree_for_context(
     // Single pass: build mappings and find root node
     let mut element_to_state: HashMap<String, String> = HashMap::new();
     let mut element_to_data: HashMap<String, Value> = HashMap::new();
-    let mut root_state_key: Option<String> = None;
+    let mut root_state_keys: Vec<String> = Vec::new();
     let iter = db.iterator_cf(state_cf, IteratorMode::Start);
 
     for item in iter {
@@ -437,7 +437,7 @@ fn find_and_build_tree_for_context(
 
                 // Check if this is the root node (parent_id is None)
                 if index.parent_id.is_none() {
-                    root_state_key = Some(state_key);
+                    root_state_keys.push(state_key);
                 }
             } else if let Some(decoded) = decode_state_entry(&value, manifest) {
                 // Store data entries by their element_id for O(1) lookup
@@ -450,13 +450,22 @@ fn find_and_build_tree_for_context(
         }
     }
 
+    // Handle multiple root nodes (shouldn't happen but could due to data corruption)
+    if root_state_keys.len() > 1 {
+        return Err(eyre::eyre!(
+            "Multiple root nodes found for context {}: {} roots detected. This indicates data corruption.",
+            hex::encode(context_id),
+            root_state_keys.len()
+        ));
+    }
+
     // Build tree from root node if found
-    if let Some(root_key) = root_state_key {
+    if let Some(root_key) = root_state_keys.first() {
         return build_tree_from_root(
             db,
             state_cf,
             context_id,
-            &root_key,
+            root_key,
             manifest,
             &element_to_state,
             &element_to_data,
