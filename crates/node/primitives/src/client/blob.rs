@@ -243,21 +243,14 @@ impl NodeClient {
             return Ok(None);
         }
 
-        // Try direct blobstore access first (works for locally stored blobs)
-        // This avoids hanging on node manager calls in tests
-        if let Some(mut stream) = self.blobstore.get(*blob_id)? {
-            let mut data = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                data.extend_from_slice(&chunk?);
-            }
-            return Ok(Some(data.into()));
-        }
+        let blob_id = *blob_id;
 
-        // If not found locally, try NodeManager's cache (for production use)
-        let request = GetBlobBytesRequest { blob_id: *blob_id };
+        // Try NodeManager's cache first (checks cache, then blobstore if not cached, and updates cache)
+        // This ensures proper caching behavior and access tracking
+        let request = GetBlobBytesRequest { blob_id };
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        // Use a very short timeout to avoid hanging in tests
+        // Use a short timeout to avoid hanging if NodeManager is unavailable
         let send_result = tokio::time::timeout(
             tokio::time::Duration::from_millis(10),
             self.node_manager.send(GetBlobBytes {
@@ -273,15 +266,28 @@ impl NodeClient {
                 Ok(Ok(Ok(response))) if response.bytes.is_some() => {
                     return Ok(response.bytes);
                 }
+                Ok(Ok(Ok(_))) => {
+                    // NodeManager returned None (blob not found), fall through to direct blobstore
+                }
                 _ => {
-                    // Node manager didn't respond in time or returned None, fall through
+                    // Node manager didn't respond in time, fall through to direct blobstore
                 }
             }
         }
 
+        // Fallback to direct blobstore access if NodeManager is unavailable or blob not in cache
+        // This ensures we can still retrieve blobs even if NodeManager is down (e.g., in tests)
+        if let Some(mut stream) = self.blobstore.get(blob_id)? {
+            let mut data = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                data.extend_from_slice(&chunk?);
+            }
+            return Ok(Some(data.into()));
+        }
+
         // If not found locally and context_id provided, try network discovery
         if let Some(context_id) = context_id {
-            let Some(mut blob) = self.get_blob(blob_id, Some(context_id)).await? else {
+            let Some(mut blob) = self.get_blob(&blob_id, Some(context_id)).await? else {
                 return Ok(None);
             };
 
