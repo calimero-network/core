@@ -75,8 +75,20 @@ impl<'ast> AbiEmitter {
         referenced_types: &mut std::collections::HashSet<String>,
     ) {
         for variant in &item_enum.variants {
-            for field in &variant.fields {
-                self.collect_types_from_type(&field.ty, referenced_types);
+            match &variant.fields {
+                syn::Fields::Unnamed(fields) => {
+                    for field in &fields.unnamed {
+                        self.collect_types_from_type(&field.ty, referenced_types);
+                    }
+                }
+                syn::Fields::Named(fields) => {
+                    for field in &fields.named {
+                        self.collect_types_from_type(&field.ty, referenced_types);
+                    }
+                }
+                syn::Fields::Unit => {
+                    // No fields to collect
+                }
             }
         }
     }
@@ -159,18 +171,69 @@ impl<'ast> AbiEmitter {
             let payload = if variant.fields.is_empty() {
                 None
             } else {
-                // Handle event payloads
+                // Handle event payloads properly
                 if variant.fields.len() == 1 {
                     // Single field variant
                     if let syn::Fields::Unnamed(fields) = &variant.fields {
                         let field_type = normalize_type(&fields.unnamed[0].ty, true, self).unwrap();
                         let field_type = post_process_type_ref(field_type, self);
                         Some(field_type)
+                    } else if let syn::Fields::Named(fields) = &variant.fields {
+                        // Named fields - create a record type
+                        let mut record_fields = Vec::new();
+                        for field in &fields.named {
+                            let field_name = field.ident.as_ref().unwrap().to_string();
+                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let field_type = post_process_type_ref(field_type, self);
+                            record_fields.push(Field {
+                                name: field_name,
+                                type_: field_type,
+                                nullable: None,
+                            });
+                        }
+                        let record_type = TypeDef::Record {
+                            fields: record_fields,
+                        };
+                        let record_name = format!("Event_{event_name}");
+                        self.add_type_definition(&record_name, record_type);
+                        Some(TypeRef::reference(&record_name))
                     } else {
-                        None
+                        Some(TypeRef::unit())
                     }
                 } else {
-                    None
+                    // Multiple fields - create a record type
+                    let mut record_fields = Vec::new();
+                    if let syn::Fields::Unnamed(fields) = &variant.fields {
+                        // Tuple variant with multiple fields
+                        for (i, field) in fields.unnamed.iter().enumerate() {
+                            let field_name = format!("field_{i}");
+                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let field_type = post_process_type_ref(field_type, self);
+                            record_fields.push(Field {
+                                name: field_name,
+                                type_: field_type,
+                                nullable: None,
+                            });
+                        }
+                    } else if let syn::Fields::Named(fields) = &variant.fields {
+                        // Struct variant with multiple fields
+                        for field in &fields.named {
+                            let field_name = field.ident.as_ref().unwrap().to_string();
+                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let field_type = post_process_type_ref(field_type, self);
+                            record_fields.push(Field {
+                                name: field_name,
+                                type_: field_type,
+                                nullable: None,
+                            });
+                        }
+                    }
+                    let record_type = TypeDef::Record {
+                        fields: record_fields,
+                    };
+                    let record_name = format!("Event_{event_name}");
+                    self.add_type_definition(&record_name, record_type);
+                    Some(TypeRef::reference(&record_name))
                 }
             };
 
@@ -325,18 +388,30 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                 } else {
                     // Multiple fields - create a record type
                     let mut record_fields = Vec::new();
-                    for (i, field) in variant.fields.iter().enumerate() {
-                        let field_name = field
-                            .ident
-                            .as_ref()
-                            .map_or_else(|| format!("field_{i}"), ToString::to_string);
-                        let field_type = normalize_type(&field.ty, true, self).unwrap();
-                        let field_type = post_process_type_ref(field_type, self);
-                        record_fields.push(Field {
-                            name: field_name,
-                            type_: field_type,
-                            nullable: None,
-                        });
+                    if let syn::Fields::Unnamed(fields) = &variant.fields {
+                        // Tuple variant with multiple fields
+                        for (i, field) in fields.unnamed.iter().enumerate() {
+                            let field_name = format!("field_{i}");
+                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let field_type = post_process_type_ref(field_type, self);
+                            record_fields.push(Field {
+                                name: field_name,
+                                type_: field_type,
+                                nullable: None,
+                            });
+                        }
+                    } else if let syn::Fields::Named(fields) = &variant.fields {
+                        // Struct variant with multiple fields
+                        for field in &fields.named {
+                            let field_name = field.ident.as_ref().unwrap().to_string();
+                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let field_type = post_process_type_ref(field_type, self);
+                            record_fields.push(Field {
+                                name: field_name,
+                                type_: field_type,
+                                nullable: None,
+                            });
+                        }
                     }
                     // Create a temporary record type for the variant payload
                     let record_type = TypeDef::Record {
