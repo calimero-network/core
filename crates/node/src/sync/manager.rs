@@ -601,10 +601,16 @@ impl SyncManager {
                         };
 
                         // Install bundle
-                        let _ = self
-                            .node_client
+                        self.node_client
                             .install_application_from_bundle_blob(&blob_id, &source.into())
-                            .await;
+                            .await
+                            .map_err(|e| {
+                                eyre::eyre!(
+                                    "Failed to install bundle application from blob {}: {}",
+                                    blob_id,
+                                    e
+                                )
+                            })?;
 
                         // Re-fetch application
                         application = self.node_client.get_application(&context.application_id)?;
