@@ -11,7 +11,7 @@ use tracing::{debug, error, info};
 
 use super::NetworkManager;
 use crate::discovery::state::{
-    DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
+    DiscoveryState, ReachabilityActions, RelayReservationStatus, RendezvousRegistrationStatus,
 };
 
 pub mod state;
@@ -298,5 +298,53 @@ impl NetworkManager {
             .update_relay_reservation_status(relay_peer, RelayReservationStatus::Requested);
 
         Ok(())
+    }
+
+    /// Execute actions determined by DiscoveryState
+    pub(crate) fn execute_reachability_actions(&mut self, actions: ReachabilityActions) {
+        if !actions.has_actions() {
+            return;
+        }
+
+        // AutoNAT server control
+        if actions.enable_autonat_server {
+            if let Err(err) = self.swarm.behaviour_mut().autonat.enable_server() {
+                error!(%err, "Failed to enable AutoNAT server");
+            }
+        }
+
+        if actions.disable_autonat_server {
+            if let Err(err) = self.swarm.behaviour_mut().autonat.disable_server() {
+                error!(%err, "Failed to disable AutoNAT server");
+            }
+        }
+
+        // Unregister from rendezvous (do this first when going private)
+        for peer_id in actions.rendezvous_unregister {
+            if let Err(err) = self.rendezvous_unregister(&peer_id) {
+                error!(%err, %peer_id, "Failed to unregister from rendezvous");
+            }
+        }
+
+        // Create relay reservations
+        for peer_id in actions.relay_reservations {
+            if let Err(err) = self.create_relay_reservation(&peer_id) {
+                error!(%err, %peer_id, "Failed to create relay reservation");
+            }
+        }
+
+        // Discover peers
+        for peer_id in &actions.rendezvous_discover {
+            if let Err(err) = self.rendezvous_discover(peer_id) {
+                error!(%err, %peer_id, "Failed to discover via rendezvous");
+            }
+        }
+
+        // Register with rendezvous (do this last, after relay setup)
+        for peer_id in actions.rendezvous_register {
+            if let Err(err) = self.rendezvous_register(&peer_id) {
+                error!(%err, %peer_id, "Failed to register with rendezvous");
+            }
+        }
     }
 }

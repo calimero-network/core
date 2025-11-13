@@ -11,6 +11,7 @@ use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
 use multiaddr::Protocol;
+use tracing::info;
 
 // The rendezvous protocol name is not public in libp2p, so we have to define it here.
 // source: https://github.com/libp2p/rust-libp2p/blob/a8888a7978f08ec9b8762207bf166193bf312b94/protocols/rendezvous/src/lib.rs#L50C12-L50C92
@@ -19,16 +20,138 @@ const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvou
 /// DiscoveryState is a struct that holds the state of the disovered peers.
 /// It holds the relay and rendezvous indexes to quickly check if a peer is a relay or rendezvous.
 /// It offers mutable methods for managing the state of the peers.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
     autonat_index: BTreeSet<PeerId>,
     confirmed_external_addresses: HashSet<Multiaddr>,
+    reachability_state: ReachabilityState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReachabilityState {
+    Unknown,
+    Reachable,
+    Unreachable,
+}
+
+impl Default for DiscoveryState {
+    fn default() -> Self {
+        Self {
+            peers: BTreeMap::new(),
+            relay_index: BTreeSet::new(),
+            rendezvous_index: BTreeSet::new(),
+            autonat_index: BTreeSet::new(),
+            confirmed_external_addresses: HashSet::new(),
+            reachability_state: ReachabilityState::Unknown,
+        }
+    }
+}
+
+/// Pure data: what actions NetworkManager should execute
+#[derive(Debug, Default)]
+pub struct ReachabilityActions {
+    pub enable_autonat_server: bool,
+    pub disable_autonat_server: bool,
+    pub rendezvous_register: Vec<PeerId>,
+    pub rendezvous_unregister: Vec<PeerId>,
+    pub relay_reservations: Vec<PeerId>,
+    pub rendezvous_discover: Vec<PeerId>,
+}
+
+impl ReachabilityActions {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn has_actions(&self) -> bool {
+        self.enable_autonat_server
+            || self.disable_autonat_server
+            || !self.rendezvous_register.is_empty()
+            || !self.rendezvous_unregister.is_empty()
+            || !self.relay_reservations.is_empty()
+            || !self.rendezvous_discover.is_empty()
+    }
 }
 
 impl DiscoveryState {
+    /// Called when AutoNAT confirms an address is reachable
+    pub fn on_address_reachable(&mut self, addr: &Multiaddr) -> ReachabilityActions {
+        self.add_confirmed_external_address(addr);
+        self.check_transition()
+    }
+
+    /// Called when AutoNAT test fails for an address
+    pub fn on_address_unreachable(&mut self, addr: &Multiaddr) -> ReachabilityActions {
+        self.remove_confirmed_external_address(addr);
+        self.check_transition()
+    }
+
+    /// Called when swarm reports external address changes
+    pub fn on_external_address_changed(&mut self) -> ReachabilityActions {
+        self.check_transition()
+    }
+
+    /// Core state machine: check if transition occurred and return actions
+    fn check_transition(&mut self) -> ReachabilityActions {
+        let has_confirmed = self.has_confirmed_external_addresses();
+        let current = self.reachability_state;
+
+        let new_state = if has_confirmed {
+            ReachabilityState::Reachable
+        } else if current == ReachabilityState::Unknown {
+            // First failure means we're unreachable
+            ReachabilityState::Unreachable
+        } else {
+            ReachabilityState::Unreachable
+        };
+
+        // Only act on actual transitions
+        if current == new_state {
+            return ReachabilityActions::none();
+        }
+
+        info!("Reachability: {:?} → {:?}", current, new_state);
+        self.reachability_state = new_state;
+
+        match new_state {
+            ReachabilityState::Reachable => self.became_reachable(),
+            ReachabilityState::Unreachable => self.became_unreachable(),
+            ReachabilityState::Unknown => ReachabilityActions::none(),
+        }
+    }
+
+    fn became_reachable(&self) -> ReachabilityActions {
+        info!("🌐 Node is now publicly reachable");
+
+        ReachabilityActions {
+            enable_autonat_server: true,
+            disable_autonat_server: false,
+            rendezvous_register: self.get_rendezvous_peer_ids().collect(),
+            rendezvous_unregister: vec![],
+            relay_reservations: vec![],
+            rendezvous_discover: vec![],
+        }
+    }
+
+    fn became_unreachable(&self) -> ReachabilityActions {
+        info!("🔒 Node is behind NAT, not publicly reachable");
+
+        let rendezvous_peers: Vec<_> = self.get_rendezvous_peer_ids().collect();
+        let relay_peers: Vec<_> = self.get_relay_peer_ids().collect();
+
+        ReachabilityActions {
+            enable_autonat_server: false,
+            disable_autonat_server: true,
+            rendezvous_register: rendezvous_peers.clone(),
+            rendezvous_unregister: rendezvous_peers.clone(),
+            relay_reservations: relay_peers,
+            rendezvous_discover: rendezvous_peers,
+        }
+    }
+
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
         let _ = self
             .peers
