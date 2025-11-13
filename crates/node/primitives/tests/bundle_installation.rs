@@ -1206,9 +1206,13 @@ async fn test_bundle_blob_sharing_integration() {
     let bundle_source = app_user1.source;
 
     // Step 2: User 2 receives the bundle blob (simulating blob sharing)
-    // Read bundle from User 1's installation
-    let bundle_data = fs::read(&bundle_path).unwrap();
-    let cursor = Cursor::new(bundle_data.as_slice());
+    // Read bundle from User 1's blobstore (bundle file was deleted after installation)
+    let bundle_data = node_client_1
+        .get_blob_bytes(&bundle_blob_id, None)
+        .await
+        .expect("Should get bundle blob from User 1's blobstore")
+        .expect("Bundle blob should exist");
+    let cursor = Cursor::new(bundle_data.as_ref());
     let (received_blob_id, received_size) = node_client_2
         .add_blob(cursor, Some(bundle_data.len() as u64), None)
         .await
@@ -1366,7 +1370,7 @@ async fn test_bundle_get_application_bytes_fallback() {
     assert!(!wasm_path.exists(), "WASM should be deleted");
 
     // Get application bytes - should fallback to re-extract from bundle blob
-    // Note: fallback extracts from bundle blob but doesn't write back to disk
+    // Note: fallback now extracts entire bundle to disk for persistence
     let bytes = node_client
         .get_application_bytes(&application_id)
         .await
@@ -1379,9 +1383,9 @@ async fn test_bundle_get_application_bytes_fallback() {
         "Application bytes should match WASM content (re-extracted from bundle blob)"
     );
 
-    // Verify WASM file still doesn't exist (fallback doesn't write back to disk)
+    // Verify WASM file now exists (fallback extracts bundle to disk for persistence)
     assert!(
-        !wasm_path.exists(),
-        "WASM file should still not exist (fallback extracts from blob, doesn't write to disk)"
+        wasm_path.exists(),
+        "WASM file should exist after fallback (fallback extracts bundle to disk)"
     );
 }
