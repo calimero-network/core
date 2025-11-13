@@ -31,13 +31,9 @@ export class StateTreeVisualizer {
 
     /**
      * Load state tree data from backend
+     * Uses the new paginated API: first loads context list, then loads trees on-demand
      */
     async load() {
-        if (this.state.stateTreeData) {
-            this.render();
-            return;
-        }
-
         if (!this.state.currentWasmFile) {
             throw new Error('WASM file is required for state tree visualization');
         }
@@ -46,15 +42,63 @@ export class StateTreeVisualizer {
         UIManager.hideElement('state-error');
 
         try {
-            const response = await ApiService.loadStateTree(
+            // First, list available contexts (fast operation)
+            const contextsResponse = await ApiService.listContexts(this.state.currentDbPath);
+
+            // Initialize state with context list
+            if (!this.state.stateTreeData) {
+                this.state.stateTreeData = {
+                    contexts: [],
+                    loadedTrees: new Map() // Cache loaded trees by context_id
+                };
+            }
+
+            // Store context metadata
+            this.state.stateTreeData.contexts = contextsResponse.data.contexts;
+
+            // Populate dropdown with contexts
+            this.populateContextSelector();
+
+            // Load the first context's tree automatically
+            if (this.state.stateTreeData.contexts.length > 0) {
+                const firstContextId = this.state.stateTreeData.contexts[0].context_id;
+                await this.loadContextTree(firstContextId);
+            }
+
+            this.render();
+        } catch (error) {
+            throw error;
+        } finally {
+            UIManager.hideElement('state-loading');
+        }
+    }
+
+    /**
+     * Load tree for a specific context (on-demand)
+     * @param {string} contextId - Context ID to load
+     */
+    async loadContextTree(contextId) {
+        // Check if already loaded
+        if (this.state.stateTreeData?.loadedTrees?.has(contextId)) {
+            return;
+        }
+
+        UIManager.showElement('state-loading');
+
+        try {
+            const response = await ApiService.loadContextTree(
                 this.state.currentDbPath,
+                contextId,
                 this.state.currentWasmFile
             );
 
-            this.state.stateTreeData = response.data;
-            this.populateContextSelector();
-            this.render();
+            // Cache the loaded tree
+            if (!this.state.stateTreeData.loadedTrees) {
+                this.state.stateTreeData.loadedTrees = new Map();
+            }
+            this.state.stateTreeData.loadedTrees.set(contextId, response.data.tree);
         } catch (error) {
+            console.error(`Failed to load tree for context ${contextId}:`, error);
             throw error;
         } finally {
             UIManager.hideElement('state-loading');
@@ -74,14 +118,27 @@ export class StateTreeVisualizer {
         // Add option for each context
         this.state.stateTreeData.contexts.forEach((context, index) => {
             const option = document.createElement('option');
-            option.value = index.toString();
-            option.textContent = `Context ${index + 1}: ${context.context_id.substring(0, 8)}...`;
+            option.value = context.context_id;
+            option.textContent = `Context ${index + 1}: ${context.context_id.substring(0, 8)}... (${context.root_hash.substring(0, 8)}...)`;
             select.appendChild(option);
         });
 
+        // Add change event listener to load tree on-demand when context changes
+        select.removeEventListener('change', this._contextChangeHandler);
+        this._contextChangeHandler = async (e) => {
+            const contextId = e.target.value;
+            try {
+                await this.loadContextTree(contextId);
+                this.render();
+            } catch (error) {
+                UIManager.showError('state-error', `Failed to load context tree: ${error.message}`);
+            }
+        };
+        select.addEventListener('change', this._contextChangeHandler);
+
         // Select the first context by default
         if (this.state.stateTreeData.contexts.length > 0) {
-            select.value = '0';
+            select.value = this.state.stateTreeData.contexts[0].context_id;
         }
     }
 
@@ -93,10 +150,12 @@ export class StateTreeVisualizer {
         if (!this.state.stateTreeData?.contexts) return null;
 
         const select = document.getElementById('state-context-select');
-        const selectedValue = select?.value || '0';
+        const selectedContextId = select?.value;
 
-        const index = parseInt(selectedValue, 10);
-        const tree = this.state.stateTreeData.contexts[index]?.tree;
+        if (!selectedContextId) return null;
+
+        // Get from cache
+        const tree = this.state.stateTreeData.loadedTrees?.get(selectedContextId);
 
         // Deep clone to prevent mutation of original stateTreeData
         if (!tree) return null;
@@ -104,7 +163,7 @@ export class StateTreeVisualizer {
         try {
             return JSON.parse(JSON.stringify(tree));
         } catch (error) {
-            console.error(`Failed to clone tree for context ${index}:`, error);
+            console.error(`Failed to clone tree for context ${selectedContextId}:`, error);
             return {
                 id: 'clone-error',
                 type: 'Error',
