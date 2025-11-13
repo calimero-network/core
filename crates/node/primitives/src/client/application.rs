@@ -417,6 +417,9 @@ impl NodeClient {
             "install_bundle_from_path started"
         );
 
+        // Clone path for deletion after installation
+        let bundle_path = path.clone();
+
         // Read bundle file
         let bundle_data = tokio::fs::read(&path).await?;
         let bundle_size = bundle_data.len() as u64;
@@ -493,10 +496,20 @@ impl NodeClient {
             true, // is_bundle: true for bundles
         )?;
 
-        // Note: We don't delete the bundle file after installation because:
-        // 1. Multiple nodes may need to install from the same file path (e.g., in e2e tests)
-        // 2. The bundle is already stored as a blob, so the original file is no longer needed for runtime
-        // 3. File cleanup should be handled by the caller or system cleanup processes
+        // Delete bundle file after successful installation (it's now stored as a blob)
+        if let Err(e) = tokio::fs::remove_file(&bundle_path).await {
+            warn!(
+                path = %bundle_path,
+                error = %e,
+                "Failed to delete bundle file after installation"
+            );
+            // Don't fail installation if deletion fails - bundle is already installed
+        } else {
+            debug!(
+                path = %bundle_path,
+                "Deleted bundle file after successful installation"
+            );
+        }
 
         Ok(application_id)
     }
