@@ -658,11 +658,29 @@ impl SyncManager {
             warn!(
                 installed_app_id = %installed_app_id,
                 context_app_id = %context.application_id,
-                "Installed application ID does not match context application ID, using installed ID"
+                "Installed application ID does not match context application ID, updating to installed ID"
             );
             // Update context with the installed application ID for consistency
-            // Note: This updates the local context copy, not the persisted context
             context.application_id = installed_app_id;
+
+            // Persist the ApplicationId change to the database
+            // This is critical: if we don't persist, the old ApplicationId will be
+            // used on node restart, causing application lookup failures
+            self.context_client
+                .update_context_application_id(context_id, installed_app_id)
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to persist ApplicationId update for context {}: {}",
+                        context_id,
+                        e
+                    )
+                })?;
+
+            debug!(
+                %context_id,
+                installed_app_id = %installed_app_id,
+                "Persisted ApplicationId update to database"
+            );
         }
 
         // Use the verified installed application
