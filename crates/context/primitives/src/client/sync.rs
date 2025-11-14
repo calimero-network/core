@@ -1,8 +1,17 @@
+//! Context configuration synchronization and application installation.
+//!
+//! This module handles syncing context configuration from external sources,
+//! installing applications (both bundles and regular WASM), and managing
+//! context metadata updates.
+
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use tokio::sync::oneshot;
+use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};
 use url::Url;
 
@@ -10,6 +19,197 @@ use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
 impl ContextClient {
+    // Constants for application installation
+    const DEFAULT_PACKAGE: &str = "unknown";
+    const DEFAULT_VERSION: &str = "0.0.0";
+    const MAX_BLOB_RETRIES: u32 = 20;
+    const BLOB_RETRY_DELAY_MS: u64 = 1000;
+    const MEMBERS_PAGE_SIZE: usize = 100;
+
+    /// Try to install application from URL (for HTTP/HTTPS sources)
+    async fn try_install_from_url(
+        &self,
+        source: &Url,
+        metadata: &[u8],
+    ) -> eyre::Result<Option<ApplicationId>> {
+        match source.scheme() {
+            "http" | "https" => Ok(Some(
+                self.node_client
+                    .install_application_from_url(source.clone(), metadata.to_vec(), None)
+                    .await?,
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    /// Install a regular (non-bundle) application
+    async fn install_regular_application(
+        &self,
+        blob_id: &BlobId,
+        size: u64,
+        source: &Url,
+        metadata: &[u8],
+    ) -> eyre::Result<ApplicationId> {
+        self.node_client.install_application(
+            blob_id,
+            size,
+            &source.clone().into(),
+            metadata.to_vec(),
+            Self::DEFAULT_PACKAGE,
+            Self::DEFAULT_VERSION,
+            false, // is_bundle: false
+        )
+    }
+
+    /// Check if blob is a bundle and install accordingly
+    async fn check_bundle_and_install(
+        &self,
+        blob_id: &BlobId,
+        blob_bytes: &[u8],
+        source: &Url,
+        size: u64,
+        metadata: &[u8],
+    ) -> eyre::Result<ApplicationId> {
+        let blob_bytes_clone = blob_bytes.to_vec();
+        let is_bundle =
+            tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
+                .await?;
+
+        if is_bundle {
+            debug!(
+                blob_id = %blob_id,
+                "Blob is a bundle, installing from bundle blob"
+            );
+            self.node_client
+                .install_application_from_bundle_blob(blob_id, &source.clone().into())
+                .await
+        } else {
+            debug!(
+                blob_id = %blob_id,
+                "Blob is not a bundle, using regular installation"
+            );
+            self.install_regular_application(blob_id, size, source, metadata)
+                .await
+        }
+    }
+
+    /// Install application from existing blob (checks if bundle and installs accordingly)
+    async fn install_from_existing_blob(
+        &self,
+        blob_id: &BlobId,
+        source: &Url,
+        size: u64,
+        metadata: &[u8],
+    ) -> eyre::Result<ApplicationId> {
+        debug!(
+            blob_id = %blob_id,
+            "Blob exists locally, checking if it's a bundle"
+        );
+
+        // Check if blob is a bundle
+        let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
+            debug!(
+                blob_id = %blob_id,
+                "Failed to read blob, falling back to regular installation"
+            );
+            // Failed to read blob, fall back to regular installation
+            return self
+                .install_regular_application(blob_id, size, source, metadata)
+                .await;
+        };
+
+        // Check if bundle and install accordingly
+        self.check_bundle_and_install(blob_id, &blob_bytes, source, size, metadata)
+            .await
+    }
+
+    /// Wait for blob to arrive and install bundle (with retry logic)
+    async fn wait_for_blob_and_install(
+        &self,
+        blob_id: &BlobId,
+        source: &Url,
+        size: u64,
+        metadata: &[u8],
+        expected_app_id: ApplicationId,
+    ) -> eyre::Result<ApplicationId> {
+        debug!(
+            blob_id = %blob_id,
+            "Source indicates bundle (.mpk), waiting for blob to arrive via blob sharing"
+        );
+        // For bundles, we need the blob to extract package/version from manifest
+        // Wait a bit for blob sharing to deliver it, then retry
+
+        for _ in 0..Self::MAX_BLOB_RETRIES {
+            // Check if blob is available
+            if !self.node_client.has_blob(blob_id)? {
+                sleep(Duration::from_millis(Self::BLOB_RETRY_DELAY_MS)).await;
+                continue;
+            }
+
+            // Blob arrived, try to read and install
+            let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
+                sleep(Duration::from_millis(Self::BLOB_RETRY_DELAY_MS)).await;
+                continue;
+            };
+
+            debug!(
+                blob_id = %blob_id,
+                "Blob arrived, installing bundle"
+            );
+
+            // Check if bundle and install
+            return self
+                .check_bundle_and_install(blob_id, &blob_bytes, source, size, metadata)
+                .await;
+        }
+
+        // Retries exhausted
+        warn!(
+            blob_id = %blob_id,
+            "Blob didn't arrive within retry window - bundle installation will be retried when blob arrives"
+        );
+        // Blob didn't arrive in time - we can't install without package/version from manifest
+        // Return the ApplicationId from context config to pass the check
+        // The application will be installed when blob arrives via blob sharing
+        // This will cause initiate_sync_inner to fail with "application not found",
+        // but blob sharing will happen and installation will succeed on retry
+        Ok(expected_app_id)
+    }
+
+    /// Install application when blob doesn't exist locally yet
+    async fn install_when_blob_missing(
+        &self,
+        blob_id: &BlobId,
+        source: &Url,
+        size: u64,
+        metadata: &[u8],
+        expected_app_id: ApplicationId,
+    ) -> eyre::Result<ApplicationId> {
+        debug!(
+            blob_id = %blob_id,
+            "Blob doesn't exist locally, checking source for bundle detection"
+        );
+        // Blob doesn't exist yet - try to detect if it's a bundle from source URL
+        // If source ends with .mpk, it's likely a bundle
+        let is_bundle_from_source = source.path().ends_with(".mpk");
+
+        if is_bundle_from_source {
+            // Wait for blob to arrive and install bundle
+            self.wait_for_blob_and_install(blob_id, source, size, metadata, expected_app_id)
+                .await
+        } else {
+            debug!(
+                blob_id = %blob_id,
+                "Blob doesn't exist locally, using regular installation"
+            );
+            // Blob doesn't exist yet - create ApplicationMeta entry anyway
+            // The blob will be shared later in initiate_sync_inner
+            // When blob arrives, get_application_bytes will handle extraction on-demand
+            self.install_regular_application(blob_id, size, source, metadata)
+                .await
+        }
+    }
+
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,
@@ -41,9 +241,7 @@ impl ContextClient {
 
         let members_revision = {
             let external_client = self.external_client(&context_id, &config)?;
-
             let config_client = external_client.config();
-
             config_client.members_revision().await?
         };
 
@@ -52,10 +250,14 @@ impl ContextClient {
             config.members_revision = members_revision;
 
             let external_client = self.external_client(&context_id, &config)?;
-
             let config_client = external_client.config();
 
-            for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
+            for (offset, length) in (0..).map(|i| {
+                (
+                    Self::MEMBERS_PAGE_SIZE.saturating_mul(i),
+                    Self::MEMBERS_PAGE_SIZE,
+                )
+            }) {
                 let members = config_client.members(offset, length).await?;
 
                 if members.is_empty() {
@@ -80,9 +282,7 @@ impl ContextClient {
 
         let application_revision = {
             let external_client = self.external_client(&context_id, &config)?;
-
             let config_client = external_client.config();
-
             config_client.application_revision().await?
         };
 
@@ -93,217 +293,40 @@ impl ContextClient {
             config.application_revision = application_revision;
 
             let external_client = self.external_client(&context_id, &config)?;
-
             let config_client = external_client.config();
-
             let application = config_client.application().await?;
 
             application_id = Some(application.id);
 
             if !self.node_client.has_application(&application.id)? {
                 let source: Url = application.source.into();
-                let source_clone = source.clone();
                 let metadata = application.metadata.clone();
                 let blob_id = application.blob.bytecode;
 
                 let derived_application_id = {
                     // Try URL installation first (for HTTP/HTTPS sources)
-                    let app_id = match source.scheme() {
-                        "http" | "https" => self
-                            .node_client
-                            .install_application_from_url(
-                                source_clone.clone(),
-                                metadata.clone(),
-                                None,
+                    if let Some(app_id) = self.try_install_from_url(&source, &metadata).await? {
+                        app_id
+                    } else {
+                        // URL installation failed or not applicable
+                        // Check if blob exists locally (might have been received via blob sharing)
+                        if self.node_client.has_blob(&blob_id)? {
+                            self.install_from_existing_blob(
+                                &blob_id,
+                                &source,
+                                application.size,
+                                &metadata,
                             )
-                            .await
-                            .ok(),
-                        _ => None,
-                    };
-
-                    match app_id {
-                        Some(id) => id,
-                        None => {
-                            // URL installation failed or not applicable
-                            // Check if blob exists locally (might have been received via blob sharing)
-                            if self.node_client.has_blob(&blob_id)? {
-                                debug!(
-                                    blob_id = %blob_id,
-                                    "Blob exists locally, checking if it's a bundle"
-                                );
-                                // Blob exists, check if it's a bundle
-                                if let Ok(Some(blob_bytes)) =
-                                    self.node_client.get_blob_bytes(&blob_id, None).await
-                                {
-                                    // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-                                    let blob_bytes_clone = blob_bytes.clone();
-                                    let is_bundle = tokio::task::spawn_blocking(move || {
-                                        NodeClient::is_bundle_blob(&blob_bytes_clone)
-                                    })
-                                    .await?;
-                                    if is_bundle {
-                                        debug!(
-                                            blob_id = %blob_id,
-                                            "Blob is a bundle, installing from bundle blob"
-                                        );
-                                        // Install from bundle blob
-                                        self.node_client
-                                            .install_application_from_bundle_blob(
-                                                &blob_id,
-                                                &source_clone.clone().into(),
-                                            )
-                                            .await?
-                                    } else {
-                                        debug!(
-                                            blob_id = %blob_id,
-                                            "Blob is not a bundle, using regular installation"
-                                        );
-                                        // Not a bundle, use regular installation
-                                        self.node_client.install_application(
-                                            &blob_id,
-                                            application.size,
-                                            &source_clone.clone().into(),
-                                            metadata.clone(),
-                                            "unknown",
-                                            "0.0.0",
-                                            false, // is_bundle: false
-                                        )?
-                                    }
-                                } else {
-                                    debug!(
-                                        blob_id = %blob_id,
-                                        "Failed to read blob, falling back to regular installation"
-                                    );
-                                    // Failed to read blob, fall back to regular installation
-                                    self.node_client.install_application(
-                                        &blob_id,
-                                        application.size,
-                                        &source_clone.clone().into(),
-                                        metadata.clone(),
-                                        "unknown",
-                                        "0.0.0",
-                                        false, // is_bundle: false
-                                    )?
-                                }
-                            } else {
-                                debug!(
-                                    blob_id = %blob_id,
-                                    "Blob doesn't exist locally, checking source for bundle detection"
-                                );
-                                // Blob doesn't exist yet - try to detect if it's a bundle from source URL
-                                // If source ends with .mpk, it's likely a bundle
-                                let is_bundle_from_source = source.path().ends_with(".mpk");
-
-                                if is_bundle_from_source {
-                                    debug!(
-                                        blob_id = %blob_id,
-                                        "Source indicates bundle (.mpk), waiting for blob to arrive via blob sharing"
-                                    );
-                                    // For bundles, we need the blob to extract package/version from manifest
-                                    // Wait a bit for blob sharing to deliver it, then retry
-                                    use tokio::time::{sleep, Duration};
-                                    let mut retries = 20; // Increased retries for blob sharing
-                                    let mut installed = false;
-
-                                    let mut app_id_result = application.id;
-
-                                    while retries > 0 && !installed {
-                                        // Check first, then sleep only if blob doesn't exist
-                                        // This avoids wasting time if blob is already available
-                                        if self.node_client.has_blob(&blob_id)? {
-                                            debug!(
-                                                blob_id = %blob_id,
-                                                "Blob arrived, installing bundle"
-                                            );
-                                            // Blob arrived, install it
-                                            if let Ok(Some(blob_bytes)) = self
-                                                .node_client
-                                                .get_blob_bytes(&blob_id, None)
-                                                .await
-                                            {
-                                                // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-                                                let blob_bytes_clone = blob_bytes.clone();
-                                                let is_bundle =
-                                                    tokio::task::spawn_blocking(move || {
-                                                        NodeClient::is_bundle_blob(
-                                                            &blob_bytes_clone,
-                                                        )
-                                                    })
-                                                    .await?;
-                                                if is_bundle {
-                                                    app_id_result = self
-                                                        .node_client
-                                                        .install_application_from_bundle_blob(
-                                                            &blob_id,
-                                                            &source_clone.clone().into(),
-                                                        )
-                                                        .await?;
-                                                    installed = true;
-                                                } else {
-                                                    // Not a bundle after all, use regular installation
-                                                    app_id_result =
-                                                        self.node_client.install_application(
-                                                            &blob_id,
-                                                            application.size,
-                                                            &source_clone.clone().into(),
-                                                            metadata.clone(),
-                                                            "unknown",
-                                                            "0.0.0",
-                                                            false, // is_bundle: false
-                                                        )?;
-                                                    installed = true;
-                                                }
-                                            } else {
-                                                retries -= 1;
-                                                // Sleep after failed check, before next retry
-                                                if retries > 0 {
-                                                    sleep(Duration::from_millis(1000)).await;
-                                                }
-                                                continue;
-                                            }
-                                        } else {
-                                            retries -= 1;
-                                            // Sleep after failed check, before next retry
-                                            if retries > 0 {
-                                                sleep(Duration::from_millis(1000)).await;
-                                            }
-                                            continue;
-                                        }
-                                    }
-
-                                    if !installed {
-                                        warn!(
-                                            blob_id = %blob_id,
-                                            "Blob didn't arrive within retry window - bundle installation will be retried when blob arrives"
-                                        );
-                                        // Blob didn't arrive in time - we can't install without package/version from manifest
-                                        // Return the ApplicationId from context config to pass the check
-                                        // The application will be installed when blob arrives via blob sharing
-                                        // This will cause initiate_sync_inner to fail with "application not found",
-                                        // but blob sharing will happen and installation will succeed on retry
-                                        application.id
-                                    } else {
-                                        app_id_result
-                                    }
-                                } else {
-                                    debug!(
-                                        blob_id = %blob_id,
-                                        "Blob doesn't exist locally, using regular installation"
-                                    );
-                                    // Blob doesn't exist yet - create ApplicationMeta entry anyway
-                                    // The blob will be shared later in initiate_sync_inner
-                                    // When blob arrives, get_application_bytes will handle extraction on-demand
-                                    self.node_client.install_application(
-                                        &blob_id,
-                                        application.size,
-                                        &source_clone.clone().into(),
-                                        metadata.clone(),
-                                        "unknown",
-                                        "0.0.0",
-                                        false, // is_bundle: false
-                                    )?
-                                }
-                            }
+                            .await?
+                        } else {
+                            self.install_when_blob_missing(
+                                &blob_id,
+                                &source,
+                                application.size,
+                                &metadata,
+                                application.id,
+                            )
+                            .await?
                         }
                     }
                 };
