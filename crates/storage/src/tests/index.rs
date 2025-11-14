@@ -4,6 +4,7 @@ use crate::store::MainStorage;
 mod index__public_methods {
     use super::*;
     use crate::interface::{Action, Interface};
+    use crate::entities::StorageType;
     use crate::store::MockedStorage;
 
     #[test]
@@ -18,6 +19,7 @@ mod index__public_methods {
             metadata: Metadata {
                 created_at: 1,
                 updated_at: 1.into(),
+                storage_type: StorageType::Public,
             },
         };
 
@@ -30,11 +32,13 @@ mod index__public_methods {
                 Metadata {
                     created_at: 43,
                     updated_at: 22.into(),
+                    storage_type: StorageType::Public,
                 },
             )],
             metadata: Metadata {
                 created_at: 1,
                 updated_at: 1.into(),
+                storage_type: StorageType::Public,
             },
         };
 
