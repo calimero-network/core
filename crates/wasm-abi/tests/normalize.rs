@@ -359,3 +359,65 @@ fn test_complex_nested_scenarios() {
         TypeRef::list(TypeRef::map(TypeRef::bytes_with_size(32, None)))
     );
 }
+
+// This test function verifies all the new types we added
+#[test]
+fn test_new_storage_types() {
+    // Set up a mock resolver and add a 'Person' record for testing references
+    let mut resolver = MockResolver::new();
+    resolver.add_record("Person"); // [cite: 5]
+
+    // Test PublicKey
+    // We added logic to normalize `PublicKey` as a scalar.
+    assert_eq!(
+        normalize_type(&parse_type("PublicKey"), true, &resolver).unwrap(),
+        TypeRef::bytes_with_size(32, None) // 
+    );
+
+    // Test FrozenValue<T> (transparent wrapper)
+    // We added `FrozenValue` to the list of wrappers (like LwwRegister)
+    // that should be unwrapped.
+    // FrozenValue<String> -> string
+    assert_eq!(
+        normalize_type(&parse_type("FrozenValue<String>"), true, &resolver).unwrap(),
+        TypeRef::string() // 
+    );
+
+    // FrozenValue<Person> -> $ref:"Person"
+    assert_eq!(
+        normalize_type(&parse_type("FrozenValue<Person>"), true, &resolver).unwrap(),
+        TypeRef::reference("Person") // 
+    );
+
+    // Test UserStorage<T> (maps to map<string, T>)
+    // We added logic to normalize `UserStorage<T>` as a map.
+    // The key (PublicKey) becomes a string in the ABI.
+    //
+    // UserStorage<u64> -> map<string, u64>
+    assert_eq!(
+        normalize_type(&parse_type("UserStorage<u64>"), true, &resolver).unwrap(),
+        TypeRef::map(TypeRef::u64()) // [cite: 295]
+    );
+
+    // UserStorage<Person> -> map<string, $ref:Person>
+    assert_eq!(
+        normalize_type(&parse_type("UserStorage<Person>"), true, &resolver).unwrap(),
+        TypeRef::map(TypeRef::reference("Person"))
+    );
+
+    // Test FrozenStorage<T> (maps to map<string, T>)
+    // We added logic to normalize `FrozenStorage<T>` as a map.
+    // The key (Hash) becomes a string in the ABI.
+    //
+    // FrozenStorage<String> -> map<string, string>
+    assert_eq!(
+        normalize_type(&parse_type("FrozenStorage<String>"), true, &resolver).unwrap(),
+        TypeRef::map(TypeRef::string())
+    );
+
+    // FrozenStorage<Vec<Person>> -> map<string, list<$ref:Person>>
+    assert_eq!(
+        normalize_type(&parse_type("FrozenStorage<Vec<Person>>"), true, &resolver).unwrap(),
+        TypeRef::map(TypeRef::list(TypeRef::reference("Person"))) // [cite: 31, 290]
+    );
+}

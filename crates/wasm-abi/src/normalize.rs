@@ -274,7 +274,7 @@ fn normalize_generic_type(
             }
         }
         // CRDT types - unwrap to inner type for ABI
-        "LwwRegister" | "Counter" | "ReplicatedGrowableArray" | "Vector" | "UnorderedSet" => {
+        "LwwRegister" | "Counter" | "ReplicatedGrowableArray" | "Vector" | "UnorderedSet" | "FrozenValue" => {
             // These CRDT wrappers unwrap to their inner type for ABI purposes
             // LwwRegister<T> -> T, Counter -> u64, etc.
 
@@ -302,10 +302,24 @@ fn normalize_generic_type(
             };
             normalize_type(ty, wasm32, resolver)
         }
-        // TODO: add custom handler for the `UserStorage` and `FrozenStorage`.
-        //"UserStorage" | "FrozenStorage" => {
-        //    todo!();
-        //}
+        // Handle UserStorage and FrozenStorage
+        "UserStorage" | "FrozenStorage" => {
+            // These normalize to map<string, T>
+            // Key (PublicKey or Hash) is treated as a string
+            if args.args.is_empty() {
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {ident_str} type - expected 1 type argument"
+                )));
+            }
+            let arg = &args.args[0];
+            let GenericArgument::Type(ty) = arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid storage argument".to_owned(),
+                ));
+            };
+            let value_type = normalize_type(ty, wasm32, resolver)?;
+            Ok(TypeRef::map(value_type)) // Becomes map<string, T>
+        }
         _ => Err(NormalizeError::TypePathError(format!(
             "unknown generic type: {ident}"
         ))),
@@ -368,6 +382,11 @@ fn normalize_scalar_type(
             } else {
                 Ok(TypeRef::i64())
             }
+        }
+        // Handle PublicKey
+        "PublicKey" => {
+            // PublicKey is [u8; 32], so it's bytes with a fixed size
+            Ok(TypeRef::bytes_with_size(32, None))
         }
         // Storage CRDT wrappers – treat as opaque blobs until ABI definitions exist.
         "Counter" | "ReplicatedGrowableArray" => Ok(TypeRef::bytes()),
