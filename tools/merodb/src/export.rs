@@ -352,60 +352,68 @@ pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -
     }
 }
 
-/// Extract state tree structure starting from state_root
+/// List all available contexts without building their trees
+/// This is a lightweight operation that only reads the Meta column
 #[cfg(feature = "gui")]
-pub fn extract_state_tree(
-    db: &DBWithThreadMode<SingleThreaded>,
-    manifest: &Manifest,
-) -> Result<Value> {
-    // Get Meta column to find contexts and their root hashes
+pub fn list_contexts(db: &DBWithThreadMode<SingleThreaded>) -> Result<Vec<Value>> {
     let meta_cf = db
         .cf_handle("Meta")
         .ok_or_else(|| eyre::eyre!("Meta column family not found"))?;
 
-    let state_cf = db
-        .cf_handle("State")
-        .ok_or_else(|| eyre::eyre!("State column family not found"))?;
-
     let mut contexts = Vec::new();
-
-    // Iterate through Meta column to find all contexts
     let iter = db.iterator_cf(&meta_cf, IteratorMode::Start);
+
     for item in iter {
         let (key, value) = item.wrap_err("Failed to read Meta entry")?;
 
-        // Try to parse the key to get context_id
         let key_json = parse_key(Column::Meta, &key)?;
         let context_id = key_json
             .get("id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| eyre::eyre!("Failed to extract context_id from Meta key"))?;
 
-        // Parse the value to get root_hash
         let value_json = parse_value(Column::Meta, &value)?;
         let root_hash_str = value_json
             .get("root_hash")
             .and_then(|v| v.as_str())
             .ok_or_else(|| eyre::eyre!("Failed to extract root_hash from Meta value"))?;
 
-        // Decode context_id from hex to bytes for State column lookup
-        let context_id_bytes =
-            hex::decode(context_id).wrap_err("Failed to decode context_id from hex")?;
-
-        // Find the actual root node in the State column by iterating through entries
-        // and finding one where parent_id == null
-        let tree = find_and_build_tree_for_context(db, state_cf, &context_id_bytes, manifest)?;
-
         contexts.push(json!({
             "context_id": context_id,
-            "root_hash": root_hash_str,
-            "tree": tree
+            "root_hash": root_hash_str
         }));
     }
 
+    Ok(contexts)
+}
+
+/// Extract state tree for a specific context
+/// This builds the tree on-demand for only the requested context
+#[cfg(feature = "gui")]
+pub fn extract_context_tree(
+    db: &DBWithThreadMode<SingleThreaded>,
+    context_id_hex: &str,
+    manifest: &Manifest,
+) -> Result<Value> {
+    let state_cf = db
+        .cf_handle("State")
+        .ok_or_else(|| eyre::eyre!("State column family not found"))?;
+
+    let context_id_bytes =
+        hex::decode(context_id_hex).wrap_err("Failed to decode context_id from hex")?;
+
+    if context_id_bytes.len() != 32 {
+        return Err(eyre::eyre!(
+            "Invalid context_id length: expected 32 bytes, got {}",
+            context_id_bytes.len()
+        ));
+    }
+
+    let tree = find_and_build_tree_for_context(db, state_cf, &context_id_bytes, manifest)?;
+
     Ok(json!({
-        "contexts": contexts,
-        "total_contexts": contexts.len()
+        "context_id": context_id_hex,
+        "tree": tree
     }))
 }
 
