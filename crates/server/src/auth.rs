@@ -1,6 +1,4 @@
 use std::convert::Infallible;
-use std::env;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -11,7 +9,6 @@ use axum::Router;
 use eyre::Result;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
-use mero_auth::config::StorageConfig;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
 use mero_auth::AuthService;
 use tower::{Layer, Service};
@@ -38,19 +35,12 @@ impl BundledAuth {
 
 /// Initialise the embedded authentication service according to the server configuration.
 pub async fn initialise(server_config: &ServerConfig) -> Result<BundledAuth> {
-    let mut auth_config = server_config
+    let auth_config = server_config
         .embedded_auth_config()
         .cloned()
         .unwrap_or_else(default_config);
 
-    if let StorageConfig::RocksDB { path } = &mut auth_config.storage {
-        if path.is_relative() {
-            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let resolved = cwd.join(&*path);
-            *path = resolved;
-        }
-    }
-
+    // Path resolution is handled by merod run.rs before passing config here
     let app = build_app(auth_config).await?;
 
     info!("Embedded authentication endpoints enabled at /auth and /admin");

@@ -43,12 +43,10 @@ Node Server component is split into 4 parts:
 
 ## Build Modes
 
-Two build outputs are supported so operators can choose whether the authentication
-service runs alongside the node or inside it.
+The node server supports two authentication modes that can be selected at runtime:
 
 ### Default mode (external auth)
 
-- `calimero-server` is built with default Cargo features.
 - The node expects an external `mero-auth` deployment and continues to forward
   authentication traffic to it, matching the current production setup.
 - Existing configuration files work without modification.
@@ -61,7 +59,7 @@ service runs alongside the node or inside it.
   routes, and guards the JSON-RPC, admin, WebSocket, and SSE endpoints with the
   bundled JWT middleware.
 - When `auth_mode = "embedded"` but there is no `[network.server.embedded_auth]`
-  block, the service defaults to a local RocksDB store under the node’s home
+  block, the service defaults to a local RocksDB store under the node's home
   directory (`auth/`) and enables only the `user_password` provider.
 - `merod init --auth-mode embedded` writes those defaults during node
   initialization; use `--auth-storage-path <dir>` to move the RocksDB data or
@@ -96,12 +94,32 @@ Omitting the block leaves the embedded defaults in place (RocksDB storage at
 `auth/`, username/password authentication). External deployments can keep existing
 configs unchanged while opting in environment by environment.
 
+#### `merod init` with embedded auth
+
+To initialize a node with embedded authentication, use the `--auth-mode embedded` flag:
+
+```bash
+merod --node-name my-node init --auth-mode embedded
+```
+
+By default, this will configure RocksDB storage at `auth/` within the node's home directory.
+You can customize the storage:
+
+- `--auth-storage-path <PATH>`: Specify a custom path for RocksDB storage.
+- `--auth-storage memory`: Use in-memory storage (for testing, not persistent).
+
+Example with in-memory storage:
+
+```bash
+merod --node-name my-node init --auth-mode embedded --auth-storage memory
+```
+
 #### CI/CD expectations
 
 - Build the node once: `cargo build -p calimero-server`.
 - Publish or package the single artefact; operators select the mode through
   configuration or the CLI flag.
-- For the bundled build, ensure the environment exposes the frontend assets:
+- For the embedded auth build, ensure the environment exposes the frontend assets:
   - `CALIMERO_AUTH_FRONTEND_SRC` pointing to a release archive or local build, or
   - `CALIMERO_AUTH_FRONTEND_PATH` pointing to a prebuilt directory.
 - When running integration suites, exercise at least one smoke test in each mode to
@@ -321,10 +339,14 @@ protected routes require authentication.
 
 ### Protected Routes
 
-These routes require authentication using auth headers. Auth headers are
-generated using `createAuthHeader` function from the `calimero sdk` library.
+These routes require authentication. The authentication method depends on the auth mode:
 
-Parts of the Auth Headers
+- **Proxy mode (default)**: Uses auth headers generated with `createAuthHeader` from the `calimero sdk` library.
+- **Embedded auth mode**: Uses JWT tokens in the `Authorization` header (e.g., `Authorization: Bearer <token>`).
+
+**Auth Headers (Proxy Mode)**
+
+Parts of the Auth Headers:
 
 1.  `wallet_type`: Specifies the type of wallet used (e.g., NEAR).
 2.  `signing_key`: Encoded public key used for signing the request.
@@ -411,35 +433,47 @@ These routes do not require authentication.
 
 **1. Health Check**
 
-- **Path**: `/health`
+- **Path**: `/admin-api/health`
 - **Method**: `GET`
 - **Description**: Checks the health of the API.
 
-**2. Request Challenge**
+**2. Authentication Status**
+
+- **Path**: `/admin-api/is-authed`
+- **Method**: `GET`
+- **Description**: Checks if the current request is authenticated.
+
+**3. Certificate**
+
+- **Path**: `/admin-api/certificate`
+- **Method**: `GET`
+- **Description**: Retrieves the node's certificate.
+
+**4. Request Challenge**
 
 - **Path**: `/request-challenge`
 - **Method**: `POST`
 - **Description**: Requests a challenge for authentication.
 
-**3. Add Client Key**
+**5. Add Client Key**
 
 - **Path**: `/add-client-key`
 - **Method**: `POST`
 - **Description**: Adds a new client key.
 
-**4. Install Dev Application**
+**6. Install Dev Application**
 
 - **Path**: `/dev/install-application`
 - **Method**: `POST`
 - **Description**: Installs a development application.
 
-**5. Manage Dev Contexts**
+**7. Manage Dev Contexts**
 
 - **Path**: `/dev/contexts`
 - Methods: `GET`, `POST`
 - **Description**: Lists (`GET`) and creates (`POST`) development contexts.
 
-**6. List Dev Applications**
+**8. List Dev Applications**
 
 - **Path**: `/dev/applications`
 - **Method**: `GET`
@@ -450,6 +484,9 @@ These routes do not require authentication.
 The JSON-rpc server endpoint is structured to handle various request types.
 
 **Base path**: `/jsonrpc`
+
+**Note**: When embedded auth mode is enabled, all JSON-RPC requests require authentication
+via JWT tokens in the `Authorization` header (e.g., `Authorization: Bearer <token>`).
 
 **1. Handle JSON-rpc Request**
 
@@ -464,6 +501,9 @@ The WebSocket, accessible at /ws, allows clients to dynamically subscribe to and
 unsubscribe from real-time updates about specific contexts within the Node
 Server.
 
+**Note**: When embedded auth mode is enabled, WebSocket connections require authentication
+via JWT tokens in the `Authorization` header during the initial handshake.
+
 **1. Handle WebSocket Request**
 
 - **Path**: `/ws`
@@ -475,6 +515,9 @@ Server.
 
 The SSE endpoint, accessible at `/sse`, allows clients to establish a real-time connection 
 to receive updates for specific contexts within the Node Server.
+
+**Note**: When embedded auth mode is enabled, SSE connections require authentication
+via JWT tokens in the `Authorization` header when opening the connection.
 
 **1. Establish SSE Connection**
 

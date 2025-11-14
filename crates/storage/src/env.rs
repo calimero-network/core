@@ -8,6 +8,85 @@ use mocked as imp;
 use crate::logical_clock::HybridTimestamp;
 use crate::store::Key;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+/// Runtime-provided storage environment used by host functions.
+///
+/// The JS runtime passes a `RuntimeEnv` down when it wants the storage crate to
+/// talk to the live `RuntimeStorage` inside `VMLogic` instead of the default
+/// mock/WASM adapters.  The environment packages read/write/remove callbacks
+/// that close over the current storage trait object.  While the host function is
+/// executing we install this environment thread-locally so every
+/// `Interface::<MainStorage>::*` call can reach the real context storage.
+pub struct RuntimeEnv {
+    storage_read: std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
+    storage_write: std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>,
+    storage_remove: std::rc::Rc<dyn Fn(&Key) -> bool>,
+    context_id: [u8; 32],
+    executor_id: [u8; 32],
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeEnv {
+    #[must_use]
+    /// Creates a new runtime environment with host-provided storage callbacks.
+    ///
+    /// The callbacks are reference-counted closures so they stay valid for the
+    /// duration of the host call but can still hand mutable access to the
+    /// underlying storage when invoked from the storage crate.
+    pub fn new(
+        storage_read: std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
+        storage_write: std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>,
+        storage_remove: std::rc::Rc<dyn Fn(&Key) -> bool>,
+        context_id: [u8; 32],
+        executor_id: [u8; 32],
+    ) -> Self {
+        Self {
+            storage_read,
+            storage_write,
+            storage_remove,
+            context_id,
+            executor_id,
+        }
+    }
+
+    #[must_use]
+    /// Returns the storage read callback.
+    pub fn storage_read(&self) -> std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>> {
+        self.storage_read.clone()
+    }
+
+    #[must_use]
+    /// Returns the storage write callback.
+    pub fn storage_write(&self) -> std::rc::Rc<dyn Fn(Key, &[u8]) -> bool> {
+        self.storage_write.clone()
+    }
+
+    #[must_use]
+    /// Returns the storage remove callback.
+    pub fn storage_remove(&self) -> std::rc::Rc<dyn Fn(&Key) -> bool> {
+        self.storage_remove.clone()
+    }
+
+    #[must_use]
+    /// Returns the current context identifier.
+    pub const fn context_id(&self) -> [u8; 32] {
+        self.context_id
+    }
+
+    #[must_use]
+    /// Returns the current executor identifier.
+    pub const fn executor_id(&self) -> [u8; 32] {
+        self.executor_id
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Executes `f` with the provided runtime environment installed.
+pub fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
+    mocked::with_runtime_env(env, f)
+}
+
 /// Commits the root hash to the runtime.
 ///
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
@@ -243,12 +322,14 @@ mod mocked {
 
     use rand::RngCore;
 
+    use super::RuntimeEnv;
     use crate::logical_clock::{HybridTimestamp, LogicalClock};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
         static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf)));
+        static RUNTIME_ENV: RefCell<Option<RuntimeEnv>> = const { RefCell::new(None) };
     }
 
     /// The default storage system.
@@ -263,17 +344,35 @@ mod mocked {
 
     /// Reads data from persistent storage.
     pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
-        DefaultStore::storage_read(key)
+        let runtime_env = RUNTIME_ENV.with(|env| env.borrow().clone());
+        if let Some(env) = runtime_env {
+            let reader = env.storage_read();
+            reader(&key)
+        } else {
+            DefaultStore::storage_read(key)
+        }
     }
 
     /// Removes data from persistent storage.
     pub(super) fn storage_remove(key: Key) -> bool {
-        DefaultStore::storage_remove(key)
+        let runtime_env = RUNTIME_ENV.with(|env| env.borrow().clone());
+        if let Some(env) = runtime_env {
+            let remover = env.storage_remove();
+            remover(&key)
+        } else {
+            DefaultStore::storage_remove(key)
+        }
     }
 
     /// Writes data to persistent storage.
     pub(super) fn storage_write(key: Key, value: &[u8]) -> bool {
-        DefaultStore::storage_write(key, value)
+        let runtime_env = RUNTIME_ENV.with(|env| env.borrow().clone());
+        if let Some(env) = runtime_env {
+            let writer = env.storage_write();
+            writer(key, value)
+        } else {
+            DefaultStore::storage_write(key, value)
+        }
     }
 
     /// Fills the buffer with random bytes.
@@ -282,8 +381,11 @@ mod mocked {
     }
 
     /// Return the context id.
-    pub(super) const fn context_id() -> [u8; 32] {
-        [236; 32]
+    pub(super) fn context_id() -> [u8; 32] {
+        RUNTIME_ENV
+            .with(|env| env.borrow().clone())
+            .map(|env| env.context_id())
+            .unwrap_or([236; 32])
     }
 
     thread_local! {
@@ -292,7 +394,10 @@ mod mocked {
 
     /// Return the executor id (for testing, returns a fixed value).
     pub(super) fn executor_id() -> [u8; 32] {
-        EXECUTOR_ID.with(|id| id.get())
+        RUNTIME_ENV
+            .with(|env| env.borrow().clone())
+            .map(|env| env.executor_id)
+            .unwrap_or_else(|| EXECUTOR_ID.with(|id| id.get()))
     }
 
     /// Prints the log
@@ -330,6 +435,15 @@ mod mocked {
     /// Update HLC with remote timestamp
     pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
         NATIVE_HLC.with(|hlc| hlc.borrow_mut().update(remote_ts, time_now))
+    }
+
+    pub(super) fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
+        RUNTIME_ENV.with(|slot| {
+            let prev = slot.replace(Some(env));
+            let result = f();
+            slot.replace(prev);
+            result
+        })
     }
 
     /// Resets the environment state for testing.
