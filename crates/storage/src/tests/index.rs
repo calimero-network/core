@@ -3,8 +3,8 @@ use crate::store::MainStorage;
 
 mod index__public_methods {
     use super::*;
-    use crate::interface::{Action, Interface};
     use crate::entities::StorageType;
+    use crate::interface::{Action, Interface};
     use crate::store::MockedStorage;
 
     #[test]

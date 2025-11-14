@@ -274,7 +274,12 @@ fn normalize_generic_type(
             }
         }
         // CRDT types - unwrap to inner type for ABI
-        "LwwRegister" | "Counter" | "ReplicatedGrowableArray" | "Vector" | "UnorderedSet" | "FrozenValue" => {
+        "LwwRegister"
+        | "Counter"
+        | "ReplicatedGrowableArray"
+        | "Vector"
+        | "UnorderedSet"
+        | "FrozenValue" => {
             // These CRDT wrappers unwrap to their inner type for ABI purposes
             // LwwRegister<T> -> T, Counter -> u64, etc.
 

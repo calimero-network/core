@@ -371,7 +371,7 @@ fn test_new_storage_types() {
     // We added logic to normalize `PublicKey` as a scalar.
     assert_eq!(
         normalize_type(&parse_type("PublicKey"), true, &resolver).unwrap(),
-        TypeRef::bytes_with_size(32, None) // 
+        TypeRef::bytes_with_size(32, None)
     );
 
     // Test FrozenValue<T> (transparent wrapper)
@@ -380,13 +380,13 @@ fn test_new_storage_types() {
     // FrozenValue<String> -> string
     assert_eq!(
         normalize_type(&parse_type("FrozenValue<String>"), true, &resolver).unwrap(),
-        TypeRef::string() // 
+        TypeRef::string()
     );
 
     // FrozenValue<Person> -> $ref:"Person"
     assert_eq!(
         normalize_type(&parse_type("FrozenValue<Person>"), true, &resolver).unwrap(),
-        TypeRef::reference("Person") // 
+        TypeRef::reference("Person")
     );
 
     // Test UserStorage<T> (maps to map<string, T>)
