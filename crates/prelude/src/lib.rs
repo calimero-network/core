@@ -1,7 +1,9 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, BorshSerialize, BorshDeserialize, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, BorshSerialize, BorshDeserialize, Serialize, Deserialize, PartialEq, Eq,
+)]
 #[borsh(crate = "borsh")]
 #[serde(crate = "serde")]
 pub struct PublicKey(pub [u8; 32]);
@@ -17,4 +19,3 @@ impl AsRef<[u8]> for PublicKey {
         &self.0
     }
 }
-
