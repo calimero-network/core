@@ -6,7 +6,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata, StorageType};
+use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
 
 /// Actions to be taken during synchronisation.
 ///
@@ -165,20 +165,7 @@ impl Action {
                     hasher.update(child.merkle_hash());
                 }
 
-                // Hash metadata fields except the signature itself
-                hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
-                hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
-
-                // Extract nonce from within `StorageType`
-                if let StorageType::User {
-                    signature_data: Some(sig_data),
-                    ..
-                } = metadata.storage_type
-                {
-                    hasher.update(borsh::to_vec(&sig_data.nonce).unwrap_or_default());
-                } else {
-                    hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
-                }
+                hash_metadata_for_payload(&mut hasher, metadata);
             }
             Action::DeleteRef {
                 id,
@@ -190,20 +177,7 @@ impl Action {
                 hasher.update(id.as_bytes());
                 hasher.update(deleted_at.to_le_bytes());
 
-                // Hash metadata fields except the signature
-                hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
-                hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
-
-                // Extract nonce from within StorageType
-                if let StorageType::User {
-                    signature_data: Some(sig_data),
-                    ..
-                } = metadata.storage_type
-                {
-                    hasher.update(borsh::to_vec(&sig_data.nonce).unwrap_or_default());
-                } else {
-                    hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
-                }
+                hash_metadata_for_payload(&mut hasher, metadata);
             }
             Action::Compare { id } => {
                 // Compare actions are not signed
@@ -212,5 +186,34 @@ impl Action {
             }
         }
         hasher.finalize().into()
+    }
+}
+
+/// This is the single, correct way to hash metadata for both signing and ID computation.
+fn hash_metadata_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
+    hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
+    hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
+
+    match &metadata.storage_type {
+        StorageType::Public => {
+            hasher.update(borsh::to_vec(&StorageType::Public).unwrap_or_default());
+        }
+        StorageType::Frozen => {
+            hasher.update(borsh::to_vec(&StorageType::Frozen).unwrap_or_default());
+        }
+        StorageType::User {
+            owner,
+            signature_data,
+        } => {
+            // Hash the User variant without the signature
+            let partial_type = StorageType::User {
+                owner: *owner,
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
     }
 }
