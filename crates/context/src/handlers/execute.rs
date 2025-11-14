@@ -20,6 +20,7 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
 use calimero_storage::{
@@ -672,7 +673,7 @@ async fn internal_execute(
         debug!(
             context_id = %context.id,
             old_root = ?context.root_hash,
-            new_root = ?root_hash,
+            new_root = ?Hash::from(root_hash),
             is_state_op,
             storage_empty = storage.is_empty(),
             "Updating context root_hash after execution"
@@ -984,9 +985,6 @@ fn sign_user_actions(
             if *owner == identity_private_key.public_key() && sig_data.signature == [0; 64] {
                 // Re-set the nonce in sig_data just in case
                 sig_data.nonce = nonce;
-
-                // Sign the payload
-                //let payload = action.payload_for_signing();
 
                 // TODO: Add `.map_err`.
                 let signature = identity_private_key.sign(&payload_for_signing)?;

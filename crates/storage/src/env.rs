@@ -83,6 +83,15 @@ pub fn executor_id() -> [u8; 32] {
     imp::executor_id()
 }
 
+/// Prints the log.
+///
+/// In WASM, this calls `calimero_sdk::env::log()`, which calls the host function.
+/// In tests, it uses plain `println!()`.
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
+pub fn log(message: &str) {
+    imp::log(message);
+}
+
 /// Get hybrid timestamp (auto-increments logical clock).
 #[must_use]
 pub fn hlc_timestamp() -> HybridTimestamp {
@@ -179,6 +188,11 @@ mod calimero_vm {
     /// Return the executor id.
     pub(super) fn executor_id() -> [u8; 32] {
         env::executor_id()
+    }
+
+    /// Prints the log
+    pub(super) fn log(message: &str) {
+        env::log(message);
     }
 
     /// Gets the current time.
@@ -279,6 +293,11 @@ mod mocked {
     /// Return the executor id (for testing, returns a fixed value).
     pub(super) fn executor_id() -> [u8; 32] {
         EXECUTOR_ID.with(|id| id.get())
+    }
+
+    /// Prints the log
+    pub(super) fn log(message: &str) {
+        println!("{}", message);
     }
 
     /// Set executor ID for testing purposes

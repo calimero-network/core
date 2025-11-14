@@ -22,7 +22,8 @@ use thiserror::Error as ThisError;
 
 const BYTES_LEN: usize = 32;
 #[expect(clippy::integer_division, reason = "Not harmful here")]
-const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
+// https://github.com/bitcoin/libbase58/blob/master/base58.c#L155
+const MAX_STR_LEN: usize = (BYTES_LEN * 138 / 100) + 1;
 
 #[derive(Clone, Copy)]
 pub struct Hash {

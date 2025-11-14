@@ -68,6 +68,10 @@ where
         let storage_type = StorageType::User {
             owner: executor_public_key,
             signature_data: None,
+            //signature_data: Some(crate::entities::SignatureData {
+            //    nonce: 0,
+            //    signature: [0u8; 64],
+            //})
         };
 
         // Call the new method on UnorderedMap

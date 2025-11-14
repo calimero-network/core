@@ -515,7 +515,7 @@ impl ContextClient {
 
         tracing::debug!(
             %context_id,
-            old_root = ?meta.root_hash,
+            old_root = ?Hash::from(meta.root_hash),
             new_root = ?root_hash,
             "Forcing root hash to expected value for DAG consistency"
         );

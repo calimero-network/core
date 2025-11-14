@@ -166,7 +166,6 @@ impl Action {
                 }
 
                 // Hash metadata fields except the signature itself
-                hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
                 hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
                 hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
 
@@ -177,6 +176,8 @@ impl Action {
                 } = metadata.storage_type
                 {
                     hasher.update(borsh::to_vec(&sig_data.nonce).unwrap_or_default());
+                } else {
+                    hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
                 }
             }
             Action::DeleteRef {
@@ -190,7 +191,6 @@ impl Action {
                 hasher.update(deleted_at.to_le_bytes());
 
                 // Hash metadata fields except the signature
-                hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
                 hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
                 hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
 
@@ -201,6 +201,8 @@ impl Action {
                 } = metadata.storage_type
                 {
                     hasher.update(borsh::to_vec(&sig_data.nonce).unwrap_or_default());
+                } else {
+                    hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
                 }
             }
             Action::Compare { id } => {

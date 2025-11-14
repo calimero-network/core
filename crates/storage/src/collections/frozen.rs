@@ -17,7 +17,8 @@ type Hash = [u8; 32];
 
 /// A wrapper for immutable, content-addressable storage.
 ///
-/// Under the hood, this is an `UnorderedMap<Hash, FrozenValue<T>>`.
+/// Under the hood, this is an `UnorderedMap<Hash, FrozenValue<Vec<u8>>>`.
+/// The user interacts with type `T`, but we store its serialized bytes.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct FrozenStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing immutable data.
@@ -70,12 +71,12 @@ where
 
         let key_hash: Hash = Sha256::digest(&data_bytes).into();
 
-        let frozen_value = FrozenValue(value);
+        let frozen_value_bytes = FrozenValue(value);
 
         // Call the new method on UnorderedMap
         let _ignored = self.inner.insert_with_storage_type(
             key_hash,
-            frozen_value,
+            frozen_value_bytes,
             StorageType::Frozen,
             None,
         )?;
@@ -90,12 +91,22 @@ where
     S: StorageAdaptor,
 {
     /// Gets a value from frozen storage by its hash.
+    /// Returns the deserialized value `T`.
     ///
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self, hash: &Hash) -> Result<Option<T>, StoreError> {
-        // Return the `T` type directly instead of the internal `FrozenValue`.
         Ok(self.inner.get(hash)?.map(|frozen_value| frozen_value.0))
+        //// Get the Option<FrozenValue<Vec<u8>>>
+        //if let Some(frozen_value_bytes) = self.inner.get(hash)? {
+        //    // `frozen_value_bytes.0` is the Vec<u8>
+        //    // Deserialize the bytes back into T
+        //    let value = T::try_from_slice(&frozen_value_bytes.0)
+        //        .map_err(|e| StoreError::StorageError(StorageError::DeserializationError(e)))?;
+        //    Ok(Some(value))
+        //} else {
+        //    Ok(None)
+        //}
     }
 
     /// Checks if a hash exists in frozen storage.

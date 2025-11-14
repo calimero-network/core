@@ -47,6 +47,7 @@ use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::address::Id;
+use crate::collections::FrozenValue;
 use crate::entities::{ChildInfo, Data, Element, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
@@ -63,12 +64,6 @@ pub type MainInterface = Interface<MainStorage>;
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
-
-#[derive(BorshDeserialize)]
-struct FrozenEntryPartial {
-    item: ([u8; 32], Vec<u8>),
-    _storage: Element,
-}
 
 impl<S: StorageAdaptor> Interface<S> {
     /// Adds a child entity to a parent's collection.
@@ -113,6 +108,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `ActionNotAllowed` if Compare action is passed directly
     ///
     pub fn apply_action(action: Action) -> Result<(), StorageError> {
+        crate::env::log("apply_action");
         // TODO: refactor to a separate function.
         // Run verification logic before applying
         match &action {
@@ -127,33 +123,109 @@ impl<S: StorageAdaptor> Interface<S> {
                         owner,
                         signature_data,
                     } => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            %owner,
+                            data_len = data.len(),
+                            "Interface::apply_action received upsert user action"
+                        );
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: \
+                            \n=== Id: {id};\
+                            \n=== created_at: {0};  updated_at: {1};\
+                            \n=== owner: {owner}; data_len: {2}",
+                            metadata.created_at,
+                            metadata.updated_at(),
+                            data.len()
+                        ));
+
                         let sig_data = signature_data.as_ref().ok_or(StorageError::InvalidData(
                             "Remote User action must be signed".to_owned(),
                         ))?;
 
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            %owner,
+                            data_len = data.len(),
+                            ?sig_data.signature,
+                            sig_data.nonce,
+                            "Interface::apply_action received upsert user action: sig data"
+                        );
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: sig data \
+                            \n=== Signature: {:?}; owner: {owner}; nonce: {}",
+                            sig_data.signature, sig_data.nonce
+                        ));
+
+                        crate::env::log("Interface::apply_action received upsert user action: getting last nonce from storage");
                         // Replay protection check
                         let new_nonce = sig_data.nonce;
                         let last_nonce = <Index<S>>::get_metadata(*id)?
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
 
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: last nonce from storage \
+                            \n=== last_nonce: {}",
+                            last_nonce
+                        ));
+
                         if new_nonce <= last_nonce {
                             return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
                         }
 
                         let signature = ed25519_dalek::Signature::from_bytes(&sig_data.signature);
-
                         let dalek_pk = ed25519_dalek::VerifyingKey::from_bytes(owner.as_ref())
                             .map_err(|_| {
                                 StorageError::InvalidData("Invalid owner public key".to_owned())
                             })?;
 
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: dalek_pk\
+                            \n=== dalek_pk: {:?}",
+                            dalek_pk
+                        ));
+
                         let payload = action.payload_for_signing();
-                        dalek_pk
+
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: payload\
+                            \n=== action_payload: {:?}",
+                            payload
+                        ));
+                        let verification_result = dalek_pk
                             .verify(&payload, &signature)
-                            .map_err(|_| StorageError::InvalidSignature)?;
+                            .map_err(|_| StorageError::InvalidSignature);
+
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            %owner,
+                            data_len = data.len(),
+                            signature_verification_result = ?verification_result,
+                            "Interface::apply_action upsert user action: verify signature"
+                        );
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: verify signature\
+                            \n=== Id: {id}; Signature_verification_result: {0}; owner: {owner}",
+                            verification_result.is_err(),
+                        ));
+
+                        verification_result?;
                     }
                     StorageType::Frozen => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            data_len = data.len(),
+                            "Interface::apply_action received upsert frozen action"
+                        );
                         verify_frozen_action_upsert(&action, data)?;
                     }
                     StorageType::Public => { /* No special checks */ }
@@ -166,6 +238,12 @@ impl<S: StorageAdaptor> Interface<S> {
 
                 match existing_metadata.storage_type {
                     StorageType::Frozen => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            "Interface::apply_action received delete frozen action"
+                        );
                         return Err(StorageError::ActionNotAllowed(
                             "Frozen data cannot be deleted".to_owned(),
                         ));
@@ -1056,28 +1134,35 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
         ));
     }
 
-    // Verify the content-addressing.
-    match from_slice::<FrozenEntryPartial>(data) {
-        Ok(partial_entry) => {
-            let key_from_entry = partial_entry.item.0;
-            let value_bytes = &partial_entry.item.1;
+    // Verify the content-addressing via byte-slicing.
+    // The data blob is: [key_hash (32 bytes)] + [value_bytes (N bytes)] + [element_id (32 bytes)]
+    const KEY_HASH_SIZE: usize = 32;
+    const ELEMENT_ID_SIZE: usize = 32;
+    const MIN_LEN: usize = KEY_HASH_SIZE + ELEMENT_ID_SIZE;
 
-            // Re-calculate the hash of the value.
-            let calculated_hash: [u8; 32] = Sha256::digest(value_bytes).into();
-
-            // Check 1: The key inside the Entry
-            // must match the hash of the value inside the Entry.
-            if key_from_entry != calculated_hash {
-                return Err(StorageError::InvalidData(
-                    "Frozen data corruption: Entry key does not match hash of Entry value."
-                        .to_owned(),
-                ));
-            }
-        }
-        Err(e) => {
-            // This means the data blob isn't even a valid Entry.
-            return Err(StorageError::DeserializationError(e));
-        }
+    if data.len() < MIN_LEN {
+        return Err(StorageError::InvalidData(
+            "Frozen data blob is too small.".to_owned(),
+        ));
     }
+
+    // Extract the three components
+    let key_from_entry = &data[..KEY_HASH_SIZE];
+    // We don't need the `Element::Id` from the end, but we know it's there and
+    // we need to remove it from the value_bytes.
+    let value_bytes = &data[KEY_HASH_SIZE..data.len() - ELEMENT_ID_SIZE];
+
+    // Re-calculate the hash of the `value bytes`
+    let calculated_hash: [u8; 32] = Sha256::digest(value_bytes).into();
+
+    // Check: The key inside the `Entry` must match the hash
+    // of the value inside the `Entry`.
+    if key_from_entry != calculated_hash {
+        return Err(StorageError::InvalidData(
+            "Frozen data corruption: Entry key does not match hash of Entry value.".to_owned(),
+        ));
+    }
+
+    // If this check passes, the data is verified.
     Ok(())
 }

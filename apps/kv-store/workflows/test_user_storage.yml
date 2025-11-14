@@ -1,10 +1,15 @@
 description: KV-Store user storage workflow test
 name: KV-store user storage workflow
 
+# Configuration options
+stop_all_nodes: true
+restart: true
+wait_timeout: 120
+
 nodes:
   chain_id: testnet-1
-  count: 1
-  image: storage-user-frozen:latest
+  count: 2
+  image: storage-user-frozen:17
   prefix: calimero-node
 
 steps:
@@ -124,15 +129,13 @@ steps:
     statements:
       - 'json_equal({{nested_value_res}}, {"output": "UserNestedValue1"})'
 
-  # Step 10: get simple user storage for a specific user
+  # Step 10: get simple user storage on Node 1
   - name: Simple user storage get test for a specific user
     type: call
     node: calimero-node-1
     context_id: '{{context_id}}'
     executor_public_key: '{{member_public_key}}'
     method: get_user_simple
-    args:
-      user_key: "{{member_public_key}}"
     outputs:
       simple_value_res_specific_user: result
 
@@ -144,7 +147,7 @@ steps:
   # Wait after Node 1 messages
   - name: Wait after Node 1 Messages
     type: wait
-    seconds: 10
+    seconds: 15
 
   # Step 11: Node2: get simple user storage for a specific user
   - name: Node 2 - Simple user storage get test for a specific user
@@ -163,14 +166,63 @@ steps:
     statements:
       - 'json_equal({{node2_simple_value_res_specific_user}}, {"output": "SomeSimpleUserString"})'
 
+  # Step HACK: Set a value in the storage (HACK ATTEMPT ????)
+  - name: Set value in the storage 'my_key2':'my_value2'
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{node2_public_key}}'
+    method: set
+    args:
+      key: "my_key2"
+      value: "my_value2"
+
+  # Step 12: Node2: set simple user storage
+  - name: Node 2 - Simple user storage get test for a specific user
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{node2_public_key}}'
+    method: set_user_simple
+    args:
+      value: "SimpleUserStringFromNode2"
+
+  # Step 13: Node2: get simple user storage (belongs to Node2 PublicKey)
+  - name: Simple user storage get test for a specific user
+    type: call
+    node: calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{node2_public_key}}'
+    method: get_user_simple
+    outputs:
+      node2_simple_value_res: result
+
+  - name: Assert simple user storage on Node 2 value got is expected
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_simple_value_res}}, {"output": "SimpleUserStringFromNode2"})'
+
   # Wait after Node 2 messages
   - name: Wait after Node 2 Messages
     type: wait
-    seconds: 10
+    seconds: 60
 
-# Configuration options
-stop_all_nodes: true
-restart: true
-wait_timeout: 120
+  # Step 14: Node1: get simple user storage for Node 2 user
+  - name: Node 1 - Simple user storage get test for a specific user (from Node2)
+    type: call
+    node: calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_user_simple_for
+    args:
+      user_key: "{{node2_public_key}}"
+    outputs:
+      node1_simple_value_res_from_node2: result
+
+  - name: Assert simple user storage value got is expected
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_simple_value_res_from_node2}}, {"output": "SimpleUserStringFromNode2"})'
+
 
 

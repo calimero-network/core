@@ -3,8 +3,8 @@ name: KV-store frozen storage workflow
 
 nodes:
   chain_id: testnet-1
-  count: 1
-  image: storage-user-frozen:latest
+  count: 2
+  image: storage-user-frozen:13
   prefix: calimero-node
 
 steps:
