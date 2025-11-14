@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 // Include the generated ABI code
-//include!(env!("GENERATED_ABI_PATH"));
+include!(env!("GENERATED_ABI_PATH"));
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
