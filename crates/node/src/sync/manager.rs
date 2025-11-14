@@ -510,158 +510,176 @@ impl SyncManager {
         super::stream::recv(stream, shared_key, budget).await
     }
 
-    async fn initiate_sync_inner(
+    /// Get blob ID and application config from application or context config
+    async fn get_blob_info(
         &self,
-        context_id: ContextId,
-        chosen_peer: PeerId,
-    ) -> eyre::Result<SyncProtocol> {
-        let mut context = self
-            .context_client
-            .sync_context_config(context_id, None)
-            .await?;
-
-        // Get application - if not found, we'll try to install it after blob sharing
-        let mut application = self.node_client.get_application(&context.application_id)?;
-
-        // Get blob_id and app config for later use
-        let (blob_id, app_config_opt) = if let Some(ref app) = application {
-            (app.blob.bytecode, None)
+        context_id: &ContextId,
+        application: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<(
+        calimero_primitives::blobs::BlobId,
+        Option<calimero_primitives::application::Application>,
+    )> {
+        if let Some(ref app) = application {
+            Ok((app.blob.bytecode, None))
         } else {
             // Application not found - get blob_id from context config
             let context_config = self
                 .context_client
-                .context_config(&context_id)?
+                .context_config(context_id)?
                 .ok_or_else(|| eyre::eyre!("context config not found"))?;
             let external_client = self
                 .context_client
-                .external_client(&context_id, &context_config)?;
+                .external_client(context_id, &context_config)?;
             let config_client = external_client.config();
             let app_config = config_client.application().await?;
-            (app_config.blob.bytecode, Some(app_config))
-        };
+            Ok((app_config.blob.bytecode, Some(app_config)))
+        }
+    }
 
-        let identities = self
-            .context_client
-            .get_context_members(&context.id, Some(true));
+    /// Get application size from application, cached config, or context config
+    async fn get_application_size(
+        &self,
+        context_id: &ContextId,
+        application: &Option<calimero_primitives::application::Application>,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<u64> {
+        if let Some(ref app) = application {
+            Ok(app.size)
+        } else if let Some(ref app_config) = app_config_opt {
+            Ok(app_config.size)
+        } else {
+            let context_config = self
+                .context_client
+                .context_config(context_id)?
+                .ok_or_else(|| eyre::eyre!("context config not found"))?;
+            let external_client = self
+                .context_client
+                .external_client(context_id, &context_config)?;
+            let config_client = external_client.config();
+            let app_config = config_client.application().await?;
+            Ok(app_config.size)
+        }
+    }
 
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-            .await
-            .transpose()?
-        else {
-            bail!("no owned identities found for context: {}", context.id);
-        };
+    /// Get application source from cached config or context config
+    async fn get_application_source(
+        &self,
+        context_id: &ContextId,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<calimero_primitives::application::ApplicationSource> {
+        if let Some(ref app_config) = app_config_opt {
+            Ok(app_config.source.clone())
+        } else {
+            let context_config = self
+                .context_client
+                .context_config(context_id)?
+                .ok_or_else(|| eyre::eyre!("context config not found"))?;
+            let external_client = self
+                .context_client
+                .external_client(context_id, &context_config)?;
+            let config_client = external_client.config();
+            let app_config = config_client.application().await?;
+            Ok(app_config.source.clone())
+        }
+    }
 
-        let mut stream = self.network_client.open_stream(chosen_peer).await?;
-
-        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
-            .await?;
-
-        if !self.node_client.has_blob(&blob_id)? {
-            // Get size from application config if we don't have application yet
-            let size = if let Some(ref app) = application {
-                app.size
-            } else if let Some(ref app_config) = app_config_opt {
-                app_config.size
-            } else {
-                let context_config = self
-                    .context_client
-                    .context_config(&context_id)?
-                    .ok_or_else(|| eyre::eyre!("context config not found"))?;
-                let external_client = self
-                    .context_client
-                    .external_client(&context_id, &context_config)?;
-                let config_client = external_client.config();
-                let app_config = config_client.application().await?;
-                app_config.size
-            };
-
-            self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
-                .await?;
-
-            // After blob sharing, try to install application if it doesn't exist
-            if application.is_none() && self.node_client.has_blob(&blob_id)? {
-                // Check if blob is a bundle and install it
-                if let Ok(Some(blob_bytes)) = self.node_client.get_blob_bytes(&blob_id, None).await
-                {
-                    // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-                    let blob_bytes_clone = blob_bytes.clone();
-                    let is_bundle = tokio::task::spawn_blocking(move || {
-                        NodeClient::is_bundle_blob(&blob_bytes_clone)
-                    })
-                    .await?;
-                    if is_bundle {
-                        // Get source from context config (use cached if available, otherwise fetch)
-                        let source = if let Some(ref app_config) = app_config_opt {
-                            app_config.source.clone()
-                        } else {
-                            let context_config =
-                                self.context_client
-                                    .context_config(&context_id)?
-                                    .ok_or_else(|| eyre::eyre!("context config not found"))?;
-                            let external_client = self
-                                .context_client
-                                .external_client(&context_id, &context_config)?;
-                            let config_client = external_client.config();
-                            let app_config = config_client.application().await?;
-                            app_config.source.clone()
-                        };
-
-                        // Install bundle
-                        let installed_app_id = self
-                            .node_client
-                            .install_application_from_bundle_blob(&blob_id, &source.into())
-                            .await
-                            .map_err(|e| {
-                                eyre::eyre!(
-                                    "Failed to install bundle application from blob {}: {}",
-                                    blob_id,
-                                    e
-                                )
-                            })?;
-
-                        // Verify installation succeeded by fetching the installed application
-                        let installed_application = self
-                            .node_client
-                            .get_application(&installed_app_id)
-                            .map_err(|e| {
-                                eyre::eyre!(
-                                    "Failed to verify bundle installation for application {}: {}",
-                                    installed_app_id,
-                                    e
-                                )
-                            })?;
-
-                        let Some(installed_application) = installed_application else {
-                            bail!(
-                                "Bundle installation reported success but application {} is not retrievable",
-                                installed_app_id
-                            );
-                        };
-
-                        // Verify the installed ApplicationId matches the context's ApplicationId
-                        if installed_app_id != context.application_id {
-                            warn!(
-                                installed_app_id = %installed_app_id,
-                                context_app_id = %context.application_id,
-                                "Installed application ID does not match context application ID, using installed ID"
-                            );
-                            // Update context with the installed application ID for consistency
-                            // Note: This updates the local context copy, not the persisted context
-                            context.application_id = installed_app_id;
-                        }
-
-                        // Use the verified installed application
-                        application = Some(installed_application);
-                    }
-                }
-            }
+    /// Install bundle application after blob sharing completes.
+    ///
+    /// Returns `Some(installed_application)` if a bundle was installed,
+    /// `None` otherwise. Updates `context.application_id` if the installed
+    /// ApplicationId differs from the context's ApplicationId.
+    async fn install_bundle_after_blob_sharing(
+        &self,
+        context_id: &ContextId,
+        blob_id: &calimero_primitives::blobs::BlobId,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+        context: &mut calimero_primitives::context::Context,
+        application: &mut Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<()> {
+        // Only proceed if blob is now available locally
+        if !self.node_client.has_blob(blob_id)? {
+            return Ok(());
         }
 
-        let Some(application) = application else {
-            bail!("application not found: {}", context.application_id);
+        // Check if blob is a bundle
+        let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
+            return Ok(());
         };
 
-        // Check if we need to catch up on deltas
+        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+        let blob_bytes_clone = blob_bytes.clone();
+        let is_bundle =
+            tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
+                .await?;
+
+        if !is_bundle {
+            return Ok(());
+        }
+
+        // Get source from context config (use cached if available, otherwise fetch)
+        let source = self
+            .get_application_source(context_id, app_config_opt)
+            .await?;
+
+        // Install bundle
+        let installed_app_id = self
+            .node_client
+            .install_application_from_bundle_blob(blob_id, &source.into())
+            .await
+            .map_err(|e| {
+                eyre::eyre!(
+                    "Failed to install bundle application from blob {}: {}",
+                    blob_id,
+                    e
+                )
+            })?;
+
+        // Verify installation succeeded by fetching the installed application
+        let installed_application = self
+            .node_client
+            .get_application(&installed_app_id)
+            .map_err(|e| {
+                eyre::eyre!(
+                    "Failed to verify bundle installation for application {}: {}",
+                    installed_app_id,
+                    e
+                )
+            })?;
+
+        let Some(installed_application) = installed_application else {
+            bail!(
+                "Bundle installation reported success but application {} is not retrievable",
+                installed_app_id
+            );
+        };
+
+        // Check if the installed ApplicationId matches the context's ApplicationId
+        if installed_app_id != context.application_id {
+            warn!(
+                installed_app_id = %installed_app_id,
+                context_app_id = %context.application_id,
+                "Installed application ID does not match context application ID, using installed ID"
+            );
+            // Update context with the installed application ID for consistency
+            // Note: This updates the local context copy, not the persisted context
+            context.application_id = installed_app_id;
+        }
+
+        // Use the verified installed application
+        *application = Some(installed_application);
+
+        Ok(())
+    }
+
+    /// Handle DAG synchronization for uninitialized nodes or nodes with incomplete DAGs
+    async fn handle_dag_sync(
+        &self,
+        context_id: ContextId,
+        context: &calimero_primitives::context::Context,
+        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<SyncProtocol>> {
         let is_uninitialized = *context.root_hash == [0; 32];
 
         if is_uninitialized {
@@ -672,7 +690,7 @@ impl SyncManager {
             );
 
             let result = self
-                .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, &mut stream)
+                .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                 .await?;
 
             // If peer had no data (heads_count=0), return error to try next peer
@@ -680,7 +698,7 @@ impl SyncManager {
                 bail!("Peer has no data for this context");
             }
 
-            return Ok(result);
+            return Ok(Some(result));
         }
 
         // Check if we have pending deltas (incomplete DAG)
@@ -707,7 +725,7 @@ impl SyncManager {
 
                 // Request DAG heads just like uninitialized nodes
                 let result = self
-                    .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, &mut stream)
+                    .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                     .await?;
 
                 // If peer had no data, return error to try next peer
@@ -715,8 +733,77 @@ impl SyncManager {
                     bail!("Peer has no data for this context");
                 }
 
-                return Ok(result);
+                return Ok(Some(result));
             }
+        }
+
+        Ok(None)
+    }
+
+    async fn initiate_sync_inner(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+    ) -> eyre::Result<SyncProtocol> {
+        let mut context = self
+            .context_client
+            .sync_context_config(context_id, None)
+            .await?;
+
+        // Get application - if not found, we'll try to install it after blob sharing
+        let mut application = self.node_client.get_application(&context.application_id)?;
+
+        // Get blob_id and app config for later use
+        let (blob_id, app_config_opt) = self.get_blob_info(&context_id, &application).await?;
+
+        let identities = self
+            .context_client
+            .get_context_members(&context.id, Some(true));
+
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        else {
+            bail!("no owned identities found for context: {}", context.id);
+        };
+
+        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+
+        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
+            .await?;
+
+        if !self.node_client.has_blob(&blob_id)? {
+            // Get size from application config if we don't have application yet
+            let size = self
+                .get_application_size(&context_id, &application, &app_config_opt)
+                .await?;
+
+            self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
+                .await?;
+
+            // After blob sharing, try to install application if it doesn't exist
+            if application.is_none() {
+                self.install_bundle_after_blob_sharing(
+                    &context_id,
+                    &blob_id,
+                    &app_config_opt,
+                    &mut context,
+                    &mut application,
+                )
+                .await?;
+            }
+        }
+
+        let Some(_application) = application else {
+            bail!("application not found: {}", context.application_id);
+        };
+
+        // Handle DAG synchronization if needed (uninitialized or incomplete DAG)
+        if let Some(result) = self
+            .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
+            .await?
+        {
+            return Ok(result);
         }
 
         // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
