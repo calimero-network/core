@@ -92,6 +92,26 @@ impl InstallDevApplicationRequest {
     }
 }
 
+// -------------------------------------------- Bundle API --------------------------------------------
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleArtifact {
+    pub path: String,
+    pub hash: Option<String>,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleManifest {
+    pub version: String,
+    pub package: String,
+    pub app_version: String,
+    pub wasm: Option<BundleArtifact>,
+    pub abi: Option<BundleArtifact>,
+    pub migrations: Vec<BundleArtifact>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UninstallApplicationResponseData {
