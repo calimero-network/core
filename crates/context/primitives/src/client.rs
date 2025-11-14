@@ -529,55 +529,6 @@ impl ContextClient {
         Ok(())
     }
 
-    /// Update the application ID for a context in the database.
-    ///
-    /// This persists the application_id change to ContextMeta, ensuring
-    /// consistency between in-memory and persisted state. This is useful when
-    /// the locally computed ApplicationId (e.g., from bundle package/version)
-    /// differs from the ApplicationId stored in the context config.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The ID of the context to update.
-    /// * `application_id` - The new ApplicationId to set.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success or failure.
-    pub fn update_context_application_id(
-        &self,
-        context_id: &ContextId,
-        application_id: ApplicationId,
-    ) -> eyre::Result<()> {
-        let handle = self.datastore.handle();
-        let key = key::ContextMeta::new(*context_id);
-
-        let Some(mut meta) = handle.get(&key)? else {
-            eyre::bail!("Context not found: {}", context_id);
-        };
-
-        let old_app_id = meta.application.application_id();
-        if old_app_id == application_id {
-            // No change needed
-            return Ok(());
-        }
-
-        tracing::info!(
-            %context_id,
-            old_app_id = %old_app_id,
-            new_app_id = %application_id,
-            "Updating context application ID in database"
-        );
-
-        // Update application_id
-        meta.application = key::ApplicationMeta::new(application_id);
-
-        // Write back to database
-        self.datastore.clone().handle().put(&key, &meta)?;
-
-        Ok(())
-    }
-
     /// Returns a stream of all context IDs stored locally.
     ///
     /// # Arguments
