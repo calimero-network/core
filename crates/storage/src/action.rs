@@ -3,9 +3,10 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata};
+use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
 
 /// Actions to be taken during synchronisation.
 ///
@@ -77,6 +78,9 @@ pub enum Action {
 
         /// Timestamp when deletion occurred (for conflict resolution).
         deleted_at: u64,
+
+        /// Metadata required for verification.
+        metadata: Metadata,
     },
 
     /// Update the entity with the given ID and type to have the supplied data.
@@ -121,4 +125,95 @@ pub struct ComparisonData {
 
     /// Metadata of the entity.
     pub metadata: Metadata,
+}
+
+impl Action {
+    /// Helper to get ID from Action enum.
+    pub fn id(&self) -> Id {
+        match self {
+            Action::Add { id, .. } => *id,
+            Action::Update { id, .. } => *id,
+            Action::DeleteRef { id, .. } => *id,
+            Action::Compare { id, .. } => *id,
+        }
+    }
+
+    /// Helper function to create a verifiable payload
+    /// Hashes the content-addressable parts of an action for signature verification.
+    pub fn payload_for_signing(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        match self {
+            Action::Add {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+            | Action::Update {
+                id,
+                data,
+                ancestors,
+                metadata,
+            } => {
+                // Add version prefix
+                hasher.update(b"v1_upsert");
+                hasher.update(id.as_bytes());
+                hasher.update(data);
+
+                for child in ancestors {
+                    hasher.update(child.id().as_bytes());
+                    hasher.update(child.merkle_hash());
+                }
+
+                hash_metadata_for_payload(&mut hasher, metadata);
+            }
+            Action::DeleteRef {
+                id,
+                deleted_at,
+                metadata,
+            } => {
+                // Add version prefix
+                hasher.update(b"v1_delete");
+                hasher.update(id.as_bytes());
+                hasher.update(deleted_at.to_le_bytes());
+
+                hash_metadata_for_payload(&mut hasher, metadata);
+            }
+            Action::Compare { id } => {
+                // Compare actions are not signed
+                hasher.update(b"v1_compare");
+                hasher.update(id.as_bytes());
+            }
+        }
+        hasher.finalize().into()
+    }
+}
+
+/// This is the single, correct way to hash metadata for both signing and ID computation.
+fn hash_metadata_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
+    hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
+    hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
+
+    match &metadata.storage_type {
+        StorageType::Public => {
+            hasher.update(borsh::to_vec(&StorageType::Public).unwrap_or_default());
+        }
+        StorageType::Frozen => {
+            hasher.update(borsh::to_vec(&StorageType::Frozen).unwrap_or_default());
+        }
+        StorageType::User {
+            owner,
+            signature_data,
+        } => {
+            // Hash the User variant without the signature
+            let partial_type = StorageType::User {
+                owner: *owner,
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
+    }
 }

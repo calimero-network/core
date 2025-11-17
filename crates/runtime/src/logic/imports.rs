@@ -98,6 +98,8 @@ impl VMLogic<'_> {
             fn random_bytes(ptr: u64);
             fn time_now(ptr: u64);
 
+            fn ed25519_verify(signature_ptr: u64, public_key_ptr: u64, message_ptr: u64) -> u32;
+
             fn send_proposal(actions_ptr: u64, id_ptr: u64);
             fn approve_proposal(approval_ptr: u64);
 

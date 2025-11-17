@@ -86,6 +86,7 @@ pub fn get_delta_details(
                             "metadata": {
                                 "created_at": metadata.created_at(),
                                 "updated_at": metadata.updated_at(),
+                                "storage_type": "UNIMPLEMENTED",
                             }
                         }),
                         Action::Update {
@@ -101,12 +102,22 @@ pub fn get_delta_details(
                             "metadata": {
                                 "created_at": metadata.created_at(),
                                 "updated_at": metadata.updated_at(),
+                                "storage_type": "UNIMPLEMENTED",
                             }
                         }),
-                        Action::DeleteRef { id, deleted_at } => json!({
+                        Action::DeleteRef {
+                            id,
+                            deleted_at,
+                            metadata,
+                        } => json!({
                             "type": "DeleteRef",
                             "id": hex::encode(id.as_bytes()),
                             "deleted_at": deleted_at,
+                            "metadata": {
+                                "created_at": metadata.created_at(),
+                                "updated_at": metadata.updated_at(),
+                                "storage_type": "UNIMPLEMENTED",
+                            }
                         }),
                         Action::Compare { id } => json!({
                             "type": "Compare",

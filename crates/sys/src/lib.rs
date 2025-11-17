@@ -40,6 +40,9 @@ wasm_imports! {
         fn random_bytes(buf: Ref<BufferMut<'_>>);
         fn time_now(buf: Ref<BufferMut<'_>>);
         // --
+        // Crypto functions
+        fn ed25519_verify(signature_ptr: Ref<Buffer<'_>>, public_key_ptr: Ref<Buffer<'_>>, message_ptr: Ref<Buffer<'_>>) -> Bool;
+        // --
         fn send_proposal(value: Ref<Buffer<'_>>, buf: Ref<BufferMut<'_>>);
         fn approve_proposal(value: Ref<Buffer<'_>>);
         // --
