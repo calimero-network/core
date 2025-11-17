@@ -1,5 +1,5 @@
 [package]
-name = "kv-store"
+name = "kv-store-with-user-and-frozen-storage"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
