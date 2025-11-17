@@ -5,9 +5,8 @@ mod tests;
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::hash::{Hash as StdHash, Hasher};
-use core::mem::MaybeUninit;
 use core::ops::Deref;
-use core::str::{from_utf8, FromStr};
+use core::str::{from_utf8_unchecked, FromStr};
 #[cfg(feature = "borsh")]
 use std::io;
 
@@ -27,9 +26,9 @@ const MAX_STR_LEN: usize = (BYTES_LEN * 138 / 100) + 1;
 
 #[derive(Clone, Copy)]
 pub struct Hash {
-    // todo! consider genericizing over a const N
     bytes: [u8; BYTES_LEN],
-    bs58: MaybeUninit<(usize, [u8; MAX_STR_LEN])>,
+    bs58_cache: [u8; MAX_STR_LEN],
+    bs58_len: u8,
 }
 
 impl Hash {
@@ -38,25 +37,23 @@ impl Hash {
         &self.bytes
     }
 
-    // todo! genericize over D: Digest
     #[must_use]
     pub fn new(data: &[u8]) -> Self {
-        Self {
-            bytes: Sha256::digest(data).into(),
-            bs58: MaybeUninit::zeroed(),
-        }
+        let hash_bytes: [u8; BYTES_LEN] = Sha256::digest(data).into();
+        // Will call `From<[u8; 32]>` which computes the cache
+        hash_bytes.into()
     }
 
-    // todo! genericize over D: Digest
     pub fn hash_json<T: Serialize>(data: &T) -> JsonResult<Self> {
         let mut hasher = Sha256::default();
 
         to_json_writer(&mut hasher, data)?;
 
-        Ok(Self {
-            bytes: hasher.finalize().into(),
-            bs58: MaybeUninit::zeroed(),
-        })
+        // Get the raw [u8; 32] bytes from the hasher
+        let hash_bytes: [u8; BYTES_LEN] = hasher.finalize().into();
+
+        // Let `From<[u8; 32]>` handle construction and caching
+        Ok(hash_bytes.into())
     }
 
     #[cfg(feature = "borsh")]
@@ -65,50 +62,63 @@ impl Hash {
 
         data.serialize(&mut hasher)?;
 
-        Ok(Self {
-            bytes: hasher.finalize().into(),
-            bs58: MaybeUninit::zeroed(),
-        })
+        // Get the raw [u8; 32] bytes from the hasher
+        let hash_bytes: [u8; BYTES_LEN] = hasher.finalize().into();
+
+        // Let `From<[u8; 32]>` handle construction and caching
+        Ok(hash_bytes.into())
     }
 
-    // todo! using generic-array;
-    // todo! as_str(&self, buf: &mut [u8; N]) -> &str
     #[must_use]
     pub fn as_str(&self) -> &str {
-        let (stored_len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
+        // Safe: Read from the pre-computed cache.
+        let s = &self.bs58_cache[..self.bs58_len as usize];
 
-        let mut len = *stored_len;
-
-        if len == 0 {
-            len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
-            *stored_len = len;
-        }
-
-        from_utf8(&bs58[..len]).unwrap()
+        // We can trust this is valid UTF-8 because we are the ones
+        // who put it there during initialization.
+        // Using from_utf8().unwrap() is also perfectly fine.
+        unsafe { from_utf8_unchecked(s) }
     }
 
     fn from_str(s: &str) -> Result<Self, Option<Bs58Error>> {
+        let s_len = s.len();
+        if s_len > MAX_STR_LEN {
+            return Err(Some(Bs58Error::BufferTooSmall));
+        }
+
         let mut bytes = [0; BYTES_LEN];
-        let mut bs58 = [0; MAX_STR_LEN];
-        let len = s.len().min(MAX_STR_LEN);
-        bs58[..len].copy_from_slice(&s.as_bytes()[..len]);
         match bs58::decode(s).onto(&mut bytes) {
-            Ok(len) if len == bytes.len() => Ok(Self {
-                bytes,
-                bs58: MaybeUninit::new((s.len(), bs58)),
-            }),
+            Ok(len) if len == bytes.len() => {
+                let mut bs58_cache = [0; MAX_STR_LEN];
+                bs58_cache[..s_len].copy_from_slice(s.as_bytes());
+
+                Ok(Self {
+                    bytes,
+                    bs58_cache,
+                    bs58_len: s_len.try_into().expect("infallible conversion: checked before string length is less than MAX_STR_LEN"),
+                })
+            }
             Ok(_) => Err(None),
             Err(err) => Err(Some(err)),
         }
     }
 }
 
-// todo! re-evaluate controlled construction
 impl From<[u8; BYTES_LEN]> for Hash {
     fn from(bytes: [u8; BYTES_LEN]) -> Self {
+        let mut bs58_cache = [0; MAX_STR_LEN];
+        let len = bs58::encode(&bytes)
+            .onto(&mut bs58_cache[..])
+            // Panics if MAX_STR_LEN is wrong, which is good.
+            .expect("Base58 encoding failed");
+
         Self {
             bytes,
-            bs58: MaybeUninit::zeroed(),
+            bs58_cache,
+            // Safe: max len is 45
+            bs58_len: len
+                .try_into()
+                .expect("infaliible conversion: bs58_len conversion failed, but shouldn't have"),
         }
     }
 }
@@ -135,10 +145,11 @@ impl Deref for Hash {
 
 impl Default for Hash {
     fn default() -> Self {
-        Self {
-            bytes: [0; BYTES_LEN],
-            bs58: MaybeUninit::zeroed(),
-        }
+        // Create the default byte array
+        const DEFAULT_BYTES: [u8; BYTES_LEN] = [0; BYTES_LEN];
+
+        // Let `From<[u8; 32]>` handle construction and caching
+        DEFAULT_BYTES.into()
     }
 }
 
@@ -214,10 +225,9 @@ impl BorshDeserialize for Hash {
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let mut bytes = [0; BYTES_LEN];
         reader.read_exact(&mut bytes)?;
-        Ok(Self {
-            bytes,
-            bs58: MaybeUninit::zeroed(),
-        })
+
+        // Let `From<[u8; 32]>` handle construction and caching
+        Ok(bytes.into())
     }
 }
 

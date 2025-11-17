@@ -40,15 +40,13 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
-use borsh::{from_slice, to_vec, BorshDeserialize};
-use ed25519_dalek::Verifier;
+use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::address::Id;
-use crate::collections::FrozenValue;
-use crate::entities::{ChildInfo, Data, Element, Metadata, SignatureData, StorageType};
+use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
@@ -118,6 +116,8 @@ impl<S: StorageAdaptor> Interface<S> {
             | Action::Update {
                 metadata, data, id, ..
             } => {
+                Self::verify_action_update(&action)?;
+
                 match &metadata.storage_type {
                     StorageType::User {
                         owner,
@@ -128,6 +128,7 @@ impl<S: StorageAdaptor> Interface<S> {
                             created_at = metadata.created_at,
                             updated_at = metadata.updated_at(),
                             %owner,
+                            ?owner,
                             data_len = data.len(),
                             "Interface::apply_action received upsert user action"
                         );
@@ -147,21 +148,33 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         debug!(
                             %id,
+                            ?id,
                             created_at = metadata.created_at,
                             updated_at = metadata.updated_at(),
                             %owner,
+                            ?owner,
                             data_len = data.len(),
                             ?sig_data.signature,
                             sig_data.nonce,
                             "Interface::apply_action received upsert user action: sig data"
                         );
+
+                        let payload = action.payload_for_signing();
+
                         crate::env::log(&format!(
                             "Interface::apply_action received upsert user action: sig data \
-                            \n=== Signature: {:?}; owner: {owner}; nonce: {}",
-                            sig_data.signature, sig_data.nonce
+                            \n=== Signature: {:?}; signature_len: {}, nonce: {}; \
+                            \n=== owner: {}; owner_bytes: {:?} \
+                            \n=== payload: {:?}",
+                            sig_data.signature,
+                            sig_data.signature.len(),
+                            sig_data.nonce,
+                            owner,
+                            owner.digest(),
+                            payload,
                         ));
-
                         crate::env::log("Interface::apply_action received upsert user action: getting last nonce from storage");
+
                         // Replay protection check
                         let new_nonce = sig_data.nonce;
                         let last_nonce = <Index<S>>::get_metadata(*id)?
@@ -170,53 +183,29 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         crate::env::log(&format!(
                             "Interface::apply_action received upsert user action: last nonce from storage \
-                            \n=== last_nonce: {}",
-                            last_nonce
+                            \n=== new_nonce: {}; last_nonce: {}",
+                            new_nonce, last_nonce
                         ));
 
                         if new_nonce <= last_nonce {
                             return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
                         }
 
-                        let signature = ed25519_dalek::Signature::from_bytes(&sig_data.signature);
-                        let dalek_pk = ed25519_dalek::VerifyingKey::from_bytes(owner.as_ref())
-                            .map_err(|_| {
-                                StorageError::InvalidData("Invalid owner public key".to_owned())
-                            })?;
-
-                        crate::env::log(&format!(
-                            "Interface::apply_action received upsert user action: dalek_pk\
-                            \n=== dalek_pk: {:?}",
-                            dalek_pk
-                        ));
-
-                        let payload = action.payload_for_signing();
-
-                        crate::env::log(&format!(
-                            "Interface::apply_action received upsert user action: payload\
-                            \n=== action_payload: {:?}",
-                            payload
-                        ));
-                        let verification_result = dalek_pk
-                            .verify(&payload, &signature)
-                            .map_err(|_| StorageError::InvalidSignature);
-
-                        debug!(
-                            %id,
-                            created_at = metadata.created_at,
-                            updated_at = metadata.updated_at(),
-                            %owner,
-                            data_len = data.len(),
-                            signature_verification_result = ?verification_result,
-                            "Interface::apply_action upsert user action: verify signature"
+                        let verification_result = crate::env::ed25519_verify(
+                            &sig_data.signature,
+                            owner.digest(),
+                            &payload,
                         );
+
                         crate::env::log(&format!(
                             "Interface::apply_action received upsert user action: verify signature\
-                            \n=== Id: {id}; Signature_verification_result: {0}; owner: {owner}",
-                            verification_result.is_err(),
+                            \n=== Id: {id}; Signature_verification_result: {0}; owner: {owner:?}; owner:{owner}",
+                            verification_result,
                         ));
 
-                        verification_result?;
+                        if !verification_result {
+                            return Err(StorageError::InvalidSignature);
+                        }
                     }
                     StorageType::Frozen => {
                         debug!(
@@ -281,21 +270,16 @@ impl<S: StorageAdaptor> Interface<S> {
                                     ))));
                                 }
 
-                                let signature =
-                                    ed25519_dalek::Signature::from_bytes(&sig_data.signature);
-
-                                let dalek_pk =
-                                    ed25519_dalek::VerifyingKey::from_bytes(owner.as_ref())
-                                        .map_err(|_| {
-                                            StorageError::InvalidData(
-                                                "Invalid owner public key".to_owned(),
-                                            )
-                                        })?;
-
                                 let payload = action.payload_for_signing();
-                                dalek_pk
-                                    .verify(&payload, &signature)
-                                    .map_err(|_| StorageError::InvalidSignature)?;
+                                let verification_result = crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    owner.digest(),
+                                    &payload,
+                                );
+
+                                if !verification_result {
+                                    return Err(StorageError::InvalidSignature);
+                                }
                             }
                             _ => {
                                 // Action metadata is not User, but existing is.
@@ -1122,6 +1106,59 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
+    }
+
+    /// Helper to verify a new `Update` action.
+    fn verify_action_update(action: &Action) -> Result<(), StorageError> {
+        let (metadata, _data, id) = match action {
+            Action::Update {
+                metadata, data, id, ..
+            } => (metadata, data, *id),
+            // Should not happen
+            _ => return Ok(()),
+        };
+
+        // Get existing metadata
+        let existing_metadata =
+            <Index<S>>::get_metadata(id)?.ok_or(StorageError::IndexNotFound(id))?;
+
+        // 2. Compare storage types and owners
+        match (&existing_metadata.storage_type, &metadata.storage_type) {
+            (StorageType::Public, StorageType::Public) => {
+                // no checks needed for Public storage
+                Ok(())
+            }
+            (StorageType::Frozen, StorageType::Frozen) => {
+                // Mutability is verified in the main `apply_action()` function later
+                Ok(())
+            }
+            (
+                StorageType::User {
+                    owner: existing_owner,
+                    ..
+                },
+                StorageType::User { owner, .. },
+            ) => {
+                // Check owner hasn't changed
+                if *owner != *existing_owner {
+                    return Err(StorageError::ActionNotAllowed(
+                        "Cannot change owner of User storage".to_owned(),
+                    ));
+                }
+
+                Ok(())
+            }
+            (existing, new) => {
+                // All other combinations are invalid
+                crate::env::log(&format!(
+                    "Invalid storage type change attempted: {:?} -> {:?}",
+                    existing, new
+                ));
+                Err(StorageError::ActionNotAllowed(
+                    "Cannot change StorageType (e.g., User->Public/User->Frozen/etc)".to_owned(),
+                ))
+            }
+        }
     }
 }
 

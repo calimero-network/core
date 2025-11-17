@@ -9,14 +9,14 @@ wait_timeout: 120
 nodes:
   chain_id: testnet-1
   count: 2
-  image: storage-user-frozen:17
-  prefix: calimero-node
+  image: storage-user-frozen:24
+  prefix: new-calimero-node
 
 steps:
   # Step 1: Install the application on the first node
   - name: Install Application on Node 1
     type: install_application
-    node: calimero-node-1
+    node: new-calimero-node-1
     path: "./res/kv_store.wasm"
     dev: true
     outputs:
@@ -25,7 +25,7 @@ steps:
   # Step 2: Create a context using the installed application
   - name: Create Context on Node 1
     type: create_context
-    node: calimero-node-1
+    node: new-calimero-node-1
     application_id: '{{app_id}}'
     params: '{}'
     outputs:
@@ -35,7 +35,7 @@ steps:
   # Step 3: Generate identity on second node
   - name: Create Identity on Node 2
     type: create_identity
-    node: calimero-node-2
+    node: new-calimero-node-2
     outputs:
       node2_public_key: publicKey
 
@@ -46,7 +46,7 @@ steps:
   # Step 4: Invite second node to join the context
   - name: Invite Node 2 from Node 1
     type: invite_identity
-    node: calimero-node-1
+    node: new-calimero-node-1
     context_id: "{{context_id}}"
     grantee_id: "{{node2_public_key}}"
     granter_id: "{{member_public_key}}"
@@ -57,7 +57,7 @@ steps:
   # Step 5: Join context from second node
   - name: Join Context from Node 2
     type: join_context
-    node: calimero-node-2
+    node: new-calimero-node-2
     context_id: "{{context_id}}"
     invitee_id: "{{node2_public_key}}"
     invitation: "{{invitation}}"
@@ -66,21 +66,10 @@ steps:
   # Testing Phase: User Storage Simple
   # ============================================
 
-  # Step 6: Set a value in the storage
-  - name: Set value in the storage 'my_key1':'my_value1'
-    type: call
-    node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
-    method: set
-    args:
-      key: "my_key1"
-      value: "my_value1"
-
   # Step 7: simple user storage set
   - name: Simple user storage set test
     type: call
-    node: calimero-node-1
+    node: new-calimero-node-1
     context_id: '{{context_id}}'
     executor_public_key: '{{member_public_key}}'
     method: set_user_simple
@@ -90,7 +79,7 @@ steps:
   # Step 8: simple user storage get
   - name: Simple user storage get test
     type: call
-    node: calimero-node-1
+    node: new-calimero-node-1
     context_id: '{{context_id}}'
     executor_public_key: '{{member_public_key}}'
     method: get_user_simple
@@ -105,7 +94,7 @@ steps:
   # Step 9: nested user storage set
   - name: Nested user storage set test
     type: call
-    node: calimero-node-1
+    node: new-calimero-node-1
     context_id: '{{context_id}}'
     executor_public_key: '{{member_public_key}}'
     method: set_user_nested
@@ -115,7 +104,7 @@ steps:
 
   - name: Nested user storage get test
     type: call
-    node: calimero-node-1
+    node: new-calimero-node-1
     context_id: '{{context_id}}'
     executor_public_key: '{{member_public_key}}'
     method: get_user_nested
@@ -132,7 +121,7 @@ steps:
   # Step 10: get simple user storage on Node 1
   - name: Simple user storage get test for a specific user
     type: call
-    node: calimero-node-1
+    node: new-calimero-node-1
     context_id: '{{context_id}}'
     executor_public_key: '{{member_public_key}}'
     method: get_user_simple
@@ -152,7 +141,7 @@ steps:
   # Step 11: Node2: get simple user storage for a specific user
   - name: Node 2 - Simple user storage get test for a specific user
     type: call
-    node: calimero-node-2
+    node: new-calimero-node-2
     context_id: '{{context_id}}'
     executor_public_key: '{{node2_public_key}}'
     method: get_user_simple_for
@@ -166,21 +155,10 @@ steps:
     statements:
       - 'json_equal({{node2_simple_value_res_specific_user}}, {"output": "SomeSimpleUserString"})'
 
-  # Step HACK: Set a value in the storage (HACK ATTEMPT ????)
-  - name: Set value in the storage 'my_key2':'my_value2'
-    type: call
-    node: calimero-node-2
-    context_id: '{{context_id}}'
-    executor_public_key: '{{node2_public_key}}'
-    method: set
-    args:
-      key: "my_key2"
-      value: "my_value2"
-
   # Step 12: Node2: set simple user storage
   - name: Node 2 - Simple user storage get test for a specific user
     type: call
-    node: calimero-node-2
+    node: new-calimero-node-2
     context_id: '{{context_id}}'
     executor_public_key: '{{node2_public_key}}'
     method: set_user_simple
@@ -190,7 +168,7 @@ steps:
   # Step 13: Node2: get simple user storage (belongs to Node2 PublicKey)
   - name: Simple user storage get test for a specific user
     type: call
-    node: calimero-node-2
+    node: new-calimero-node-2
     context_id: '{{context_id}}'
     executor_public_key: '{{node2_public_key}}'
     method: get_user_simple
@@ -205,12 +183,12 @@ steps:
   # Wait after Node 2 messages
   - name: Wait after Node 2 Messages
     type: wait
-    seconds: 60
+    seconds: 15
 
   # Step 14: Node1: get simple user storage for Node 2 user
   - name: Node 1 - Simple user storage get test for a specific user (from Node2)
     type: call
-    node: calimero-node-1
+    node: new-calimero-node-1
     context_id: '{{context_id}}'
     executor_public_key: '{{member_public_key}}'
     method: get_user_simple_for

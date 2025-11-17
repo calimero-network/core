@@ -114,6 +114,11 @@ impl PublicKey {
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
         VerifyingKey::from_bytes(self.as_ref())?.verify(message, signature)
     }
+
+    // Return represented as a 32-byte array
+    pub fn digest(&self) -> &[u8; 32] {
+        &self.0
+    }
 }
 
 impl fmt::Display for PublicKey {

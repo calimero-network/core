@@ -144,6 +144,15 @@ pub fn time_now() -> u64 {
     imp::time_now()
 }
 
+/// Verifies an Ed25519 signature.
+///
+/// On WASM, this calls the host environment.
+/// In tests, this uses a pure-Rust implementation.
+#[must_use]
+pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool {
+    imp::ed25519_verify(signature, public_key, message)
+}
+
 /// Returns the current context ID.
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
@@ -282,6 +291,16 @@ mod calimero_vm {
         env::time_now()
     }
 
+    /// Verifies an Ed25519 signature.
+    pub(super) fn ed25519_verify(
+        signature: &[u8; 64],
+        public_key: &[u8; 32],
+        message: &[u8],
+    ) -> bool {
+        // Call the host function from the calimero_sdk
+        calimero_sdk::env::ed25519_verify(signature, public_key, message)
+    }
+
     /// Get a new hybrid timestamp from the HLC
     pub(super) fn hlc_timestamp() -> HybridTimestamp {
         ensure_hlc_initialized();
@@ -317,6 +336,7 @@ mod calimero_vm {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod mocked {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::cell::RefCell;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -425,6 +445,25 @@ mod mocked {
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
             .as_nanos() as u64
+    }
+
+    /// Verifies an Ed25519 signature.
+    ///
+    /// Uses a pure-Rust implementation for testing.
+    pub(super) fn ed25519_verify(
+        signature: &[u8; 64],
+        public_key: &[u8; 32],
+        message: &[u8],
+    ) -> bool {
+        // We need to parse the public key.
+        // If parsing fails, the signature is invalid.
+        let Ok(public_key) = VerifyingKey::from_bytes(public_key) else {
+            return false;
+        };
+
+        let signature = Signature::from_bytes(signature);
+        // Perform the verification.
+        public_key.verify(message, &signature).is_ok()
     }
 
     /// Get a new hybrid timestamp from the HLC

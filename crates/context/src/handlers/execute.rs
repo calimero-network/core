@@ -148,6 +148,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             "infallible (verified before): missing sender key in ContextIdentity for signing",
         );
 
+        debug!(
+            public_key = ?identity.public_key,
+            public_key = %identity.public_key,
+            sender_key = ?sender_key.public_key(),
+            sender_key = %sender_key.public_key(),
+            "ContextManager: keys",
+        );
+
         let payload =
             match substitute_aliases_in_payload(&self.node_client, context_id, payload, &aliases) {
                 Ok(payload) => payload,
@@ -703,11 +711,10 @@ async fn internal_execute(
 
             // The artifact was `StorageDelta::Actions`.
             if actions.len() != 0 {
-                // Sign the actions
                 info!(
                     context_id = %context.id,
                     actions_count = actions.len(),
-                    "Signing user actions..."
+                    "Received several actions. Verify if there any user actions..."
                 );
                 sign_user_actions(&mut actions, &identity_private_key)
                     .wrap_err("Failed to sign user actions")?;
@@ -941,6 +948,8 @@ fn sign_user_actions(
     actions: &mut [Action],
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<()> {
+    // Sign the actions
+    info!(actions_count = actions.len(), "Signing user actions...");
     for action in actions.iter_mut() {
         let action_id = action.id();
         let payload_for_signing = action.payload_for_signing();
@@ -992,11 +1001,28 @@ fn sign_user_actions(
 
                 debug!(
                     action_id = ?action_id,
+                    action_id = %action_id,
                     owner = %owner,
+                    owner = ?owner.digest(),
                     nonce = %nonce,
+                    payload_for_signing = ?payload_for_signing,
+                    ed25519_signature = ?signature,
+                    signature = ?sig_data.signature,
+                    signature_len = sig_data.signature.len(),
                     "Signed user action"
                 );
             }
+        }
+
+        if let StorageType::User {
+            owner: _,
+            signature_data: Some(_),
+        } = &metadata.storage_type
+        {
+            debug!(
+                action_serialized = ?borsh::to_vec(action)?,
+                "After signing user action"
+            );
         }
     }
     Ok(())

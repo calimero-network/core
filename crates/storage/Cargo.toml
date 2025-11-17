@@ -12,7 +12,6 @@ publish = true
 borsh = { workspace = true, features = ["derive"] }
 calimero-primitives = { workspace = true, features = ["borsh"] }
 eyre.workspace = true
-ed25519-dalek.workspace = true
 fixedstr = { workspace = true, features = ["flex-str", "serde", "std"] }
 hex.workspace = true
 indexmap.workspace = true
@@ -25,6 +24,7 @@ calimero-sdk.workspace = true
 calimero-storage-macros.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ed25519-dalek.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
