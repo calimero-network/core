@@ -1119,44 +1119,57 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         // Get existing metadata
-        let existing_metadata =
-            <Index<S>>::get_metadata(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let existing_metadata = <Index<S>>::get_metadata(id)?;
 
-        // 2. Compare storage types and owners
-        match (&existing_metadata.storage_type, &metadata.storage_type) {
-            (StorageType::Public, StorageType::Public) => {
-                // no checks needed for Public storage
-                Ok(())
-            }
-            (StorageType::Frozen, StorageType::Frozen) => {
-                // Mutability is verified in the main `apply_action()` function later
-                Ok(())
-            }
-            (
-                StorageType::User {
-                    owner: existing_owner,
-                    ..
-                },
-                StorageType::User { owner, .. },
-            ) => {
-                // Check owner hasn't changed
-                if *owner != *existing_owner {
-                    return Err(StorageError::ActionNotAllowed(
-                        "Cannot change owner of User storage".to_owned(),
-                    ));
+        // Try to get existing metadata to determine if this is an Update or an Add (upsert)
+        match existing_metadata {
+            // This is indeed an update operation
+            Some(existing_metadata) => {
+                // Compare storage types and owners
+                match (&existing_metadata.storage_type, &metadata.storage_type) {
+                    (StorageType::Public, StorageType::Public) => {
+                        // no checks needed for Public storage
+                        Ok(())
+                    }
+                    (StorageType::Frozen, StorageType::Frozen) => {
+                        // Mutability is verified in the main `apply_action()` function later
+                        Ok(())
+                    }
+                    (
+                        StorageType::User {
+                            owner: existing_owner,
+                            ..
+                        },
+                        StorageType::User { owner, .. },
+                    ) => {
+                        // Check owner hasn't changed
+                        if *owner != *existing_owner {
+                            return Err(StorageError::ActionNotAllowed(
+                                "Cannot change owner of User storage".to_owned(),
+                            ));
+                        }
+
+                        Ok(())
+                    }
+                    (existing, new) => {
+                        // All other combinations are invalid
+                        crate::env::log(&format!(
+                            "Invalid storage type change attempted: {:?} -> {:?}",
+                            existing, new
+                        ));
+                        Err(StorageError::ActionNotAllowed(
+                            "Cannot change StorageType (e.g., User->Public/User->Frozen/etc)"
+                                .to_owned(),
+                        ))
+                    }
                 }
-
-                Ok(())
             }
-            (existing, new) => {
-                // All other combinations are invalid
-                crate::env::log(&format!(
-                    "Invalid storage type change attempted: {:?} -> {:?}",
-                    existing, new
-                ));
-                Err(StorageError::ActionNotAllowed(
-                    "Cannot change StorageType (e.g., User->Public/User->Frozen/etc)".to_owned(),
-                ))
+            None => {
+                // This is an "add" (upsert).
+                // TODO: refactor
+                // The item doesn't exist. Run the "Add" verification logic (that is currently
+                // located in the main `apply_function()`.
+                Ok(())
             }
         }
     }
