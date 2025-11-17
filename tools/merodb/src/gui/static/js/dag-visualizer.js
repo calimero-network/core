@@ -200,9 +200,15 @@ export class DAGVisualizer {
                 .attr('class', 'dag-node')
                 .attr('transform', `translate(${pos.x},${pos.y})`)
                 .style('cursor', 'pointer')
-                .on('mouseover', (event) => {
+                .on('mouseover', async (event) => {
+                    const nodeId = node.delta_id || node.id;
+
+                    // Show initial tooltip with basic info
                     const content = this.formatTooltipContent(node);
-                    this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
+                    this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
+
+                    // Load detailed info on demand (actions and events)
+                    await this.loadAndUpdateTooltip(event, node);
                 })
                 .on('mousemove', (event) => {
                     this.tooltipManager.moveTooltip(event);
@@ -283,9 +289,15 @@ export class DAGVisualizer {
             .attr('stroke-width', 2)
             .attr('class', 'dag-node')
             .style('cursor', 'pointer')
-            .on('mouseover', (event, d) => {
+            .on('mouseover', async (event, d) => {
+                const nodeId = d.delta_id || d.id;
+
+                // Show initial tooltip with basic info
                 const content = this.formatTooltipContent(d);
-                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
+                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
+
+                // Load detailed info on demand (actions and events)
+                await this.loadAndUpdateTooltip(event, d);
             })
             .on('mousemove', (event) => {
                 this.tooltipManager.moveTooltip(event);
@@ -608,5 +620,66 @@ export class DAGVisualizer {
         html += `</div>`;
 
         return html;
+    }
+
+    /**
+     * Load delta details on demand and update the tooltip
+     * @param {Event} event - Mouse event for positioning
+     * @param {Object} node - DAG node object
+     */
+    async loadAndUpdateTooltip(event, node) {
+        // Skip loading details for genesis nodes
+        if (node.is_genesis) {
+            return;
+        }
+
+        // Skip if no context_id or delta_id
+        if (!node.context_id || !node.delta_id) {
+            return;
+        }
+
+        // Skip if details are already loaded
+        if (node.actions || node.events) {
+            return;
+        }
+
+        try {
+            // Import ApiService dynamically
+            const { ApiService } = await import('./api-service.js');
+
+            // Get the database path from app state
+            const dbPath = this.state.currentDbPath;
+            if (!dbPath) {
+                return;
+            }
+
+            // Store the node ID to check for race conditions
+            const nodeId = node.delta_id || node.id;
+
+            // Fetch delta details
+            const details = await ApiService.loadDeltaDetails(dbPath, node.context_id, node.delta_id);
+
+            // Check if tooltip is still showing the same node (race condition check)
+            const currentTooltip = this.tooltipManager.getCurrentTooltipNode();
+            if (!currentTooltip || currentTooltip !== nodeId) {
+                // User has moved to a different node, don't update
+                return;
+            }
+
+            // Update node with details
+            if (details.actions) {
+                node.actions = details.actions;
+            }
+            if (details.events) {
+                node.events = details.events;
+            }
+
+            // Re-render tooltip with updated content
+            const updatedContent = this.formatTooltipContent(node);
+            this.tooltipManager.updateTooltipContent(updatedContent);
+        } catch (error) {
+            console.error('Failed to load delta details:', error);
+            // Don't show error to user, just log it
+        }
     }
 }

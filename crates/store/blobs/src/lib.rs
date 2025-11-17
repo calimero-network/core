@@ -98,6 +98,11 @@ impl BlobManager {
         self.blob_store.version_path(package, version)
     }
 
+    /// Get the root/base path of the blobstore
+    pub fn root_path(&self) -> Utf8PathBuf {
+        self.blob_store.root_path()
+    }
+
     /// Get the path for a blob stored in a package/version directory
     pub fn application_blob_path(&self, package: &str, version: &str, id: BlobId) -> Utf8PathBuf {
         self.blob_store.application_blob_path(package, version, id)
@@ -441,6 +446,11 @@ impl FileSystem {
     /// Get the version directory path
     pub fn version_path(&self, package: &str, version: &str) -> Utf8PathBuf {
         self.package_path(package).join(version)
+    }
+
+    /// Get the root/base path of the blobstore
+    pub fn root_path(&self) -> Utf8PathBuf {
+        self.root.clone()
     }
 }
 

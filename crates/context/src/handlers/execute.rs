@@ -569,7 +569,10 @@ impl ContextManager {
                     "no usable precompiled module found, compiling.."
                 );
 
-                let Some(bytecode) = node_client.get_blob_bytes(&blob.bytecode, None).await? else {
+                // Use get_application_bytes instead of get_blob_bytes for bytecode
+                // because get_application_bytes knows how to extract WASM from bundles
+                let Some(bytecode) = node_client.get_application_bytes(&application_id).await?
+                else {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 

@@ -2138,12 +2138,16 @@ dependencies = [
  "dashmap 6.1.0",
  "ed25519-dalek",
  "eyre",
+ "flate2",
  "futures-util",
+ "hex",
  "libp2p",
  "prometheus-client",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tar",
  "tokio",
  "tracing",
 ]
@@ -2154,6 +2158,7 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "async-stream",
+ "base64 0.22.1",
  "borsh",
  "calimero-blobstore",
  "calimero-crypto",
@@ -2161,14 +2166,23 @@ dependencies = [
  "calimero-primitives",
  "calimero-storage",
  "calimero-store",
+ "calimero-store-rocksdb",
  "calimero-utils-actix",
  "camino",
  "eyre",
+ "flate2",
  "futures-util",
+ "hex",
  "infer",
  "libp2p",
  "rand 0.8.5",
  "reqwest 0.12.24",
+ "semver 1.0.27",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2406,7 +2420,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.17"
+version = "0.10.0-rc.18"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
