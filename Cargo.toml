@@ -72,6 +72,7 @@ members = [
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
+	"./apps/kv-store-with-user-and-frozen-storage",
     "./apps/nested-crdt-test",
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",

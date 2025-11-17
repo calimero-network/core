@@ -11,7 +11,7 @@ mkdir -p res
 
 RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unknown --profile app-release
 
-cp $TARGET/wasm32-unknown-unknown/app-release/kv_store.wasm ./res/
+cp $TARGET/wasm32-unknown-unknown/app-release/kv_store_with_user_and_frozen_storage.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
   wasm-opt -Oz ./res/kv_store.wasm -o ./res/kv_store.wasm
