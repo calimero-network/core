@@ -28,26 +28,30 @@ impl KeyComponent for Fragment {
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct Generic(Key<(Scope, Fragment)>);
 
+pub const SCOPE_SIZE: usize = 16;
+pub const FRAGMENT_SIZE: usize = 32;
+pub const GENERIC_KEY_SIZE: usize = SCOPE_SIZE + FRAGMENT_SIZE;
+
 impl Generic {
     #[must_use]
-    pub fn new(scope: [u8; 16], fragment: [u8; 32]) -> Self {
+    pub fn new(scope: [u8; SCOPE_SIZE], fragment: [u8; FRAGMENT_SIZE]) -> Self {
         Self(Key(GenericArray::from(scope).concat(fragment.into())))
     }
 
     #[must_use]
-    pub fn scope(&self) -> [u8; 16] {
-        let mut scope = [0; 16];
+    pub fn scope(&self) -> [u8; SCOPE_SIZE] {
+        let mut scope = [0; SCOPE_SIZE];
 
-        scope.copy_from_slice(&AsRef::<[_; 48]>::as_ref(&self.0)[..16]);
+        scope.copy_from_slice(&AsRef::<[_; GENERIC_KEY_SIZE]>::as_ref(&self.0)[..SCOPE_SIZE]);
 
         scope
     }
 
     #[must_use]
-    pub fn fragment(&self) -> [u8; 32] {
-        let mut fragment = [0; 32];
+    pub fn fragment(&self) -> [u8; FRAGMENT_SIZE] {
+        let mut fragment = [0; FRAGMENT_SIZE];
 
-        fragment.copy_from_slice(&AsRef::<[_; 48]>::as_ref(&self.0)[16..]);
+        fragment.copy_from_slice(&AsRef::<[_; GENERIC_KEY_SIZE]>::as_ref(&self.0)[SCOPE_SIZE..]);
 
         fragment
     }
