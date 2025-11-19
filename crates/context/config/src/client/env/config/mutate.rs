@@ -37,6 +37,7 @@ struct Mutate<'a> {
 mod ethereum;
 #[cfg(feature = "icp_client")]
 mod icp;
+mod mock_relayer;
 #[cfg(feature = "near_client")]
 mod near;
 #[cfg(feature = "starknet_client")]
