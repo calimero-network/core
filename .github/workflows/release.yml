@@ -281,6 +281,35 @@ jobs:
           container_name: mero-auth
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+  release-mero-relayer-container:
+    name: Release Mero Relayer container
+    needs: [prepare, build-binaries]
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.job }}-mero-relayer-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Release
+        uses: ./.github/actions/container-release
+        with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: ${{ needs.prepare.outputs.docker_release }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          push: ${{ needs.prepare.outputs.docker_push }}
+          binaries: mero-relayer
+          dockerfile: Dockerfile.relayer
+          container_name: mero-relayer
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   brew-update:
     name: Update Homebrew Tap
     if: needs.prepare.outputs.binary_release == 'true'
