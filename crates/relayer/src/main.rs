@@ -296,6 +296,22 @@ struct Cli {
     /// Configuration file path (optional, uses environment variables if not provided)
     #[arg(short, long, value_name = "PATH")]
     pub config: Option<std::path::PathBuf>,
+
+    /// Enable mock relayer protocol
+    #[arg(long)]
+    pub enable_mock_relayer: bool,
+
+    /// Network for mock relayer (default: "local")
+    #[arg(long, value_name = "NETWORK")]
+    pub mock_relayer_network: Option<String>,
+
+    /// RPC URL for mock relayer (default: "http://localhost:9812")
+    #[arg(long, value_name = "URL")]
+    pub mock_relayer_rpc_url: Option<String>,
+
+    /// Contract ID for mock relayer (default: "mock-context-config")
+    #[arg(long, value_name = "CONTRACT_ID")]
+    pub mock_relayer_contract_id: Option<String>,
 }
 
 #[tokio::main]
@@ -321,6 +337,36 @@ async fn main() -> EyreResult<()> {
     // Override listen address from CLI if provided
     if let Some(listen) = cli.listen {
         config.listen = listen;
+    }
+
+    // Apply mock relayer CLI flags
+    if cli.enable_mock_relayer {
+        let mock_config = config
+            .protocols
+            .entry(protocols::mock_relayer::NAME.to_owned())
+            .or_insert_with(|| config::ProtocolConfig {
+                enabled: true,
+                network: protocols::mock_relayer::DEFAULT_NETWORK.to_owned(),
+                rpc_url: protocols::mock_relayer::DEFAULT_RPC_URL.parse().unwrap(),
+                contract_id: protocols::mock_relayer::DEFAULT_CONTRACT_ID.to_owned(),
+                credentials: None,
+            });
+
+        mock_config.enabled = true;
+
+        if let Some(network) = cli.mock_relayer_network {
+            mock_config.network = network;
+        }
+
+        if let Some(rpc_url) = cli.mock_relayer_rpc_url {
+            mock_config.rpc_url = rpc_url
+                .parse()
+                .map_err(|e| eyre::eyre!("Invalid mock relayer RPC URL: {e}"))?;
+        }
+
+        if let Some(contract_id) = cli.mock_relayer_contract_id {
+            mock_config.contract_id = contract_id;
+        }
     }
 
     let service = RelayerService::new(config);

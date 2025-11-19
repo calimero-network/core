@@ -40,9 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /usr/local/bin/mero-relayer /usr/local/bin/
-COPY mock-relayer-config.toml /config/mock-relayer-config.toml
 
 WORKDIR /data
-EXPOSE 63529
+EXPOSE 9812
 
-CMD ["mero-relayer", "--config", "/config/mock-relayer-config.toml"]
+CMD ["mero-relayer", "--enable-mock-relayer", "--listen", "0.0.0.0:9812"]
