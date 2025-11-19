@@ -33,20 +33,39 @@ use tracing_subscriber::{registry, EnvFilter};
 mod config;
 mod constants;
 mod credentials;
+mod mock;
 
 use config::RelayerConfig;
-use constants::{DEFAULT_ADDR, DEFAULT_RELAYER_URL};
+use constants::{protocols, DEFAULT_ADDR, DEFAULT_RELAYER_URL};
+use mock::MockRelayer;
 
 /// Relayer service that handles incoming requests
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RelayerService {
     config: RelayerConfig,
+    mock_relayer: Option<MockRelayer>,
 }
 
 impl RelayerService {
     /// Create a new relayer service with the given configuration
     fn new(config: RelayerConfig) -> Self {
-        Self { config }
+        // Initialize mock relayer if the mock-relayer protocol is enabled
+        let mock_relayer = if config
+            .protocols
+            .get(protocols::mock_relayer::NAME)
+            .map(|p| p.enabled)
+            .unwrap_or(false)
+        {
+            info!("Mock relayer protocol enabled");
+            Some(MockRelayer::new())
+        } else {
+            None
+        };
+
+        Self {
+            config,
+            mock_relayer,
+        }
     }
 
     /// Create blockchain client from relayer configuration
@@ -78,7 +97,11 @@ impl RelayerService {
             let mut signers = BTreeMap::new();
 
             // Create credentials only if explicitly provided
-            let credentials = if let Some(creds) = protocol_config.credentials.as_ref() {
+            // Skip credentials requirement for mock-relayer
+            let credentials = if protocol_name == protocols::mock_relayer::NAME {
+                // Mock relayer doesn't need credentials, skip signer config
+                continue;
+            } else if let Some(creds) = protocol_config.credentials.as_ref() {
                 self.convert_credentials(creds)?
             } else {
                 // Skip this protocol if no credentials are provided
@@ -136,8 +159,39 @@ impl RelayerService {
         // Create blockchain client from relayer config
         let transports = self.create_client()?;
 
+        // Clone mock relayer for the async task
+        let mock_relayer = self.mock_relayer.clone();
+
         let handle = async move {
             while let Some((request, res_tx)) = rx.recv().await {
+                // Check if this is a mock-relayer request
+                if request.protocol == protocols::mock_relayer::NAME {
+                    if let Some(ref mock) = mock_relayer {
+                        debug!(
+                            "Handling mock-relayer request for operation: {:?}",
+                            request.operation
+                        );
+                        let res = mock.handle_request(request).await.map(Ok).map_err(|e| {
+                            debug!("Mock relayer error: {:?}", e);
+                            ServerError::UnsupportedProtocol {
+                                found: protocols::mock_relayer::NAME.into(),
+                                expected: vec![protocols::mock_relayer::NAME.into()].into(),
+                            }
+                        });
+                        let _ignored = res_tx.send(res);
+                        continue;
+                    } else {
+                        // Mock relayer not enabled
+                        let res = Err(ServerError::UnsupportedProtocol {
+                            found: protocols::mock_relayer::NAME.into(),
+                            expected: vec![].into(),
+                        });
+                        let _ignored = res_tx.send(res);
+                        continue;
+                    }
+                }
+
+                // Handle regular blockchain protocols
                 let args = TransportArguments {
                     protocol: request.protocol,
                     request: TransportRequest {
@@ -233,12 +287,11 @@ async fn handler(
     version = env!("CARGO_PKG_VERSION")
 )]
 struct Cli {
-    /// Sets the address to listen on [default: 0.0.0.0:63529]
+    /// Sets the address to listen on
     /// Valid: `63529`, `127.0.0.1`, `127.0.0.1:63529` [env: PORT]
     #[clap(short, long, value_name = "URI")]
     #[clap(verbatim_doc_comment, value_parser = addr_from_str)]
-    #[clap(default_value_t = DEFAULT_ADDR)]
-    pub listen: SocketAddr,
+    pub listen: Option<SocketAddr>,
 
     /// Configuration file path (optional, uses environment variables if not provided)
     #[arg(short, long, value_name = "PATH")]
@@ -266,7 +319,9 @@ async fn main() -> EyreResult<()> {
     };
 
     // Override listen address from CLI if provided
-    config.listen = cli.listen;
+    if let Some(listen) = cli.listen {
+        config.listen = listen;
+    }
 
     let service = RelayerService::new(config);
     service.start().await
