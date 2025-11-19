@@ -29,9 +29,23 @@ fn bytes_to_signer_id(bytes: [u8; 32]) -> SignerId {
 }
 
 fn create_test_application() -> Application<'static> {
+    use calimero_context_config::repr::ReprBytes;
+
+    let app_id = ApplicationId::from_bytes(|bytes| {
+        *bytes = [1u8; 32];
+        Ok(32)
+    })
+    .expect("valid application id");
+
+    let blob_id = BlobId::from_bytes(|bytes| {
+        *bytes = [2u8; 32];
+        Ok(32)
+    })
+    .expect("valid blob id");
+
     Application::new(
-        Repr::new(ApplicationId::from([1u8; 32])),
-        Repr::new(BlobId::from([2u8; 32])),
+        Repr::new(app_id),
+        Repr::new(blob_id),
         1024,
         ApplicationSource(Cow::Owned("test-source".to_string())),
         ApplicationMetadata(Repr::new(Cow::Owned(vec![1, 2, 3]))),
@@ -54,13 +68,13 @@ fn test_add_context() {
     let application = create_test_application();
 
     // Create add context request
-    let request = RequestKind::Context(ContextRequest {
-        context_id: Repr::new(context_id),
-        kind: ContextRequestKind::Add {
+    let request = RequestKind::Context(ContextRequest::new(
+        Repr::new(context_id),
+        ContextRequestKind::Add {
             author_id: Repr::new(author_id),
             application: application.clone(),
         },
-    });
+    ));
 
     let payload = serde_json::to_vec(&request).unwrap();
     let operation = Operation::Write {
@@ -68,7 +82,7 @@ fn test_add_context() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to add context: {:?}", result);
+    assert!(result.is_ok(), "Failed to add context: {result:?}");
 
     // Verify context was added
     assert!(state.has_context(&context_id));
@@ -102,7 +116,7 @@ fn test_query_application() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to query application: {:?}", result);
+    assert!(result.is_ok(), "Failed to query application: {result:?}");
 
     let response: Application = borsh::from_slice(&result.unwrap()).unwrap();
     assert_eq!(response.id, application.id);
@@ -122,12 +136,12 @@ fn test_add_members() {
     let new_member1 = ContextIdentity::from([101u8; 32]);
     let new_member2 = ContextIdentity::from([102u8; 32]);
 
-    let request = RequestKind::Context(ContextRequest {
-        context_id: Repr::new(context_id),
-        kind: ContextRequestKind::AddMembers {
+    let request = RequestKind::Context(ContextRequest::new(
+        Repr::new(context_id),
+        ContextRequestKind::AddMembers {
             members: Cow::Owned(vec![Repr::new(new_member1), Repr::new(new_member2)]),
         },
-    });
+    ));
 
     let payload = serde_json::to_vec(&request).unwrap();
     let operation = Operation::Write {
@@ -135,7 +149,7 @@ fn test_add_members() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to add members: {:?}", result);
+    assert!(result.is_ok(), "Failed to add members: {result:?}");
 
     // Verify members were added
     let context = state.get_context(&context_id).unwrap();
@@ -172,7 +186,7 @@ fn test_query_members() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to query members: {:?}", result);
+    assert!(result.is_ok(), "Failed to query members: {result:?}");
 
     let members: Vec<ContextIdentity> = borsh::from_slice(&result.unwrap()).unwrap();
     assert_eq!(members.len(), 1);
@@ -205,7 +219,7 @@ fn test_fetch_nonce() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to fetch nonce: {:?}", result);
+    assert!(result.is_ok(), "Failed to fetch nonce: {result:?}");
 
     let nonce: Option<u64> = borsh::from_slice(&result.unwrap()).unwrap();
     assert_eq!(nonce, Some(0));
@@ -228,15 +242,15 @@ fn test_grant_capabilities() {
     state.add_context(context_id, application, author_id);
 
     let member = ContextIdentity::from([150u8; 32]);
-    let request = RequestKind::Context(ContextRequest {
-        context_id: Repr::new(context_id),
-        kind: ContextRequestKind::Grant {
+    let request = RequestKind::Context(ContextRequest::new(
+        Repr::new(context_id),
+        ContextRequestKind::Grant {
             capabilities: Cow::Owned(vec![
                 (Repr::new(member), Capability::ManageMembers),
                 (Repr::new(member), Capability::Proxy),
             ]),
         },
-    });
+    ));
 
     let payload = serde_json::to_vec(&request).unwrap();
     let operation = Operation::Write {
@@ -244,7 +258,7 @@ fn test_grant_capabilities() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to grant capabilities: {:?}", result);
+    assert!(result.is_ok(), "Failed to grant capabilities: {result:?}");
 
     // Verify capabilities were granted
     let context = state.get_context(&context_id).unwrap();
@@ -257,6 +271,8 @@ fn test_grant_capabilities() {
 
 #[test]
 fn test_proxy_proposal() {
+    use calimero_context_config::repr::ReprBytes;
+
     let mut state = MockState::new();
     let context_id = create_test_context_id();
     let author_id = create_test_identity();
@@ -264,7 +280,11 @@ fn test_proxy_proposal() {
 
     state.add_context(context_id, application, author_id);
 
-    let proposal_id = ProposalId::from([200u8; 32]);
+    let proposal_id = ProposalId::from_bytes(|bytes| {
+        *bytes = [200u8; 32];
+        Ok(32)
+    })
+    .expect("valid proposal id");
     let signer_id = identity_to_signer_id(&author_id);
 
     let proposal = Proposal {
@@ -286,7 +306,7 @@ fn test_proxy_proposal() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to create proposal: {:?}", result);
+    assert!(result.is_ok(), "Failed to create proposal: {result:?}");
 
     // Verify proposal was created
     let context = state.get_context(&context_id).unwrap();
@@ -295,6 +315,8 @@ fn test_proxy_proposal() {
 
 #[test]
 fn test_proxy_approve() {
+    use calimero_context_config::repr::ReprBytes;
+
     let mut state = MockState::new();
     let context_id = create_test_context_id();
     let author_id = create_test_identity();
@@ -303,7 +325,11 @@ fn test_proxy_approve() {
     state.add_context(context_id, application, author_id);
 
     // Create a proposal first
-    let proposal_id = ProposalId::from([200u8; 32]);
+    let proposal_id = ProposalId::from_bytes(|bytes| {
+        *bytes = [200u8; 32];
+        Ok(32)
+    })
+    .expect("valid proposal id");
     let signer_id = identity_to_signer_id(&author_id);
 
     let proposal = Proposal {
@@ -334,7 +360,7 @@ fn test_proxy_approve() {
     let approve_payload = serde_json::to_vec(&approve_request).unwrap();
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &approve_payload);
-    assert!(result.is_ok(), "Failed to approve proposal: {:?}", result);
+    assert!(result.is_ok(), "Failed to approve proposal: {result:?}");
 
     // Verify approval was recorded
     let context = state.get_context(&context_id).unwrap();
@@ -365,7 +391,7 @@ fn test_get_proxy_contract() {
     };
 
     let result = MockHandlers::handle_operation(&mut state, &operation, &payload);
-    assert!(result.is_ok(), "Failed to get proxy contract: {:?}", result);
+    assert!(result.is_ok(), "Failed to get proxy contract: {result:?}");
 
     let proxy_contract_id: String = borsh::from_slice(&result.unwrap()).unwrap();
     assert!(proxy_contract_id.starts_with("mock-proxy-"));
