@@ -1270,7 +1270,11 @@ impl TryFrom<tdx_quote::Quote> for Quote {
                             ("PlatformManifest", hex::encode(d))
                         }
                         // Return error for unknown inner certification data variants
-                        _ => return Err("Unknown CertificationDataInner variant encountered".to_string()),
+                        _ => {
+                            return Err(
+                                "Unknown CertificationDataInner variant encountered".to_string()
+                            )
+                        }
                     };
 
                     CertificationData::QeReportCertificationData(QeReportCertificationDataInfo {
