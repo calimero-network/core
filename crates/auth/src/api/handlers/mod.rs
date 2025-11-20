@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod client_keys;
+pub mod farcaster;
 pub mod permissions;
 pub mod root_keys;
 
@@ -26,6 +27,8 @@ pub use auth::{
 };
 /// Re-export client key management handlers
 pub use client_keys::{delete_client_handler, list_clients_handler};
+/// Re-export Farcaster authentication handlers
+pub use farcaster::{farcaster_auth_handler, farcaster_info_handler};
 /// Re-export key management handlers
 pub use root_keys::{create_key_handler, delete_key_handler, list_keys_handler};
 

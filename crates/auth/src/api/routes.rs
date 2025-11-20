@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::middleware::from_fn;
 use axum::routing::{delete, get, post};
-use axum::{Extension, Router};
+use axum::Router;
 use tower_http::cors::CorsLayer;
 
 use super::handlers::client_keys::generate_client_key_handler;
@@ -11,6 +11,7 @@ use crate::api::handlers::auth::{
     revoke_token_handler, token_handler, validate_handler,
 };
 use crate::api::handlers::client_keys::{delete_client_handler, list_clients_handler};
+use crate::api::handlers::farcaster::{farcaster_auth_handler, farcaster_info_handler};
 use crate::api::handlers::permissions::{
     get_key_permissions_handler, update_key_permissions_handler,
 };
@@ -72,7 +73,10 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/providers", get(providers_handler))
         .route("/health", get(health_handler))
         .route("/refresh", post(refresh_token_handler))
-        .route("/validate", get(validate_handler).post(validate_handler));
+        .route("/validate", get(validate_handler).post(validate_handler))
+        // Farcaster authentication endpoints
+        .route("/farcaster", post(farcaster_auth_handler))
+        .route("/farcaster/info", get(farcaster_info_handler));
 
     // 2. Protected routes (require JWT validation)
     let protected_routes = Router::new()
@@ -104,7 +108,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
     let mut router = Router::new()
         .nest("/auth", public_routes)
         .nest("/admin", protected_routes)
-        .layer(Extension(Arc::clone(&state)));
+        .with_state(Arc::clone(&state));
 
     // Add security layers from outermost to innermost
 
