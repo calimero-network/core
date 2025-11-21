@@ -50,4 +50,13 @@ pub mod protocols {
         pub const DEFAULT_CONTRACT_ID: &str = "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB";
         // Note: All credentials must be provided via environment variables
     }
+
+    /// Mock Relayer Protocol configuration
+    pub mod mock_relayer {
+        pub const NAME: &str = "mock-relayer";
+        pub const DEFAULT_NETWORK: &str = "local";
+        pub const DEFAULT_RPC_URL: &str = "http://localhost:9812";
+        pub const DEFAULT_CONTRACT_ID: &str = "mock-context-config";
+        // Note: No credentials needed for mock protocol
+    }
 }
