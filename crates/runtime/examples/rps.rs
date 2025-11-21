@@ -87,6 +87,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&create_keypair_outcome);
 
@@ -115,6 +116,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&create_keypair_outcome);
 
@@ -142,6 +144,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&join_outcome);
 
@@ -166,6 +169,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&join_outcome);
 
@@ -187,6 +191,7 @@ fn main() -> EyreResult<()> {
         "state",
         &input,
         &mut storage,
+        None,
         None,
     )?;
     dbg!(&state_outcome);
@@ -217,6 +222,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&prepare_outcome);
 
@@ -246,6 +252,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&prepare_outcome);
 
@@ -272,6 +279,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&commit_outcome);
 
@@ -294,6 +302,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&commit_outcome);
 
@@ -314,6 +323,7 @@ fn main() -> EyreResult<()> {
         "reveal",
         &input,
         &mut storage,
+        None,
         None,
     )?;
     dbg!(&reveal_outcome);
@@ -336,6 +346,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&reveal_outcome);
 
@@ -354,6 +365,7 @@ fn main() -> EyreResult<()> {
         "state",
         &input,
         &mut storage,
+        None,
         None,
     )?;
     dbg!(&state_outcome);
@@ -387,6 +399,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
     dbg!(&reset_outcome);
 
@@ -398,6 +411,7 @@ fn main() -> EyreResult<()> {
         "state",
         &input,
         &mut storage,
+        None,
         None,
     )?;
     dbg!(&state_outcome);

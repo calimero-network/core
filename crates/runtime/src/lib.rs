@@ -13,7 +13,7 @@ pub mod store;
 
 pub use constraint::Constraint;
 use errors::{FunctionCallError, VMRuntimeError};
-use logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
+use logic::{ContextHost, Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
 use memory::WasmerTunables;
 use store::Storage;
 
@@ -105,6 +105,7 @@ impl Module {
         input: &[u8],
         storage: &mut dyn Storage,
         node_client: Option<NodeClient>,
+        context_host: Option<Box<dyn ContextHost>>,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
         info!(%context_id, method, "Running WASM method");
@@ -112,7 +113,7 @@ impl Module {
 
         let context = VMContext::new(input.into(), *context_id, *executor);
 
-        let mut logic = VMLogic::new(storage, context, &self.limits, node_client);
+        let mut logic = VMLogic::new(storage, context, &self.limits, node_client, context_host);
 
         let mut store = Store::new(self.engine.clone());
 
