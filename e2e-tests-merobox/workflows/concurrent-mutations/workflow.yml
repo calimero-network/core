@@ -1,0 +1,304 @@
+name: "Concurrent Mutations - NEAR"
+description: "Concurrent mutations test on NEAR protocol - verifies DAG convergence with conflicting concurrent writes"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: concurrent-near
+
+steps:
+  # ============================================================================
+  # Phase 1: Application Installation
+  # ============================================================================
+  - name: Install KV Store Application on Node 1
+    type: install_application
+    node: concurrent-near-1
+    path: "apps/kv-store/res/kv_store.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # ============================================================================
+  # Phase 2: Context Creation
+  # ============================================================================
+  - name: Create Context on Node 1
+    type: create_context
+    node: concurrent-near-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Wait for Context Initialization
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 3: Multi-Node Setup
+  # ============================================================================
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: concurrent-near-2
+    outputs:
+      public_key_2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: concurrent-near-3
+    outputs:
+      public_key_3: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_2}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3 from Node 1
+    type: invite_identity
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_3}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Node 2 Joins Context
+    type: join_context
+    node: concurrent-near-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_2}}"
+    invitation: "{{invitation_2}}"
+
+  - name: Node 3 Joins Context
+    type: join_context
+    node: concurrent-near-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_3}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for gossipsub mesh formation and sync
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 4: Establish Baseline State
+  # ============================================================================
+  - name: Set initial value on inviter
+    type: call
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: "initial"
+      value: "synced"
+
+  - name: Wait for initial set to propagate
+    type: wait
+    seconds: 3
+
+  - name: Get initial value from Node 1
+    type: call
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "initial"
+    outputs:
+      initial_node1: result
+
+  - name: Get initial value from Node 2
+    type: call
+    node: concurrent-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "initial"
+    outputs:
+      initial_node2: result
+
+  - name: Get initial value from Node 3
+    type: call
+    node: concurrent-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "initial"
+    outputs:
+      initial_node3: result
+
+  - name: Assert all nodes have synced initial value
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_node1}}, {"output": "synced"})'
+      - 'json_equal({{initial_node2}}, {"output": "synced"})'
+      - 'json_equal({{initial_node3}}, {"output": "synced"})'
+
+  # ============================================================================
+  # Phase 5: Concurrent Mutations (Conflicting Writes)
+  # ============================================================================
+  - name: Inviter sets test_key to from_inviter
+    type: call
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "from_inviter"
+
+  - name: Node 2 sets test_key to from_invitee (concurrent)
+    type: call
+    node: concurrent-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "from_invitee"
+
+  - name: Node 3 sets test_key to from_invitee (concurrent)
+    type: call
+    node: concurrent-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: set
+    args:
+      key: "test_key"
+      value: "from_invitee"
+
+  - name: Wait for concurrent mutations to propagate and DAG to converge
+    type: wait
+    seconds: 5
+
+  # ============================================================================
+  # Phase 6: Verify DAG Convergence
+  # ============================================================================
+  - name: Get test_key from Node 1
+    type: call
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      converged_value_1: result
+
+  - name: Wait for Node 1 query
+    type: wait
+    seconds: 2
+
+  - name: Get test_key from Node 2
+    type: call
+    node: concurrent-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      converged_value_2: result
+
+  - name: Wait for Node 2 query
+    type: wait
+    seconds: 2
+
+  - name: Get test_key from Node 3
+    type: call
+    node: concurrent-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      converged_value_3: result
+
+  - name: Assert all nodes converged to same value (DAG convergence)
+    type: json_assert
+    statements:
+      - "json_equal({{converged_value_1}}, {{converged_value_2}})"
+      - "json_equal({{converged_value_1}}, {{converged_value_3}})"
+      - "json_equal({{converged_value_2}}, {{converged_value_3}})"
+
+  # ============================================================================
+  # Phase 7: Post-Convergence Operation
+  # ============================================================================
+  - name: Final write after convergence
+    type: call
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: "final"
+      value: "done"
+
+  - name: Wait for final write to propagate
+    type: wait
+    seconds: 3
+
+  - name: Get final value from Node 1
+    type: call
+    node: concurrent-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "final"
+    outputs:
+      final_node1: result
+
+  - name: Get final value from Node 2
+    type: call
+    node: concurrent-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_2}}"
+    method: get
+    args:
+      key: "final"
+    outputs:
+      final_node2: result
+
+  - name: Get final value from Node 3
+    type: call
+    node: concurrent-near-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_3}}"
+    method: get
+    args:
+      key: "final"
+    outputs:
+      final_node3: result
+
+  - name: Assert final write succeeded on all nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{final_node1}}, {"output": "done"})'
+      - 'json_equal({{final_node2}}, {"output": "done"})'
+      - 'json_equal({{final_node3}}, {"output": "done"})'
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 60

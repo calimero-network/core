@@ -1,0 +1,632 @@
+name: "Collaborative Editor - NEAR"
+description: "CRDT-based collaborative text editing test on NEAR protocol - verifies RGA CRDT and concurrent edits"
+
+# Use --no-docker mode with native merod processes
+no_docker: true
+force_pull_image: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: collab-near
+
+steps:
+  # ============================================================================
+  # Phase 1: Setup - Install app and create context
+  # ============================================================================
+  - name: Install Collaborative Editor on Node 1
+    type: install_application
+    node: collab-near-1
+    path: "apps/collaborative-editor/res/collaborative_editor.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: collab-near-1
+    application_id: "{{app_id}}"
+    protocol: near
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{member_public_key}})"
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: collab-near-2
+    outputs:
+      public_key: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 5
+
+  - name: Invite Node 2 from Node 1
+    type: invite_identity
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation: invitation
+
+  - name: Join Context from Node 2
+    type: join_context
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key}}"
+    invitation: "{{invitation}}"
+
+  # ============================================================================
+  # Phase 2: Verify Initial State
+  # ============================================================================
+  - name: Get Initial Text (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      initial_text: result
+
+  - name: Assert document is initially empty
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_text}}, {"output": ""})'
+
+  - name: Get Initial Title (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_title
+    args: {}
+    outputs:
+      initial_title: result
+
+  - name: Assert title is Untitled Document
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_title}}, {"output": "Untitled Document"})'
+
+  # ============================================================================
+  # Phase 3: Basic Text Operations
+  # ============================================================================
+  - name: Insert Hello from Node 1
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "Hello"
+    outputs:
+      insert_hello_result: result
+
+  - name: Assert Hello inserted successfully
+    type: json_assert
+    statements:
+      - 'json_equal({{insert_hello_result}}, {"output": null})'
+
+  - name: Wait for edit to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get Text After Hello (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_node1_hello: result
+
+  - name: Assert Node 1 sees Hello
+    type: json_assert
+    statements:
+      - 'json_equal({{text_node1_hello}}, {"output": "Hello"})'
+
+  - name: Get Text After Hello (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_node2_hello: result
+
+  - name: Assert Node 2 sees Hello (synced)
+    type: json_assert
+    statements:
+      - 'json_equal({{text_node2_hello}}, {"output": "Hello"})'
+
+  # ============================================================================
+  # Phase 4: Append from Node 2
+  # ============================================================================
+  - name: Append World from Node 2
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: append_text
+    args:
+      text: " World"
+    outputs:
+      append_world_result: result
+
+  - name: Wait for edit to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get Text After World (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_node1_world: result
+
+  - name: Assert Node 1 sees Hello World
+    type: json_assert
+    statements:
+      - 'json_equal({{text_node1_world}}, {"output": "Hello World"})'
+
+  - name: Get Text After World (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_node2_world: result
+
+  - name: Assert Node 2 sees Hello World
+    type: json_assert
+    statements:
+      - 'json_equal({{text_node2_world}}, {"output": "Hello World"})'
+
+  # ============================================================================
+  # Phase 5: Insert Exclamation
+  # ============================================================================
+  - name: Insert Exclamation from Node 1
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: insert_text
+    args:
+      position: 11
+      text: "!"
+    outputs:
+      insert_exclamation_result: result
+
+  - name: Wait for edit to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get Text After Exclamation (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_with_exclamation_node1: result
+
+  - name: Assert Node 1 sees Hello World!
+    type: json_assert
+    statements:
+      - 'json_equal({{text_with_exclamation_node1}}, {"output": "Hello World!"})'
+
+  - name: Get Text After Exclamation (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_with_exclamation_node2: result
+
+  - name: Assert Node 2 sees Hello World!
+    type: json_assert
+    statements:
+      - 'json_equal({{text_with_exclamation_node2}}, {"output": "Hello World!"})'
+
+  # ============================================================================
+  # Phase 6: Delete Operation
+  # ============================================================================
+  - name: Delete World from Node 2
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: delete_text
+    args:
+      start: 6
+      end: 11
+    outputs:
+      delete_world_result: result
+
+  - name: Wait for deletion to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get Text After Deletion (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_after_delete_node1: result
+
+  - name: Assert Node 1 sees Hello !
+    type: json_assert
+    statements:
+      - 'json_equal({{text_after_delete_node1}}, {"output": "Hello !"})'
+
+  - name: Get Text After Deletion (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_after_delete_node2: result
+
+  - name: Assert Node 2 sees Hello !
+    type: json_assert
+    statements:
+      - 'json_equal({{text_after_delete_node2}}, {"output": "Hello !"})'
+
+  # ============================================================================
+  # Phase 7: Replace Operation
+  # ============================================================================
+  - name: Insert CRDT from Node 1
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: insert_text
+    args:
+      position: 6
+      text: "CRDT"
+    outputs:
+      insert_crdt_result: result
+
+  - name: Wait for edit to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get Text After CRDT Insert (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_with_crdt_node1: result
+
+  - name: Assert Node 1 sees Hello CRDT!
+    type: json_assert
+    statements:
+      - 'json_equal({{text_with_crdt_node1}}, {"output": "Hello CRDT!"})'
+
+  - name: Get Text After CRDT Insert (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_with_crdt_node2: result
+
+  - name: Assert Node 2 sees Hello CRDT!
+    type: json_assert
+    statements:
+      - 'json_equal({{text_with_crdt_node2}}, {"output": "Hello CRDT!"})'
+
+  - name: Replace CRDT with Calimero from Node 2
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: replace_text
+    args:
+      start: 6
+      end: 10
+      text: "Calimero"
+    outputs:
+      replace_result: result
+
+  - name: Wait for replacement to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get Text After Replace (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_after_replace_node1: result
+
+  - name: Assert Node 1 sees Hello Calimero!
+    type: json_assert
+    statements:
+      - 'json_equal({{text_after_replace_node1}}, {"output": "Hello Calimero!"})'
+
+  - name: Get Text After Replace (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_after_replace_node2: result
+
+  - name: Assert Node 2 sees Hello Calimero!
+    type: json_assert
+    statements:
+      - 'json_equal({{text_after_replace_node2}}, {"output": "Hello Calimero!"})'
+
+  # ============================================================================
+  # Phase 8: Document Length Test
+  # ============================================================================
+  - name: Get Document Length (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_length
+    args: {}
+    outputs:
+      doc_length: result
+
+  - name: Assert length is correct (15 characters)
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_length}}, {"output": 15})'
+
+  - name: Check if Document is Empty (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: is_empty
+    args: {}
+    outputs:
+      is_empty_result: result
+
+  - name: Assert document is not empty
+    type: json_assert
+    statements:
+      - 'json_equal({{is_empty_result}}, {"output": false})'
+
+  # ============================================================================
+  # Phase 9: Title Management
+  # ============================================================================
+  - name: Set New Title from Node 2
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: set_title
+    args:
+      new_title: "Collaborative Editor Demo"
+    outputs:
+      set_title_result: result
+
+  - name: Wait for title change to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get New Title (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_title
+    args: {}
+    outputs:
+      new_title_node1: result
+
+  - name: Assert title changed on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{new_title_node1}}, {"output": "Collaborative Editor Demo"})'
+
+  - name: Get New Title (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_title
+    args: {}
+    outputs:
+      new_title_node2: result
+
+  - name: Assert title changed on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{new_title_node2}}, {"output": "Collaborative Editor Demo"})'
+
+  # ============================================================================
+  # Phase 10: Document Statistics
+  # ============================================================================
+  - name: Get Document Stats (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_stats
+    args: {}
+    outputs:
+      stats: result
+
+  - name: Assert stats call succeeded
+    type: assert
+    statements:
+      - "is_set({{stats}})"
+
+  # ============================================================================
+  # Phase 11: Clear Operation
+  # ============================================================================
+  - name: Clear Document from Node 1
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: clear
+    args: {}
+    outputs:
+      clear_result: result
+
+  - name: Wait for clear to propagate
+    type: wait
+    seconds: 2
+
+  - name: Get Text After Clear (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_after_clear_node1: result
+
+  - name: Assert Node 1 document is empty
+    type: json_assert
+    statements:
+      - 'json_equal({{text_after_clear_node1}}, {"output": ""})'
+
+  - name: Get Text After Clear (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_after_clear_node2: result
+
+  - name: Assert Node 2 document is empty
+    type: json_assert
+    statements:
+      - 'json_equal({{text_after_clear_node2}}, {"output": ""})'
+
+  - name: Check if Document is Empty After Clear (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: is_empty
+    args: {}
+    outputs:
+      is_empty_after_clear: result
+
+  - name: Assert document is now empty
+    type: json_assert
+    statements:
+      - 'json_equal({{is_empty_after_clear}}, {"output": true})'
+
+  # ============================================================================
+  # Phase 12: Concurrent Edits - CRDT Convergence Test
+  # ============================================================================
+  - name: Insert ABC from Node 1
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "ABC"
+    outputs:
+      insert_abc_result: result
+
+  - name: Insert XYZ from Node 2
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: insert_text
+    args:
+      position: 0
+      text: "XYZ"
+    outputs:
+      insert_xyz_result: result
+
+  - name: Wait for concurrent edits to propagate
+    type: wait
+    seconds: 3
+
+  - name: Get Text After Concurrent Edits (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_concurrent_node1: result
+
+  - name: Get Text After Concurrent Edits (Node 2)
+    type: call
+    node: collab-near-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key}}"
+    method: get_text
+    args: {}
+    outputs:
+      text_concurrent_node2: result
+
+  - name: Assert both nodes have same text (convergence)
+    type: json_assert
+    statements:
+      - "json_equal({{text_concurrent_node1}}, {{text_concurrent_node2}})"
+
+  - name: Get Length After Concurrent Edits (Node 1)
+    type: call
+    node: collab-near-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_length
+    args: {}
+    outputs:
+      length_concurrent: result
+
+  - name: Assert total length is 6 (ABC + XYZ)
+    type: json_assert
+    statements:
+      - 'json_equal({{length_concurrent}}, {"output": 6})'
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 60
