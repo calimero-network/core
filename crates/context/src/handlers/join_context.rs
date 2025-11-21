@@ -147,5 +147,20 @@ async fn join_context(
     node_client.sync(Some(&context_id), None).await?;
     tracing::info!(%context_id, %invitee_id, "join_context: sync request sent successfully");
 
+    // CRITICAL FIX: Wait for app state to become available after initial sync
+    // When a node joins via open invitation, it needs time for:
+    // 1. Mesh formation (gossipsub)
+    // 2. DAG delta sync from peers
+    // 3. App state materialization from deltas
+    //
+    // Without this delay, immediate function calls will fail with
+    // "Failed to find or read app state" because Root::fetch() returns None.
+    //
+    // This is especially critical for open invitation joins where the
+    // app was initialized (init() called) before the node joined.
+    tracing::info!(%context_id, %invitee_id, "join_context: waiting for app state to sync...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    tracing::info!(%context_id, %invitee_id, "join_context: app state wait completed");
+
     Ok((context_id, invitee_id))
 }
