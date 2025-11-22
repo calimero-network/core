@@ -9,7 +9,7 @@ wait_timeout: 120
 nodes:
   chain_id: testnet-1
   count: 2
-  image: ctx-mgmt-host-fn:4
+  image: ghcr.io/calimero-network/merod:edge
   prefix: ac-node
 
 steps:
