@@ -156,6 +156,11 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         RelayReservationStatus::Accepted,
                     );
                 }
+
+                // Handle external address changes for Discovery state
+                let actions = self.discovery.state.on_external_address_changed();
+                self.execute_reachability_actions(actions);
+
                 self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::ExternalAddrExpired { address } => {
@@ -166,6 +171,11 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         RelayReservationStatus::Expired,
                     );
                 }
+
+                // Handle external address changes for Discovery state
+                let actions = self.discovery.state.on_external_address_changed();
+                self.execute_reachability_actions(actions);
+
                 self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {

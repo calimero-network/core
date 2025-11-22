@@ -27,7 +27,8 @@ use tracing::error;
 
 use crate::handlers::stream::incoming::FromIncoming;
 
-mod behaviour;
+pub mod autonat;
+pub mod behaviour;
 mod discovery;
 mod handlers;
 
