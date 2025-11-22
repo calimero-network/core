@@ -455,20 +455,19 @@ impl ContextClient {
             if let Ok(mut iter) = handle.iter::<key::ContextIdentity>() {
                 let start_key = key::ContextIdentity::new(context_id, [0u8; DIGEST_SIZE].into());
 
-                if iter.seek(start_key).is_ok() {
-                    // Iterate over all keys found after seek
-                    for k in iter.keys() {
-                        if let Ok(k) = k {
-                            // Stop if we drifted to another context
-                            if k.context_id() != context_id {
-                                break;
-                            }
+                // Capture the first element from seek() and chain with the rest to avoid skipping the first member
+                let first = iter.seek(start_key).ok().flatten();
 
-                            // If local member is missing from external set -> Mark for removal
-                            if !external_members.contains(&k.public_key()) {
-                                members_to_remove.push(*k.public_key());
-                            }
-                        }
+                // Iterate over the first item + the rest of the keys
+                for k in first.into_iter().chain(iter.keys().flatten()) {
+                    // Stop if we drifted to another context
+                    if k.context_id() != context_id {
+                        break;
+                    }
+
+                    // If local member is missing from external set -> Mark for removal
+                    if !external_members.contains(&k.public_key()) {
+                        members_to_remove.push(*k.public_key());
                     }
                 }
             }
