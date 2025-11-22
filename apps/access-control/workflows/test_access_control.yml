@@ -2,14 +2,14 @@ description: Test Access Control App
 name: Access Control Test
 
 # Configuration options
-#stop_all_nodes: true
-#restart: true
-#wait_timeout: 120
+stop_all_nodes: true
+restart: true
+wait_timeout: 120
 
 nodes:
   chain_id: testnet-1
   count: 2
-  image: ctx-mgmt-host-fn:3
+  image: ctx-mgmt-host-fn:4
   prefix: ac-node
 
 steps:
@@ -115,20 +115,21 @@ steps:
     type: assert
     statements:
       - "contains({{all_members_final_result}}, {{admin_key}})"
-  # 11. Verify Node 2 is NOT member
-  # Require updating the store in the node??
-  #- name: Check Node 2 Membership Again
-  #  type: call
-  #  node: ac-node-1
-  #  context_id: '{{context_id}}'
-  #  executor_public_key: '{{admin_key}}'
-  #  method: is_member
-  #  args:
-  #    public_key: '{{node2_key}}'
-  #  outputs:
-  #    is_member_final: result
+      - "not_contains({{all_members_final_result}}, {{node2_key}})"
 
-  #- name: Assert Node 2 is NOT member
-  #  type: json_assert
-  #  statements:
-  #    - 'json_equal({{is_member_final}}, {"output": false})'
+  # 11. Verify Node 2 is NOT member
+  - name: Check Node 2 Membership Again
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: is_member
+    args:
+      public_key: '{{node2_key}}'
+    outputs:
+      is_member_final: result
+
+  - name: Assert Node 2 is NOT member
+    type: json_assert
+    statements:
+      - 'json_equal({{is_member_final}}, {"output": false})'

@@ -7,14 +7,17 @@
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
+use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
+use super::external::ExternalClient;
 use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
@@ -239,45 +242,34 @@ impl ContextClient {
             |config| Ok((config, true)),
         )?;
 
-        let members_revision = {
+        // Fetch the LATEST revision from the blockchain
+        let remote_members_revision = {
             let external_client = self.external_client(&context_id, &config)?;
-            let config_client = external_client.config();
-            config_client.members_revision().await?
+            external_client.config().members_revision().await?
         };
 
-        if context.is_none() || members_revision != config.members_revision {
+        // Check members revision and sync members, if needed
+        if context.is_none() || remote_members_revision != config.members_revision {
+            tracing::info!(
+                %context_id,
+                local_members_revision = config.members_revision,
+                remote_members_revision,
+                "Members revision changed, synchronizing member list...",
+            );
+
             should_save_config = true;
-            config.members_revision = members_revision;
+            config.members_revision = remote_members_revision;
 
+            // Perform the sync of the members.
             let external_client = self.external_client(&context_id, &config)?;
-            let config_client = external_client.config();
-
-            for (offset, length) in (0..).map(|i| {
-                (
-                    Self::MEMBERS_PAGE_SIZE.saturating_mul(i),
-                    Self::MEMBERS_PAGE_SIZE,
-                )
-            }) {
-                let members = config_client.members(offset, length).await?;
-
-                if members.is_empty() {
-                    break;
-                }
-
-                for member in members {
-                    let key = key::ContextIdentity::new(context_id, member);
-
-                    if !handle.has(&key)? {
-                        handle.put(
-                            &key,
-                            &types::ContextIdentity {
-                                private_key: None,
-                                sender_key: None,
-                            },
-                        )?;
-                    }
-                }
-            }
+            self.sync_members(context_id, &external_client).await?;
+        } else {
+            debug!(
+                %context_id,
+                local_members_revision = config.members_revision,
+                remote_members_revision,
+                "Members revision was not changed, skipping sync",
+            );
         }
 
         let application_revision = {
@@ -407,5 +399,92 @@ impl ContextClient {
         let context = Context::with_dag_heads(context_id, application_id, root_hash, dag_heads);
 
         Ok(context)
+    }
+
+    /// Synchronizes the local member list with the authoritative state from the blockchain.
+    ///
+    /// These actions are performed:
+    /// 1. Fetch the complete list of members from the external contract.
+    /// 2. Adds any missing members to the local `datastore`.
+    /// 3. Prunes (deletes) any local members that are no longer present in the external contract.
+    async fn sync_members(
+        &self,
+        context_id: ContextId,
+        external_client: &ExternalClient<'_>,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.handle();
+        let config_client = external_client.config();
+
+        let mut external_members = BTreeSet::new();
+
+        // Fetch ALL remote members
+        for (offset, length) in (0..).map(|i| {
+            (
+                Self::MEMBERS_PAGE_SIZE.saturating_mul(i),
+                Self::MEMBERS_PAGE_SIZE,
+            )
+        }) {
+            let members = config_client.members(offset, length).await?;
+            if members.is_empty() {
+                break;
+            }
+
+            for member in members {
+                external_members.insert(member);
+
+                // Upsert: add to local DB if missing
+                let key = key::ContextIdentity::new(context_id, member);
+                if !handle.has(&key)? {
+                    handle.put(
+                        &key,
+                        &types::ContextIdentity {
+                            private_key: None,
+                            sender_key: None,
+                        },
+                    )?;
+                }
+            }
+        }
+
+        // PRUNING stage.
+        // Identify members that exist locally but NOT remotely.
+        let mut members_to_remove = Vec::new();
+
+        // Create a scope for the iterator to avoid borrowing issues
+        {
+            if let Ok(mut iter) = handle.iter::<key::ContextIdentity>() {
+                let start_key = key::ContextIdentity::new(context_id, [0u8; DIGEST_SIZE].into());
+
+                if iter.seek(start_key).is_ok() {
+                    // Iterate over all keys found after seek
+                    for k in iter.keys() {
+                        if let Ok(k) = k {
+                            // Stop if we drifted to another context
+                            if k.context_id() != context_id {
+                                break;
+                            }
+
+                            // If local member is missing from external set -> Mark for removal
+                            if !external_members.contains(&k.public_key()) {
+                                members_to_remove.push(*k.public_key());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Execute deletions of members that exist in the local DB, but don't exist remotely anymore
+        for member in members_to_remove {
+            let member_public_key = member.into();
+            debug!(%context_id, %member_public_key, "Trying to prune member from local store (it was removed from the contract)");
+
+            let key = key::ContextIdentity::new(context_id, member_public_key);
+            handle.delete(&key)?;
+
+            info!(%context_id, %member_public_key, "Pruned member from local store (it was removed from the contract)");
+        }
+
+        Ok(())
     }
 }
