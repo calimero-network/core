@@ -28,7 +28,7 @@ ABI_SIZE=$(stat -f%z res/abi.json 2>/dev/null || stat -c%s res/abi.json 2>/dev/n
 cat > res/bundle-temp/manifest.json <<EOF
 {
   "version": "1.0",
-  "package": "com.calimero.kv-store",
+  "package": "com.calimero.access-control",
   "appVersion": "1.0.0",
   "wasm": {
     "path": "app.wasm",
@@ -46,12 +46,12 @@ EOF
 
 # Create .mpk bundle (tar.gz archive)
 cd res/bundle-temp
-tar -czf ../kv-store-1.0.0.mpk manifest.json app.wasm abi.json 2>/dev/null || \
-tar -czf ../kv-store-1.0.0.mpk manifest.json app.wasm 2>/dev/null
+tar -czf ../access-control-1.0.0.mpk manifest.json app.wasm abi.json 2>/dev/null || \
+tar -czf ../access-control-1.0.0.mpk manifest.json app.wasm 2>/dev/null
 
 # Cleanup
 cd ..
 rm -rf bundle-temp
 
-echo "Bundle created: res/kv-store-1.0.0.mpk"
+echo "Bundle created: res/access-control-1.0.0.mpk"
 

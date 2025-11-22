@@ -1,7 +1,6 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env;
-use calimero_sdk::serde::Serialize;
 use calimero_sdk::PublicKey;
 
 #[app::state]

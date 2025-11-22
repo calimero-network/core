@@ -80,7 +80,7 @@ impl VMHostFunctions<'_> {
 
         // Serialize using Borsh
         let data = borsh::to_vec(&members)
-            .map_err(|_| VMLogicError::HostError(HostError::DeserializationError))?;
+            .map_err(|_| VMLogicError::HostError(HostError::SerializationError))?;
 
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, dest_register_id, data))?;
 
