@@ -14,11 +14,12 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_sys as sys;
 use ouroboros::self_referencing;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::constants::{ONE_GIB, ONE_KIB, ONE_MIB};
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
+pub use crate::logic::traits::ContextHost;
 use crate::store::Storage;
 use crate::Constraint;
 
@@ -26,6 +27,7 @@ mod errors;
 mod host_functions;
 mod imports;
 mod registers;
+mod traits;
 
 pub use errors::VMLogicError;
 pub use host_functions::*;
@@ -182,6 +184,11 @@ pub struct VMLogic<'a> {
     /// A list of approvals submitted during execution.
     approvals: Vec<[u8; DIGEST_SIZE]>,
 
+    /// A list of context configuration mutations requested by the guest.
+    context_mutations: Vec<ContextMutation>,
+    /// Interface to the host system for querying context information (e.g. membership).
+    context_host: Option<Box<dyn ContextHost>>,
+
     // Blob functionality
     /// An optional client for interacting with the node's blob storage.
     node_client: Option<NodeClient>,
@@ -205,6 +212,7 @@ impl<'a> VMLogic<'a> {
         context: VMContext<'a>,
         limits: &'a VMLimits,
         node_client: Option<NodeClient>,
+        context_host: Option<Box<dyn ContextHost>>,
     ) -> Self {
         debug!(
             target: "runtime::logic",
@@ -228,6 +236,8 @@ impl<'a> VMLogic<'a> {
             commit_called: false,
             proposals: BTreeMap::new(),
             approvals: vec![],
+            context_mutations: vec![],
+            context_host,
 
             // Blob functionality
             node_client,
@@ -277,6 +287,19 @@ impl<'a> VMLogic<'a> {
     }
 }
 
+/// Represents a request from the guest to modify context configuration.
+///
+/// These mutations are collected during execution and applied by the host
+/// after the WASM execution completes successfully.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContextMutation {
+    /// Request to add a new member to the context.
+    AddMember { public_key: [u8; DIGEST_SIZE] },
+    /// Request to remove an existing member from the context.
+    RemoveMember { public_key: [u8; DIGEST_SIZE] },
+    // TODO: add Grant/Revoke capabilities for ACL here in the future.
+}
+
 /// Represents the final outcome of a VM execution.
 ///
 /// This struct aggregates all the results and side effects of function calls,
@@ -302,6 +325,8 @@ pub struct Outcome {
     pub proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
     /// A list of approvals submitted during execution.
     pub approvals: Vec<[u8; DIGEST_SIZE]>,
+    /// A list of context mutations submitted during execution.
+    pub context_mutations: Vec<ContextMutation>,
     //TODO: execution runtime (???).
     //TODO: current storage usage of the app (???).
 }
@@ -362,6 +387,7 @@ impl VMLogic<'_> {
             artifact: self.artifact,
             proposals: self.proposals,
             approvals: self.approvals,
+            context_mutations: self.context_mutations,
         }
     }
 }
@@ -569,7 +595,7 @@ mod tests {
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
-            let mut logic = VMLogic::new($storage, context, $limits, None);
+            let mut logic = VMLogic::new($storage, context, $limits, None, None);
             let _ = logic.with_memory(memory);
             (logic, store)
         }};

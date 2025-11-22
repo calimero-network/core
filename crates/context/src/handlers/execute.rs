@@ -22,7 +22,7 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_runtime::logic::Outcome;
+use calimero_runtime::logic::{ContextHost, Outcome};
 use calimero_storage::{
     action::Action,
     delta::{CausalDelta, StorageDelta},
@@ -38,6 +38,7 @@ use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error, info, warn};
 
+use crate::handlers::utils::{process_context_mutations, StoreContextHost};
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
 
@@ -479,6 +480,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                         proxy_client.approve(&executor, &proposal_id).await?;
                     }
 
+                    process_context_mutations(&context_client, context_id, executor, &outcome.context_mutations).await;
+
                     Ok((guard, context.root_hash, outcome))
                 }
                 .map_err(|err| {
@@ -622,8 +625,13 @@ async fn internal_execute(
     is_state_op: bool,
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<(Outcome, Option<CausalDelta>)> {
-    let storage = ContextStorage::from(datastore, context.id);
+    // Create the host store context implementation
+    let context_host = StoreContextHost {
+        store: datastore.clone(),
+        context_id: context.id,
+    };
 
+    let storage = ContextStorage::from(datastore, context.id);
     let (mut outcome, storage) = execute(
         guard,
         module,
@@ -632,6 +640,7 @@ async fn internal_execute(
         input,
         storage,
         node_client.clone(),
+        Some(Box::new(context_host)),
     )
     .await?;
 
@@ -885,6 +894,7 @@ pub async fn execute(
     input: Cow<'static, [u8]>,
     mut storage: ContextStorage,
     node_client: NodeClient,
+    context_host: Option<Box<dyn ContextHost>>,
 ) -> eyre::Result<(Outcome, ContextStorage)> {
     let context_id = **context;
 
@@ -899,6 +909,7 @@ pub async fn execute(
                 &input,
                 &mut storage,
                 Some(node_client),
+                context_host,
             )?;
             Ok((outcome, storage))
         })
