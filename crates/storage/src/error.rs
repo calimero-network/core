@@ -7,6 +7,7 @@ use serde::Serialize;
 use thiserror::Error as ThisError;
 
 use crate::address::Id;
+use calimero_primitives::identity::PublicKey;
 
 /// Errors that can occur when working with the storage system.
 #[derive(Debug, ThisError)]
@@ -34,6 +35,15 @@ pub enum StorageError {
     /// Invalid or corrupt data encountered.
     #[error("Invalid data: {0}")]
     InvalidData(String),
+
+    /// [NEW] The provided signature for an action is invalid.
+    #[error("Invalid signature for user-owned data")]
+    InvalidSignature,
+
+    /// A remote action was rejected due to an invalid (old or reused) nonce.
+    /// `PublicKey` is `Box`ed to reduce the enum's size.
+    #[error("Nonce replay detected for user {}: received nonce {}", 0.0, 0.1)]
+    NonceReplay(Box<(PublicKey, u64)>),
 
     /// The requested record was not found, but in the context it was asked for,
     /// it was expected to be found and so this represents an error or some kind
@@ -66,6 +76,11 @@ impl Serialize for StorageError {
             | Self::UnexpectedId(id)
             | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
             Self::InvalidData(ref msg) => serializer.serialize_str(msg),
+            Self::InvalidSignature => serializer.serialize_str("Invalid signature"),
+            Self::NonceReplay(ref data) => {
+                let (pk, nonce) = &**data;
+                serializer.serialize_str(&format!("Nonce replay for {}: {}", pk, nonce))
+            }
             Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
         }
     }

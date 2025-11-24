@@ -103,6 +103,7 @@ fn tombstone_marks_deleted() {
     let delete_action = Action::DeleteRef {
         id,
         deleted_at: time_now(),
+        metadata: Metadata::default(),
     };
 
     TestInterface::apply_action(delete_action).unwrap();
@@ -120,7 +121,7 @@ fn tombstone_prevents_old_resurrection() {
     let id = page.id();
 
     assert!(TestInterface::save(&mut page).unwrap());
-    let save_meta = page.element().metadata;
+    let save_meta = page.element().metadata.clone();
 
     // Delete with current time
     let delete_time = time_now();
@@ -164,7 +165,7 @@ fn tombstone_allows_newer_update() {
         id,
         data: borsh::to_vec(&new_page).unwrap(),
         ancestors: vec![],
-        metadata: new_page.element().metadata,
+        metadata: new_page.element().metadata.clone(),
     };
 
     TestInterface::apply_action(update_action).unwrap();
@@ -190,6 +191,7 @@ fn delete_vs_update_conflict() {
     let delete_action = Action::DeleteRef {
         id,
         deleted_at: time_now(),
+        metadata: Metadata::default(),
     };
 
     // Small delay for newer update
@@ -203,7 +205,7 @@ fn delete_vs_update_conflict() {
         id,
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     // Apply delete first, then update
@@ -230,7 +232,7 @@ fn update_vs_delete_conflict() {
         id,
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     // Small delay for newer delete
@@ -239,6 +241,7 @@ fn update_vs_delete_conflict() {
     let delete_action = Action::DeleteRef {
         id,
         deleted_at: time_now(),
+        metadata: Metadata::default(),
     };
 
     // Apply update first, then delete
@@ -301,7 +304,7 @@ fn concurrent_update_same_entity_different_fields() {
         id: page.id(),
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     // Second update with newer timestamp
@@ -313,7 +316,7 @@ fn concurrent_update_same_entity_different_fields() {
         id: page.id(),
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     // Apply both
@@ -338,7 +341,7 @@ fn actions_idempotent() {
         id: page.id(),
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     // Apply multiple times
@@ -360,7 +363,7 @@ fn update_before_add_creates_entity() {
         id: page.id(),
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     TestInterface::apply_action(action).unwrap();
@@ -375,13 +378,14 @@ fn delete_prevents_old_add() {
     // Test that tombstones prevent resurrection with older timestamps
     let mut page = Page::new_from_element("Test", Element::root());
     TestInterface::save(&mut page).unwrap();
-    let old_meta = page.element().metadata;
+    let old_meta = page.element().metadata.clone();
 
     // Delete
     std::thread::sleep(std::time::Duration::from_millis(2));
     let delete_action = Action::DeleteRef {
         id: page.id(),
         deleted_at: time_now(),
+        metadata: Metadata::default(),
     };
     TestInterface::apply_action(delete_action).unwrap();
 
@@ -422,7 +426,7 @@ fn same_timestamp_lww_behavior() {
         id,
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -432,7 +436,7 @@ fn same_timestamp_lww_behavior() {
         id,
         data: borsh::to_vec(&page).unwrap(),
         ancestors: vec![],
-        metadata: page.element().metadata,
+        metadata: page.element().metadata.clone(),
     };
 
     // Apply both - later one wins
@@ -486,6 +490,7 @@ fn multiple_deletes_idempotent() {
     let delete_action = Action::DeleteRef {
         id: page.id(),
         deleted_at: time_now(),
+        metadata: Metadata::default(),
     };
 
     // Delete multiple times
@@ -520,7 +525,7 @@ fn many_sequential_updates() {
             id,
             data: borsh::to_vec(&page).unwrap(),
             ancestors: vec![],
-            metadata: page.element().metadata,
+            metadata: page.element().metadata.clone(),
         };
 
         TestInterface::apply_action(action).unwrap();
@@ -549,6 +554,7 @@ fn rapid_add_delete_cycles() {
             let action = Action::DeleteRef {
                 id,
                 deleted_at: time_now(),
+                metadata: Metadata::default(),
             };
             TestInterface::apply_action(action).unwrap();
         } else {
@@ -560,7 +566,7 @@ fn rapid_add_delete_cycles() {
                 id,
                 data: borsh::to_vec(&page).unwrap(),
                 ancestors: vec![],
-                metadata: page.element().metadata,
+                metadata: page.element().metadata.clone(),
             };
             TestInterface::apply_action(action).unwrap();
         }

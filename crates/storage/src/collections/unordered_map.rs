@@ -9,15 +9,17 @@ use serde::ser::SerializeMap;
 use serde::Serialize;
 
 use super::{compute_id, Collection, StorageAdaptor};
+use crate::address::Id;
 use crate::collections::error::StoreError;
-use crate::entities::Data;
+use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::store::MainStorage;
+use std::collections::BTreeMap;
 
 /// A map collection that stores key-value pairs.
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
-    inner: Collection<(K, V), S>,
+    pub(crate) inner: Collection<(K, V), S>,
 }
 
 impl<K, V> UnorderedMap<K, V, MainStorage>
@@ -56,7 +58,30 @@ where
     where
         K: AsRef<[u8]> + PartialEq,
     {
-        let id = compute_id(self.inner.id(), key.as_ref());
+        // By default, add as the Public storage.
+        self.insert_with_storage_type(key, value, StorageType::Public, None)
+    }
+
+    /// Insert a key-value pair into the map with the specified `StorageType`.
+    /// It also optionally allows passing a custom `Id`.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    ///
+    pub(crate) fn insert_with_storage_type(
+        &mut self,
+        key: K,
+        value: V,
+        storage_type: StorageType,
+        custom_id: Option<Id>,
+    ) -> Result<Option<V>, StoreError>
+    where
+        K: AsRef<[u8]> + PartialEq,
+    {
+        let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
 
         if let Some(mut entry) = self.inner.get_mut(id)? {
             let (_, v) = &mut *entry;
@@ -64,7 +89,11 @@ where
             return Ok(Some(mem::replace(v, value)));
         }
 
-        let _ignored = self.inner.insert(Some(id), (key, value))?;
+        // Insert into the inner collection.
+        // Pass the `StorageType` directly to the `Collection`.
+        let _ignored = self
+            .inner
+            .insert_with_storage_type(Some(id), (key, value), storage_type)?;
 
         Ok(None)
     }
@@ -161,6 +190,26 @@ where
     ///
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.inner.clear()
+    }
+}
+
+// Implement Data for UnorderedMap by delegating to its inner Collection
+impl<K, V, S> Data for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
+        self.inner.collections()
+    }
+
+    fn element(&self) -> &Element {
+        self.inner.element()
+    }
+
+    fn element_mut(&mut self) -> &mut Element {
+        self.inner.element_mut()
     }
 }
 

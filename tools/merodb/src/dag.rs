@@ -11,6 +11,147 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::Column;
 
+/// Get detailed information about a specific delta (actions and events)
+/// This is used for on-demand loading when the user hovers over a node
+pub fn get_delta_details(
+    db: &DBWithThreadMode<SingleThreaded>,
+    context_id: &str,
+    delta_id: &str,
+) -> Result<Value> {
+    // Decode the context_id and delta_id from hex
+    let context_bytes = hex::decode(context_id)
+        .wrap_err_with(|| format!("Invalid context_id hex: {context_id}"))?;
+    let delta_bytes =
+        hex::decode(delta_id).wrap_err_with(|| format!("Invalid delta_id hex: {delta_id}"))?;
+
+    if context_bytes.len() != 32 {
+        eyre::bail!("Context ID must be 32 bytes, got {}", context_bytes.len());
+    }
+    if delta_bytes.len() != 32 {
+        eyre::bail!("Delta ID must be 32 bytes, got {}", delta_bytes.len());
+    }
+
+    // Create the composite key: ContextId + DeltaId (64 bytes total)
+    let mut key = Vec::with_capacity(64);
+    key.extend_from_slice(&context_bytes);
+    key.extend_from_slice(&delta_bytes);
+
+    // Try to find the delta in the Delta column first, then Generic
+    let delta = {
+        let delta_cf_name = Column::Delta.as_str();
+        if let Some(delta_cf) = db.cf_handle(delta_cf_name) {
+            if let Some(value) = db.get_cf(&delta_cf, &key)? {
+                Some(
+                    StoreContextDagDelta::try_from_slice(&value)
+                        .wrap_err("Failed to deserialize delta from Delta column")?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+    .or_else(|| {
+        let generic_cf_name = Column::Generic.as_str();
+        if let Some(generic_cf) = db.cf_handle(generic_cf_name) {
+            db.get_cf(&generic_cf, &key)
+                .ok()
+                .flatten()
+                .and_then(|value| StoreContextDagDelta::try_from_slice(&value).ok())
+        } else {
+            None
+        }
+    })
+    .ok_or_else(|| eyre::eyre!("Delta not found: {context_id}:{delta_id}"))?;
+
+    // Deserialize actions
+    let actions_json = match delta.deserialize_actions() {
+        Ok(actions) => {
+            let actions_vec: Vec<Value> = actions
+                .iter()
+                .map(|action| {
+                    use calimero_storage::action::Action;
+                    match action {
+                        Action::Add {
+                            id,
+                            data,
+                            ancestors,
+                            metadata,
+                        } => json!({
+                            "type": "Add",
+                            "id": hex::encode(id.as_bytes()),
+                            "data_size": data.len(),
+                            "ancestors_count": ancestors.len(),
+                            "metadata": {
+                                "created_at": metadata.created_at(),
+                                "updated_at": metadata.updated_at(),
+                                "storage_type": "UNIMPLEMENTED",
+                            }
+                        }),
+                        Action::Update {
+                            id,
+                            data,
+                            ancestors,
+                            metadata,
+                        } => json!({
+                            "type": "Update",
+                            "id": hex::encode(id.as_bytes()),
+                            "data_size": data.len(),
+                            "ancestors_count": ancestors.len(),
+                            "metadata": {
+                                "created_at": metadata.created_at(),
+                                "updated_at": metadata.updated_at(),
+                                "storage_type": "UNIMPLEMENTED",
+                            }
+                        }),
+                        Action::DeleteRef {
+                            id,
+                            deleted_at,
+                            metadata,
+                        } => json!({
+                            "type": "DeleteRef",
+                            "id": hex::encode(id.as_bytes()),
+                            "deleted_at": deleted_at,
+                            "metadata": {
+                                "created_at": metadata.created_at(),
+                                "updated_at": metadata.updated_at(),
+                                "storage_type": "UNIMPLEMENTED",
+                            }
+                        }),
+                        Action::Compare { id } => json!({
+                            "type": "Compare",
+                            "id": hex::encode(id.as_bytes()),
+                        }),
+                    }
+                })
+                .collect();
+            Some(actions_vec)
+        }
+        Err(e) => {
+            eprintln!("Failed to deserialize actions for delta {delta_id}: {e}");
+            None
+        }
+    };
+
+    // Deserialize events if present
+    let events_json = match delta.deserialize_events() {
+        Ok(Some(events)) => Some(events),
+        Ok(None) => None,
+        Err(e) => {
+            eprintln!("Failed to deserialize events for delta {delta_id}: {e}");
+            None
+        }
+    };
+
+    Ok(json!({
+        "context_id": context_id,
+        "delta_id": delta_id,
+        "actions": actions_json,
+        "events": events_json
+    }))
+}
+
 /// Export DAG structure from the Generic column family
 #[expect(
     clippy::too_many_lines,
@@ -110,8 +251,9 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                     .get(&context_id)
                     .is_some_and(|heads| heads.contains(&delta_id));
 
-                // Create node
-                let node = json!({
+                // Create node WITHOUT deserializing actions/events
+                // These will be loaded on-demand via the /api/dag/delta-details endpoint
+                let node_json = json!({
                     "id": node_id,
                     "context_id": context_id,
                     "delta_id": delta_id,
@@ -124,9 +266,11 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                     "parent_count": delta.parents.len(),
                     "parents": parent_hashes.clone(),
                     "is_dag_head": is_dag_head,
-                    "has_missing_parents": false  // Will be updated later
+                    "has_missing_parents": false,  // Will be updated later
+                    "expected_root_hash": hex::encode(delta.expected_root_hash)
                 });
-                nodes.push(node);
+
+                nodes.push(node_json);
 
                 // Store parents for later edge creation
             }

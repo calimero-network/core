@@ -295,7 +295,7 @@ fn parse_context_meta(data: &[u8]) -> Result<Value> {
     match StoreContextMeta::try_from_slice(data) {
         Ok(meta) => Ok(json!({
             "application_id": String::from_utf8_lossy(meta.application.application_id().as_ref()),
-            "root_hash": String::from_utf8_lossy(&meta.root_hash),
+            "root_hash": hex::encode(meta.root_hash),
             "dag_heads": meta.dag_heads.iter().map(hex::encode).collect::<Vec<_>>()
         })),
         Err(e) => Ok(json!({
@@ -429,15 +429,23 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,
-                "applied": delta.applied
+                "applied": delta.applied,
+                "expected_root_hash": hex::encode(delta.expected_root_hash)
             }))
         }
-        Err(_) => {
+        Err(e) => {
+            // Log the error for debugging
+            tracing::debug!(
+                error = %e,
+                data_len = data.len(),
+                "Failed to parse Generic value as ContextDagDelta"
+            );
             // Fall back to raw bytes for generic values
             Ok(json!({
                 "type": "generic",
                 "raw": String::from_utf8_lossy(data),
-                "size": data.len()
+                "size": data.len(),
+                "parse_error": format!("{e}")
             }))
         }
     }

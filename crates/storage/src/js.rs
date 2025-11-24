@@ -68,7 +68,7 @@ impl JsUnorderedMap {
     /// Returns metadata associated with the collection.
     #[must_use]
     pub fn metadata(&self) -> Metadata {
-        *self.storage.metadata()
+        self.storage.metadata().clone()
     }
 
     /// Grants immutable access to the underlying element.

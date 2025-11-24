@@ -128,6 +128,8 @@ pub enum HostError {
     BlobHandleLimitExceeded,
     #[error("total blob memory usage exceeds limit")]
     BlobMemoryLimitExceeded,
+    #[error("incorrect ed25519 public key")]
+    Ed25519IncorrectPublicKey,
 }
 
 #[derive(Copy, Clone, Debug, Serialize)]
