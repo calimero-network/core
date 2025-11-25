@@ -1,3 +1,5 @@
+pub mod cli;
+
 use borsh::BorshDeserialize;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{CollectionType, Field, Manifest, TypeDef, TypeRef};
@@ -121,7 +123,7 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
         "type": "Entry",
         "field": field.name.clone(),
         "element": {
-            "id": String::from_utf8_lossy(&element_id)
+            "id": hex::encode(element_id)
         },
         "key": {
             "parsed": key_value,
@@ -141,11 +143,11 @@ fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
     if let Ok(index) = borsh::from_slice::<EntityIndex>(bytes) {
         return Some(json!({
             "type": "EntityIndex",
-            "id": String::from_utf8_lossy(index.id.as_bytes()),
-            "parent_id": index.parent_id.map(|id| String::from_utf8_lossy(id.as_bytes()).to_string()),
+            "id": hex::encode(index.id.as_bytes()),
+            "parent_id": index.parent_id.map(|id| hex::encode(id.as_bytes())),
             "children_count": index.children.as_ref().map_or(0, Vec::len),
-            "full_hash": String::from_utf8_lossy(&index.full_hash),
-            "own_hash": String::from_utf8_lossy(&index.own_hash),
+            "full_hash": hex::encode(index.full_hash),
+            "own_hash": hex::encode(index.own_hash),
             "created_at": index.metadata.created_at,
             "updated_at": *index.metadata.updated_at,
             "deleted_at": index.deleted_at
@@ -157,7 +159,7 @@ fn decode_state_entry(bytes: &[u8], manifest: &Manifest) -> Option<Value> {
         if let Ok(id) = borsh::from_slice::<Id>(bytes) {
             return Some(json!({
                 "type": "RawId",
-                "id": String::from_utf8_lossy(id.as_bytes()),
+                "id": hex::encode(id.as_bytes()),
                 "note": "Direct ID storage (possibly root collection reference or internal metadata)"
             }));
         }
@@ -227,7 +229,7 @@ fn decode_scalar_entry(bytes: &[u8], field: &Field, manifest: &Manifest) -> Resu
         "type": "ScalarEntry",
         "field": field.name.clone(),
         "element": {
-            "id": String::from_utf8_lossy(&element_id)
+            "id": hex::encode(element_id)
         },
         "value": {
             "parsed": value_parsed,
@@ -288,7 +290,7 @@ impl Deref for UpdatedAt {
 }
 
 /// Parse a value with the ABI manifest present
-fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Result<Value> {
+pub fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Result<Value> {
     match column {
         Column::State => {
             if let Some(decoded) = decode_state_entry(value, manifest) {
@@ -310,15 +312,16 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                         let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                         return Ok(json!({
                             "type": "context_dag_delta",
-                            "delta_id": String::from_utf8_lossy(&delta.delta_id),
-                            "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
+                            "delta_id": hex::encode(delta.delta_id),
+                            "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                             "actions": {
                                 "parsed": parsed,
                                 "raw": String::from_utf8_lossy(&delta.actions)
                             },
                             "timestamp": timestamp_raw,
                             "hlc": hlc_json,
-                            "applied": delta.applied
+                            "applied": delta.applied,
+                            "expected_root_hash": hex::encode(delta.expected_root_hash)
                         }));
                     }
                 }
@@ -326,27 +329,391 @@ fn parse_value_with_abi(column: Column, value: &[u8], manifest: &Manifest) -> Re
                 let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                 return Ok(json!({
                     "type": "context_dag_delta",
-                    "delta_id": String::from_utf8_lossy(&delta.delta_id),
-                    "parents": delta.parents.iter().map(|p| String::from_utf8_lossy(p).to_string()).collect::<Vec<_>>(),
+                    "delta_id": hex::encode(delta.delta_id),
+                    "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                     "actions": {
                         "raw": String::from_utf8_lossy(&delta.actions),
                         "note": "Unable to decode actions with ABI"
                     },
                     "timestamp": timestamp_raw,
                     "hlc": hlc_json,
-                    "applied": delta.applied
+                    "applied": delta.applied,
+                    "expected_root_hash": hex::encode(delta.expected_root_hash)
                 }));
             }
 
-            Ok(json!({
-                "raw": String::from_utf8_lossy(value),
-                "size": value.len(),
-                "note": "Unable to decode with ABI"
-            }))
+            // Fall back to parse_value which properly handles Generic column entries
+            parse_value(column, value)
         }
         _ => {
             // For other columns, use default parsing
             parse_value(column, value)
         }
     }
+}
+
+/// List all available contexts without building their trees
+/// This is a lightweight operation that only reads the Meta column
+#[cfg(feature = "gui")]
+pub fn list_contexts(db: &DBWithThreadMode<SingleThreaded>) -> Result<Vec<Value>> {
+    let meta_cf = db
+        .cf_handle("Meta")
+        .ok_or_else(|| eyre::eyre!("Meta column family not found"))?;
+
+    let mut contexts = Vec::new();
+    let iter = db.iterator_cf(&meta_cf, IteratorMode::Start);
+
+    for item in iter {
+        let (key, value) = item.wrap_err("Failed to read Meta entry")?;
+
+        let key_json = parse_key(Column::Meta, &key)?;
+        let context_id = key_json
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| eyre::eyre!("Failed to extract context_id from Meta key"))?;
+
+        let value_json = parse_value(Column::Meta, &value)?;
+        let root_hash_str = value_json
+            .get("root_hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| eyre::eyre!("Failed to extract root_hash from Meta value"))?;
+
+        contexts.push(json!({
+            "context_id": context_id,
+            "root_hash": root_hash_str
+        }));
+    }
+
+    Ok(contexts)
+}
+
+/// Extract state tree for a specific context
+/// This builds the tree on-demand for only the requested context
+#[cfg(feature = "gui")]
+pub fn extract_context_tree(
+    db: &DBWithThreadMode<SingleThreaded>,
+    context_id_hex: &str,
+    manifest: &Manifest,
+) -> Result<Value> {
+    let state_cf = db
+        .cf_handle("State")
+        .ok_or_else(|| eyre::eyre!("State column family not found"))?;
+
+    let context_id_bytes =
+        hex::decode(context_id_hex).wrap_err("Failed to decode context_id from hex")?;
+
+    if context_id_bytes.len() != 32 {
+        return Err(eyre::eyre!(
+            "Invalid context_id length: expected 32 bytes, got {}",
+            context_id_bytes.len()
+        ));
+    }
+
+    let tree = find_and_build_tree_for_context(db, state_cf, &context_id_bytes, manifest)?;
+
+    Ok(json!({
+        "context_id": context_id_hex,
+        "tree": tree
+    }))
+}
+
+/// Find the root node for a context and build the tree
+#[cfg(feature = "gui")]
+fn find_and_build_tree_for_context(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    manifest: &Manifest,
+) -> Result<Value> {
+    use rocksdb::IteratorMode;
+    use std::collections::HashMap;
+
+    // Single pass: build mappings and find root node
+    let mut element_to_state: HashMap<String, String> = HashMap::new();
+    let mut element_to_data: HashMap<String, Value> = HashMap::new();
+    let mut root_state_keys: Vec<String> = Vec::new();
+    let iter = db.iterator_cf(state_cf, IteratorMode::Start);
+
+    for item in iter {
+        let (key, value) = item.wrap_err("Failed to read State entry")?;
+
+        // Check if this key belongs to our context (first 32 bytes match context_id)
+        if key.len() == 64 && &key[0..32] == context_id {
+            // Try to decode as EntityIndex
+            if let Ok(index) = borsh::from_slice::<EntityIndex>(&value) {
+                let element_id = hex::encode(index.id.as_bytes());
+                let state_key = hex::encode(&key[32..64]);
+                element_to_state.insert(element_id, state_key.clone());
+
+                // Check if this is the root node (parent_id is None)
+                if index.parent_id.is_none() {
+                    root_state_keys.push(state_key);
+                }
+            } else if let Some(decoded) = decode_state_entry(&value, manifest) {
+                // Store data entries by their element_id for O(1) lookup
+                if let Some(element) = decoded.get("element") {
+                    if let Some(element_id) = element.get("id").and_then(|v| v.as_str()) {
+                        element_to_data.insert(element_id.to_string(), decoded);
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle multiple root nodes (shouldn't happen but could due to data corruption)
+    if root_state_keys.len() > 1 {
+        return Err(eyre::eyre!(
+            "Multiple root nodes found for context {}: {} roots detected. This indicates data corruption.",
+            hex::encode(context_id),
+            root_state_keys.len()
+        ));
+    }
+
+    // Build tree from root node if found
+    if let Some(root_key) = root_state_keys.first() {
+        let mut visited = std::collections::HashSet::new();
+        return build_tree_from_root(
+            db,
+            state_cf,
+            context_id,
+            root_key,
+            manifest,
+            &element_to_state,
+            &element_to_data,
+            &mut visited,
+        );
+    }
+
+    // No root node found for this context
+    Ok(json!({
+        "id": "unknown",
+        "type": "missing",
+        "note": "No root node (parent_id == null) found in State column for this context"
+    }))
+}
+
+/// Recursively build tree structure from a given root hash with cycle detection
+#[cfg(feature = "gui")]
+fn build_tree_from_root(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    node_id: &str,
+    manifest: &Manifest,
+    element_to_state: &std::collections::HashMap<String, String>,
+    element_to_data: &std::collections::HashMap<String, Value>,
+    visited: &mut std::collections::HashSet<String>,
+) -> Result<Value> {
+    // Detect cycles: if we've already visited this node, return an error
+    if !visited.insert(node_id.to_string()) {
+        return Ok(json!({
+            "id": node_id,
+            "type": "cycle_detected",
+            "error": format!("Circular reference detected: node {} references an ancestor", node_id)
+        }));
+    }
+
+    // Decode the node_id (state key) from hex string
+    let state_key = hex::decode(node_id).wrap_err("Failed to decode node_id from hex")?;
+
+    // Construct composite key: context_id (32 bytes) + state_key (32 bytes) = 64 bytes
+    let mut key = Vec::with_capacity(64);
+    key.extend_from_slice(context_id);
+    key.extend_from_slice(&state_key);
+    let value_bytes = db
+        .get_cf(state_cf, key)
+        .wrap_err("Failed to query State column")?;
+
+    let Some(value_bytes) = value_bytes else {
+        // Remove from visited before returning to allow siblings to visit this node
+        visited.remove(node_id);
+        return Ok(json!({
+            "id": node_id,
+            "type": "missing",
+            "note": "Node not found in State column"
+        }));
+    };
+
+    // Build the result based on the node type
+    let result = if let Ok(index) = borsh::from_slice::<EntityIndex>(&value_bytes) {
+        let children_info: Vec<Value> = if let Some(children) = &index.children {
+            let mut child_nodes = Vec::new();
+            for child in children {
+                // Convert child element_id to hex string
+                let child_element_id = hex::encode(child.id.as_bytes());
+
+                // Look up the state_key for this element_id
+                if let Some(child_state_key) = element_to_state.get(&child_element_id) {
+                    let child_tree = build_tree_from_root(
+                        db,
+                        state_cf,
+                        context_id,
+                        child_state_key,
+                        manifest,
+                        element_to_state,
+                        element_to_data,
+                        visited,
+                    )?;
+                    child_nodes.push(child_tree);
+                } else {
+                    // Child element_id not found in mapping - it might be a data entry
+                    // Try to look up this child as a data entry directly using the element_id as state_key
+                    match hex::decode(&child_element_id) {
+                        Ok(child_state_key_bytes) if child_state_key_bytes.len() == 32 => {
+                            let mut child_key = Vec::with_capacity(64);
+                            child_key.extend_from_slice(context_id);
+                            child_key.extend_from_slice(&child_state_key_bytes);
+
+                            if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                                // Try to decode as data entry
+                                if let Some(decoded) = decode_state_entry(&child_value, manifest) {
+                                    child_nodes.push(json!({
+                                        "id": child_element_id,
+                                        "type": decoded.get("type").and_then(|v| v.as_str()).unwrap_or("DataEntry"),
+                                        "data": decoded
+                                    }));
+                                    continue;
+                                }
+                            }
+
+                            child_nodes.push(json!({
+                                "id": child_element_id,
+                                "type": "missing",
+                                "note": "Child element_id not found in state mapping"
+                            }));
+                        }
+                        Ok(_) => {
+                            child_nodes.push(json!({
+                                "id": child_element_id,
+                                "type": "error",
+                                "note": "Child element_id has invalid length (expected 32 bytes)"
+                            }));
+                        }
+                        Err(e) => {
+                            child_nodes.push(json!({
+                                "id": child_element_id,
+                                "type": "error",
+                                "note": format!("Failed to decode child element_id: {}", e)
+                            }));
+                        }
+                    }
+                }
+            }
+            child_nodes
+        } else {
+            Vec::new()
+        };
+
+        // Look up data entry associated with this EntityIndex using O(1) HashMap lookup
+        let element_id_hex = hex::encode(index.id.as_bytes());
+        let associated_data = element_to_data.get(&element_id_hex).cloned();
+
+        json!({
+            "id": node_id,
+            "type": "EntityIndex",
+            "parent_id": index.parent_id.map(|id| hex::encode(id.as_bytes())),
+            "full_hash": hex::encode(index.full_hash),
+            "own_hash": hex::encode(index.own_hash),
+            "created_at": index.metadata.created_at,
+            "updated_at": *index.metadata.updated_at,
+            "deleted_at": index.deleted_at,
+            "children": children_info,
+            "children_count": children_info.len(),
+            "data": associated_data
+        })
+    } else if let Some(decoded) = decode_state_entry(&value_bytes, manifest) {
+        // Try to decode as data entry
+        json!({
+            "id": node_id,
+            "type": decoded.get("type").and_then(|v| v.as_str()).unwrap_or("DataEntry"),
+            "data": decoded
+        })
+    } else {
+        // Fallback for unknown format
+        json!({
+            "id": node_id,
+            "type": "Unknown",
+            "size": value_bytes.len(),
+            "raw": String::from_utf8_lossy(&value_bytes)
+        })
+    };
+
+    // Remove from visited after processing to allow siblings to visit this node
+    // This ensures cycle detection works (nodes in current path) while allowing
+    // the same node to appear in different branches of the tree
+    visited.remove(node_id);
+
+    Ok(result)
+}
+
+/// Export data without ABI manifest
+#[cfg(feature = "gui")]
+pub fn export_data_without_abi(
+    db: &DBWithThreadMode<SingleThreaded>,
+    columns: &[Column],
+) -> Result<Value> {
+    let mut data = serde_json::Map::new();
+
+    for column in columns {
+        let cf_name = column.as_str();
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| eyre::eyre!("Column family '{cf_name}' not found"))?;
+
+        let mut entries = Vec::new();
+        let iter = db.iterator_cf(&cf, IteratorMode::Start);
+
+        for item in iter {
+            let (key, value) = item
+                .wrap_err_with(|| format!("Failed to read entry from column family '{cf_name}'"))?;
+
+            let key_json = parse_key(*column, &key)
+                .wrap_err_with(|| format!("Failed to parse key in column '{cf_name}'"))?;
+
+            // For Generic column, try to parse ContextDagDelta even without ABI
+            let value_json = if *column == Column::Generic {
+                if let Ok(delta) = StoreContextDagDelta::try_from_slice(&value) {
+                    let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
+                    json!({
+                        "type": "context_dag_delta",
+                        "delta_id": hex::encode(delta.delta_id),
+                        "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
+                        "actions": {
+                            "raw": String::from_utf8_lossy(&delta.actions),
+                            "note": "Unable to decode actions without ABI"
+                        },
+                        "timestamp": timestamp_raw,
+                        "hlc": hlc_json,
+                        "applied": delta.applied,
+                        "expected_root_hash": hex::encode(delta.expected_root_hash)
+                    })
+                } else {
+                    parse_value(*column, &value)
+                        .wrap_err_with(|| format!("Failed to parse value in column '{cf_name}'"))?
+                }
+            } else {
+                parse_value(*column, &value)
+                    .wrap_err_with(|| format!("Failed to parse value in column '{cf_name}'"))?
+            };
+
+            entries.push(json!({
+                "key": key_json,
+                "value": value_json
+            }));
+        }
+
+        drop(data.insert(
+            cf_name.to_owned(),
+            json!({
+                "count": entries.len(),
+                "entries": entries
+            }),
+        ));
+    }
+
+    Ok(json!({
+        "database": "Calimero RocksDB Export",
+        "exported_columns": columns.iter().map(Column::as_str).collect::<Vec<_>>(),
+        "data": data
+    }))
 }

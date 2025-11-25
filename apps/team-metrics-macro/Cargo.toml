@@ -13,7 +13,3 @@ crate-type = ["cdylib"]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
 calimero-storage-macros.workspace = true
-
-[lints]
-workspace = true
-

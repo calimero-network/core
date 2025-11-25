@@ -1,46 +1,30 @@
-#[cfg(feature = "http-server")]
 use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-#[cfg(feature = "http-server")]
 use tower as _;
 
-#[cfg(feature = "http-server")]
 use axum::http::Method;
-#[cfg(feature = "http-server")]
 use axum::Router;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
-#[cfg(feature = "http-server")]
-use eyre::bail;
-use eyre::Result as EyreResult;
-#[cfg(feature = "http-server")]
+use eyre::{bail, Result as EyreResult};
 use multiaddr::Protocol;
 use prometheus_client::registry::Registry;
-#[cfg(feature = "http-server")]
 use tokio::net::TcpListener;
-#[cfg(feature = "http-server")]
 use tokio::task::JoinSet;
-#[cfg(feature = "http-server")]
 use tower_http::cors::{Any, CorsLayer};
-#[cfg(feature = "http-server")]
 use tracing::warn;
 
-#[cfg(feature = "http-server")]
 use crate::admin::service::{setup, site};
 
-#[cfg(feature = "http-server")]
 pub mod admin;
+mod auth;
 pub mod config;
-#[cfg(feature = "http-server")]
 pub mod jsonrpc;
-#[cfg(feature = "http-server")]
 mod metrics;
-#[cfg(feature = "http-server")]
 pub mod sse;
-#[cfg(feature = "http-server")]
 pub mod ws;
 
 #[derive(Debug)]
@@ -62,8 +46,7 @@ impl AdminState {
     }
 }
 
-// Server mode: Full HTTP server with Axum
-#[cfg(feature = "http-server")]
+// TODO: Consider splitting this long function into multiple parts.
 #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
 #[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
@@ -111,7 +94,17 @@ pub async fn start(
 
     let mut app = Router::new();
 
-    let mut serviced = false;
+    let mut embedded_auth = if config.use_embedded_auth() {
+        Some(auth::initialise(&config).await?)
+    } else {
+        None
+    };
+
+    let auth_service = embedded_auth
+        .as_ref()
+        .map(|auth| Arc::new(auth.auth_service()));
+
+    let mut service_count = 0usize;
 
     let shared_state = Arc::new(AdminState::new(
         datastore.clone(),
@@ -120,36 +113,66 @@ pub async fn start(
     ));
 
     if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
+        let router = if let Some(service) = auth_service.clone() {
+            router.layer(auth::guard_layer(service))
+        } else {
+            router
+        };
+
         app = app.nest(&path, router);
-        serviced = true;
+        service_count += 1;
     }
 
     if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
-        app = app.route(&path, handler);
+        let handler = if let Some(service) = auth_service.clone() {
+            handler.layer(auth::guard_layer(service))
+        } else {
+            handler
+        };
 
-        serviced = true;
+        app = app.route(&path, handler);
+        service_count += 1;
     }
 
     if let Some((path, router)) = sse::service(&config, node_client.clone(), datastore.clone()) {
+        let router = if let Some(service) = auth_service.clone() {
+            router.layer(auth::guard_layer(service))
+        } else {
+            router
+        };
+
         app = app.nest(&path, router);
-        serviced = true;
+        service_count += 1;
     }
 
-    if let Some((api_path, router)) = setup(&config, shared_state) {
+    if let Some((api_path, protected_router, public_router)) = setup(&config, shared_state) {
         if let Some((site_path, serve_dir)) = site(&config) {
             app = app.nest_service(site_path.as_str(), serve_dir);
         }
 
-        app = app.nest(&api_path, router);
-        serviced = true;
+        let protected_router = if let Some(service) = auth_service.clone() {
+            protected_router.layer(auth::guard_layer(service))
+        } else {
+            protected_router
+        };
+
+        let admin_router = protected_router.merge(public_router);
+
+        app = app.nest(&api_path, admin_router);
+        service_count += 1;
     }
 
     if let Some((path, router)) = metrics::service(&config, prom_registry) {
         app = app.nest(path, router);
-        serviced = true;
+        service_count += 1;
     }
 
-    if !serviced {
+    if let Some(bundled_auth) = embedded_auth.take() {
+        app = app.merge(bundled_auth.into_router());
+        service_count += 1;
+    }
+
+    if service_count == 0 {
         warn!("No services enabled, enable at least one service to start the server");
 
         return Ok(());
@@ -181,27 +204,6 @@ pub async fn start(
     }
 
     Ok(())
-}
-
-// Desktop mode: No HTTP server
-#[cfg(not(feature = "http-server"))]
-pub async fn start(
-    config: ServerConfig,
-    _ctx_client: ContextClient,
-    _node_client: NodeClient,
-    _datastore: Store,
-    _prom_registry: Registry,
-) -> EyreResult<()> {
-    // Defensive guard: ensure no HTTP listeners in desktop builds
-    assert!(
-        config.listen.is_empty(),
-        "Desktop build must not bind HTTP listeners. Found: {:?}",
-        config.listen
-    );
-
-    // In desktop mode, calimero-server doesn't run an HTTP server
-    // The Tauri app uses ContextClient/NodeClient directly via IPC
-    std::future::pending().await
 }
 
 #[cfg(test)]

@@ -19,9 +19,9 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 5000,
+        "durationMs": 500,
         "description": [
-          "Wait for context initialization"
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
         ]
       }
     },
@@ -54,7 +54,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -63,9 +66,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "Wait for mesh formation + sync"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -113,9 +116,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "Wait for concurrent increments to sync and CRDT merge to happen"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -149,7 +152,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -184,7 +190,10 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000
+        "durationMs": 2000,
+        "description": [
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
+        ]
       }
     },
     {
@@ -220,7 +229,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -269,11 +281,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "CRITICAL: This tests nested map field-level merge!",
-          "Node 1 set status, Nodes 2&3 set author concurrently",
-          "After merge, BOTH fields should be present (not LWW on whole map)"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -355,7 +365,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -405,7 +418,10 @@
     {
       "wait": {
         "for": "broadcast",
-        "durationMs": 3000
+        "durationMs": 500,
+        "description": [
+          "Wait for broadcast propagation (~6ms measured, 200ms for safety)"
+        ]
       }
     },
     {
@@ -452,9 +468,9 @@
     {
       "wait": {
         "for": "consensus",
-        "durationMs": 5000,
+        "durationMs": 2000,
         "description": [
-          "Wait for concurrent tag additions to merge (union)"
+          "Wait for mesh formation + sync (~6ms measured, 1000ms for mesh + cascade)"
         ]
       }
     },
@@ -508,4 +524,3 @@
     }
   ]
 }
-

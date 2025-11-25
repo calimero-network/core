@@ -14,7 +14,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::{InitPayload, StreamMessage};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
+use eyre::{bail, eyre};
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
@@ -155,6 +155,28 @@ impl SyncManager {
 
                     requested_ctx = ctx;
                     requested_peer = peer;
+
+                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
+                    // When multiple contexts join rapidly (common in E2E tests), they all
+                    // call sync() which queues requests in ctx_sync_rx. The old code only
+                    // processed ONE request per loop iteration, leaving contexts 2-N queued
+                    // indefinitely. This caused those contexts to never sync and remain
+                    // with dag_heads=[] and Uninitialized errors.
+                    //
+                    // Solution: Use try_recv() to drain all buffered requests immediately,
+                    // then trigger a full sync that will process all contexts.
+                    let mut drained_count = 0;
+                    while ctx_sync_rx.try_recv().is_ok() {
+                        drained_count += 1;
+                    }
+
+                    if drained_count > 0 {
+                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
+                        // Clear requested_ctx to force syncing ALL contexts
+                        // This ensures newly-joined contexts get synced even if they weren't first in queue
+                        requested_ctx = None;
+                        requested_peer = None;
+                    }
                 }
             }
 
@@ -273,10 +295,29 @@ impl SyncManager {
             return self.initiate_sync(context_id, peer_id).await;
         }
 
-        let peers = self
-            .network_client
-            .mesh_peers(TopicHash::from_raw(context_id))
-            .await;
+        // CRITICAL FIX: Retry peer discovery if mesh is still forming
+        // After subscribing to a context, gossipsub needs time to form the mesh.
+        // We retry a few times with short delays to handle this gracefully.
+        let mut peers = Vec::new();
+        for attempt in 1..=3 {
+            peers = self
+                .network_client
+                .mesh_peers(TopicHash::from_raw(context_id))
+                .await;
+
+            if !peers.is_empty() {
+                break;
+            }
+
+            if attempt < 3 {
+                debug!(
+                    %context_id,
+                    attempt,
+                    "No peers found yet, mesh may still be forming, retrying..."
+                );
+                time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
 
         if peers.is_empty() {
             bail!("No peers to sync with for context {}", context_id);
@@ -469,6 +510,254 @@ impl SyncManager {
         super::stream::recv(stream, shared_key, budget).await
     }
 
+    /// Get blob ID and application config from application or context config
+    async fn get_blob_info(
+        &self,
+        context_id: &ContextId,
+        application: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<(
+        calimero_primitives::blobs::BlobId,
+        Option<calimero_primitives::application::Application>,
+    )> {
+        if let Some(ref app) = application {
+            Ok((app.blob.bytecode, None))
+        } else {
+            // Application not found - get blob_id from context config
+            let context_config = self
+                .context_client
+                .context_config(context_id)?
+                .ok_or_else(|| eyre::eyre!("context config not found"))?;
+            let external_client = self
+                .context_client
+                .external_client(context_id, &context_config)?;
+            let config_client = external_client.config();
+            let app_config = config_client.application().await?;
+            Ok((app_config.blob.bytecode, Some(app_config)))
+        }
+    }
+
+    /// Get application size from application, cached config, or context config
+    async fn get_application_size(
+        &self,
+        context_id: &ContextId,
+        application: &Option<calimero_primitives::application::Application>,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<u64> {
+        if let Some(ref app) = application {
+            Ok(app.size)
+        } else if let Some(ref app_config) = app_config_opt {
+            Ok(app_config.size)
+        } else {
+            let context_config = self
+                .context_client
+                .context_config(context_id)?
+                .ok_or_else(|| eyre::eyre!("context config not found"))?;
+            let external_client = self
+                .context_client
+                .external_client(context_id, &context_config)?;
+            let config_client = external_client.config();
+            let app_config = config_client.application().await?;
+            Ok(app_config.size)
+        }
+    }
+
+    /// Get application source from cached config or context config
+    async fn get_application_source(
+        &self,
+        context_id: &ContextId,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<calimero_primitives::application::ApplicationSource> {
+        if let Some(ref app_config) = app_config_opt {
+            Ok(app_config.source.clone())
+        } else {
+            let context_config = self
+                .context_client
+                .context_config(context_id)?
+                .ok_or_else(|| eyre::eyre!("context config not found"))?;
+            let external_client = self
+                .context_client
+                .external_client(context_id, &context_config)?;
+            let config_client = external_client.config();
+            let app_config = config_client.application().await?;
+            Ok(app_config.source.clone())
+        }
+    }
+
+    /// Install bundle application after blob sharing completes.
+    ///
+    /// Returns `Some(installed_application)` if a bundle was installed,
+    /// `None` otherwise. Updates `context.application_id` if the installed
+    /// ApplicationId differs from the context's ApplicationId.
+    async fn install_bundle_after_blob_sharing(
+        &self,
+        context_id: &ContextId,
+        blob_id: &calimero_primitives::blobs::BlobId,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+        context: &mut calimero_primitives::context::Context,
+        application: &mut Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<()> {
+        // Only proceed if blob is now available locally
+        if !self.node_client.has_blob(blob_id)? {
+            return Ok(());
+        }
+
+        // Check if blob is a bundle
+        let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
+            return Ok(());
+        };
+
+        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+        let blob_bytes_clone = blob_bytes.clone();
+        let is_bundle =
+            tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
+                .await?;
+
+        if !is_bundle {
+            return Ok(());
+        }
+
+        // Get source from context config (use cached if available, otherwise fetch)
+        let source = self
+            .get_application_source(context_id, app_config_opt)
+            .await?;
+
+        // Install bundle
+        let installed_app_id = self
+            .node_client
+            .install_application_from_bundle_blob(blob_id, &source.into())
+            .await
+            .map_err(|e| {
+                eyre::eyre!(
+                    "Failed to install bundle application from blob {}: {}",
+                    blob_id,
+                    e
+                )
+            })?;
+
+        // Verify installation succeeded by fetching the installed application
+        let installed_application = self
+            .node_client
+            .get_application(&installed_app_id)
+            .map_err(|e| {
+                eyre::eyre!(
+                    "Failed to verify bundle installation for application {}: {}",
+                    installed_app_id,
+                    e
+                )
+            })?;
+
+        let Some(installed_application) = installed_application else {
+            bail!(
+                "Bundle installation reported success but application {} is not retrievable",
+                installed_app_id
+            );
+        };
+
+        // Check if the installed ApplicationId matches the context's ApplicationId
+        if installed_app_id != context.application_id {
+            warn!(
+                installed_app_id = %installed_app_id,
+                context_app_id = %context.application_id,
+                "Installed application ID does not match context application ID, updating to installed ID"
+            );
+            // Update context with the installed application ID for consistency
+            context.application_id = installed_app_id;
+
+            // Persist the ApplicationId change to the database
+            // This is critical: if we don't persist, the old ApplicationId will be
+            // used on node restart, causing application lookup failures
+            self.context_client
+                .update_context_application_id(context_id, installed_app_id)
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to persist ApplicationId update for context {}: {}",
+                        context_id,
+                        e
+                    )
+                })?;
+
+            debug!(
+                %context_id,
+                installed_app_id = %installed_app_id,
+                "Persisted ApplicationId update to database"
+            );
+        }
+
+        // Use the verified installed application
+        *application = Some(installed_application);
+
+        Ok(())
+    }
+
+    /// Handle DAG synchronization for uninitialized nodes or nodes with incomplete DAGs
+    async fn handle_dag_sync(
+        &self,
+        context_id: ContextId,
+        context: &calimero_primitives::context::Context,
+        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<SyncProtocol>> {
+        let is_uninitialized = *context.root_hash == [0; 32];
+
+        if is_uninitialized {
+            info!(
+                %context_id,
+                %chosen_peer,
+                "Node is uninitialized, requesting DAG heads from peer to catch up"
+            );
+
+            let result = self
+                .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                .await?;
+
+            // If peer had no data (heads_count=0), return error to try next peer
+            if matches!(result, SyncProtocol::None) {
+                bail!("Peer has no data for this context");
+            }
+
+            return Ok(Some(result));
+        }
+
+        // Check if we have pending deltas (incomplete DAG)
+        // Even if node has some state, it might be missing parent deltas
+        if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+            let missing_result = delta_store.get_missing_parents().await;
+
+            // Note: Cascaded events from DB loads are handled in state_delta handler
+            if !missing_result.cascaded_events.is_empty() {
+                info!(
+                    %context_id,
+                    cascaded_count = missing_result.cascaded_events.len(),
+                    "Cascaded deltas from DB load (handlers executed in state_delta path)"
+                );
+            }
+
+            if !missing_result.missing_ids.is_empty() {
+                warn!(
+                    %context_id,
+                    %chosen_peer,
+                    missing_count = missing_result.missing_ids.len(),
+                    "Node has incomplete DAG (pending deltas), requesting DAG heads to catch up"
+                );
+
+                // Request DAG heads just like uninitialized nodes
+                let result = self
+                    .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                    .await?;
+
+                // If peer had no data, return error to try next peer
+                if matches!(result, SyncProtocol::None) {
+                    bail!("Peer has no data for this context");
+                }
+
+                return Ok(Some(result));
+            }
+        }
+
+        Ok(None)
+    }
+
     async fn initiate_sync_inner(
         &self,
         context_id: ContextId,
@@ -479,9 +768,11 @@ impl SyncManager {
             .sync_context_config(context_id, None)
             .await?;
 
-        let Some(application) = self.node_client.get_application(&context.application_id)? else {
-            bail!("application not found: {}", context.application_id);
-        };
+        // Get application - if not found, we'll try to install it after blob sharing
+        let mut application = self.node_client.get_application(&context.application_id)?;
+
+        // Get blob_id and app config for later use
+        let (blob_id, app_config_opt) = self.get_blob_info(&context_id, &application).await?;
 
         let identities = self
             .context_client
@@ -499,36 +790,37 @@ impl SyncManager {
         self.initiate_key_share_process(&mut context, our_identity, &mut stream)
             .await?;
 
-        if !self.node_client.has_blob(&application.blob.bytecode)? {
-            self.initiate_blob_share_process(
-                &context,
-                our_identity,
-                application.blob.bytecode,
-                application.size,
-                &mut stream,
-            )
-            .await?;
-        }
-
-        // Check if we need to catch up on deltas
-        let is_uninitialized = *context.root_hash == [0; 32];
-
-        if is_uninitialized {
-            info!(
-                %context_id,
-                %chosen_peer,
-                "Node is uninitialized, requesting DAG heads from peer to catch up"
-            );
-
-            let result = self
-                .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, &mut stream)
+        if !self.node_client.has_blob(&blob_id)? {
+            // Get size from application config if we don't have application yet
+            let size = self
+                .get_application_size(&context_id, &application, &app_config_opt)
                 .await?;
 
-            // If peer had no data (heads_count=0), return error to try next peer
-            if matches!(result, SyncProtocol::None) {
-                bail!("Peer has no data for this context");
-            }
+            self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
+                .await?;
 
+            // After blob sharing, try to install application if it doesn't exist
+            if application.is_none() {
+                self.install_bundle_after_blob_sharing(
+                    &context_id,
+                    &blob_id,
+                    &app_config_opt,
+                    &mut context,
+                    &mut application,
+                )
+                .await?;
+            }
+        }
+
+        let Some(_application) = application else {
+            bail!("application not found: {}", context.application_id);
+        };
+
+        // Handle DAG synchronization if needed (uninitialized or incomplete DAG)
+        if let Some(result) = self
+            .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
+            .await?
+        {
             return Ok(result);
         }
 
@@ -541,7 +833,7 @@ impl SyncManager {
     async fn request_dag_heads_and_sync(
         &self,
         context_id: ContextId,
-        _peer_id: PeerId,
+        peer_id: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
@@ -598,8 +890,42 @@ impl SyncManager {
                     return Ok(SyncProtocol::None);
                 }
 
-                // Request each head delta (these are the tips of the DAG)
-                // The DeltaStore will recursively request parent deltas as needed
+                // CRITICAL FIX: Fetch ALL DAG heads first, THEN request missing parents
+                // This ensures we don't miss sibling heads that might be the missing parents
+
+                // Get or create DeltaStore for this context (do this once before the loop)
+                let (delta_store_ref, is_new_store) = {
+                    let mut is_new = false;
+                    let delta_store = self
+                        .node_state
+                        .delta_stores
+                        .entry(context_id)
+                        .or_insert_with(|| {
+                            is_new = true;
+                            crate::delta_store::DeltaStore::new(
+                                [0u8; 32],
+                                self.context_client.clone(),
+                                context_id,
+                                our_identity,
+                            )
+                        });
+
+                    let delta_store_ref = delta_store.clone();
+                    (delta_store_ref, is_new)
+                };
+
+                // Load persisted deltas from database on first access
+                if is_new_store {
+                    if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                        warn!(
+                            ?e,
+                            %context_id,
+                            "Failed to load persisted deltas, starting with empty DAG"
+                        );
+                    }
+                }
+
+                // Phase 1: Request and add ALL DAG heads
                 for head_id in &dag_heads {
                     info!(
                         %context_id,
@@ -641,23 +967,6 @@ impl SyncManager {
                                 expected_root_hash: storage_delta.expected_root_hash,
                             };
 
-                            // Get or create DeltaStore for this context
-                            let delta_store = self
-                                .node_state
-                                .delta_stores
-                                .entry(context_id)
-                                .or_insert_with(|| {
-                                    crate::delta_store::DeltaStore::new(
-                                        [0u8; 32],
-                                        self.context_client.clone(),
-                                        context_id,
-                                        our_identity,
-                                    )
-                                });
-
-                            let delta_store_ref = delta_store.clone();
-                            drop(delta_store);
-
                             if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
                                 warn!(
                                     ?e,
@@ -676,6 +985,44 @@ impl SyncManager {
                         _ => {
                             warn!(%context_id, head_id = ?head_id, "Unexpected response to delta request");
                         }
+                    }
+                }
+
+                // Phase 2: Now check for missing parents and fetch them recursively
+                let missing_result = delta_store_ref.get_missing_parents().await;
+
+                // Note: Cascaded events from DB loads logged but not executed here (state_delta handler will catch them)
+                if !missing_result.cascaded_events.is_empty() {
+                    info!(
+                        %context_id,
+                        cascaded_count = missing_result.cascaded_events.len(),
+                        "Cascaded deltas from DB load during DAG head sync"
+                    );
+                }
+
+                if !missing_result.missing_ids.is_empty() {
+                    info!(
+                        %context_id,
+                        missing_count = missing_result.missing_ids.len(),
+                        "DAG heads have missing parents, requesting them recursively"
+                    );
+
+                    // Request missing parents (this uses recursive topological fetching)
+                    if let Err(e) = self
+                        .request_missing_deltas(
+                            context_id,
+                            missing_result.missing_ids,
+                            peer_id,
+                            delta_store_ref.clone(),
+                            our_identity,
+                        )
+                        .await
+                    {
+                        warn!(
+                            ?e,
+                            %context_id,
+                            "Failed to request missing parent deltas during DAG catchup"
+                        );
                     }
                 }
 

@@ -1,10 +1,9 @@
 use core::time::Duration;
 
-pub mod dirs;
-
 use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_server::admin::service::AdminConfig;
+use calimero_server::config::AuthMode;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
@@ -13,6 +12,8 @@ use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read_to_string, write};
+
+use mero_auth::config::AuthConfig;
 
 pub const CONFIG_FILE: &str = "config.toml";
 
@@ -94,6 +95,12 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub sse: Option<SseConfig>,
+
+    #[serde(default)]
+    pub auth_mode: AuthMode,
+
+    #[serde(default)]
+    pub embedded_auth: Option<AuthConfig>,
 }
 
 impl ServerConfig {
@@ -111,7 +118,35 @@ impl ServerConfig {
             jsonrpc,
             websocket,
             sse,
+            auth_mode: AuthMode::Proxy,
+            embedded_auth: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_auth(
+        listen: Vec<Multiaddr>,
+        admin: Option<AdminConfig>,
+        jsonrpc: Option<JsonRpcConfig>,
+        websocket: Option<WsConfig>,
+        sse: Option<SseConfig>,
+        auth_mode: AuthMode,
+        embedded_auth: Option<AuthConfig>,
+    ) -> Self {
+        Self {
+            listen,
+            admin,
+            jsonrpc,
+            websocket,
+            sse,
+            auth_mode,
+            embedded_auth,
+        }
+    }
+
+    #[must_use]
+    pub fn embedded_auth(&self) -> Option<&AuthConfig> {
+        self.embedded_auth.as_ref()
     }
 }
 

@@ -30,6 +30,16 @@ calimero-network-primitives.workspace = true
 calimero-storage.workspace = true
 calimero-store.workspace = true
 calimero-utils-actix.workspace = true
+flate2.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+base64.workspace = true
+semver.workspace = true
 
-[lints]
-workspace = true
+[dev-dependencies]
+calimero-store-rocksdb.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }

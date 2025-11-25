@@ -8,6 +8,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::vec;
 
+use tracing::{debug, trace};
+
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_sys as sys;
@@ -173,6 +175,8 @@ pub struct VMLogic<'a> {
     root_hash: Option<[u8; DIGEST_SIZE]>,
     /// A binary artifact produced by the execution.
     artifact: Vec<u8>,
+    /// Tracks whether the guest has explicitly called `env.commit`.
+    commit_called: bool,
     /// A map of proposals created during execution, having proposal ID as a key.
     proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
     /// A list of approvals submitted during execution.
@@ -202,6 +206,13 @@ impl<'a> VMLogic<'a> {
         limits: &'a VMLimits,
         node_client: Option<NodeClient>,
     ) -> Self {
+        debug!(
+            target: "runtime::logic",
+            context = ?context,
+            limits = ?limits,
+            has_node_client = node_client.is_some(),
+            "VMLogic::new"
+        );
         VMLogic {
             storage,
             memory: None,
@@ -214,6 +225,7 @@ impl<'a> VMLogic<'a> {
             xcalls: vec![],
             root_hash: None,
             artifact: vec![],
+            commit_called: false,
             proposals: BTreeMap::new(),
             approvals: vec![],
 
@@ -232,7 +244,7 @@ impl<'a> VMLogic<'a> {
     /// # Arguments
     ///
     /// * `memory` - The `wasmer::Memory` instance from the instantiated guest module.
-    pub const fn with_memory(&mut self, memory: wasmer::Memory) -> &mut Self {
+    pub fn with_memory(&mut self, memory: wasmer::Memory) -> &mut Self {
         self.memory = Some(memory);
         self
     }
@@ -252,6 +264,8 @@ impl<'a> VMLogic<'a> {
     pub fn host_functions(&'a mut self, store: wasmer::StoreMut<'a>) -> VMHostFunctions<'a> {
         // TODO: review the `clone()` and figure out if the function should be a one-time call only.
         let memory = self.memory.clone().expect("VM Memory not initialized");
+
+        debug!(target: "runtime::logic", "VMLogic::host_functions: building host function bindings");
 
         VMHostFunctionsBuilder {
             logic: self,
@@ -305,6 +319,19 @@ impl VMLogic<'_> {
     ///           If `None`, the outcome is determined by the `returns` field.
     #[must_use]
     pub fn finish(self, err: Option<FunctionCallError>) -> Outcome {
+        let log_count = self.logs.len();
+        let event_count = self.events.len();
+        let xcall_count = self.xcalls.len();
+        let proposal_count = self.proposals.len();
+        let approval_count = self.approvals.len();
+        let has_root_hash = self.root_hash.is_some();
+        let has_artifact = !self.artifact.is_empty();
+
+        debug!(target: "runtime::internal", "Printing internal WASM LOGS");
+        for log in &self.logs {
+            debug!(target: "runtime::internal", log);
+        }
+
         let returns = match err {
             Some(err) => Err(err),
             None => self
@@ -312,6 +339,19 @@ impl VMLogic<'_> {
                 .map(|t| t.map_err(FunctionCallError::ExecutionError))
                 .transpose(),
         };
+
+        debug!(
+            target: "runtime::logic",
+            has_error = returns.is_err(),
+            log_count,
+            event_count,
+            xcall_count,
+            proposal_count,
+            approval_count,
+            has_root_hash,
+            has_artifact,
+            "VMLogic::finish"
+        );
 
         Outcome {
             returns,
@@ -359,6 +399,13 @@ impl VMHostFunctions<'_> {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
 
+        trace!(
+            target: "runtime::memory",
+            ptr,
+            len,
+            "read_guest_memory_slice"
+        );
+
         unsafe { &self.borrow_memory().data_unchecked()[ptr..ptr + len] }
     }
 
@@ -382,6 +429,13 @@ impl VMHostFunctions<'_> {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
 
+        trace!(
+            target: "runtime::memory",
+            ptr,
+            len,
+            "read_guest_memory_slice_mut"
+        );
+
         unsafe { &mut self.borrow_memory().data_unchecked_mut()[ptr..ptr + len] }
     }
 
@@ -401,6 +455,8 @@ impl VMHostFunctions<'_> {
     /// does not contain valid UTF-8 data.
     fn read_guest_memory_str(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&str> {
         let buf = self.read_guest_memory_slice(slice);
+
+        trace!(target: "runtime::memory", len = buf.len(), "read_guest_memory_str");
 
         core::str::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
     }

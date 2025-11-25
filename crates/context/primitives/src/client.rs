@@ -489,6 +489,44 @@ impl ContextClient {
         Ok(())
     }
 
+    /// Updates the ApplicationId for a context.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to update.
+    /// * `application_id` - The new ApplicationId.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
+    pub fn update_context_application_id(
+        &self,
+        context_id: &ContextId,
+        application_id: ApplicationId,
+    ) -> eyre::Result<()> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = handle.get(&key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        // Update application_id
+        meta.application = key::ApplicationMeta::new(application_id);
+
+        // Write back to database
+        self.datastore.clone().handle().put(&key, &meta)?;
+
+        tracing::debug!(
+            %context_id,
+            %application_id,
+            "Updated application_id in database"
+        );
+
+        Ok(())
+    }
+
     /// Forces the root hash for a context to a specific value.
     ///
     /// This is used during delta application to ensure all nodes have identical
@@ -515,7 +553,7 @@ impl ContextClient {
 
         tracing::debug!(
             %context_id,
-            old_root = ?meta.root_hash,
+            old_root = ?Hash::from(meta.root_hash),
             new_root = ?root_hash,
             "Forcing root hash to expected value for DAG consistency"
         );

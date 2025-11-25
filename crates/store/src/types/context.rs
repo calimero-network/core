@@ -121,6 +121,36 @@ pub struct ContextDagDelta {
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
     pub applied: bool,
     pub expected_root_hash: [u8; 32],
+    pub events: Option<Vec<u8>>,
+}
+
+impl ContextDagDelta {
+    /// Deserialize actions from the serialized byte array
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the actions cannot be deserialized
+    pub fn deserialize_actions(
+        &self,
+    ) -> Result<Vec<calimero_storage::action::Action>, borsh::io::Error> {
+        borsh::from_slice(&self.actions)
+    }
+
+    /// Deserialize events from the serialized byte array (if present)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the events cannot be deserialized
+    #[cfg(feature = "serde")]
+    pub fn deserialize_events(&self) -> Result<Option<Vec<serde_json::Value>>, eyre::Report> {
+        if let Some(ref events_bytes) = self.events {
+            let events: Vec<serde_json::Value> = serde_json::from_slice(events_bytes)
+                .map_err(|e| eyre::eyre!("Failed to deserialize events: {}", e))?;
+            Ok(Some(events))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl PredefinedEntry for key::ContextDagDelta {

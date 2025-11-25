@@ -12,7 +12,7 @@ use indexmap::IndexSet;
 use sha2::{Digest, Sha256};
 
 pub mod counter;
-pub use counter::Counter;
+pub use counter::{Counter, GCounter, PNCounter};
 pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
 pub mod unordered_set;
@@ -39,10 +39,17 @@ pub use root::Root;
 pub mod error;
 pub use error::StoreError;
 
+pub mod user;
+pub use user::UserStorage;
+pub mod frozen;
+pub use frozen::FrozenStorage;
+pub mod frozen_value;
+pub use frozen_value::FrozenValue;
+
 // fixme! macro expects `calimero_storage` to be in deps
 use crate as calimero_storage;
 use crate::address::Id;
-use crate::entities::{ChildInfo, Data, Element};
+use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::interface::{Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
@@ -126,12 +133,24 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     /// Inserts an item into the collection.
     fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
+        self.insert_with_storage_type(id, item, StorageType::Public)
+    }
+
+    /// Inserts an item into the collection with a specific StorageType.
+    pub(crate) fn insert_with_storage_type(
+        &mut self,
+        id: Option<Id>,
+        item: T,
+        storage_type: StorageType,
+    ) -> StoreResult<T> {
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
             item,
             storage: Element::new(id),
         };
+        // Update the `StorageType`.
+        entry.storage.metadata.storage_type = storage_type;
 
         collection.insert(&mut entry)?;
 

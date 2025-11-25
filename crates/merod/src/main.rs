@@ -25,11 +25,13 @@ async fn main() -> EyreResult<()> {
 }
 
 fn setup() -> EyreResult<()> {
+    let directives = match var("RUST_LOG") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => "merod=info,calimero_=info".to_owned(),
+    };
+
     registry()
-        .with(EnvFilter::builder().parse(format!(
-            "merod=info,calimero_=info,{}",
-            var("RUST_LOG").unwrap_or_default()
-        ))?)
+        .with(EnvFilter::builder().parse(directives)?)
         .with(layer())
         .init();
 

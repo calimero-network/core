@@ -8,6 +8,85 @@ use mocked as imp;
 use crate::logical_clock::HybridTimestamp;
 use crate::store::Key;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+/// Runtime-provided storage environment used by host functions.
+///
+/// The JS runtime passes a `RuntimeEnv` down when it wants the storage crate to
+/// talk to the live `RuntimeStorage` inside `VMLogic` instead of the default
+/// mock/WASM adapters.  The environment packages read/write/remove callbacks
+/// that close over the current storage trait object.  While the host function is
+/// executing we install this environment thread-locally so every
+/// `Interface::<MainStorage>::*` call can reach the real context storage.
+pub struct RuntimeEnv {
+    storage_read: std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
+    storage_write: std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>,
+    storage_remove: std::rc::Rc<dyn Fn(&Key) -> bool>,
+    context_id: [u8; 32],
+    executor_id: [u8; 32],
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeEnv {
+    #[must_use]
+    /// Creates a new runtime environment with host-provided storage callbacks.
+    ///
+    /// The callbacks are reference-counted closures so they stay valid for the
+    /// duration of the host call but can still hand mutable access to the
+    /// underlying storage when invoked from the storage crate.
+    pub fn new(
+        storage_read: std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
+        storage_write: std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>,
+        storage_remove: std::rc::Rc<dyn Fn(&Key) -> bool>,
+        context_id: [u8; 32],
+        executor_id: [u8; 32],
+    ) -> Self {
+        Self {
+            storage_read,
+            storage_write,
+            storage_remove,
+            context_id,
+            executor_id,
+        }
+    }
+
+    #[must_use]
+    /// Returns the storage read callback.
+    pub fn storage_read(&self) -> std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>> {
+        self.storage_read.clone()
+    }
+
+    #[must_use]
+    /// Returns the storage write callback.
+    pub fn storage_write(&self) -> std::rc::Rc<dyn Fn(Key, &[u8]) -> bool> {
+        self.storage_write.clone()
+    }
+
+    #[must_use]
+    /// Returns the storage remove callback.
+    pub fn storage_remove(&self) -> std::rc::Rc<dyn Fn(&Key) -> bool> {
+        self.storage_remove.clone()
+    }
+
+    #[must_use]
+    /// Returns the current context identifier.
+    pub const fn context_id(&self) -> [u8; 32] {
+        self.context_id
+    }
+
+    #[must_use]
+    /// Returns the current executor identifier.
+    pub const fn executor_id(&self) -> [u8; 32] {
+        self.executor_id
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Executes `f` with the provided runtime environment installed.
+pub fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
+    mocked::with_runtime_env(env, f)
+}
+
 /// Commits the root hash to the runtime.
 ///
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
@@ -65,6 +144,15 @@ pub fn time_now() -> u64 {
     imp::time_now()
 }
 
+/// Verifies an Ed25519 signature.
+///
+/// On WASM, this calls the host environment.
+/// In tests, this uses a pure-Rust implementation.
+#[must_use]
+pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool {
+    imp::ed25519_verify(signature, public_key, message)
+}
+
 /// Returns the current context ID.
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
@@ -81,6 +169,15 @@ pub fn context_id() -> [u8; 32] {
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn executor_id() -> [u8; 32] {
     imp::executor_id()
+}
+
+/// Prints the log.
+///
+/// In WASM, this calls `calimero_sdk::env::log()`, which calls the host function.
+/// In tests, it uses plain `println!()`.
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
+pub fn log(message: &str) {
+    imp::log(message);
 }
 
 /// Get hybrid timestamp (auto-increments logical clock).
@@ -181,12 +278,27 @@ mod calimero_vm {
         env::executor_id()
     }
 
+    /// Prints the log
+    pub(super) fn log(message: &str) {
+        env::log(message);
+    }
+
     /// Gets the current time.
     ///
     /// This function obtains the current time as a nanosecond timestamp.
     ///
     pub(super) fn time_now() -> u64 {
         env::time_now()
+    }
+
+    /// Verifies an Ed25519 signature.
+    pub(super) fn ed25519_verify(
+        signature: &[u8; 64],
+        public_key: &[u8; 32],
+        message: &[u8],
+    ) -> bool {
+        // Call the host function from the calimero_sdk
+        calimero_sdk::env::ed25519_verify(signature, public_key, message)
     }
 
     /// Get a new hybrid timestamp from the HLC
@@ -224,17 +336,20 @@ mod calimero_vm {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod mocked {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::cell::RefCell;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use rand::RngCore;
 
+    use super::RuntimeEnv;
     use crate::logical_clock::{HybridTimestamp, LogicalClock};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
         static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf)));
+        static RUNTIME_ENV: RefCell<Option<RuntimeEnv>> = const { RefCell::new(None) };
     }
 
     /// The default storage system.
@@ -243,25 +358,41 @@ mod mocked {
     /// Commits the root hash to the runtime.
     pub(super) fn commit(root_hash: &[u8; 32], _artifact: &[u8]) {
         ROOT_HASH.with(|rh| {
-            if rh.borrow_mut().replace(*root_hash).is_some() {
-                Option::expect(None, "State previously committed")
-            }
+            let _ = rh.borrow_mut().replace(*root_hash);
         });
     }
 
     /// Reads data from persistent storage.
     pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
-        DefaultStore::storage_read(key)
+        let runtime_env = RUNTIME_ENV.with(|env| env.borrow().clone());
+        if let Some(env) = runtime_env {
+            let reader = env.storage_read();
+            reader(&key)
+        } else {
+            DefaultStore::storage_read(key)
+        }
     }
 
     /// Removes data from persistent storage.
     pub(super) fn storage_remove(key: Key) -> bool {
-        DefaultStore::storage_remove(key)
+        let runtime_env = RUNTIME_ENV.with(|env| env.borrow().clone());
+        if let Some(env) = runtime_env {
+            let remover = env.storage_remove();
+            remover(&key)
+        } else {
+            DefaultStore::storage_remove(key)
+        }
     }
 
     /// Writes data to persistent storage.
     pub(super) fn storage_write(key: Key, value: &[u8]) -> bool {
-        DefaultStore::storage_write(key, value)
+        let runtime_env = RUNTIME_ENV.with(|env| env.borrow().clone());
+        if let Some(env) = runtime_env {
+            let writer = env.storage_write();
+            writer(key, value)
+        } else {
+            DefaultStore::storage_write(key, value)
+        }
     }
 
     /// Fills the buffer with random bytes.
@@ -270,8 +401,11 @@ mod mocked {
     }
 
     /// Return the context id.
-    pub(super) const fn context_id() -> [u8; 32] {
-        [236; 32]
+    pub(super) fn context_id() -> [u8; 32] {
+        RUNTIME_ENV
+            .with(|env| env.borrow().clone())
+            .map(|env| env.context_id())
+            .unwrap_or([236; 32])
     }
 
     thread_local! {
@@ -280,7 +414,15 @@ mod mocked {
 
     /// Return the executor id (for testing, returns a fixed value).
     pub(super) fn executor_id() -> [u8; 32] {
-        EXECUTOR_ID.with(|id| id.get())
+        RUNTIME_ENV
+            .with(|env| env.borrow().clone())
+            .map(|env| env.executor_id)
+            .unwrap_or_else(|| EXECUTOR_ID.with(|id| id.get()))
+    }
+
+    /// Prints the log
+    pub(super) fn log(message: &str) {
+        println!("{}", message);
     }
 
     /// Set executor ID for testing purposes
@@ -305,6 +447,25 @@ mod mocked {
             .as_nanos() as u64
     }
 
+    /// Verifies an Ed25519 signature.
+    ///
+    /// Uses a pure-Rust implementation for testing.
+    pub(super) fn ed25519_verify(
+        signature: &[u8; 64],
+        public_key: &[u8; 32],
+        message: &[u8],
+    ) -> bool {
+        // We need to parse the public key.
+        // If parsing fails, the signature is invalid.
+        let Ok(public_key) = VerifyingKey::from_bytes(public_key) else {
+            return false;
+        };
+
+        let signature = Signature::from_bytes(signature);
+        // Perform the verification.
+        public_key.verify(message, &signature).is_ok()
+    }
+
     /// Get a new hybrid timestamp from the HLC
     pub(super) fn hlc_timestamp() -> HybridTimestamp {
         NATIVE_HLC.with(|hlc| hlc.borrow_mut().new_timestamp(time_now))
@@ -313,6 +474,15 @@ mod mocked {
     /// Update HLC with remote timestamp
     pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
         NATIVE_HLC.with(|hlc| hlc.borrow_mut().update(remote_ts, time_now))
+    }
+
+    pub(super) fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
+        RUNTIME_ENV.with(|slot| {
+            let prev = slot.replace(Some(env));
+            let result = f();
+            slot.replace(prev);
+            result
+        })
     }
 
     /// Resets the environment state for testing.

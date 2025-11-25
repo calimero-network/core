@@ -10,6 +10,7 @@ publish = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
+calimero-primitives = { workspace = true, features = ["borsh"] }
 eyre.workspace = true
 fixedstr = { workspace = true, features = ["flex-str", "serde", "std"] }
 hex.workspace = true
@@ -17,11 +18,13 @@ indexmap.workspace = true
 serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 calimero-sdk.workspace = true
 calimero-storage-macros.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ed25519-dalek.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
@@ -35,6 +38,3 @@ calimero-sdk.workspace = true
 [features]
 default = []
 testing = []  # Exposes test utilities for dependent crates
-
-[lints]
-workspace = true

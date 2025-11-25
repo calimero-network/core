@@ -12,6 +12,7 @@ publish = true
 borsh = { workspace = true, features = ["derive"] }
 bytes.workspace = true
 eyre.workspace = true
+ed25519-dalek.workspace = true
 fragile.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 ouroboros.workspace = true
@@ -29,6 +30,7 @@ wasmer-types.workspace = true
 calimero-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-sys.workspace = true
+calimero-storage.workspace = true
 
 [[example]]
 name = "demo"
@@ -42,6 +44,3 @@ serde_json.workspace = true
 
 [features]
 host-traces = ["owo-colors"]
-
-[lints]
-workspace = true

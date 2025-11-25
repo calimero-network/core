@@ -5,14 +5,14 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
-use borsh::{from_slice, BorshDeserialize, BorshSerialize};
-
 use super::{Collection, ROOT_ID};
 use crate::address::Id;
 use crate::delta::{push_comparison, StorageDelta};
 use crate::integration::Comparison;
 use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
+use borsh::{from_slice, BorshDeserialize, BorshSerialize};
+use tracing::info;
 
 /// A set collection that stores unqiue values once.
 pub struct Root<T, S: StorageAdaptor = MainStorage> {
@@ -129,8 +129,29 @@ where
 
         match artifact {
             StorageDelta::Actions(actions) => {
+                let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
+
                 for action in actions {
-                    let _ignored = match action {
+                    match &action {
+                        Action::Add {
+                            id, data, metadata, ..
+                        }
+                        | Action::Update {
+                            id, data, metadata, ..
+                        } if id.is_root() => {
+                            info!(
+                                target: "storage::root",
+                                payload_len = data.len(),
+                                created_at = metadata.created_at,
+                                updated_at = metadata.updated_at(),
+                                "captured root snapshot from delta replay"
+                            );
+                            root_snapshot = Some((data.clone(), metadata.clone()));
+                        }
+                        _ => {}
+                    }
+
+                    match action {
                         Action::Compare { id } => {
                             push_comparison(Comparison {
                                 data: <Interface<S>>::find_by_id_raw(id),
@@ -143,6 +164,15 @@ where
                             <Interface<S>>::apply_action(action)?;
                         }
                     };
+                }
+
+                if let Some((payload, metadata)) = root_snapshot {
+                    if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
+                        info!(
+                            target: "storage::root",
+                            "persisted root document from delta replay"
+                        );
+                    }
                 }
             }
             StorageDelta::Comparisons(comparisons) => {
@@ -163,6 +193,10 @@ where
             }
         }
 
+        info!(
+            target: "storage::root",
+            "committing root after delta replay"
+        );
         Self::commit_headless();
 
         Ok(())

@@ -1,11 +1,96 @@
+use borsh::to_vec;
 use core::cell::RefCell;
+use core::mem;
 use serde::Serialize;
+use std::cell::Cell;
+use tracing::{debug, error, info, trace, warn};
 
+use crate::store::Storage as RuntimeStorage;
 use crate::{
     errors::{HostError, Location, PanicContext},
-    logic::{sys, VMHostFunctions, VMLogicResult},
+    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult},
 };
 use calimero_primitives::common::DIGEST_SIZE;
+use calimero_storage::env::{with_runtime_env, RuntimeEnv};
+use calimero_storage::{
+    address::Id, entities::Metadata, index::Index, interface::Interface, store::MainStorage,
+};
+use std::rc::Rc;
+
+/// Construct a `RuntimeEnv` that forwards storage calls from the storage crate
+/// back into the VM's current `RuntimeStorage`.
+///
+/// The storage crate keeps its own thread-local accessors (used by both the WASM
+/// stubs and the mock in-process tests). When the JS runtime calls into
+/// `Interface::<MainStorage>::save_raw`/`find_by_id_raw` we need those calls to
+/// hit the per-execution storage handle (`logic.storage`) rather than the
+/// default mock store.  We cannot hand that trait object across the boundary
+/// directly, so we expose a set of closures that capture the data and vtable
+/// pointers of the current storage instance.  While the runtime call is in
+/// flight we install this `RuntimeEnv` via `with_runtime_env`, allowing the
+/// storage crate to resolve reads/writes against the live context storage.
+pub(super) fn build_runtime_env(
+    storage: &mut dyn RuntimeStorage,
+    context_id: [u8; DIGEST_SIZE],
+    executor_id: [u8; DIGEST_SIZE],
+) -> RuntimeEnv {
+    let raw_ptr: *mut dyn RuntimeStorage = storage;
+    let (data_ptr, vtable_ptr): (*mut (), *mut ()) = unsafe { mem::transmute(raw_ptr) };
+    let storage_cell = Rc::new(Cell::new((data_ptr as usize, vtable_ptr as usize)));
+
+    let reader_cell = Rc::clone(&storage_cell);
+    let reader = Rc::new(move |key: &calimero_storage::store::Key| {
+        let (data_addr, vtable_addr) = reader_cell.get();
+        if data_addr == 0 {
+            return None;
+        }
+
+        let key_vec = key.to_bytes().to_vec();
+        let raw = (data_addr as *mut (), vtable_addr as *mut ());
+        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        unsafe { (&*ptr).get(&key_vec) }
+    });
+
+    let writer_cell = Rc::clone(&storage_cell);
+    let writer = Rc::new(move |key: calimero_storage::store::Key, value: &[u8]| {
+        let (data_addr, vtable_addr) = writer_cell.get();
+        if data_addr == 0 {
+            return false;
+        }
+
+        let key_vec = key.to_bytes().to_vec();
+        let raw = (data_addr as *mut (), vtable_addr as *mut ());
+        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        unsafe { (&mut *ptr).set(key_vec, value.to_vec()).is_some() }
+    });
+
+    let remover_cell = Rc::clone(&storage_cell);
+    let remover = Rc::new(move |key: &calimero_storage::store::Key| {
+        let (data_addr, vtable_addr) = remover_cell.get();
+        if data_addr == 0 {
+            return false;
+        }
+
+        let key_vec = key.to_bytes().to_vec();
+        let raw = (data_addr as *mut (), vtable_addr as *mut ());
+        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        unsafe { (&mut *ptr).remove(&key_vec).is_some() }
+    });
+
+    // Safety notes:
+    //
+    // * The closures below capture the data and vtable pointers of `storage`
+    //   at the time `build_runtime_env` is called.  While the host function is
+    //   executing the VM guarantees exclusivity over `logic.storage`, so it is
+    //   safe to dereference those pointers inside the closures.
+    // * The pointers are stored in a `Cell` to keep the closures `Fn` (instead
+    //   of `FnMut`) which matches the storage crate’s expectations.
+    // * When the host function returns the `RuntimeEnv` drops out of scope and
+    //   the storage crate falls back to its default environment, so subsequent
+    //   calls that do not install an override will continue to use the mock /
+    //   WASM backends.
+    RuntimeEnv::new(reader, writer, remover, context_id, executor_id)
+}
 
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
@@ -60,6 +145,14 @@ impl VMHostFunctions<'_> {
         let line = location.line();
         let column = location.column();
 
+        warn!(
+            target: "runtime::host::system",
+            file = %file,
+            line,
+            column,
+            "Guest panic() without message"
+        );
+
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message: "explicit panic".to_owned(),
@@ -89,6 +182,12 @@ impl VMHostFunctions<'_> {
         src_panic_msg_ptr: u64,
         src_location_ptr: u64,
     ) -> VMLogicResult<()> {
+        debug!(
+            target: "runtime::host::system",
+            src_panic_msg_ptr,
+            src_location_ptr,
+            "panic_utf8 invoked"
+        );
         let panic_message_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
         let location =
@@ -98,6 +197,15 @@ impl VMHostFunctions<'_> {
         let file = self.read_guest_memory_str(&location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
+
+        error!(
+            target: "runtime::host::system",
+            message = %panic_message,
+            file = %file,
+            line,
+            column,
+            "Guest panic captured"
+        );
 
         Err(HostError::Panic {
             context: PanicContext::Guest,
@@ -118,11 +226,20 @@ impl VMHostFunctions<'_> {
     /// The length of the data in the specified register. If the register is not found,
     /// it returns `u64::MAX`.
     pub fn register_len(&self, register_id: u64) -> VMLogicResult<u64> {
-        Ok(self
+        let len = self
             .borrow_logic()
             .registers
             .get_len(register_id)
-            .unwrap_or(u64::MAX))
+            .unwrap_or(u64::MAX);
+
+        trace!(
+            target: "runtime::host::system",
+            register_id,
+            len,
+            "register_len"
+        );
+
+        Ok(len)
     }
 
     /// Reads the data from a register into a guest memory buffer.
@@ -149,11 +266,25 @@ impl VMHostFunctions<'_> {
         let data = self.borrow_logic().registers.get(register_id)?;
 
         if data.len() != usize::try_from(dest_data.len()).map_err(|_| HostError::IntegerOverflow)? {
+            trace!(
+                target: "runtime::host::system",
+                register_id,
+                register_size = data.len(),
+                dest_size = dest_data.len(),
+                "read_register length mismatch"
+            );
             return Ok(0);
         }
 
         self.read_guest_memory_slice_mut(&dest_data)
             .copy_from_slice(data);
+
+        trace!(
+            target: "runtime::host::system",
+            register_id,
+            bytes_copied = data.len(),
+            "read_register"
+        );
 
         Ok(1)
     }
@@ -168,11 +299,74 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
     pub fn context_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic
                 .registers
                 .set(logic.limits, dest_register_id, logic.context.context_id)
-        })
+                .map_err(VMLogicError::from)?;
+            Ok(())
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "context_id written"
+        );
+
+        Ok(())
+    }
+
+    /// Handles QuickJS debug prints routed through `js_std_d_print`.
+    ///
+    /// QuickJS' libc invokes this host import to surface diagnostics. We treat it like any
+    /// other guest log, storing it in the execution outcome and emitting it at `info` level.
+    pub fn js_std_d_print(
+        &mut self,
+        _ctx_ptr: u64,
+        message_ptr: u64,
+        message_len: u64,
+    ) -> VMLogicResult<u32> {
+        trace!(
+            target: "runtime::guest::log",
+            ptr = message_ptr,
+            len = message_len,
+            "js_std_d_print invoked"
+        );
+
+        let len = usize::try_from(message_len).map_err(|_| HostError::IntegerOverflow)?;
+
+        let mut bytes = vec![0u8; len];
+        if len > 0 {
+            self.borrow_memory()
+                .read(message_ptr, &mut bytes)
+                .map_err(|_| HostError::InvalidMemoryAccess)?;
+        }
+
+        let message = String::from_utf8_lossy(&bytes).to_string();
+        let max_len = {
+            let logic = self.borrow_logic();
+            if logic.logs.len()
+                >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+            {
+                return Err(HostError::LogsOverflow.into());
+            }
+            usize::try_from(logic.limits.max_log_size).map_err(|_| HostError::IntegerOverflow)?
+        };
+        if message.len() > max_len {
+            return Err(HostError::LogLengthOverflow.into());
+        }
+        self.with_logic_mut(|logic| logic.logs.push(message.clone()));
+
+        let total_logs = self.borrow_logic().logs.len();
+        info!(
+            target: "runtime::guest::log",
+            interesting = false,
+            total_logs,
+            message = %message,
+            "guest log (js_std_d_print)"
+        );
+
+        Ok(0)
     }
 
     /// Copies the executor's public key into a register.
@@ -185,13 +379,21 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
     pub fn executor_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic.registers.set(
                 logic.limits,
                 dest_register_id,
                 logic.context.executor_public_key,
             )
-        })
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "executor_id written"
+        );
+
+        Ok(())
     }
 
     /// Copies the input data for the current execution (from context ID) into a register.
@@ -204,11 +406,18 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
     pub fn input(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic
                 .registers
                 .set(logic.limits, dest_register_id, &*logic.context.input)
         })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            input_len = self.borrow_logic().context.input.len(),
+            "input copied to register"
+        );
 
         Ok(())
     }
@@ -235,7 +444,19 @@ impl VMHostFunctions<'_> {
             sys::ValueReturn::Err(value) => Err(self.read_guest_memory_slice(&value).to_vec()),
         };
 
+        let result_len = match &result {
+            Ok(value) | Err(value) => value.len(),
+        };
+        let was_ok = result.is_ok();
+
         self.with_logic_mut(|logic| logic.returns = Some(result));
+
+        debug!(
+            target: "runtime::host::system",
+            success = was_ok,
+            bytes = result_len,
+            "value_return captured"
+        );
 
         Ok(())
     }
@@ -253,19 +474,64 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BadUTF8` if the message is not a valid UTF-8 string.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn log_utf8(&mut self, src_log_ptr: u64) -> VMLogicResult<()> {
-        let src_log_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr)? };
+        trace!(
+            target: "runtime::guest::log",
+            ptr = src_log_ptr,
+            "log_utf8 invoked"
+        );
 
-        let logic = self.borrow_logic();
+        let src_log_buf =
+            match unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr) } {
+                Ok(buf) => buf,
+                Err(err) => {
+                    error!(
+                        target: "runtime::guest::log",
+                        ptr = src_log_ptr,
+                        error = ?err,
+                        "failed to read guest log buffer descriptor"
+                    );
+                    return Err(err);
+                }
+            };
 
-        if logic.logs.len()
-            >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
-        {
-            return Err(HostError::LogsOverflow.into());
+        let message = match self.read_guest_memory_str(&src_log_buf) {
+            Ok(msg) => msg.to_owned(),
+            Err(err) => {
+                error!(
+                    target: "runtime::guest::log",
+                    ptr = src_log_ptr,
+                    buf_len = src_log_buf.len(),
+                    error = ?err,
+                    "failed to read guest log message"
+                );
+                return Err(err);
+            }
+        };
+        let max_len = {
+            let logic = self.borrow_logic();
+            if logic.logs.len()
+                >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+            {
+                return Err(HostError::LogsOverflow.into());
+            }
+            usize::try_from(logic.limits.max_log_size).map_err(|_| HostError::IntegerOverflow)?
+        };
+        if message.len() > max_len {
+            return Err(HostError::LogLengthOverflow.into());
         }
 
-        let message = self.read_guest_memory_str(&src_log_buf)?.to_owned();
+        self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
-        self.with_logic_mut(|logic| logic.logs.push(message));
+        let total_logs = self.borrow_logic().logs.len();
+        let interesting = message.contains("[dispatcher]") || message.contains("QuickJS");
+
+        info!(
+            target: "runtime::guest::log",
+            interesting,
+            total_logs,
+            message = %message,
+            "guest log"
+        );
 
         Ok(())
     }
@@ -313,13 +579,22 @@ impl VMHostFunctions<'_> {
         // Read callback handler name from thread-local storage
         let handler = CURRENT_CALLBACK_HANDLER.with(|name| name.borrow().clone());
 
-        self.with_logic_mut(|logic| {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic.events.push(Event {
                 kind,
                 data,
                 handler,
             });
-        });
+            Ok(())
+        })?;
+
+        debug!(
+            target: "runtime::host::system",
+            events = self.borrow_logic().events.len(),
+            kind_len,
+            data_len,
+            "emit"
+        );
 
         Ok(())
     }
@@ -455,7 +730,15 @@ impl VMHostFunctions<'_> {
 
     /// Commits the execution state, providing a state root and an artifact.
     ///
-    /// This function can only be called once per execution.
+    /// Every JS contract must call this exactly once per execution. The runtime
+    /// stores the root hash and artifact in the `Outcome`; the **Rust core**
+    /// (particularly the Wasm execution services in `crates/context` and
+    /// `crates/node`) expects those fields to be present so it can broadcast
+    /// receipts, trigger event handlers, and persist execution metadata. This is
+    /// the same contract followed by the Rust SDK—those services never inspect
+    /// guest memory directly, they rely on the `Outcome` produced here. The
+    /// newer `persist_root_state` API complements this by ensuring the Merkle
+    /// tree reflects the same state.
     ///
     /// # Arguments
     ///
@@ -476,17 +759,293 @@ impl VMHostFunctions<'_> {
         let artifact = self.read_guest_memory_slice(&artifact).to_vec();
 
         self.with_logic_mut(|logic| {
-            if logic.root_hash.is_some() {
+            if logic.commit_called {
                 return Err(HostError::InvalidMemoryAccess);
             }
 
             logic.root_hash = Some(root_hash);
             logic.artifact = artifact;
+            logic.commit_called = true;
 
             Ok(())
         })?;
 
         Ok(())
+    }
+
+    /// Persists the root state document provided by the guest runtime.
+    ///
+    /// Instead of writing directly to storage (which would bypass Merkle bookkeeping),
+    /// the payload is stored through the storage interface so that parent hashes are
+    /// recomputed and a CRDT action is emitted. The Rust SDK accomplishes the same thing
+    /// by calling storage APIs directly; the JS SDK cannot, so it funnels the serialized
+    /// root document back to the host via this hook. Paired with `commit` and
+    /// `flush_delta`, this keeps both the outcome artifact and the storage DAG in sync.
+    pub fn persist_root_state(
+        &mut self,
+        src_doc_ptr: u64,
+        created_at: u64,
+        updated_at: u64,
+    ) -> VMLogicResult<()> {
+        let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_doc_ptr)? };
+        let payload = self.read_guest_memory_slice(&buffer).to_vec();
+
+        fn hlc_to_nanos(ts: calimero_storage::logical_clock::HybridTimestamp) -> u64 {
+            let ntp = ts.get_time().as_u64();
+            let secs = ntp >> 32;
+            let frac = ntp & 0xFFFF_FFFF;
+            let nanos = (frac.saturating_mul(1_000_000_000)) >> 32;
+            secs.saturating_mul(1_000_000_000).saturating_add(nanos)
+        }
+
+        let logical_time = calimero_storage::env::hlc_timestamp();
+        let host_updated_at = hlc_to_nanos(logical_time);
+
+        let base_created_at = if created_at == 0 {
+            host_updated_at
+        } else {
+            created_at
+        };
+
+        let previous_updated = updated_at.max(base_created_at);
+        let monotonic_updated = host_updated_at.max(previous_updated.saturating_add(1));
+
+        let final_created_at = base_created_at;
+        let final_updated_at = monotonic_updated;
+        let mut payload_opt = Some(payload);
+
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            debug!(
+                target: "runtime::host::system",
+                "apply_storage_delta using context id"
+            );
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
+            );
+
+            let payload = payload_opt
+                .take()
+                .expect("persist_root_state payload already consumed");
+
+            with_runtime_env(env, move || {
+                Interface::<MainStorage>::save_raw(
+                    Id::root(),
+                    payload,
+                    Metadata::new(final_created_at, final_updated_at),
+                )
+            })
+            .map_err(|err| {
+                VMLogicError::from(HostError::Panic {
+                    context: PanicContext::Host,
+                    message: format!("persist_root_state failed: {err}"),
+                    location: Location::Unknown,
+                })
+            })?;
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    /// Reads the persisted root state document into a register.
+    ///
+    /// Returns `1` if the state exists, `0` otherwise.
+    pub fn read_root_state(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.with_logic_mut(|logic| -> VMLogicResult<i32> {
+            let context_hex: String = logic
+                .context
+                .context_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
+            );
+
+            let maybe_bytes =
+                with_runtime_env(env, || Interface::<MainStorage>::find_by_id_raw(Id::root()));
+
+            if let Some(bytes) = maybe_bytes {
+                let value_len = bytes.len();
+                logic
+                    .registers
+                    .set(logic.limits, dest_register_id, bytes)
+                    .map_err(VMLogicError::from)?;
+
+                info!(
+                    target: "runtime::host::system",
+                    value_len,
+                    dest_register_id,
+                    context_id = %context_hex,
+                    "read_root_state returned payload"
+                );
+
+                Ok(1)
+            } else {
+                info!(
+                    target: "runtime::host::system",
+                    context_id = %context_hex,
+                    "read_root_state returned no payload"
+                );
+                Ok(0)
+            }
+        })
+    }
+
+    /// Applies a serialized storage delta produced by another executor.
+    ///
+    /// The delta must be encoded as `StorageDelta::Actions` in Borsh format. The host
+    /// will deserialize the actions and feed them into the storage interface so that
+    /// CRDT entities and the root document are updated atomically.
+    pub fn apply_storage_delta(&mut self, src_delta_ptr: u64) -> VMLogicResult<()> {
+        let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_delta_ptr)? };
+        let payload = self.read_guest_memory_slice(&buffer).to_vec();
+        let delta_len = payload.len();
+
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            let context_hex: String = logic
+                .context
+                .context_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            info!(
+                target: "runtime::host::system",
+                delta_len,
+                context_id = %context_hex,
+                "apply_storage_delta start"
+            );
+
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
+            );
+
+            with_runtime_env(env.clone(), || {
+                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload)
+            })
+            .map_err(|err| {
+                VMLogicError::from(HostError::Panic {
+                    context: PanicContext::Host,
+                    message: format!("apply_storage_delta failed: {err}"),
+                    location: Location::Unknown,
+                })
+            })?;
+
+            let root_hash =
+                with_runtime_env(env, || Index::<MainStorage>::get_hashes_for(Id::root()))
+                    .map_err(|err| {
+                        VMLogicError::from(HostError::Panic {
+                            context: PanicContext::Host,
+                            message: format!(
+                                "apply_storage_delta failed to fetch root hash: {err}"
+                            ),
+                            location: Location::Unknown,
+                        })
+                    })?
+                    .map(|(full_hash, _)| full_hash)
+                    .unwrap_or([0; 32]);
+
+            logic.root_hash = Some(root_hash);
+
+            info!(
+                target: "runtime::host::system",
+                delta_len,
+                context_id = %context_hex,
+                "apply_storage_delta completed"
+            );
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    /// Flushes pending CRDT actions recorded by the storage layer and commits them
+    /// as a causal delta.
+    ///
+    /// The delta is only emitted if `persist_root_state` (or other storage
+    /// operations) recorded actions since the last flush. The Rust SDK triggers
+    /// this automatically when collections mutate; the JS SDK does it manually.
+    /// Returns `1` if a delta was emitted, `0` if there was nothing to commit.
+    pub fn flush_delta(&mut self) -> VMLogicResult<i32> {
+        self.with_logic_mut(|logic| -> VMLogicResult<i32> {
+            let env = build_runtime_env(
+                logic.storage,
+                logic.context.context_id,
+                logic.context.executor_public_key,
+            );
+
+            let root_hash = with_runtime_env(env.clone(), || {
+                Index::<MainStorage>::get_hashes_for(Id::root())
+            })
+            .map_err(|err| HostError::Panic {
+                context: PanicContext::Host,
+                message: format!("failed to fetch root hash: {err}"),
+                location: Location::Unknown,
+            })?
+            .map(|(full_hash, _)| full_hash)
+            .unwrap_or([0; 32]);
+
+            let commit_result = with_runtime_env(env, || {
+                calimero_storage::delta::commit_causal_delta(&root_hash)
+            })
+            .map_err(|err| {
+                VMLogicError::from(HostError::Panic {
+                    context: PanicContext::Host,
+                    message: format!("commit_causal_delta failed: {err}"),
+                    location: Location::Unknown,
+                })
+            })?;
+
+            match commit_result {
+                Some(delta) => {
+                    use calimero_storage::interface::Action;
+
+                    let action_ids: Vec<String> = delta
+                        .actions
+                        .iter()
+                        .map(|action| match action {
+                            Action::Add { id, .. }
+                            | Action::Update { id, .. }
+                            | Action::DeleteRef { id, .. }
+                            | Action::Compare { id } => format!("{id:?}"),
+                        })
+                        .collect();
+
+                    debug!(
+                        target: "runtime::host::system",
+                        action_count = delta.actions.len(),
+                        parent_count = delta.parents.len(),
+                        action_ids = ?action_ids,
+                        "flush_delta emitting causal delta"
+                    );
+                    let storage_delta =
+                        calimero_storage::delta::StorageDelta::Actions(delta.actions.clone());
+                    let artifact = to_vec(&storage_delta).map_err(|err| {
+                        VMLogicError::from(HostError::Panic {
+                            context: PanicContext::Host,
+                            message: format!("failed to serialize causal delta: {err}"),
+                            location: Location::Unknown,
+                        })
+                    })?;
+
+                    logic.root_hash = Some(root_hash);
+                    logic.artifact = artifact;
+                    Ok(1)
+                }
+                None => {
+                    logic.root_hash = Some(root_hash);
+                    Ok(0)
+                }
+            }
+        })
     }
 }
 
@@ -710,6 +1269,27 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_log_utf8_length_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        limits.max_log_size = 4;
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "exceeds";
+        let msg_ptr = 200u64;
+        write_str(&host, msg_ptr, msg);
+        let buf_ptr = 12u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, msg_ptr, msg.len() as u64);
+
+        let err = host.log_utf8(buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogLengthOverflow)
+        ));
+    }
+
     /// Tests that the `log_utf8()` host function correctly handles the bad UTF8 and properly returns
     /// an error `HostError::BadUTF8` when the incorrect string is provided (the failure occurs
     /// because of the verification happening inside the private `read_guest_memory_str` function).
@@ -731,6 +1311,27 @@ mod tests {
         // `log_utf8` calls `read_guest_memory_str` internally. We expect it to fail.
         let err = host.log_utf8(buf_ptr).unwrap_err();
         assert!(matches!(err, VMLogicError::HostError(HostError::BadUTF8)));
+    }
+
+    #[test]
+    fn test_js_std_d_print_length_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        limits.max_log_size = 5;
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg = "too long";
+        let msg_ptr = 512u64;
+        write_str(&host, msg_ptr, msg);
+
+        let err = host
+            .js_std_d_print(0, msg_ptr, msg.len() as u64)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::LogLengthOverflow)
+        ));
     }
 
     /// Tests the `panic()` host function (without a custom message).

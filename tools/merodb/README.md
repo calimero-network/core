@@ -61,11 +61,33 @@ merodb --db-path /path/to/rocksdb --export --columns Meta,Config,State --wasm-fi
 
 ### Validate Database
 
-Validate the database integrity:
+Validate the database integrity by performing comprehensive checks on all column families:
 
 ```bash
 merodb --db-path /path/to/rocksdb --validate --output validation.json
 ```
+
+The validation checks:
+- **Key Size Validation**: Verifies all keys match expected byte lengths for their column type
+- **Key Structure Validation**: Validates internal structure of keys (non-zero IDs, valid components, UTF-8 encoding where required)
+- **Value Deserialization**: Attempts to deserialize all values according to their schema
+
+The output includes overall statistics, per-column results, and detailed error information for any invalid entries found.
+
+### Export DAG Structure
+
+Export Context DAG deltas as a graph structure for visualization:
+
+```bash
+merodb --db-path /path/to/rocksdb --export-dag --output dag.json
+```
+
+This command extracts all Context DAG deltas from the Generic column family and outputs:
+- **Nodes**: Each delta with its metadata (timestamp, HLC, actions size, applied status)
+- **Edges**: Parent-child relationships between deltas
+- **Contexts**: Grouping of deltas by context ID
+- **Roots**: Genesis deltas (starting points)
+- **Leaves**: Most recent deltas (endpoints)
 
 ### Interactive GUI (requires `gui` feature)
 
@@ -78,11 +100,39 @@ merodb --gui
 The GUI will start a local web server (default port 8080). You can then:
 
 1. Enter your RocksDB database folder path
-2. Upload your instrumented WASM contract file
+2. Upload your instrumented WASM contract file (validated for ABI manifest)
 3. Click "Load Database" to process and view the data
 4. Browse the database structure with an interactive tree view
 5. Run JQ queries to filter and analyze the data
 6. Explore query results in real-time
+7. **View DAG visualization** - Switch to the DAG View tab to see an interactive visualization of Context DAG deltas with hierarchical or force-directed layouts
+8. **View State Tree** - Switch to the State Tree tab to explore the Merkle tree-based state structure with interactive D3.js visualization
+9. **Load specific contexts on demand** - Use the State Tree context selector to fetch and cache trees only for the contexts you inspect (multi-context friendly)
+
+#### State Tree Visualization
+
+The State Tree view provides an interactive visualization of your database's Merkle tree structure:
+
+- **Context-aware loading**: The GUI first lists all contexts (Meta column scan only) and then fetches trees lazily when you pick a context from the dropdown. Large multi-context databases no longer require loading every tree up front.
+- **On-demand caching**: Once a context tree is loaded it is cached in-memory, so switching back to an earlier context is instant and does not re-query RocksDB.
+- **Multi-Context Support**: View state trees for all contexts with tab-based navigation
+- **Interactive Nodes**: Click to expand/collapse branches, hover for detailed metadata
+- **Color-Coded Types**:
+  - Blue: EntityIndex nodes (tree structure metadata)
+  - Green: Map entries (key-value pairs)
+  - Orange: Scalar entries (single values)
+  - Red: Missing or unknown nodes
+- **Node Information**: Each node displays ID, type, parent relationships, hashes, timestamps
+- **Navigation**: Zoom and pan controls for exploring large state trees
+
+**State Tree workflow:**
+
+1. Load a database and supply a WASM file with an ABI manifest.
+2. The GUI lists contexts immediately; the first context's tree is fetched and rendered automatically.
+3. Pick a different context from the dropdown to trigger an on-demand fetch for just that tree.
+4. Repeat the process as needed—each loaded tree is cached for the session.
+
+**Note**: The uploaded WASM file must contain a valid ABI manifest. Files without proper ABI will be rejected with an error notification.
 
 Specify a custom port:
 
@@ -112,6 +162,17 @@ The GUI automatically exports and processes the database server-side, eliminatin
 - `.data.State.entries | map(.key)` - Extract all state keys
 - `.data | to_entries | map({column: .key, count: .value.count})` - Get entry counts per column
 
+## Migration Workflow (`merodb migrate`)
+
+A full walkthrough (plan schema, dry-run engine, roadmap, and YAML reference) now lives in [`src/migration/README.md`](src/migration/README.md). Refer to that document when authoring plans or extending the migration implementation.
+
+During dry runs the CLI prints a human-readable preview and can also persist machine-readable output using:
+
+```bash
+merodb migrate --plan ./plan.yaml --report ./dry-run.json
+```
+
+The `--report` file contains the step-by-step summary emitted by the dry-run engine, including counts, samples, and warnings.
 ## Column Families
 
 The tool supports all Calimero RocksDB column families:
@@ -166,11 +227,20 @@ merodb --schema --output schema.json
 merodb --db-path ~/.calimero/data --validate --output validation.json
 
 # 3. Export all data for analysis
-merodb --db-path ~/.calimero/data --export --all --output full-export.json
+merodb --db-path ~/.calimero/data --export --all --output full-export.json --wasm-file contract.wasm
 
 # 4. Export only context-related data
-merodb --db-path ~/.calimero/data --export --columns Meta,Config,Identity --output contexts.json
+merodb --db-path ~/.calimero/data --export --columns Meta,Config,Identity --output contexts.json --wasm-file contract.wasm
+
+# 5. Export DAG structure for visualization
+merodb --db-path ~/.calimero/data --export-dag --output dag.json
 ```
+
+#### DAG Visualization Enhancements
+
+- **On-demand delta details**: Hovering a node shows basic metadata immediately, then fetches the delta's actions/events lazily via `/api/dag/delta-details`, eliminating the previous O(N) upfront deserialization hit.
+- **Richer tooltips**: Once details arrive, tooltips update in-place with action types, payload sizes, ancestor counts, timestamp metadata, and event summaries—no extra clicks required.
+- **Scales with large DAGs**: Because delta payloads are only decoded when you inspect a node, initial DAG exports remain fast even for thousands of deltas spread across many contexts.
 
 ### Debugging a Specific Context
 

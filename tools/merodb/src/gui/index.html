@@ -3,1022 +3,204 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Interactive RocksDB Database Viewer with JQ Query Support">
     <title>MeroDB Inspector</title>
+
+    <!-- External Dependencies -->
     <script src="https://cdn.jsdelivr.net/npm/jq-web@0.6.2/jq.js" crossorigin="anonymous"></script>
-    <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            line-height: 1.6;
-        }
-
-        .app-container {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .app-header {
-            background: #252526;
-            padding: 20px 40px;
-            border-bottom: 1px solid #3e3e42;
-        }
-
-        .app-header h1 {
-            color: #ffffff;
-            margin: 0;
-            font-size: 28px;
-            font-weight: 600;
-        }
-
-        .subtitle {
-            color: #858585;
-            margin: 5px 0 0 0;
-            font-size: 14px;
-        }
-
-        .app-main {
-            flex: 1;
-            padding: 40px;
-        }
-
-        /* Upload Container */
-        .upload-container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-
-        .form-container {
-            border: 1px solid #3e3e42;
-            border-radius: 8px;
-            padding: 40px;
-            background: #252526;
-        }
-
-        .form-icon {
-            font-size: 64px;
-            text-align: center;
-            margin-bottom: 20px;
-        }
-
-        .form-container h2 {
-            color: #ffffff;
-            margin-bottom: 10px;
-            font-size: 24px;
-            text-align: center;
-        }
-
-        .form-container > p {
-            color: #858585;
-            margin-bottom: 30px;
-            text-align: center;
-        }
-
-        .load-form {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .form-group label {
-            color: #d4d4d4;
-            font-weight: 500;
-            font-size: 14px;
-        }
-
-        .text-input {
-            background: #1e1e1e;
-            border: 1px solid #3e3e42;
-            color: #d4d4d4;
-            padding: 12px 16px;
-            border-radius: 4px;
-            font-size: 14px;
-            font-family: 'Consolas', 'Monaco', monospace;
-        }
-
-        .text-input:focus {
-            outline: none;
-            border-color: #007acc;
-        }
-
-        .file-input {
-            display: none;
-        }
-
-        .file-button {
-            display: inline-block;
-            background: #3e3e42;
-            color: #d4d4d4;
-            padding: 12px 24px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: background 0.2s ease;
-            border: none;
-            font-size: 14px;
-        }
-
-        .file-button:hover {
-            background: #4e4e52;
-        }
-
-        .filename {
-            color: #858585;
-            font-size: 13px;
-            margin-left: 10px;
-            font-style: italic;
-        }
-
-        .submit-button {
-            background: #007acc;
-            color: white;
-            padding: 14px 24px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: background 0.2s ease;
-            border: none;
-            font-size: 16px;
-            margin-top: 10px;
-        }
-
-        .submit-button:hover {
-            background: #005a9e;
-        }
-
-        .submit-button:disabled {
-            background: #3e3e42;
-            cursor: not-allowed;
-            opacity: 0.6;
-        }
-
-        .loading-message {
-            text-align: center;
-            padding: 15px;
-            background: #2d2d30;
-            border: 1px solid #3e3e42;
-            border-radius: 4px;
-            color: #d4d4d4;
-        }
-
-        .spinner {
-            display: inline-block;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
-
-        .error-message {
-            padding: 15px;
-            background: #5a1d1d;
-            border: 1px solid #be1100;
-            border-radius: 4px;
-            color: #f48771;
-        }
-
-        .instructions {
-            margin-top: 40px;
-            padding: 30px;
-            background: #252526;
-            border-radius: 8px;
-            border: 1px solid #3e3e42;
-        }
-
-        .instructions h3 {
-            color: #ffffff;
-            margin-bottom: 15px;
-            font-size: 18px;
-        }
-
-        .instructions ol {
-            margin-left: 20px;
-        }
-
-        .instructions li {
-            margin-bottom: 10px;
-            color: #d4d4d4;
-        }
-
-        .instructions code {
-            background: #1e1e1e;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-            color: #ce9178;
-        }
-
-        /* Viewer Container */
-        .viewer-container {
-            display: flex;
-            flex-direction: column;
-            height: calc(100vh - 140px);
-        }
-
-        .file-info {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px 20px;
-            background: #252526;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            border: 1px solid #3e3e42;
-        }
-
-        .file-name {
-            font-weight: 500;
-            color: #ffffff;
-        }
-
-        .reload-button {
-            background: #3e3e42;
-            color: #d4d4d4;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background 0.2s ease;
-        }
-
-        .reload-button:hover {
-            background: #4e4e52;
-        }
-
-        .content-panels {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            flex: 1;
-            overflow: hidden;
-        }
-
-        .json-panel, .jq-panel {
-            background: #252526;
-            border-radius: 8px;
-            padding: 20px;
-            overflow: auto;
-            border: 1px solid #3e3e42;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .json-panel h3, .jq-panel h3 {
-            color: #ffffff;
-            margin-bottom: 15px;
-            font-size: 18px;
-            flex-shrink: 0;
-        }
-
-        /* JSON Viewer */
-        .json-viewer {
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-            line-height: 1.5;
-            overflow: auto;
-            flex: 1;
-        }
-
-        .json-node {
-            margin: 0;
-        }
-
-        .json-key-container {
-            cursor: pointer;
-            user-select: none;
-            padding: 1px 0;
-            line-height: 1.4;
-        }
-
-        .json-key-container:hover {
-            background: #2d2d30;
-        }
-
-        .expand-icon {
-            display: inline-block;
-            width: 16px;
-            color: #858585;
-            font-size: 11px;
-        }
-
-        .json-brace {
-            color: #d4d4d4;
-            font-weight: bold;
-        }
-
-        .json-count {
-            color: #858585;
-            font-size: 11px;
-            font-style: italic;
-        }
-
-        .json-children {
-            margin-left: 0;
-        }
-
-        .json-entry {
-            padding: 1px 0;
-            line-height: 1.4;
-        }
-
-        .json-key {
-            color: #9cdcfe;
-            font-weight: 500;
-        }
-
-        .json-index {
-            color: #dcdcaa;
-        }
-
-        .json-colon {
-            color: #858585;
-        }
-
-        .json-string {
-            color: #ce9178;
-        }
-
-        .json-number {
-            color: #b5cea8;
-        }
-
-        .json-boolean {
-            color: #569cd6;
-            font-weight: 500;
-        }
-
-        .json-null {
-            color: #858585;
-            font-style: italic;
-        }
-
-        /* JQ Panel */
-        .jq-container {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-        }
-
-        .jq-container h4 {
-            color: #ffffff;
-            margin: 20px 0 10px 0;
-            font-size: 14px;
-        }
-
-        .query-input-container {
-            margin-bottom: 20px;
-            flex-shrink: 0;
-        }
-
-        .query-input-container label {
-            display: block;
-            margin-bottom: 8px;
-            color: #d4d4d4;
-            font-size: 14px;
-        }
-
-        .input-row {
-            display: flex;
-            gap: 10px;
-        }
-
-        .jq-input {
-            flex: 1;
-            background: #1e1e1e;
-            border: 1px solid #3e3e42;
-            color: #d4d4d4;
-            padding: 10px 12px;
-            border-radius: 4px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-        }
-
-        .jq-input:focus {
-            outline: none;
-            border-color: #007acc;
-        }
-
-        .run-button {
-            background: #007acc;
-            color: white;
-            border: none;
-            padding: 10px 24px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: background 0.2s ease;
-        }
-
-        .run-button:hover {
-            background: #005a9e;
-        }
-
-        .examples-section, .history-section {
-            margin-bottom: 15px;
-            flex-shrink: 0;
-        }
-
-        .example-buttons, .history-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 10px;
-        }
-
-        .example-button, .history-button {
-            background: #3e3e42;
-            color: #d4d4d4;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 12px;
-            transition: background 0.2s ease;
-        }
-
-        .example-button:hover, .history-button:hover {
-            background: #4e4e52;
-        }
-
-        .result-container {
-            margin-top: 10px;
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .result-content {
-            flex: 1;
-            overflow: auto;
-        }
-
-        .result-placeholder {
-            padding: 20px;
-            background: #1e1e1e;
-            border: 1px solid #3e3e42;
-            border-radius: 4px;
-            color: #858585;
-            text-align: center;
-            font-style: italic;
-        }
-
-        .result-success {
-            background: #1e1e1e;
-            border: 1px solid #3e3e42;
-            border-radius: 4px;
-            padding: 15px;
-            overflow-x: auto;
-            margin: 0;
-        }
-
-        .result-success code {
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-            color: #d4d4d4;
-            line-height: 1.5;
-        }
-
-        .result-error {
-            background: #5a1d1d;
-            border: 1px solid #be1100;
-            border-radius: 4px;
-            padding: 15px;
-            color: #f48771;
-        }
-
-        .result-error strong {
-            color: #f14c4c;
-        }
-
-        /* Scrollbar styling */
-        ::-webkit-scrollbar {
-            width: 12px;
-            height: 12px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: #1e1e1e;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #3e3e42;
-            border-radius: 6px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: #4e4e52;
-        }
-
-        .hidden {
-            display: none !important;
-        }
-    </style>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="/static/css/variables.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/json-viewer.css">
+    <link rel="stylesheet" href="/static/css/jq-panel.css">
+    <link rel="stylesheet" href="/static/css/visualization.css">
 </head>
 <body>
     <div class="app-container">
+        <!-- Header -->
         <header class="app-header">
-            <h1>MeroDB Inspector</h1>
-            <p class="subtitle">Interactive RocksDB Database Viewer with JQ Query Support</p>
+            <h1 class="app-header__title">MeroDB Inspector</h1>
+            <p class="app-header__subtitle">Interactive RocksDB Database Viewer with JQ Query Support</p>
         </header>
 
+        <!-- Main Content -->
         <main class="app-main">
+            <!-- Upload View -->
             <div id="upload-view" class="upload-container">
                 <div class="form-container">
-                    <div class="form-icon">🗄️</div>
-                    <h2>Load RocksDB Database</h2>
-                    <p>Provide the database folder path and WASM contract file</p>
+                    <div class="form-container__icon">📊</div>
+                    <h2 class="form-container__title">Load Database</h2>
+                    <p class="form-container__description">Specify the database path and optionally upload a WASM file for state decoding</p>
 
-                    <form id="load-form" class="load-form">
+                    <form id="load-form" class="form">
                         <div class="form-group">
-                            <label for="db-path-input">Database Folder Path:</label>
+                            <label for="db-path-input" class="form-group__label">Database Path</label>
                             <input
                                 type="text"
                                 id="db-path-input"
-                                class="text-input"
-                                placeholder="/path/to/rocksdb/data"
+                                class="input"
+                                placeholder="/path/to/database"
                                 required
+                                aria-label="Database path"
                             >
                         </div>
 
                         <div class="form-group">
-                            <label for="wasm-input">WASM Contract File:</label>
-                            <input
-                                type="file"
-                                accept=".wasm"
-                                id="wasm-input"
-                                class="file-input"
-                                required
-                            >
-                            <button type="button" class="file-button" onclick="document.getElementById('wasm-input').click()">
-                                Choose WASM File
-                            </button>
-                            <span id="wasm-filename" class="filename"></span>
+                            <label for="wasm-input" class="form-group__label">WASM File (Optional)</label>
+                            <div>
+                                <label for="wasm-input" class="file-button">Choose File</label>
+                                <input
+                                    type="file"
+                                    id="wasm-input"
+                                    class="input--hidden"
+                                    accept=".wasm"
+                                    aria-label="WASM file"
+                                >
+                                <span id="wasm-filename" class="file-button__filename">No file chosen</span>
+                            </div>
                         </div>
 
-                        <button type="submit" class="submit-button" id="load-button">
-                            Load Database
-                        </button>
-
-                        <div id="loading-message" class="loading-message hidden">
-                            <span class="spinner">⏳</span> Loading database...
-                        </div>
-
-                        <div id="error-message" class="error-message hidden"></div>
+                        <button type="submit" id="load-button" class="btn btn--primary">Load Database</button>
                     </form>
-                </div>
-                <div class="instructions">
-                    <h3>How to use:</h3>
-                    <ol>
-                        <li>Enter the path to your RocksDB database folder</li>
-                        <li>Select the instrumented WASM contract file that contains the ABI schema</li>
-                        <li>Click "Load Database" to process and view the data</li>
-                        <li>Use JQ queries to explore and analyze your database</li>
-                    </ol>
+
+                    <div id="loading-message" class="message message--loading hidden">
+                        <span class="spinner">⏳</span> Loading database...
+                    </div>
+
+                    <div id="error-message" class="message message--error hidden" role="alert"></div>
+                    <div id="warning-message" class="message message--warning hidden" role="alert"></div>
+                    <div id="info-message" class="message message--success hidden" role="status"></div>
                 </div>
             </div>
 
+            <!-- Viewer View -->
             <div id="viewer-view" class="viewer-container hidden">
+                <!-- File Info Bar -->
                 <div class="file-info">
-                    <span id="file-name" class="file-name"></span>
-                    <button class="reload-button" onclick="resetView()">Load Different File</button>
+                    <span class="file-info__name" id="current-db-path"></span>
+                    <button class="btn btn--secondary" id="reload-button">Reload Database</button>
                 </div>
-                <div class="content-panels">
-                    <div class="json-panel">
-                        <h3>Database Content</h3>
-                        <div id="json-viewer" class="json-viewer"></div>
+
+                <!-- Tab Navigation -->
+                <nav class="tabs" role="tablist">
+                    <button class="tabs__button tabs__button--active" data-tab="data" role="tab" aria-selected="true">Data View</button>
+                    <button class="tabs__button" data-tab="dag" role="tab" aria-selected="false">DAG View</button>
+                    <button class="tabs__button" data-tab="state" role="tab" aria-selected="false">State Tree</button>
+                </nav>
+
+                <!-- Data Tab -->
+                <div id="data-view" class="content-panels" role="tabpanel">
+                    <div class="content-panels__panel">
+                        <h3 class="content-panels__title">JSON Data</h3>
+                        <div id="json-viewer" class="json-viewer" role="region" aria-label="JSON data viewer"></div>
                     </div>
-                    <div class="jq-panel">
-                        <div class="jq-container">
-                            <h3>JQ Query Panel</h3>
 
-                            <div class="query-input-container">
-                                <label for="jq-query">Query:</label>
-                                <div class="input-row">
-                                    <input
-                                        type="text"
-                                        id="jq-query"
-                                        class="jq-input"
-                                        placeholder="Enter JQ query (e.g., .data.Meta.entries[0])"
-                                        value="."
-                                    >
-                                    <button class="run-button" onclick="runQuery()">Run</button>
-                                </div>
+                    <div class="content-panels__panel">
+                        <h3 class="content-panels__title">JQ Query</h3>
+
+                        <div class="jq-panel__input-container">
+                            <label class="jq-panel__label" for="jq-query">Query</label>
+                            <div class="jq-panel__input-row">
+                                <input
+                                    type="text"
+                                    id="jq-query"
+                                    class="jq-panel__input"
+                                    placeholder=". | keys"
+                                    aria-label="JQ query input"
+                                >
+                                <button id="run-query" class="jq-panel__run-button">Run</button>
                             </div>
+                        </div>
 
-                            <div class="examples-section">
-                                <h4>Example Queries:</h4>
-                                <div class="example-buttons">
-                                    <button class="example-button" onclick="loadExample('.')">.</button>
-                                    <button class="example-button" onclick="loadExample('.data')">.data</button>
-                                    <button class="example-button" onclick="loadExample('.data | keys')">.data | keys</button>
-                                    <button class="example-button" onclick="loadExample('.data.Meta.entries[0]')">.data.Meta.entries[0]</button>
-                                    <button class="example-button" onclick="loadExample('.data.State.entries | map(.key)')">.data.State.entries | map(.key)</button>
-                                    <button class="example-button" onclick="loadExample('.data | to_entries | map({column: .key, count: .value.count})') ">Column summaries</button>
-                                </div>
-                            </div>
+                        <div class="jq-panel__section">
+                            <label class="jq-panel__label">Examples</label>
+                            <div id="examples" class="jq-panel__buttons"></div>
+                        </div>
 
-                            <div id="history-section" class="history-section hidden">
-                                <h4>Recent Queries:</h4>
-                                <div id="history-list" class="history-list"></div>
-                            </div>
+                        <div class="jq-panel__section">
+                            <label class="jq-panel__label">History</label>
+                            <div id="history" class="jq-panel__buttons"></div>
+                        </div>
 
-                            <div class="result-container">
-                                <h4>Result:</h4>
-                                <div class="result-content">
-                                    <div id="result-placeholder" class="result-placeholder">
-                                        Enter a JQ query and click Run to see results
-                                    </div>
-                                    <pre id="result-success" class="result-success hidden"><code></code></pre>
-                                    <div id="result-error" class="result-error hidden"></div>
+                        <div class="jq-panel__result-container">
+                            <label class="jq-panel__label">Result</label>
+                            <div id="result" class="jq-panel__result-content" role="region" aria-live="polite">
+                                <div class="jq-panel__result-placeholder">
+                                    Run a query to see results
                                 </div>
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <!-- DAG Tab -->
+                <div id="dag-view" class="visualization-container hidden" role="tabpanel">
+                    <div class="controls">
+                        <div class="control-group">
+                            <label class="control-group__label" for="context-select">Context:</label>
+                            <select id="context-select" class="control-group__select" aria-label="Select context">
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label class="control-group__label" for="layout-select">Layout:</label>
+                            <select id="layout-select" class="control-group__select" aria-label="Select layout type">
+                                <option value="hierarchical">Hierarchical</option>
+                                <option value="force">Force-Directed</option>
+                            </select>
+                        </div>
+                        <button class="btn btn--control" id="reset-zoom">Reset Zoom</button>
+                        <button class="btn btn--control" id="export-dag">Export Image</button>
+                    </div>
+
+                    <div id="dag-stats" class="stats"></div>
+                    <div class="hint" style="font-size: 12px; color: #888; padding: 8px 0;">
+                        💡 Tip: Hold <kbd>Ctrl</kbd> (or <kbd>Cmd</kbd> on Mac) and hover over a node to pin its tooltip. Pinned tooltips can be dragged and closed with the × button.
+                    </div>
+                    <svg id="dag-svg" class="visualization__svg" role="img" aria-label="DAG visualization"></svg>
+                    <div id="dag-tooltip" class="tooltip hidden" role="tooltip"></div>
+                </div>
+
+                <!-- State Tree Tab -->
+                <div id="state-view" class="visualization-container hidden" role="tabpanel">
+                    <div class="controls">
+                        <div class="control-group">
+                            <label class="control-group__label" for="state-context-select">Context:</label>
+                            <select id="state-context-select" class="control-group__select" aria-label="Select context">
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label class="control-group__label" for="state-layout-select">Layout:</label>
+                            <select id="state-layout-select" class="control-group__select" aria-label="Select layout type">
+                                <option value="tree">Tree</option>
+                                <option value="radial">Radial</option>
+                            </select>
+                        </div>
+                        <button class="btn btn--control" id="reset-state-zoom">Reset Zoom</button>
+                        <button class="btn btn--control" id="expand-all">Expand All</button>
+                        <button class="btn btn--control" id="collapse-all">Collapse All</button>
+                        <button class="btn btn--control" id="export-state">Export Image</button>
+                    </div>
+
+                    <div id="state-loading" class="message message--loading hidden">
+                        <span class="spinner">⏳</span> Loading state tree...
+                    </div>
+                    <div id="state-error" class="message message--error hidden" role="alert"></div>
+                    <div id="state-stats" class="stats"></div>
+                    <div class="hint" style="font-size: 12px; color: #888; padding: 8px 0;">
+                        💡 Tip: Hold <kbd>Ctrl</kbd> (or <kbd>Cmd</kbd> on Mac) and click a node to pin its tooltip. Pinned tooltips can be dragged and closed with the × button.
+                    </div>
+                    <svg id="state-svg" class="visualization__svg" role="img" aria-label="State tree visualization"></svg>
+                    <div id="state-tooltip" class="tooltip hidden" role="tooltip"></div>
                 </div>
             </div>
         </main>
     </div>
 
-    <script>
-        let jsonData = null;
-        let queryHistory = [];
-        let jqReady = null;
-
-        // Initialize jq-web library
-        if (typeof jq !== 'undefined') {
-            jqReady = jq;
-        }
-
-        // Form handling
-        const loadForm = document.getElementById('load-form');
-        const dbPathInput = document.getElementById('db-path-input');
-        const wasmInput = document.getElementById('wasm-input');
-        const wasmFilename = document.getElementById('wasm-filename');
-        const loadButton = document.getElementById('load-button');
-        const loadingMessage = document.getElementById('loading-message');
-        const errorMessage = document.getElementById('error-message');
-
-        // Update filename display when WASM file is selected
-        wasmInput.addEventListener('change', () => {
-            if (wasmInput.files.length > 0) {
-                wasmFilename.textContent = wasmInput.files[0].name;
-            } else {
-                wasmFilename.textContent = '';
-            }
-        });
-
-        // Handle form submission
-        loadForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const dbPath = dbPathInput.value.trim();
-            const wasmFile = wasmInput.files[0];
-
-            if (!dbPath) {
-                showError('Please enter a database path');
-                return;
-            }
-
-            if (!wasmFile) {
-                showError('Please select a WASM file');
-                return;
-            }
-
-            // Show loading state
-            loadButton.disabled = true;
-            loadingMessage.classList.remove('hidden');
-            hideError();
-
-            try {
-                // Create form data
-                const formData = new FormData();
-                formData.append('db_path', dbPath);
-                formData.append('wasm_file', wasmFile);
-
-                // Send request to backend
-                const response = await fetch('/api/export', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const result = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(result.error || 'Failed to load database');
-                }
-
-                // Success - load the data
-                jsonData = result.data;
-                document.getElementById('file-name').textContent = `${dbPath} (via ${wasmFile.name})`;
-                showViewer();
-                renderJson(jsonData);
-                hideError();
-
-            } catch (err) {
-                showError(err.message || 'Failed to load database');
-            } finally {
-                // Hide loading state
-                loadButton.disabled = false;
-                loadingMessage.classList.add('hidden');
-            }
-        });
-
-        function showError(message) {
-            errorMessage.textContent = message;
-            errorMessage.classList.remove('hidden');
-        }
-
-        function hideError() {
-            errorMessage.classList.add('hidden');
-        }
-
-        function showViewer() {
-            document.getElementById('upload-view').classList.add('hidden');
-            document.getElementById('viewer-view').classList.remove('hidden');
-        }
-
-        function resetView() {
-            jsonData = null;
-            queryHistory = [];
-            document.getElementById('upload-view').classList.remove('hidden');
-            document.getElementById('viewer-view').classList.add('hidden');
-            fileInput.value = '';
-            hideError();
-        }
-
-        // JSON viewer rendering
-        function renderJson(data) {
-            const viewer = document.getElementById('json-viewer');
-            viewer.innerHTML = '';
-            viewer.appendChild(createJsonNode(data, '$', 0));
-        }
-
-        function createJsonNode(value, path, level, inline = false) {
-            const container = document.createElement(inline ? 'span' : 'div');
-            container.className = 'json-node';
-            if (!inline) {
-                container.style.marginLeft = (level * 8) + 'px';
-            }
-
-            if (value === null) {
-                container.innerHTML = '<span class="json-null">null</span>';
-            } else if (typeof value === 'boolean') {
-                container.innerHTML = `<span class="json-boolean">${value}</span>`;
-            } else if (typeof value === 'number') {
-                container.innerHTML = `<span class="json-number">${value}</span>`;
-            } else if (typeof value === 'string') {
-                container.innerHTML = `<span class="json-string">"${escapeHtml(value)}"</span>`;
-            } else if (Array.isArray(value)) {
-                renderArray(container, value, path, level, inline);
-            } else if (typeof value === 'object') {
-                renderObject(container, value, path, level, inline);
-            }
-
-            return container;
-        }
-
-        function renderObject(container, obj, path, level, inline = false) {
-            const entries = Object.entries(obj);
-            const isEmpty = entries.length === 0;
-            const expanded = level < 2;
-
-            const keyContainer = document.createElement('div');
-            keyContainer.className = 'json-key-container';
-
-            const expandIcon = document.createElement('span');
-            expandIcon.className = 'expand-icon';
-            expandIcon.textContent = expanded ? '▼' : '▶';
-
-            const brace = document.createElement('span');
-            brace.className = 'json-brace';
-            brace.textContent = '{';
-
-            keyContainer.appendChild(expandIcon);
-            keyContainer.appendChild(brace);
-
-            if (!isEmpty) {
-                const count = document.createElement('span');
-                count.className = 'json-count';
-                count.textContent = ` ${entries.length} keys `;
-                keyContainer.appendChild(count);
-            }
-
-            const childrenContainer = document.createElement('div');
-            childrenContainer.className = 'json-children';
-            childrenContainer.style.display = expanded ? 'block' : 'none';
-
-            entries.forEach(([key, val]) => {
-                const entry = document.createElement('div');
-                entry.className = 'json-entry';
-                entry.style.marginLeft = (level * 8 + 8) + 'px';
-
-                const keySpan = document.createElement('span');
-                keySpan.className = 'json-key';
-                keySpan.textContent = key;
-
-                const colon = document.createElement('span');
-                colon.className = 'json-colon';
-                colon.textContent = ': ';
-
-                entry.appendChild(keySpan);
-                entry.appendChild(colon);
-
-                // Render primitive values inline, complex values on new lines
-                const isPrimitive = val === null || typeof val !== 'object';
-                entry.appendChild(createJsonNode(val, `${path}.${key}`, level + 1, isPrimitive));
-
-                childrenContainer.appendChild(entry);
-            });
-
-            keyContainer.addEventListener('click', () => {
-                const isExpanded = childrenContainer.style.display !== 'none';
-                childrenContainer.style.display = isExpanded ? 'none' : 'block';
-                expandIcon.textContent = isExpanded ? '▶' : '▼';
-            });
-
-            container.appendChild(keyContainer);
-            container.appendChild(childrenContainer);
-
-            const closeBrace = document.createElement('div');
-            closeBrace.style.marginLeft = (level * 8) + 'px';
-            closeBrace.innerHTML = '<span class="json-brace">}</span>';
-            container.appendChild(closeBrace);
-        }
-
-        function renderArray(container, arr, path, level, inline = false) {
-            const isEmpty = arr.length === 0;
-            const expanded = level < 2;
-
-            const keyContainer = document.createElement('div');
-            keyContainer.className = 'json-key-container';
-
-            const expandIcon = document.createElement('span');
-            expandIcon.className = 'expand-icon';
-            expandIcon.textContent = expanded ? '▼' : '▶';
-
-            const brace = document.createElement('span');
-            brace.className = 'json-brace';
-            brace.textContent = '[';
-
-            keyContainer.appendChild(expandIcon);
-            keyContainer.appendChild(brace);
-
-            if (!isEmpty) {
-                const count = document.createElement('span');
-                count.className = 'json-count';
-                count.textContent = ` ${arr.length} items `;
-                keyContainer.appendChild(count);
-            }
-
-            const childrenContainer = document.createElement('div');
-            childrenContainer.className = 'json-children';
-            childrenContainer.style.display = expanded ? 'block' : 'none';
-
-            arr.forEach((val, idx) => {
-                const entry = document.createElement('div');
-                entry.className = 'json-entry';
-                entry.style.marginLeft = (level * 8 + 8) + 'px';
-
-                const indexSpan = document.createElement('span');
-                indexSpan.className = 'json-index';
-                indexSpan.textContent = `[${idx}]`;
-
-                const colon = document.createElement('span');
-                colon.className = 'json-colon';
-                colon.textContent = ': ';
-
-                entry.appendChild(indexSpan);
-                entry.appendChild(colon);
-
-                // Render primitive values inline, complex values on new lines
-                const isPrimitive = val === null || typeof val !== 'object';
-                entry.appendChild(createJsonNode(val, `${path}[${idx}]`, level + 1, isPrimitive));
-
-                childrenContainer.appendChild(entry);
-            });
-
-            keyContainer.addEventListener('click', () => {
-                const isExpanded = childrenContainer.style.display !== 'none';
-                childrenContainer.style.display = isExpanded ? 'none' : 'block';
-                expandIcon.textContent = isExpanded ? '▶' : '▼';
-            });
-
-            container.appendChild(keyContainer);
-            container.appendChild(childrenContainer);
-
-            const closeBrace = document.createElement('div');
-            closeBrace.style.marginLeft = (level * 8) + 'px';
-            closeBrace.innerHTML = '<span class="json-brace">]</span>';
-            container.appendChild(closeBrace);
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        // JQ query handling
-        const jqInput = document.getElementById('jq-query');
-        jqInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                runQuery();
-            }
-        });
-
-        async function runQuery() {
-            const query = jqInput.value.trim();
-            if (!query || !jsonData) return;
-
-            hideResults();
-
-            try {
-                // Use jq-web library (Promise-based API)
-                if (!jqReady) {
-                    throw new Error('JQ library not initialized');
-                }
-                const jqLib = await jqReady;
-                const result = await jqLib.json(jsonData, query);
-                showSuccess(result);
-                addToHistory(query);
-            } catch (err) {
-                showQueryError(err.message || 'Query execution failed');
-            }
-        }
-
-        function hideResults() {
-            document.getElementById('result-placeholder').classList.add('hidden');
-            document.getElementById('result-success').classList.add('hidden');
-            document.getElementById('result-error').classList.add('hidden');
-        }
-
-        function showSuccess(result) {
-            const successEl = document.getElementById('result-success');
-            const code = successEl.querySelector('code');
-            code.textContent = JSON.stringify(result, null, 2);
-            successEl.classList.remove('hidden');
-        }
-
-        function showQueryError(message) {
-            const errorEl = document.getElementById('result-error');
-            errorEl.innerHTML = '<strong>Error: </strong>' + escapeHtml(message);
-            errorEl.classList.remove('hidden');
-        }
-
-        function loadExample(query) {
-            jqInput.value = query;
-        }
-
-        function addToHistory(query) {
-            if (!queryHistory.includes(query)) {
-                queryHistory.push(query);
-                if (queryHistory.length > 10) {
-                    queryHistory.shift();
-                }
-                updateHistory();
-            }
-        }
-
-        function updateHistory() {
-            const historySection = document.getElementById('history-section');
-            const historyList = document.getElementById('history-list');
-
-            if (queryHistory.length > 0) {
-                historySection.classList.remove('hidden');
-                historyList.innerHTML = '';
-
-                queryHistory.forEach(query => {
-                    const button = document.createElement('button');
-                    button.className = 'history-button';
-                    button.textContent = query;
-                    button.onclick = () => {
-                        jqInput.value = query;
-                    };
-                    historyList.appendChild(button);
-                });
-            } else {
-                historySection.classList.add('hidden');
-            }
-        }
-    </script>
+    <!-- Application Scripts (ES6 Modules) -->
+    <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

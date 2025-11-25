@@ -69,18 +69,6 @@ mod interface__public_methods {
     }
 
     #[test]
-    #[ignore]
-    fn find_by_path() {
-        todo!()
-    }
-
-    #[test]
-    #[ignore]
-    fn find_children_by_id() {
-        todo!()
-    }
-
-    #[test]
     fn save__basic() {
         let element = Element::root();
         let mut page = Page::new_from_element("Node", element);
@@ -167,7 +155,7 @@ mod interface__apply_actions {
             id: page.id(),
             data: serialized,
             ancestors: vec![],
-            metadata: page.element().metadata,
+            metadata: page.element().metadata.clone(),
         };
 
         assert!(MainInterface::apply_action(action).is_ok());
@@ -190,7 +178,7 @@ mod interface__apply_actions {
             id: page.id(),
             data: serialized,
             ancestors: vec![],
-            metadata: page.element().metadata,
+            metadata: page.element().metadata.clone(),
         };
 
         assert!(MainInterface::apply_action(action).is_ok());
@@ -210,6 +198,7 @@ mod interface__apply_actions {
         let action = Action::DeleteRef {
             id: page.id(),
             deleted_at: time_now(),
+            metadata: Metadata::default(),
         };
 
         assert!(MainInterface::apply_action(action).is_ok());
@@ -229,6 +218,7 @@ mod interface__apply_actions {
         let action = Action::DeleteRef {
             id: page.id(),
             deleted_at: time_now(),
+            metadata: Metadata::default(),
         };
 
         assert!(MainInterface::apply_action(action).is_ok());
@@ -257,6 +247,7 @@ mod interface__apply_actions {
         let old_delete = Action::DeleteRef {
             id: page.id(),
             deleted_at: update_time - 1000, // Older than update
+            metadata: Metadata::default(),
         };
 
         assert!(MainInterface::apply_action(old_delete).is_ok());
@@ -270,6 +261,7 @@ mod interface__apply_actions {
         let new_delete = Action::DeleteRef {
             id: page.id(),
             deleted_at: update_time + 1000, // Newer than update
+            metadata: Metadata::default(),
         };
 
         assert!(MainInterface::apply_action(new_delete).is_ok());
@@ -296,7 +288,7 @@ mod interface__apply_actions {
             id: page.id(),
             data: serialized,
             ancestors: vec![],
-            metadata: page.element().metadata,
+            metadata: page.element().metadata.clone(),
         };
 
         // Updating a non-existent page should still succeed (it will be added)
@@ -375,7 +367,7 @@ mod interface__comparison {
                     id: local.id(),
                     data: to_vec(&local).unwrap(),
                     ancestors: vec![],
-                    metadata: local.element().metadata,
+                    metadata: local.element().metadata.clone(),
                 }]
             )
         );
@@ -406,7 +398,7 @@ mod interface__comparison {
                     id: foreign.id(),
                     data: to_vec(&foreign).unwrap(),
                     ancestors: vec![],
-                    metadata: foreign.element().metadata,
+                    metadata: foreign.element().metadata.clone(),
                 }],
                 vec![]
             )
@@ -451,7 +443,7 @@ mod interface__comparison {
                     id: foreign_page.id(),
                     data: to_vec(&foreign_page).unwrap(),
                     ancestors: vec![],
-                    metadata: foreign_page.element().metadata,
+                    metadata: foreign_page.element().metadata.clone(),
                 },
                 // Para1 needs comparison due to different hash
                 Action::Compare {
@@ -472,7 +464,7 @@ mod interface__comparison {
                     id: local_para2.id(),
                     data: to_vec(&local_para2).unwrap(),
                     ancestors: vec![],
-                    metadata: local_para2.element().metadata,
+                    metadata: local_para2.element().metadata.clone(),
                 },
                 // Para3 needs to be added locally, but we don't have the data, so we compare
                 Action::Compare {
@@ -509,9 +501,9 @@ mod interface__comparison {
                 ancestors: vec![ChildInfo::new(
                     foreign_page.id(),
                     local_para1_ancestor_hash,
-                    local_page.element().metadata
+                    local_page.element().metadata.clone(),
                 )],
-                metadata: foreign_para1.element().metadata,
+                metadata: foreign_para1.element().metadata.clone(),
             }]
         );
         assert_eq!(foreign_para1_actions, vec![]);
@@ -544,9 +536,9 @@ mod interface__comparison {
                 ancestors: vec![ChildInfo::new(
                     foreign_page.id(),
                     local_para3_ancestor_hash,
-                    foreign_page.element().metadata
+                    foreign_page.element().metadata.clone(),
                 )],
-                metadata: foreign_para3.element().metadata,
+                metadata: foreign_para3.element().metadata.clone(),
             }]
         );
         assert_eq!(foreign_para3_actions, vec![]);

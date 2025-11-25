@@ -109,15 +109,15 @@ impl Debug for ContextConfig {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PublicKey;
+pub struct PublicKeyComponent;
 
-impl KeyComponent for PublicKey {
+impl KeyComponent for PublicKeyComponent {
     type LEN = U32;
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
+pub struct ContextIdentity(Key<(ContextId, PublicKeyComponent)>);
 
 impl ContextIdentity {
     #[must_use]
@@ -147,7 +147,7 @@ impl ContextIdentity {
 }
 
 impl AsKeyParts for ContextIdentity {
-    type Components = (ContextId, PublicKey);
+    type Components = (ContextId, PublicKeyComponent);
 
     fn column() -> Column {
         Column::Identity
@@ -279,7 +279,7 @@ impl AsKeyParts for ContextDagDelta {
     type Components = (ContextId, DeltaId);
 
     fn column() -> Column {
-        Column::Generic
+        Column::Delta
     }
 
     fn as_key(&self) -> &Key<Self::Components> {

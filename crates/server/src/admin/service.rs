@@ -24,7 +24,7 @@ use super::handlers::proposals::{
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
     get_proxy_contract_handler,
 };
-use super::handlers::{alias, blob};
+use super::handlers::{alias, blob, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
@@ -68,7 +68,7 @@ struct NodeUiStaticFiles;
 pub(crate) fn setup(
     config: &ServerConfig,
     shared_state: Arc<AdminState>,
-) -> Option<(String, Router)> {
+) -> Option<(String, Router, Router)> {
     let _ = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
@@ -93,7 +93,7 @@ pub(crate) fn setup(
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
-    let router = Router::new()
+    let protected_routes = Router::new()
         // Application management
         .route("/install-application", post(install_application::handler))
         .route(
@@ -218,18 +218,19 @@ pub(crate) fn setup(
         )
         // Alias management
         .nest("/alias", alias::service())
+        .layer(Extension(Arc::clone(&shared_state)))
+        .layer(session_layer.clone());
+
+    let public_routes = Router::new()
         .route("/health", get(health_check_handler))
         // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
-        .layer(Extension(Arc::clone(&shared_state)));
+        // TEE attestation (public endpoints)
+        .nest("/tee", tee::service())
+        .layer(Extension(shared_state));
 
-    let admin_router = Router::new()
-        .merge(router)
-        .layer(Extension(shared_state))
-        .layer(session_layer);
-
-    Some((admin_path, admin_router))
+    Some((admin_path, protected_routes, public_routes))
 }
 
 /// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.

@@ -11,14 +11,13 @@ publish = true
 [dependencies]
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
+hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+tdx-quote.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true
 calimero-primitives.workspace = true
-
-[lints]
-workspace = true

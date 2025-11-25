@@ -7,6 +7,7 @@ use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::delta::CausalDelta;
 use eyre::{bail, OptionExt, Result};
 use tracing::{debug, info, warn};
@@ -15,58 +16,128 @@ use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
 impl SyncManager {
-    /// Request multiple missing deltas from a peer and add them to the DAG
+    /// Request missing deltas from a peer and add them to the DAG
+    ///
+    /// Recursively fetches all missing ancestors until reaching deltas we already have.
     pub async fn request_missing_deltas(
         &self,
         context_id: ContextId,
         missing_ids: Vec<[u8; 32]>,
         source: libp2p::PeerId,
         delta_store: crate::delta_store::DeltaStore,
+        our_identity: PublicKey,
     ) -> Result<()> {
         info!(
             %context_id,
             ?source,
-            missing_count = missing_ids.len(),
+            initial_missing_count = missing_ids.len(),
             "Requesting missing parent deltas from peer"
         );
 
         // Open stream to peer
         let mut stream = self.network_client.open_stream(source).await?;
 
-        // Request each missing delta
-        for missing_id in missing_ids {
-            match self
-                .request_delta(&context_id, missing_id, &mut stream)
-                .await
-            {
-                Ok(Some(parent_delta)) => {
-                    info!(
-                        %context_id,
-                        delta_id = ?missing_id,
-                        action_count = parent_delta.actions.len(),
-                        "Received missing parent delta, adding to DAG"
-                    );
+        // Fetch all missing ancestors, then add them in topological order (oldest first)
+        let mut to_fetch = missing_ids;
+        let mut fetched_deltas: Vec<(
+            calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>>,
+            [u8; 32],
+        )> = Vec::new();
+        let mut fetch_count = 0;
 
-                    // Convert to DAG delta format
-                    let dag_delta = calimero_dag::CausalDelta {
-                        id: parent_delta.id,
-                        parents: parent_delta.parents,
-                        payload: parent_delta.actions,
-                        hlc: parent_delta.hlc,
-                        expected_root_hash: parent_delta.expected_root_hash,
-                    };
+        // Phase 1: Fetch ALL missing deltas recursively
+        // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
+        while !to_fetch.is_empty() {
+            let current_batch = to_fetch.clone();
+            to_fetch.clear();
 
-                    if let Err(e) = delta_store.add_delta(dag_delta).await {
-                        warn!(?e, %context_id, delta_id = ?missing_id, "Failed to add requested delta to DAG");
+            for missing_id in current_batch {
+                fetch_count += 1;
+
+                match self
+                    .request_delta(&context_id, missing_id, &mut stream, our_identity)
+                    .await
+                {
+                    Ok(Some(parent_delta)) => {
+                        info!(
+                            %context_id,
+                            delta_id = ?missing_id,
+                            action_count = parent_delta.actions.len(),
+                                total_fetched = fetch_count,
+                                "Received missing parent delta"
+                        );
+
+                        // Convert to DAG delta format
+                        let dag_delta = calimero_dag::CausalDelta {
+                            id: parent_delta.id,
+                            parents: parent_delta.parents.clone(),
+                            payload: parent_delta.actions,
+                            hlc: parent_delta.hlc,
+                            expected_root_hash: parent_delta.expected_root_hash,
+                        };
+
+                        // Store for later (don't add to DAG yet!)
+                        fetched_deltas.push((dag_delta, missing_id));
+
+                        // Check what parents THIS delta needs
+                        for parent_id in &parent_delta.parents {
+                            // Skip genesis
+                            if *parent_id == [0; 32] {
+                                continue;
+                            }
+                            // Skip if we already have it or are about to fetch it
+                            if !delta_store.has_delta(parent_id).await
+                                && !to_fetch.contains(parent_id)
+                                && !fetched_deltas.iter().any(|(d, _)| d.id == *parent_id)
+                            {
+                                to_fetch.push(*parent_id);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
+                    }
+                    Err(e) => {
+                        warn!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
+                        break; // Stop requesting if stream fails
                     }
                 }
-                Ok(None) => {
-                    warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
+            }
+        }
+
+        // Phase 2: Add all fetched deltas to DAG in topological order (oldest first)
+        // We need to add them in reverse order so parents are added before children
+        if !fetched_deltas.is_empty() {
+            info!(
+                %context_id,
+                total_fetched = fetched_deltas.len(),
+                "Adding fetched deltas to DAG in topological order"
+            );
+
+            // Reverse the list so we process oldest (deepest ancestors) first
+            fetched_deltas.reverse();
+
+            for (dag_delta, delta_id) in fetched_deltas {
+                if let Err(e) = delta_store.add_delta(dag_delta).await {
+                    warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
                 }
-                Err(e) => {
-                    warn!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
-                    break; // Stop requesting if stream fails
-                }
+            }
+        }
+
+        if fetch_count > 0 {
+            info!(
+                %context_id,
+                total_fetched = fetch_count,
+                "Completed fetching missing delta ancestors"
+            );
+
+            // Log warning for very large syncs (informational, not a hard limit)
+            if fetch_count > 1000 {
+                warn!(
+                    %context_id,
+                    total_fetched = fetch_count,
+                    "Large sync detected - fetched many deltas from peer (context has deep history)"
+                );
             }
         }
 
@@ -79,6 +150,7 @@ impl SyncManager {
         context_id: &ContextId,
         delta_id: [u8; 32],
         stream: &mut Stream,
+        our_identity: PublicKey,
     ) -> Result<Option<CausalDelta>> {
         info!(
             %context_id,
@@ -86,10 +158,10 @@ impl SyncManager {
             "Requesting missing delta from peer"
         );
 
-        // Send request
+        // Send request with proper identity (not [0; 32])
         let msg = StreamMessage::Init {
             context_id: *context_id,
-            party_id: [0; 32].into(), // TODO: Get actual identity
+            party_id: our_identity,
             payload: InitPayload::DeltaRequest {
                 context_id: *context_id,
                 delta_id,

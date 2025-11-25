@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Authentication service configuration
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Listen address
     #[serde(default = "default_listen_addr")]
@@ -241,6 +241,10 @@ pub struct ContentSecurityPolicyConfig {
     /// Style source directives
     #[serde(default = "default_csp_style_src")]
     pub style_src: Vec<String>,
+
+    /// Connect source directives (for fetch/XHR)
+    #[serde(default = "default_csp_connect_src")]
+    pub connect_src: Vec<String>,
 }
 
 impl Default for SecurityConfig {
@@ -273,6 +277,7 @@ impl Default for ContentSecurityPolicyConfig {
             default_src: default_csp_self(),
             script_src: default_csp_script_src(),
             style_src: default_csp_style_src(),
+            connect_src: default_csp_connect_src(),
         }
     }
 }
@@ -315,6 +320,16 @@ fn default_csp_script_src() -> Vec<String> {
 
 fn default_csp_style_src() -> Vec<String> {
     vec!["'self'".to_string(), "'unsafe-inline'".to_string()]
+}
+
+fn default_csp_connect_src() -> Vec<String> {
+    vec![
+        "'self'".to_string(),
+        "http://localhost:*".to_string(),
+        "http://host.docker.internal:*".to_string(),
+        "http://*.nip.io:*".to_string(),  // Allow any port
+        "https://*.nip.io:*".to_string(), // Allow any port
+    ]
 }
 
 fn default_min_password_length() -> usize {
