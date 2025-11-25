@@ -14,7 +14,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
+    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
 };
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
 use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
@@ -96,12 +96,27 @@ impl RelayerService {
             // Add protocol signer configuration
             let mut signers = BTreeMap::new();
 
-            // Create credentials only if explicitly provided
-            // Skip credentials requirement for mock-relayer
-            let credentials = if protocol_name == protocols::mock_relayer::NAME {
-                // Mock relayer doesn't need credentials, skip signer config
+            // Mock relayer doesn't need real credentials but we still need
+            // a local signer entry to keep params and signer config in sync.
+            if protocol_name == protocols::mock_relayer::NAME {
+                drop(signers.insert(
+                    protocol_config.network.clone(),
+                    ClientLocalSigner {
+                        rpc_url: protocol_config.rpc_url.clone(),
+                        credentials: Credentials::Raw(RawCredentials {
+                            account_id: None,
+                            public_key: "mock-relayer-public-key".into(),
+                            secret_key: "mock-relayer-secret-key".into(),
+                        }),
+                    },
+                ));
+
+                drop(protocols.insert(protocol_name.clone(), ClientLocalConfig { signers }));
                 continue;
-            } else if let Some(creds) = protocol_config.credentials.as_ref() {
+            }
+
+            // Create credentials only if explicitly provided
+            let credentials = if let Some(creds) = protocol_config.credentials.as_ref() {
                 self.convert_credentials(creds)?
             } else {
                 // Skip this protocol if no credentials are provided
