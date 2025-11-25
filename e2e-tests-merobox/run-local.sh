@@ -433,6 +433,8 @@ run_test() {
     # Run merobox workflow and capture output
     # Command: merobox bootstrap run [config_file] --no-docker --binary-path /path/to/merod
     # Use pipefail to capture exit code even when piped through tee
+    # Temporarily disable set -e to allow capturing exit code without script termination
+    set +e
     set -o pipefail
     merobox bootstrap run \
         "$workflow_file" \
@@ -441,6 +443,7 @@ run_test() {
         $VERBOSE 2>&1 | tee "$log_file"
     local exit_code=${PIPESTATUS[0]}
     set +o pipefail
+    set -e
     
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
