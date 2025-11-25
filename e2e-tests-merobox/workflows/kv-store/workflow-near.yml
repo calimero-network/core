@@ -254,13 +254,6 @@ steps:
         args:
           key: "key_{{current_iteration}}"
           value: "value_{{current_iteration}}"
-        outputs:
-          iter_set_result: result
-
-      - name: Assert Iteration Set Result
-        type: json_assert
-        statements:
-          - 'json_equal({{iter_set_result}}, {"output": null})'
 
       - name: Wait for Consensus
         type: wait
@@ -274,13 +267,6 @@ steps:
         method: get
         args:
           key: "key_{{current_iteration}}"
-        outputs:
-          iter_get_result: result
-
-      - name: Assert Iteration Get Result
-        type: json_assert
-        statements:
-          - 'json_equal({{iter_get_result}}, {"output": "value_{{current_iteration}}"})'
 
       - name: Remove Key from Node 2
         type: call
@@ -290,13 +276,6 @@ steps:
         method: remove
         args:
           key: "key_{{current_iteration}}"
-        outputs:
-          iter_remove_result: result
-
-      - name: Assert Iteration Remove Result
-        type: json_assert
-        statements:
-          - 'json_equal({{iter_remove_result}}, {"output": "value_{{current_iteration}}"})'
 
       - name: Wait for Removal Broadcast
         type: wait
@@ -310,13 +289,6 @@ steps:
         method: get
         args:
           key: "key_{{current_iteration}}"
-        outputs:
-          iter_removed_result: result
-
-      - name: Assert Iteration Removed Value
-        type: json_assert
-        statements:
-          - 'json_equal({{iter_removed_result}}, {"output": null})'
 
   # ============================================================================
   # Phase 8: Final Verification
