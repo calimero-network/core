@@ -28,7 +28,7 @@ env:
 jobs:
   build:
     name: Build Binaries & Apps
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -91,7 +91,7 @@ jobs:
   test:
     name: E2E Tests - ${{ matrix.protocol }}
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-8cpu
     permissions:
       contents: read
     strategy:
@@ -548,7 +548,7 @@ jobs:
   report:
     name: Generate Test Report
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-8cpu
     permissions:
       contents: read
     if: github.event_name == 'pull_request'
