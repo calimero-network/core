@@ -309,9 +309,9 @@ impl Actor for NodeManager {
             );
         });
 
-        // Periodic hash heartbeat broadcast (every 30 seconds)
-        // Allows peers to detect silent divergence
-        let _handle = ctx.run_interval(Duration::from_secs(30), |act, ctx| {
+        // Periodic hash heartbeat broadcast (every 10 seconds)
+        // Allows peers to detect silent divergence - increased frequency for faster sync detection
+        let _handle = ctx.run_interval(Duration::from_secs(10), |act, ctx| {
             let context_client = act.clients.context.clone();
             let node_client = act.clients.node.clone();
 
