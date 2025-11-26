@@ -23,15 +23,17 @@ COPY apps ./apps
 COPY tools ./tools
 COPY e2e-tests ./e2e-tests
 
-# Build standalone calimero-relayer
+# Build standalone mero-relayer
 RUN --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
-    cargo build --locked --release --bin calimero-relayer && \
-    cp /app/target/release/calimero-relayer /usr/local/bin/
+    cargo build --locked --release --bin mero-relayer && \
+    cp /app/target/release/mero-relayer /usr/local/bin/
 
 ################################################################################
 FROM debian:bookworm-slim AS runtime
+
+ARG RELAYER_PORT=63529
 
 LABEL org.opencontainers.image.description="Calimero Standalone Relayer Service" \
     org.opencontainers.image.licenses="MIT OR Apache-2.0" \
@@ -54,14 +56,14 @@ RUN adduser \
     --uid "${UID}" \
     user
 
-COPY --from=build /usr/local/bin/calimero-relayer /usr/local/bin/
+COPY --from=build /usr/local/bin/mero-relayer /usr/local/bin/
 
 USER user
 WORKDIR /data
 ENV CALIMERO_HOME=/data
 
 # Default relayer configuration
-ENV RELAYER_LISTEN="0.0.0.0:${RELAYER_PORT}"
+ENV RELAYER_LISTEN_URL="0.0.0.0:${RELAYER_PORT}"
 ENV RUST_LOG="info"
 
 # Enable/disable blockchain protocols
@@ -100,5 +102,5 @@ EXPOSE ${RELAYER_PORT}
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${RELAYER_PORT}/health || exit 1
 
-ENTRYPOINT ["calimero-relayer"]
+ENTRYPOINT ["mero-relayer"]
 CMD []

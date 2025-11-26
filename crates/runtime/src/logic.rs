@@ -327,6 +327,11 @@ impl VMLogic<'_> {
         let has_root_hash = self.root_hash.is_some();
         let has_artifact = !self.artifact.is_empty();
 
+        debug!(target: "runtime::internal", "Printing internal WASM LOGS");
+        for log in &self.logs {
+            debug!(target: "runtime::internal", log);
+        }
+
         let returns = match err {
             Some(err) => Err(err),
             None => self

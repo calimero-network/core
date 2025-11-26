@@ -72,7 +72,7 @@ impl<S: StorageAdaptor> Index<S> {
             children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
-            metadata: child.metadata,
+            metadata: child.metadata.clone(),
             deleted_at: None,
         });
         child_index.parent_id = Some(parent_id);
@@ -114,7 +114,7 @@ impl<S: StorageAdaptor> Index<S> {
             children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
-            metadata: root.metadata,
+            metadata: root.metadata.clone(),
             deleted_at: None,
         });
         index.own_hash = root.merkle_hash();
@@ -183,6 +183,11 @@ impl<S: StorageAdaptor> Index<S> {
     pub(crate) fn mark_deleted(id: Id, deleted_at: u64) -> Result<(), StorageError> {
         if let Some(mut index) = Self::get_index(id)? {
             index.deleted_at = Some(deleted_at);
+
+            // Also update the `updated_at` timestamp to this nonce.
+            // This is critical for replay protection on delete actions.
+            *index.metadata.updated_at = deleted_at;
+
             Self::save_index(&index)?;
         }
         Ok(())
@@ -265,7 +270,7 @@ impl<S: StorageAdaptor> Index<S> {
                 if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
                     let new_child_hash = Self::calculate_full_merkle_hash_for(current_id)?;
                     if child.merkle_hash() != new_child_hash {
-                        *child = ChildInfo::new(current_id, new_child_hash, child.metadata);
+                        *child = ChildInfo::new(current_id, new_child_hash, child.metadata.clone());
                     }
                 }
             }

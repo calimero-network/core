@@ -23,6 +23,7 @@ pub mod private_storage;
 mod returns;
 pub mod state;
 pub mod types;
+pub use calimero_primitives::identity::PublicKey;
 
 pub mod app {
     use super::types::Error;
