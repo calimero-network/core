@@ -14,7 +14,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::{InitPayload, StreamMessage};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::{bail, eyre};
+use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
@@ -215,12 +215,32 @@ impl SyncManager {
                             continue;
                         };
 
-                        let minimum = self.sync_config.interval;
+                        // Check if this context is uninitialized and needs aggressive sync
+                        let is_uninitialized = match self.context_client.get_context(&context_id) {
+                            Ok(Some(context)) => *context.root_hash == [0; 32],
+                            Ok(None) => true, // Context doesn't exist, treat as uninitialized
+                            Err(err) => {
+                                warn!(%context_id, %err, "Failed to get context for sync check, assuming uninitialized");
+                                true
+                            }
+                        };
+                        
+                        let minimum = if is_uninitialized {
+                            // Use aggressive 1-second interval for uninitialized contexts
+                            std::time::Duration::from_secs(crate::sync::config::UNINITIALIZED_SYNC_INTERVAL_SECS)
+                        } else {
+                            self.sync_config.interval
+                        };
+                        
                         let time_since = last_sync.elapsed();
 
                         if time_since < minimum {
                             if requested_ctx.is_none() {
-                                debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
+                                if is_uninitialized {
+                                    debug!(%context_id, ?time_since, ?minimum, "Skipping sync for uninitialized context, but will retry soon");
+                                } else {
+                                    debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
+                                }
 
                                 continue;
                             }
@@ -231,10 +251,27 @@ impl SyncManager {
                         let _ignored = state.take_last_sync();
                     }
                     hash_map::Entry::Vacant(state) => {
-                        info!(
-                            %context_id,
-                            "Syncing for the first time"
-                        );
+                        // Check if this is an uninitialized context that needs immediate sync
+                        let is_uninitialized = match self.context_client.get_context(&context_id) {
+                            Ok(Some(context)) => *context.root_hash == [0; 32],
+                            Ok(None) => true, // Context doesn't exist, treat as uninitialized
+                            Err(err) => {
+                                warn!(%context_id, %err, "Failed to get context for sync check, assuming uninitialized");
+                                true
+                            }
+                        };
+                        
+                        if is_uninitialized {
+                            info!(
+                                %context_id,
+                                "Syncing uninitialized context for the first time (aggressive mode)"
+                            );
+                        } else {
+                            info!(
+                                %context_id,
+                                "Syncing for the first time"
+                            );
+                        }
 
                         let mut new_state = SyncState::new();
                         new_state.start();

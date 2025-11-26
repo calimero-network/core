@@ -28,9 +28,14 @@ pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;
 /// This allows rapid re-sync if broadcasts fail, ensuring fast CRDT convergence
 pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 5;
 
-/// Default frequency of periodic sync checks (10 seconds)
-/// Aggressive fallback for when gossipsub broadcasts fail or are delayed
-pub const DEFAULT_SYNC_FREQUENCY_SECS: u64 = 10;
+/// Aggressive sync interval for uninitialized contexts (1 second)
+/// Newly joined nodes need faster sync to avoid "Uninitialized" errors
+pub const UNINITIALIZED_SYNC_INTERVAL_SECS: u64 = 1;
+
+/// Default frequency of periodic sync checks (5 seconds)
+/// More aggressive fallback for when gossipsub broadcasts fail or are delayed
+/// Reduced from 10s to 5s to catch uninitialized contexts faster
+pub const DEFAULT_SYNC_FREQUENCY_SECS: u64 = 5;
 
 /// Default maximum concurrent sync operations
 pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 30;
