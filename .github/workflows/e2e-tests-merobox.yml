@@ -138,28 +138,50 @@ jobs:
             echo "Running $test_description"
           echo "=========================================="
 
-            # Capture exit code and run merobox
+            # Create output directory and log file
+            mkdir -p "e2e-tests-merobox/results/$result_protocol"
+            local log_file="e2e-tests-merobox/results/$result_protocol/test.log"
+            local start_time=$(date +%s)
+            
+            # Capture exit code and run merobox with logging
             set +e
+            set -o pipefail
           merobox bootstrap run \
               "$workflow_file" \
             --no-docker \
             --binary-path target/debug/merod \
-            --verbose
-            local exit_code=$?
+              --verbose 2>&1 | tee "$log_file"
+            local exit_code=${PIPESTATUS[0]}
+            set +o pipefail
             set -e
             
-            # Generate summary.json for CI report
-            mkdir -p "e2e-tests-merobox/results/$result_protocol"
+            local end_time=$(date +%s)
+            local duration=$((end_time - start_time))
             local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             
-            if [ $exit_code -eq 0 ]; then
+            # Extract step counts from log (matching local script logic)
+            local total_steps=$(grep -c "Step " "$log_file" 2>/dev/null || echo "0")
+            local passed_steps=$(grep -c "✓\|✅\|succeeded\|completed" "$log_file" 2>/dev/null || echo "0")
+            local failed_steps=$(grep -c "✗\|❌\|failed\|error" "$log_file" 2>/dev/null || echo "0")
+            
+            # Check for failure indicators in the log
+            local has_failure=false
+            if grep -q "Workflow failed\|Step.*failed\|ERROR\|Error:" "$log_file" 2>/dev/null; then
+              has_failure=true
+            fi
+            
+            # Generate complete summary.json matching local script format
+            if [ "$exit_code" -eq 0 ] && [ "$has_failure" = false ]; then
               cat > "e2e-tests-merobox/results/$result_protocol/summary.json" <<SUMMARY_EOF
           {
             "status": "passed",
             "protocol": "$result_protocol",
+            "duration": $duration,
+            "total_steps": $total_steps,
+            "passed_steps": $passed_steps,
+            "failed_steps": $failed_steps,
             "workflow": "$workflow_file",
-            "timestamp": "$timestamp",
-            "exit_code": $exit_code
+            "timestamp": "$timestamp"
           }
           SUMMARY_EOF
             else
@@ -167,6 +189,10 @@ jobs:
           {
             "status": "failed",
             "protocol": "$result_protocol",
+            "duration": $duration,
+            "total_steps": $total_steps,
+            "passed_steps": $passed_steps,
+            "failed_steps": $failed_steps,
             "workflow": "$workflow_file",
             "timestamp": "$timestamp",
             "exit_code": $exit_code
