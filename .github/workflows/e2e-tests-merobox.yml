@@ -91,6 +91,14 @@ jobs:
           sudo mv merobox /usr/local/bin/
           merobox --version
 
+      - name: Install DFX for ICP
+        if: matrix.protocol == 'icp'
+        uses: dfinity/setup-dfx@main
+
+      - name: Install Foundry for Ethereum
+        if: matrix.protocol == 'ethereum'
+        uses: foundry-rs/foundry-toolchain@v1
+
       - name: Deploy ICP Devnet
         if: matrix.protocol == 'icp'
         run: |
@@ -186,13 +194,13 @@ jobs:
             tests["kv-store-init"]="e2e-tests-merobox/workflows/kv-store/workflow-init.yml|near-init"
             tests["kv-store-handlers"]="e2e-tests-merobox/workflows/kv-store-with-handlers/workflow.yml|near-handlers"
             tests["blobs"]="e2e-tests-merobox/workflows/blobs/workflow.yml|near-blobs"
-            tests["collaborative-editor"]="e2e-tests-merobox/workflows/collaborative-editor/workflow.yml|collaborative-editor"
-            tests["nested-crdt"]="e2e-tests-merobox/workflows/nested-crdt/workflow.yml|nested-crdt"
-            tests["team-metrics"]="e2e-tests-merobox/workflows/team-metrics/workflow.yml|team-metrics"
-            tests["concurrent-mutations"]="e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml|concurrent-mutations"
-            tests["open-invitation"]="e2e-tests-merobox/workflows/open-invitation/workflow.yml|open-invitation"
-            tests["private-data"]="e2e-tests-merobox/workflows/private-data/workflow.yml|private-data"
-            tests["xcall-example"]="e2e-tests-merobox/workflows/xcall-example/workflow.yml|xcall-example"
+            tests["collaborative-editor"]="e2e-tests-merobox/workflows/collaborative-editor/workflow.yml|near-collab"
+            tests["nested-crdt"]="e2e-tests-merobox/workflows/nested-crdt/workflow.yml|near-nested"
+            tests["team-metrics"]="e2e-tests-merobox/workflows/team-metrics/workflow.yml|near-metrics"
+            tests["concurrent-mutations"]="e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml|near-concurrent"
+            tests["open-invitation"]="e2e-tests-merobox/workflows/open-invitation/workflow.yml|near-open-invitation"
+            tests["private-data"]="e2e-tests-merobox/workflows/private-data/workflow.yml|near-private-data"
+            tests["xcall-example"]="e2e-tests-merobox/workflows/xcall-example/workflow.yml|near-xcall"
           fi
           
           # Run all tests for this protocol
