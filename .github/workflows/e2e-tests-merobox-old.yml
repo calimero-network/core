@@ -1,0 +1,1161 @@
+name: e2e-tests-merobox
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - master
+      - feature/merobox-e2e-migration
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests-merobox/**"
+      - ".github/workflows/e2e-tests-merobox.yml"
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests-merobox/**"
+      - ".github/workflows/e2e-tests-merobox.yml"
+
+env:
+  CALIMERO_CONTRACTS_VERSION: "latest"
+
+jobs:
+  build:
+    name: Build Binaries & Apps
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-tests-merobox
+
+      - name: Build Apps & Binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x apps/kv-store/build.sh
+          chmod +x apps/kv-store-init/build.sh
+          chmod +x apps/kv-store-with-handlers/build.sh
+          chmod +x apps/blobs/build.sh
+          chmod +x apps/collaborative-editor/build.sh
+          chmod +x apps/nested-crdt-test/build.sh
+          chmod +x apps/team-metrics-macro/build.sh
+          chmod +x apps/private_data/build.sh
+          chmod +x apps/xcall-example/build.sh
+          ./apps/kv-store/build.sh
+          ./apps/kv-store-init/build.sh
+          ./apps/kv-store-with-handlers/build.sh
+          ./apps/blobs/build.sh
+          ./apps/collaborative-editor/build.sh
+          ./apps/nested-crdt-test/build.sh
+          ./apps/team-metrics-macro/build.sh
+          ./apps/private_data/build.sh
+          ./apps/xcall-example/build.sh
+          cargo build -p meroctl -p merod
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            target/debug/meroctl
+            target/debug/merod
+            apps/kv-store/res/kv_store.wasm
+            apps/kv-store-init/res/kv_store_init.wasm
+            apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+            apps/blobs/res/blobs.wasm
+            apps/collaborative-editor/res/collaborative_editor.wasm
+            apps/nested-crdt-test/res/nested_crdt_test.wasm
+            apps/team-metrics-macro/res/team_metrics_macro.wasm
+            apps/private_data/res/private_data.wasm
+            apps/xcall-example/res/xcall_example.wasm
+          retention-days: 2
+
+  test:
+    name: E2E Tests - ${{ matrix.protocol }}
+    needs: build
+    runs-on: ubuntu-24.04-8cpu
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        protocol: [near, icp, ethereum]
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: .
+
+      - name: Set Permissions
+        run: |
+          chmod +x target/debug/merod target/debug/meroctl
+
+      - name: Add Binaries to PATH
+        run: |
+          echo "$GITHUB_WORKSPACE/target/debug" >> $GITHUB_PATH
+
+      - name: Verify Binaries
+        run: |
+          which merod
+          which meroctl
+          merod --version
+          meroctl --version
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clone Merobox from Source
+        run: |
+          git clone https://github.com/calimero-network/merobox.git
+
+      - name: Install Merobox from Source
+        run: |
+          pip install -e ./merobox
+
+      - name: Verify Merobox Installation
+        run: |
+          merobox --version
+
+      - name: Download Contracts
+        run: |
+          echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
+          ./scripts/download-contracts.sh
+
+      # ============================================================================
+      # ICP-specific setup
+      # ============================================================================
+      - name: Install dfx
+        if: matrix.protocol == 'icp'
+        uses: dfinity/setup-dfx@main
+
+      - name: Verify dfx installation
+        if: matrix.protocol == 'icp'
+        run: dfx --version
+
+      - name: Deploy ICP Devnet
+        if: matrix.protocol == 'icp'
+        env:
+          ICP_PORT: 4943
+        run: |
+          echo "ICP_PORT=$ICP_PORT"
+          ./scripts/icp/deploy-devnet.sh
+
+      # ============================================================================
+      # Ethereum-specific setup
+      # ============================================================================
+      - name: Install Foundry
+        if: matrix.protocol == 'ethereum'
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Verify Foundry installation
+        if: matrix.protocol == 'ethereum'
+        run: forge --version
+
+      - name: Deploy Ethereum Devnet
+        if: matrix.protocol == 'ethereum'
+        run: |
+          ./scripts/ethereum/deploy-devnet.sh
+
+      # ============================================================================
+      # Define reusable function for running merobox tests with summary generation
+      # ============================================================================
+      - name: Setup Test Functions
+        run: |
+          # Create reusable function for running merobox tests
+          cat > /tmp/run_merobox_test.sh <<'EOF'
+          #!/bin/bash
+          
+          # Function to run merobox test and generate summary.json
+          # Usage: run_merobox_test <workflow_file> <result_protocol_name> <test_description>
+          run_merobox_test() {
+            local workflow_file="$1"
+            local result_protocol="$2" 
+            local test_description="$3"
+            
+            echo "=========================================="
+            echo "Running $test_description"
+            echo "=========================================="
+            
+            # Capture exit code and run merobox
+            set +e
+            merobox bootstrap run \
+              "$workflow_file" \
+              --no-docker \
+              --binary-path target/debug/merod \
+              --verbose
+            local exit_code=$?
+            set -e
+            
+            # Generate summary.json for CI report
+            mkdir -p "e2e-tests-merobox/results/$result_protocol"
+            local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            
+            if [ $exit_code -eq 0 ]; then
+              cat > "e2e-tests-merobox/results/$result_protocol/summary.json" <<SUMMARY_EOF
+          {
+            "status": "passed",
+            "protocol": "$result_protocol",
+            "workflow": "$workflow_file",
+            "timestamp": "$timestamp",
+            "exit_code": $exit_code
+          }
+          SUMMARY_EOF
+            else
+              cat > "e2e-tests-merobox/results/$result_protocol/summary.json" <<SUMMARY_EOF
+          {
+            "status": "failed",
+            "protocol": "$result_protocol",
+            "workflow": "$workflow_file",
+            "timestamp": "$timestamp",
+            "exit_code": $exit_code
+          }
+          SUMMARY_EOF
+            fi
+            
+            # Return the original exit code
+            return $exit_code
+          }
+          EOF
+          
+          chmod +x /tmp/run_merobox_test.sh
+          source /tmp/run_merobox_test.sh
+
+      # ============================================================================
+      # Run Merobox Tests - KV Store
+      # ============================================================================
+      - name: Run KV Store Tests
+        id: kv-store-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          
+          if [ "${{ matrix.protocol }}" = "near" ]; then
+            WORKFLOW_FILE="e2e-tests-merobox/workflows/kv-store/workflow-near.yml"
+          else
+            WORKFLOW_FILE="e2e-tests-merobox/workflows/kv-store/${{ matrix.protocol }}.yml"
+          fi
+          
+          run_merobox_test "$WORKFLOW_FILE" "${{ matrix.protocol }}" "KV Store tests for ${{ matrix.protocol }}"
+
+      - name: Upload KV Store Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kv-store-${{ matrix.protocol }}
+          path: e2e-tests-merobox/results/${{ matrix.protocol }}/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - KV Store Init (NEAR only)
+      # ============================================================================
+      - name: Run KV Store Init Tests
+        if: matrix.protocol == 'near'
+        id: kv-store-init-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/kv-store/workflow-init.yml" "near-init" "KV Store Init tests for NEAR"
+
+      - name: Upload KV Store Init Test Results
+        if: matrix.protocol == 'near' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kv-store-init-near
+          path: e2e-tests-merobox/results/near-init/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Proposals
+      # ============================================================================
+      - name: Run Proposals Tests
+        id: proposals-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/proposals/${{ matrix.protocol }}-proposals.yml" "${{ matrix.protocol }}-proposals" "Proposals tests for ${{ matrix.protocol }}"
+
+      - name: Upload Proposals Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: proposals-${{ matrix.protocol }}
+          path: e2e-tests-merobox/results/${{ matrix.protocol }}-proposals/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - KV Store with Handlers (NEAR only)
+      # ============================================================================
+      - name: Run KV Store with Handlers Tests
+        if: matrix.protocol == 'near'
+        id: handlers-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/kv-store-with-handlers/workflow.yml" "near-handlers" "KV Store with Handlers tests for NEAR"
+
+      - name: Upload Handlers Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: handlers-near
+          path: e2e-tests-merobox/results/near-handlers/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Blob API (NEAR only)
+      # ============================================================================
+      - name: Run Blob API Tests
+        if: matrix.protocol == 'near'
+        id: blobs-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/blobs/workflow.yml" "near-blobs" "Blob API tests for NEAR"
+
+      - name: Upload Blob API Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blobs-near
+          path: e2e-tests-merobox/results/near-blobs/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Collaborative Editor (NEAR only)
+      # ============================================================================
+      - name: Run Collaborative Editor Tests
+        if: matrix.protocol == 'near'
+        id: collab-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/collaborative-editor/workflow.yml" "collaborative-editor" "Collaborative Editor tests for NEAR"
+
+      - name: Upload Collaborative Editor Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: collab-near
+          path: e2e-tests-merobox/results/near-collab/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Nested CRDT (NEAR only)
+      # ============================================================================
+      - name: Run Nested CRDT Tests
+        if: matrix.protocol == 'near'
+        id: nested-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/nested-crdt/workflow.yml" "nested-crdt" "Nested CRDT tests for NEAR"
+
+      - name: Upload Nested CRDT Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nested-near
+          path: e2e-tests-merobox/results/near-nested/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Team Metrics (NEAR only)
+      # ============================================================================
+      - name: Run Team Metrics Tests
+        if: matrix.protocol == 'near'
+        id: metrics-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/team-metrics/workflow.yml" "team-metrics" "Team Metrics tests for NEAR"
+
+      - name: Upload Team Metrics Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-near
+          path: e2e-tests-merobox/results/near-metrics/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Concurrent Mutations (NEAR only)
+      # ============================================================================
+      - name: Run Concurrent Mutations Tests
+        if: matrix.protocol == 'near'
+        id: concurrent-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml" "concurrent-mutations" "Concurrent Mutations tests for NEAR"
+
+      - name: Upload Concurrent Mutations Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: concurrent-near
+          path: e2e-tests-merobox/results/near-concurrent/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Open Invitation (NEAR only)
+      # ============================================================================
+      - name: Run Open Invitation Tests
+        if: matrix.protocol == 'near'
+        id: open-invitation-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/open-invitation/workflow.yml" "open-invitation" "Open Invitation tests for NEAR"
+
+      - name: Upload Open Invitation Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-invitation-near
+          path: e2e-tests-merobox/results/near-open-invitation/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - Private Data (NEAR only)
+      # ============================================================================
+      - name: Run Private Data Tests
+        if: matrix.protocol == 'near'
+        id: private-data-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/private-data/workflow.yml" "private-data" "Private Data tests for NEAR"
+
+      - name: Upload Private Data Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-data-near
+          path: e2e-tests-merobox/results/near-private-data/
+          retention-days: 2
+
+      # ============================================================================
+      # Run Merobox Tests - XCall Example (NEAR only)
+      # ============================================================================
+      - name: Run XCall Example Tests
+        if: matrix.protocol == 'near'
+        id: xcall-test
+        env:
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+        run: |
+          source /tmp/run_merobox_test.sh
+          run_merobox_test "e2e-tests-merobox/workflows/xcall-example/workflow.yml" "xcall-example" "XCall example tests for NEAR"
+
+      - name: Upload XCall Example Test Results
+        if: ${{ !cancelled() && matrix.protocol == 'near' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcall-near
+          path: e2e-tests-merobox/results/near-xcall/
+          retention-days: 2
+
+      # ============================================================================
+      # Upload Logs (Combined for all tests)
+      # ============================================================================
+      - name: Upload Test Logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.protocol }}
+          path: ~/.merobox/logs/
+          retention-days: 1
+
+  report:
+    name: Generate Test Report
+    needs: test
+    runs-on: ubuntu-24.04-8cpu
+    permissions:
+      contents: read
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download All Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kv-store-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download KV Store Init Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kv-store-init-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Proposals Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: proposals-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Handlers Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: handlers-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Blob API Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blobs-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Collaborative Editor Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: collab-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Nested CRDT Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nested-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Team Metrics Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: metrics-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Concurrent Mutations Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: concurrent-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Open Invitation Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: open-invitation-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download Private Data Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: private-data-*
+          merge-multiple: false
+          path: results/
+
+      - name: Download XCall Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xcall-*
+          merge-multiple: false
+          path: results/
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Generate Comprehensive Test Report
+        run: |
+          echo "# 🧪 Merobox E2E Test Results" > report.md
+          echo "" >> report.md
+          echo "**Workflow Run:** [\`${{ github.run_id }}\`](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> report.md
+          echo "" >> report.md
+
+          # Summary counters
+          total_tests=0
+          passed_tests=0
+          failed_tests=0
+
+          # ============================================================================
+          # KV Store Tests Section
+          # ============================================================================
+          echo "## 📦 KV Store Tests" >> report.md
+          echo "" >> report.md
+
+          for protocol in near icp ethereum; do
+            echo "### 🔹 ${protocol^^}" >> report.md
+            
+            if [ -d "results/kv-store-$protocol" ]; then
+              if [ -f "results/kv-store-$protocol/summary.json" ]; then
+                status=$(jq -r '.status' results/kv-store-$protocol/summary.json)
+                duration=$(jq -r '.duration' results/kv-store-$protocol/summary.json)
+                total_steps=$(jq -r '.total_steps // 0' results/kv-store-$protocol/summary.json)
+                passed_steps=$(jq -r '.passed_steps // 0' results/kv-store-$protocol/summary.json)
+                failed_steps=$(jq -r '.failed_steps // 0' results/kv-store-$protocol/summary.json)
+                
+                total_tests=$((total_tests + 1))
+                
+                if [ "$status" = "passed" ]; then
+                  echo "✅ **Status:** Passed" >> report.md
+                  passed_tests=$((passed_tests + 1))
+                else
+                  echo "❌ **Status:** Failed" >> report.md
+                  failed_tests=$((failed_tests + 1))
+                fi
+                
+                echo "- **Duration:** ${duration}s" >> report.md
+                echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+              else
+                echo "⚠️ **Status:** No summary found" >> report.md
+                total_tests=$((total_tests + 1))
+                failed_tests=$((failed_tests + 1))
+              fi
+            else
+              echo "❌ **Status:** Tests did not run" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+            echo "" >> report.md
+          done
+
+          # ============================================================================
+          # KV Store Init Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🔄 KV Store Init Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/kv-store-init-near" ]; then
+            if [ -f "results/kv-store-init-near/summary.json" ]; then
+              status=$(jq -r '.status' results/kv-store-init-near/summary.json)
+              duration=$(jq -r '.duration' results/kv-store-init-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/kv-store-init-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/kv-store-init-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/kv-store-init-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Proposals Tests Section
+          # ============================================================================
+          echo "## 📋 Proposals Tests" >> report.md
+          echo "" >> report.md
+
+          for protocol in near icp ethereum; do
+            echo "### 🔹 ${protocol^^}" >> report.md
+            
+            if [ -d "results/proposals-$protocol" ]; then
+              if [ -f "results/proposals-$protocol/summary.json" ]; then
+                status=$(jq -r '.status' results/proposals-$protocol/summary.json)
+                duration=$(jq -r '.duration' results/proposals-$protocol/summary.json)
+                total_steps=$(jq -r '.total_steps // 0' results/proposals-$protocol/summary.json)
+                passed_steps=$(jq -r '.passed_steps // 0' results/proposals-$protocol/summary.json)
+                failed_steps=$(jq -r '.failed_steps // 0' results/proposals-$protocol/summary.json)
+                
+                total_tests=$((total_tests + 1))
+                
+                if [ "$status" = "passed" ]; then
+                  echo "✅ **Status:** Passed" >> report.md
+                  passed_tests=$((passed_tests + 1))
+                else
+                  echo "❌ **Status:** Failed" >> report.md
+                  failed_tests=$((failed_tests + 1))
+                fi
+                
+                echo "- **Duration:** ${duration}s" >> report.md
+                echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+              else
+                echo "⚠️ **Status:** No summary found" >> report.md
+                total_tests=$((total_tests + 1))
+                failed_tests=$((failed_tests + 1))
+              fi
+            else
+              echo "❌ **Status:** Tests did not run" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+            echo "" >> report.md
+          done
+
+          # ============================================================================
+          # Handlers Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🛠️ KV Store with Handlers Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/handlers-near" ]; then
+            if [ -f "results/handlers-near/summary.json" ]; then
+              status=$(jq -r '.status' results/handlers-near/summary.json)
+              duration=$(jq -r '.duration' results/handlers-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/handlers-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/handlers-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/handlers-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Blob API Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 📎 Blob API Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/blobs-near" ]; then
+            if [ -f "results/blobs-near/summary.json" ]; then
+              status=$(jq -r '.status' results/blobs-near/summary.json)
+              duration=$(jq -r '.duration' results/blobs-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/blobs-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/blobs-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/blobs-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Collaborative Editor Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 📝 Collaborative Editor Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/collab-near" ]; then
+            if [ -f "results/collab-near/summary.json" ]; then
+              status=$(jq -r '.status' results/collab-near/summary.json)
+              duration=$(jq -r '.duration' results/collab-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/collab-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/collab-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/collab-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Nested CRDT Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🧩 Nested CRDT Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/nested-near" ]; then
+            if [ -f "results/nested-near/summary.json" ]; then
+              status=$(jq -r '.status' results/nested-near/summary.json)
+              duration=$(jq -r '.duration' results/nested-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/nested-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/nested-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/nested-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Team Metrics Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 📊 Team Metrics Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/metrics-near" ]; then
+            if [ -f "results/metrics-near/summary.json" ]; then
+              status=$(jq -r '.status' results/metrics-near/summary.json)
+              duration=$(jq -r '.duration' results/metrics-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/metrics-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/metrics-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/metrics-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Concurrent Mutations Tests Section (NEAR only)
+          # ============================================================================
+          echo "## ⚡ Concurrent Mutations Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/concurrent-near" ]; then
+            if [ -f "results/concurrent-near/summary.json" ]; then
+              status=$(jq -r '.status' results/concurrent-near/summary.json)
+              duration=$(jq -r '.duration' results/concurrent-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/concurrent-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/concurrent-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/concurrent-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Open Invitation Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🔓 Open Invitation Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/open-invitation-near" ]; then
+            if [ -f "results/open-invitation-near/summary.json" ]; then
+              status=$(jq -r '.status' results/open-invitation-near/summary.json)
+              duration=$(jq -r '.duration' results/open-invitation-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/open-invitation-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/open-invitation-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/open-invitation-near/summary.json)
+              
+              total_tests=$((total_tests + 1))
+              
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+              
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Private Data Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🔐 Private Data Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/private-data-near" ]; then
+            if [ -f "results/private-data-near/summary.json" ]; then
+              status=$(jq -r '.status' results/private-data-near/summary.json)
+              duration=$(jq -r '.duration' results/private-data-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/private-data-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/private-data-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/private-data-near/summary.json)
+
+              total_tests=$((total_tests + 1))
+
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # XCall Example Tests Section (NEAR only)
+          # ============================================================================
+          echo "## 🔁 XCall Example Tests" >> report.md
+          echo "" >> report.md
+
+          echo "### 🔹 NEAR" >> report.md
+
+          if [ -d "results/xcall-near" ]; then
+            if [ -f "results/xcall-near/summary.json" ]; then
+              status=$(jq -r '.status' results/xcall-near/summary.json)
+              duration=$(jq -r '.duration' results/xcall-near/summary.json)
+              total_steps=$(jq -r '.total_steps // 0' results/xcall-near/summary.json)
+              passed_steps=$(jq -r '.passed_steps // 0' results/xcall-near/summary.json)
+              failed_steps=$(jq -r '.failed_steps // 0' results/xcall-near/summary.json)
+
+              total_tests=$((total_tests + 1))
+
+              if [ "$status" = "passed" ]; then
+                echo "✅ **Status:** Passed" >> report.md
+                passed_tests=$((passed_tests + 1))
+              else
+                echo "❌ **Status:** Failed" >> report.md
+                failed_tests=$((failed_tests + 1))
+              fi
+
+              echo "- **Duration:** ${duration}s" >> report.md
+              echo "- **Steps:** ${total_steps} total, ${passed_steps} passed, ${failed_steps} failed" >> report.md
+            else
+              echo "⚠️ **Status:** No summary found" >> report.md
+              total_tests=$((total_tests + 1))
+              failed_tests=$((failed_tests + 1))
+            fi
+          else
+            echo "❌ **Status:** Tests did not run" >> report.md
+            total_tests=$((total_tests + 1))
+            failed_tests=$((failed_tests + 1))
+          fi
+          echo "" >> report.md
+
+          # ============================================================================
+          # Overall Summary
+          # ============================================================================
+          echo "---" >> report.md
+          echo "" >> report.md
+          echo "## 📊 Overall Summary" >> report.md
+          echo "" >> report.md
+          echo "- **Total Test Suites:** ${total_tests}" >> report.md
+          echo "- **✅ Passed:** ${passed_tests}" >> report.md
+          echo "- **❌ Failed:** ${failed_tests}" >> report.md
+          echo "" >> report.md
+
+          if [ $failed_tests -eq 0 ]; then
+            echo "### 🎉 All tests passed!" >> report.md
+          else
+            echo "### ⚠️ Some tests failed. Please review the logs above." >> report.md
+          fi
+
+          echo "" >> report.md
+          echo "---" >> report.md
+          echo "*Generated on $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> report.md
+
+      - name: Display Report
+        run: cat report.md
+
+      - name: Prepare PR Comment
+        run: >-
+          jq -n
+          --arg pr '${{ github.event.number }}'
+          --arg tag e2e-merobox-report
+          --arg mode recreate
+          --rawfile message report.md
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment Payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-merobox-payload
+          path: payload.json
