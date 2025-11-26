@@ -46,14 +46,22 @@ wasm_imports! {
         fn send_proposal(value: Ref<Buffer<'_>>, buf: Ref<BufferMut<'_>>);
         fn approve_proposal(value: Ref<Buffer<'_>>);
         // --
+        // Context Management functions
+        fn context_add_member(public_key: Ref<Buffer<'_>>);
+        fn context_remove_member(public_key: Ref<Buffer<'_>>);
+        fn context_is_member(public_key: Ref<Buffer<'_>>) -> Bool;
+        fn context_members(register_id: RegisterId);
+        // --
         // Streaming blob functions
         fn blob_create() -> PtrSizedInt;
         fn blob_open(blob_id: Ref<Buffer<'_>>) -> PtrSizedInt;
         fn blob_read(fd: PtrSizedInt, buf: Ref<BufferMut<'_>>) -> PtrSizedInt;
         fn blob_write(fd: PtrSizedInt, data: Ref<Buffer<'_>>) -> PtrSizedInt;
         fn blob_close(fd: PtrSizedInt, blob_id_buf: Ref<BufferMut<'_>>) -> Bool;
+        // --
         // Network blob functions
         fn blob_announce_to_context(blob_id: Ref<Buffer<'_>>, context_id: Ref<Buffer<'_>>) -> Bool;
+        // --
     }
 }
 

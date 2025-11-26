@@ -1,0 +1,135 @@
+description: Test Access Control App
+name: Access Control Test
+
+# Configuration options
+stop_all_nodes: true
+restart: true
+wait_timeout: 120
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: ac-node
+
+steps:
+  # 1. Install App
+  - name: Install App on Node 1
+    type: install_application
+    node: ac-node-1
+    path: res/access_control.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # 2. Create Context on Node 1
+  - name: Create Context on Node 1
+    type: create_context
+    node: ac-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      context_id: contextId
+      admin_key: memberPublicKey
+
+  # 3. Create Identity for Node 2
+  - name: Create Identity Node 2
+    type: create_identity
+    node: ac-node-2
+    outputs:
+      node2_key: publicKey
+
+  # 4. Add Node 2 (via app logic using PublicKey type)
+  - name: Add Member Node 2
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: add_member
+    args:
+      public_key: '{{node2_key}}'
+
+  # 5. Wait for async propagation
+  - name: Wait for Add
+    type: wait
+    seconds: 20
+
+  # 6. Verify Node 2 is member
+  - name: Check Node 2 Membership
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: is_member
+    args:
+      public_key: '{{node2_key}}'
+    outputs:
+      is_member: result
+
+  - name: Assert Node 2 is member
+    type: json_assert
+    statements:
+      - 'json_equal({{is_member}}, {"output": true})'
+
+  # 7. List and Verify All Members
+  - name: List All Members
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: get_all_members
+    outputs:
+      all_members_result: result.output
+
+  - name: Assert Members List contains Admin and Node 2
+    type: assert
+    statements:
+      - "contains({{all_members_result}}, {{admin_key}})"
+      - "contains({{all_members_result}}, {{node2_key}})"
+
+  # 8. Kick Node 2
+  - name: Kick Member Node 2
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: kick_member
+    args:
+      public_key: '{{node2_key}}'
+
+  # 9. Wait for revocation
+  - name: Wait for Kick
+    type: wait
+    seconds: 20
+
+  # 10. List and Verify All Members
+  - name: List All Members
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: get_all_members
+    outputs:
+      all_members_final_result: result.output
+
+  - name: Assert Members List contains only admin again
+    type: assert
+    statements:
+      - "contains({{all_members_final_result}}, {{admin_key}})"
+      - "not_contains({{all_members_final_result}}, {{node2_key}})"
+
+  # 11. Verify Node 2 is NOT member
+  - name: Check Node 2 Membership Again
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: is_member
+    args:
+      public_key: '{{node2_key}}'
+    outputs:
+      is_member_final: result
+
+  - name: Assert Node 2 is NOT member
+    type: json_assert
+    statements:
+      - 'json_equal({{is_member_final}}, {"output": false})'

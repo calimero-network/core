@@ -2,16 +2,18 @@
 
 use core::borrow::Borrow;
 use core::fmt;
+use core::ops::{Deref, DerefMut};
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, StorageAdaptor};
+use super::{compute_id, Collection, EntryMut, StorageAdaptor};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
+use crate::error::StorageError;
 use crate::store::MainStorage;
 use std::collections::BTreeMap;
 
@@ -138,6 +140,66 @@ where
         let id = compute_id(self.inner.id(), key.as_ref());
 
         Ok(self.inner.get(id)?.map(|(_, v)| v))
+    }
+
+    /// Returns a mutable reference to the value corresponding to the key.
+    ///
+    /// This returns a `ValueMut` guard. Any modifications to the value
+    /// will be written back to storage when the guard is dropped.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    ///
+    pub fn get_mut<'a, Q>(
+        &'a mut self,
+        key: &Q,
+    ) -> Result<Option<ValueMut<'a, K, V, S>>, StoreError>
+    where
+        K: Borrow<Q>,
+        Q: PartialEq + AsRef<[u8]> + ?Sized,
+    {
+        let id = compute_id(self.inner.id(), key.as_ref());
+
+        // Get the internal EntryMut<'a, (K, V), S>
+        let entry_option = self.inner.get_mut(id)?;
+
+        // Wrap it in ValueMut guard.
+        // This guard only allows access to V.
+        Ok(entry_option.map(|entry_mut| ValueMut { entry_mut }))
+    }
+
+    /// Gets the given key's corresponding entry in the map for in-place manipulation.
+    ///
+    /// This method returns a `Result` as it must access storage to check
+    /// for the key's existence.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    pub fn entry<'a>(&'a mut self, key: K) -> Result<Entry<'a, K, V, S>, StoreError>
+    where
+        K: PartialEq + AsRef<[u8]>,
+    {
+        let id = compute_id(self.inner.id(), key.as_ref());
+
+        // 1. First, check for existence using `contains`
+        if self.inner.contains(id)? {
+            // 2. If it exists, we can now safely get the mutable guard.
+            // We `expect` because we literally just confirmed it exists.
+            let entry_mut = self
+                .inner
+                .get_mut(id)?
+                .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+
+            Ok(Entry::Occupied(OccupiedEntry { entry_mut }))
+        } else {
+            // 3. If it doesn't exist, no `EntryMut` was created.
+            Ok(Entry::Vacant(VacantEntry { map: self, key }))
+        }
     }
 
     /// Check if the map contains a key.
@@ -350,8 +412,200 @@ where
     }
 }
 
+/// A mutable guard for a value in an `UnorderedMap`.
+///
+/// Changes are written back to storage when this guard is dropped.
+#[derive(Debug)]
+pub struct ValueMut<'a, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// This holds the mutable entry for the *entire* tuple.
+    entry_mut: EntryMut<'a, (K, V), S>,
+}
+
+impl<K, V, S> Deref for ValueMut<'_, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        // self.entry_mut.deref() returns &(K, V), so with .1 it accesses the V
+        &self.entry_mut.deref().1
+    }
+}
+
+impl<K, V, S> DerefMut for ValueMut<'_, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // self.entry_mut.deref() returns &(K, V), so with .1 it accesses the V
+        &mut self.entry_mut.deref_mut().1
+    }
+}
+
+/// A view into a single entry in an `UnorderedMap`, which may either be
+/// occupied or vacant.
+///
+/// This `enum` is returned by the `UnorderedMap::entry` method.
+#[derive(Debug)]
+pub enum Entry<'a, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// An occupied entry.
+    Occupied(OccupiedEntry<'a, K, V, S>),
+    /// A vacant entry.
+    Vacant(VacantEntry<'a, K, V, S>),
+}
+
+/// A view into an occupied entry in an `UnorderedMap`.
+/// It holds a mutable guard to the entry.
+#[derive(Debug)]
+pub struct OccupiedEntry<'a, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    entry_mut: EntryMut<'a, (K, V), S>,
+}
+
+/// A view into a vacant entry in an `UnorderedMap`.
+/// It holds a mutable reference to the map and the key.
+#[derive(Debug)]
+pub struct VacantEntry<'a, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    map: &'a mut UnorderedMap<K, V, S>,
+    key: K,
+}
+
+impl<'a, K, V, S> Entry<'a, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Ensures a value is in the entry by inserting the default if empty,
+    /// and returns a mutable `ValueMut` guard to the value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    pub fn or_insert(self, default: V) -> Result<ValueMut<'a, K, V, S>, StoreError> {
+        match self {
+            Entry::Occupied(entry) => Ok(ValueMut {
+                entry_mut: entry.entry_mut,
+            }),
+            Entry::Vacant(entry) => entry.insert(default),
+        }
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the
+    /// function `f` if empty, and returns a mutable `ValueMut` guard to the value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    pub fn or_insert_with<F>(self, f: F) -> Result<ValueMut<'a, K, V, S>, StoreError>
+    where
+        F: FnOnce() -> V,
+    {
+        match self {
+            Entry::Occupied(entry) => Ok(ValueMut {
+                entry_mut: entry.entry_mut,
+            }),
+            Entry::Vacant(entry) => entry.insert(f()),
+        }
+    }
+}
+
+impl<K, V, S> OccupiedEntry<'_, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Gets a reference to the value in the entry.
+    pub fn get(&self) -> &V {
+        &self.entry_mut.1
+    }
+
+    /// Gets a mutable reference to the value in the entry.
+    ///
+    /// Changes are written back to storage when the returned `DerefMut`
+    /// guard is dropped.
+    pub fn get_mut(&mut self) -> &mut V {
+        &mut self.entry_mut.1
+    }
+
+    /// Replaces the value in the entry and returns the old value.
+    pub fn insert(&mut self, value: V) -> V {
+        mem::replace(&mut self.entry_mut.1, value)
+    }
+
+    /// Removes the entry from the map and returns the removed value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    pub fn remove(self) -> Result<V, StoreError> {
+        self.entry_mut.remove().map(|(_, v)| v)
+    }
+}
+
+impl<'a, K, V, S> VacantEntry<'a, K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Inserts a new value into the entry and returns a mutable `ValueMut`
+    /// guard to the new value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    pub fn insert(self, value: V) -> Result<ValueMut<'a, K, V, S>, StoreError> {
+        let id = compute_id(self.map.inner.id(), self.key.as_ref());
+
+        // Insert the new (key, value) pair
+        drop(self.map.inner.insert(Some(id), (self.key, value))?);
+
+        // Now, get a mutable guard to the new entry.
+        // We `expect` here because this is a logic error: we just inserted
+        // an entry, so it MUST be found.
+        let entry_mut = self
+            .map
+            .inner
+            .get_mut(id)?
+            .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+
+        Ok(ValueMut { entry_mut })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::collections::unordered_map::Entry;
     use crate::collections::{Root, UnorderedMap};
 
     #[test]
@@ -544,5 +798,152 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries.contains(&("key1".to_owned(), "value1".to_owned())));
         assert!(entries.contains(&("key2".to_owned(), "value3".to_owned())));
+    }
+
+    #[test]
+    fn test_unordered_map_get_mut() {
+        let mut map = Root::new(|| UnorderedMap::new());
+        drop(
+            map.insert("key1".to_owned(), "value1".to_owned())
+                .expect("insert failed"),
+        );
+
+        // Get and modify an existing key
+        {
+            let mut guard = map
+                .get_mut("key1")
+                .expect("get_mut failed")
+                .expect("key not found");
+            assert_eq!(*guard, "value1");
+
+            // Modify the value via the guard
+            *guard = "new_value".to_owned();
+        } // Guard is dropped here, change is committed
+
+        // Verify the change was persisted
+        assert_eq!(
+            map.get("key1").expect("get failed").as_deref(),
+            Some("new_value")
+        );
+
+        // Try to get a non-existent key
+        let guard = map.get_mut("key_nonexistent").expect("get_mut failed");
+        assert!(guard.is_none());
+    }
+
+    #[test]
+    fn test_unordered_map_entry_vacant() {
+        let mut map = Root::new(|| UnorderedMap::new());
+
+        // Test `or_insert()`
+        {
+            let mut guard = map
+                .entry("key1".to_owned())
+                .expect("entry failed")
+                .or_insert("value1".to_owned())
+                .expect("or_insert failed");
+
+            // The guard points to the new value
+            assert_eq!(*guard, "value1");
+            *guard = "new_value1".to_owned();
+        } // Guard is dropped, "new_value1" is committed
+
+        assert_eq!(map.len().unwrap(), 1);
+        assert_eq!(map.get("key1").unwrap().as_deref(), Some("new_value1"));
+
+        // Test `or_insert_with()`
+        {
+            let guard = map
+                .entry("key2".to_owned())
+                .expect("entry failed")
+                .or_insert_with(|| "value2".to_owned())
+                .expect("or_insert_with failed");
+
+            assert_eq!(*guard, "value2");
+        } // Guard is dropped
+
+        assert_eq!(map.len().unwrap(), 2);
+        assert_eq!(map.get("key2").unwrap().as_deref(), Some("value2"));
+    }
+
+    #[test]
+    fn test_unordered_map_entry_occupied_or_insert() {
+        let mut map = Root::new(|| UnorderedMap::new());
+        drop(
+            map.insert("key1".to_owned(), "value1".to_owned())
+                .expect("insert failed"),
+        );
+
+        // Test `or_insert()` on an occupied entry
+        {
+            let guard = map
+                .entry("key1".to_owned())
+                .expect("entry failed")
+                .or_insert("new_value".to_owned()) // This value should be ignored
+                .expect("or_insert failed");
+
+            // Guard should point to the *original* value
+            assert_eq!(*guard, "value1");
+        } // Guard is dropped
+
+        // Make sure the value hasn't changed
+        assert_eq!(map.len().unwrap(), 1);
+        assert_eq!(map.get("key1").unwrap().as_deref(), Some("value1"));
+
+        // Test `or_insert_with()` on an occupied entry
+        let mut called = false;
+        {
+            let guard = map
+                .entry("key1".to_owned())
+                .expect("entry failed")
+                .or_insert_with(|| {
+                    // This closure should not be called
+                    called = true;
+                    "new_value".to_owned()
+                })
+                .expect("or_insert_with failed");
+
+            assert_eq!(*guard, "value1");
+        } // Guard is dropped
+
+        assert_eq!(called, false); // Verify closure was not executed
+        assert_eq!(map.len().unwrap(), 1);
+        assert_eq!(map.get("key1").unwrap().as_deref(), Some("value1"));
+    }
+
+    #[test]
+    fn test_unordered_map_entry_occupied_mutations() {
+        let mut map = Root::new(|| UnorderedMap::new());
+        drop(map.insert("key1".to_owned(), "value1".to_owned()).unwrap());
+        drop(map.insert("key2".to_owned(), "value2".to_owned()).unwrap());
+        drop(map.insert("key3".to_owned(), "value3".to_owned()).unwrap());
+
+        // Test `OccupiedEntry::get_mut()`
+        if let Ok(Entry::Occupied(mut entry)) = map.entry("key1".to_owned()) {
+            *entry.get_mut() = "updated_value1".to_owned();
+        } else {
+            panic!("Entry should be occupied");
+        }
+        assert_eq!(map.get("key1").unwrap().as_deref(), Some("updated_value1"));
+
+        // Test `OccupiedEntry::insert()`
+        let old_val = if let Ok(Entry::Occupied(mut entry)) = map.entry("key2".to_owned()) {
+            entry.insert("updated_value2".to_owned())
+        } else {
+            panic!("Entry should be occupied");
+        };
+        assert_eq!(old_val, "value2");
+        assert_eq!(map.get("key2").unwrap().as_deref(), Some("updated_value2"));
+        assert_eq!(map.len().unwrap(), 3); // Length should be unchanged
+
+        // Test `OccupiedEntry::remove()`
+        let old_val = if let Ok(Entry::Occupied(entry)) = map.entry("key3".to_owned()) {
+            entry.remove().expect("remove failed")
+        } else {
+            panic!("Entry should be occupied");
+        };
+        assert_eq!(old_val, "value3");
+        assert_eq!(map.get("key3").unwrap(), None); // Key should be gone
+        assert_eq!(map.len().unwrap(), 2); // Length should decrease
     }
 }

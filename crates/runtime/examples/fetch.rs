@@ -43,6 +43,7 @@ fn main() -> EyreResult<()> {
         &input,
         &mut storage,
         None,
+        None,
     )?;
 
     let returns = String::from_utf8(outcome.returns.unwrap().unwrap()).unwrap();

@@ -88,6 +88,8 @@ pub enum HostError {
     BadUTF8,
     #[error("deserialization error")]
     DeserializationError,
+    #[error("serialization error")]
+    SerializationError,
     #[error("integer overflow")]
     IntegerOverflow,
     #[error("key length overflow")]
