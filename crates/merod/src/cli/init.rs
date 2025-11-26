@@ -3,9 +3,6 @@ use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
     SyncConfig,
 };
-use calimero_node::sync::{
-    DEFAULT_SYNC_FREQUENCY_SECS, DEFAULT_SYNC_INTERVAL_SECS, DEFAULT_SYNC_TIMEOUT_SECS,
-};
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
@@ -18,6 +15,9 @@ use calimero_context_config::client::protocol::{
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
+};
+use calimero_node::sync::{
+    DEFAULT_SYNC_FREQUENCY_SECS, DEFAULT_SYNC_INTERVAL_SECS, DEFAULT_SYNC_TIMEOUT_SECS,
 };
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::config::AuthMode;
@@ -49,7 +49,6 @@ use url::Url;
 
 use super::auth_mode::AuthModeArg;
 use crate::{cli, defaults};
-
 
 /// Helper struct to define protocol configuration
 #[derive(Debug)]

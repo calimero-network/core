@@ -224,14 +224,16 @@ impl SyncManager {
                                 true
                             }
                         };
-                        
+
                         let minimum = if is_uninitialized {
                             // Use aggressive 1-second interval for uninitialized contexts
-                            std::time::Duration::from_secs(crate::sync::config::UNINITIALIZED_SYNC_INTERVAL_SECS)
+                            std::time::Duration::from_secs(
+                                crate::sync::config::UNINITIALIZED_SYNC_INTERVAL_SECS,
+                            )
                         } else {
                             self.sync_config.interval
                         };
-                        
+
                         let time_since = last_sync.elapsed();
 
                         if time_since < minimum {
@@ -260,7 +262,7 @@ impl SyncManager {
                                 true
                             }
                         };
-                        
+
                         if is_uninitialized {
                             info!(
                                 %context_id,
