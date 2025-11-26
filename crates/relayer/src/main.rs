@@ -14,7 +14,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
+    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
 };
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
 use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
@@ -33,20 +33,39 @@ use tracing_subscriber::{registry, EnvFilter};
 mod config;
 mod constants;
 mod credentials;
+mod mock;
 
 use config::RelayerConfig;
-use constants::{DEFAULT_ADDR, DEFAULT_RELAYER_URL};
+use constants::{protocols, DEFAULT_ADDR, DEFAULT_RELAYER_URL};
+use mock::MockRelayer;
 
 /// Relayer service that handles incoming requests
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RelayerService {
     config: RelayerConfig,
+    mock_relayer: Option<MockRelayer>,
 }
 
 impl RelayerService {
     /// Create a new relayer service with the given configuration
     fn new(config: RelayerConfig) -> Self {
-        Self { config }
+        // Initialize mock relayer if the mock-relayer protocol is enabled
+        let mock_relayer = if config
+            .protocols
+            .get(protocols::mock_relayer::NAME)
+            .map(|p| p.enabled)
+            .unwrap_or(false)
+        {
+            info!("Mock relayer protocol enabled");
+            Some(MockRelayer::new())
+        } else {
+            None
+        };
+
+        Self {
+            config,
+            mock_relayer,
+        }
     }
 
     /// Create blockchain client from relayer configuration
@@ -76,6 +95,25 @@ impl RelayerService {
 
             // Add protocol signer configuration
             let mut signers = BTreeMap::new();
+
+            // Mock relayer doesn't need real credentials but we still need
+            // a local signer entry to keep params and signer config in sync.
+            if protocol_name == protocols::mock_relayer::NAME {
+                drop(signers.insert(
+                    protocol_config.network.clone(),
+                    ClientLocalSigner {
+                        rpc_url: protocol_config.rpc_url.clone(),
+                        credentials: Credentials::Raw(RawCredentials {
+                            account_id: None,
+                            public_key: "mock-relayer-public-key".into(),
+                            secret_key: "mock-relayer-secret-key".into(),
+                        }),
+                    },
+                ));
+
+                drop(protocols.insert(protocol_name.clone(), ClientLocalConfig { signers }));
+                continue;
+            }
 
             // Create credentials only if explicitly provided
             let credentials = if let Some(creds) = protocol_config.credentials.as_ref() {
@@ -136,8 +174,39 @@ impl RelayerService {
         // Create blockchain client from relayer config
         let transports = self.create_client()?;
 
+        // Clone mock relayer for the async task
+        let mock_relayer = self.mock_relayer.clone();
+
         let handle = async move {
             while let Some((request, res_tx)) = rx.recv().await {
+                // Check if this is a mock-relayer request
+                if request.protocol == protocols::mock_relayer::NAME {
+                    if let Some(ref mock) = mock_relayer {
+                        debug!(
+                            "Handling mock-relayer request for operation: {:?}",
+                            request.operation
+                        );
+                        let res = mock.handle_request(request).await.map(Ok).map_err(|e| {
+                            debug!("Mock relayer error: {:?}", e);
+                            ServerError::UnsupportedProtocol {
+                                found: protocols::mock_relayer::NAME.into(),
+                                expected: vec![protocols::mock_relayer::NAME.into()].into(),
+                            }
+                        });
+                        let _ignored = res_tx.send(res);
+                        continue;
+                    } else {
+                        // Mock relayer not enabled
+                        let res = Err(ServerError::UnsupportedProtocol {
+                            found: protocols::mock_relayer::NAME.into(),
+                            expected: vec![].into(),
+                        });
+                        let _ignored = res_tx.send(res);
+                        continue;
+                    }
+                }
+
+                // Handle regular blockchain protocols
                 let args = TransportArguments {
                     protocol: request.protocol,
                     request: TransportRequest {
@@ -233,16 +302,31 @@ async fn handler(
     version = env!("CARGO_PKG_VERSION")
 )]
 struct Cli {
-    /// Sets the address to listen on [default: 0.0.0.0:63529]
+    /// Sets the address to listen on
     /// Valid: `63529`, `127.0.0.1`, `127.0.0.1:63529` [env: PORT]
     #[clap(short, long, value_name = "URI")]
     #[clap(verbatim_doc_comment, value_parser = addr_from_str)]
-    #[clap(default_value_t = DEFAULT_ADDR)]
-    pub listen: SocketAddr,
+    pub listen: Option<SocketAddr>,
 
     /// Configuration file path (optional, uses environment variables if not provided)
     #[arg(short, long, value_name = "PATH")]
     pub config: Option<std::path::PathBuf>,
+
+    /// Enable mock relayer protocol
+    #[arg(long)]
+    pub enable_mock_relayer: bool,
+
+    /// Network for mock relayer (default: "local")
+    #[arg(long, value_name = "NETWORK")]
+    pub mock_relayer_network: Option<String>,
+
+    /// RPC URL for mock relayer (default: "http://localhost:9812")
+    #[arg(long, value_name = "URL")]
+    pub mock_relayer_rpc_url: Option<String>,
+
+    /// Contract ID for mock relayer (default: "mock-context-config")
+    #[arg(long, value_name = "CONTRACT_ID")]
+    pub mock_relayer_contract_id: Option<String>,
 }
 
 #[tokio::main]
@@ -266,7 +350,39 @@ async fn main() -> EyreResult<()> {
     };
 
     // Override listen address from CLI if provided
-    config.listen = cli.listen;
+    if let Some(listen) = cli.listen {
+        config.listen = listen;
+    }
+
+    // Apply mock relayer CLI flags
+    if cli.enable_mock_relayer {
+        let mock_config = config
+            .protocols
+            .entry(protocols::mock_relayer::NAME.to_owned())
+            .or_insert_with(|| config::ProtocolConfig {
+                enabled: true,
+                network: protocols::mock_relayer::DEFAULT_NETWORK.to_owned(),
+                rpc_url: protocols::mock_relayer::DEFAULT_RPC_URL.parse().unwrap(),
+                contract_id: protocols::mock_relayer::DEFAULT_CONTRACT_ID.to_owned(),
+                credentials: None,
+            });
+
+        mock_config.enabled = true;
+
+        if let Some(network) = cli.mock_relayer_network {
+            mock_config.network = network;
+        }
+
+        if let Some(rpc_url) = cli.mock_relayer_rpc_url {
+            mock_config.rpc_url = rpc_url
+                .parse()
+                .map_err(|e| eyre::eyre!("Invalid mock relayer RPC URL: {e}"))?;
+        }
+
+        if let Some(contract_id) = cli.mock_relayer_contract_id {
+            mock_config.contract_id = contract_id;
+        }
+    }
 
     let service = RelayerService::new(config);
     service.start().await
