@@ -3,7 +3,7 @@
     {
       "applicationInstall": {
         "application": {
-          "localFile": "./apps/kv-store/res/kv_store.wasm"
+          "localFile": "./apps/kv-store-with-user-and-frozen-storage/res/kv_store_with_user_and_frozen_storage.wasm"
         },
         "target": "allMembers"
       }
@@ -13,7 +13,7 @@
     },
     {
       "contextCreateAlias": {
-        "aliasName": "my_context"
+        "aliasName": "my_context_kv_store_with_user_and_frozen_storage"
       }
     },
     {
