@@ -71,10 +71,6 @@ jobs:
     name: E2E Tests
     needs: build
     runs-on: ubuntu-24.04-8cpu
-    strategy:
-      fail-fast: false
-      matrix:
-        protocol: [near, icp, ethereum]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -106,20 +102,16 @@ jobs:
           ./scripts/download-contracts.sh
 
       - name: Install DFX for ICP
-        if: matrix.protocol == 'icp'
         uses: dfinity/setup-dfx@main
 
       - name: Install Foundry for Ethereum
-        if: matrix.protocol == 'ethereum'
         uses: foundry-rs/foundry-toolchain@v1
 
       - name: Deploy ICP Devnet
-        if: matrix.protocol == 'icp'
         run: |
           ./scripts/icp/deploy-devnet.sh
 
       - name: Deploy Ethereum Devnet
-        if: matrix.protocol == 'ethereum'
         run: |
           ./scripts/ethereum/deploy-devnet.sh
 
@@ -218,64 +210,97 @@ jobs:
         run: |
           source /tmp/run_merobox_test.sh
           
-          # Define test configurations
-          declare -A tests
+          # Run all protocols sequentially to avoid port conflicts
+          all_failed_tests=()
+          all_passed_tests=()
           
-          # Tests that run on all protocols
-          if [ "${{ matrix.protocol }}" = "near" ]; then
-            tests["kv-store"]="e2e-tests-merobox/workflows/kv-store/workflow-near.yml|${{ matrix.protocol }}"
-          else
-            tests["kv-store"]="e2e-tests-merobox/workflows/kv-store/${{ matrix.protocol }}.yml|${{ matrix.protocol }}"
-          fi
-          tests["proposals"]="e2e-tests-merobox/workflows/proposals/${{ matrix.protocol }}-proposals.yml|${{ matrix.protocol }}-proposals"
-          
-          # NEAR-only tests
-          if [ "${{ matrix.protocol }}" = "near" ]; then
-            tests["kv-store-init"]="e2e-tests-merobox/workflows/kv-store/workflow-init.yml|near-init"
-            tests["kv-store-handlers"]="e2e-tests-merobox/workflows/kv-store-with-handlers/workflow.yml|near-handlers"
-            tests["blobs"]="e2e-tests-merobox/workflows/blobs/workflow.yml|near-blobs"
-            tests["collaborative-editor"]="e2e-tests-merobox/workflows/collaborative-editor/workflow.yml|near-collab"
-            tests["nested-crdt"]="e2e-tests-merobox/workflows/nested-crdt/workflow.yml|near-nested"
-            tests["team-metrics"]="e2e-tests-merobox/workflows/team-metrics/workflow.yml|near-metrics"
-            tests["concurrent-mutations"]="e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml|near-concurrent"
-            tests["open-invitation"]="e2e-tests-merobox/workflows/open-invitation/workflow.yml|near-open-invitation"
-            tests["private-data"]="e2e-tests-merobox/workflows/private-data/workflow.yml|near-private-data"
-            tests["xcall-example"]="e2e-tests-merobox/workflows/xcall-example/workflow.yml|near-xcall"
-          fi
-          
-          # Run all tests for this protocol
-          failed_tests=()
-          passed_tests=()
-          
-          for test_name in "${!tests[@]}"; do
-            IFS='|' read -r workflow_file result_protocol <<< "${tests[$test_name]}"
-            
+          for protocol in near icp ethereum; do
             echo ""
-            echo "🧪 Running test: $test_name"
-            echo "📁 Workflow: $workflow_file"
-            echo "📊 Results: $result_protocol"
-            echo "🔗 Protocol: ${{ matrix.protocol }}"
+            echo "🚀 Starting tests for protocol: $protocol"
+            echo "=================================================="
             echo ""
             
-            if run_merobox_test "$workflow_file" "$result_protocol" "$test_name tests for ${{ matrix.protocol }}"; then
-              passed_tests+=("$test_name")
-              echo "✅ Test $test_name passed"
+            # Define test configurations for current protocol
+            declare -A tests
+            
+            # Tests that run on all protocols
+            if [ "$protocol" = "near" ]; then
+              tests["kv-store"]="e2e-tests-merobox/workflows/kv-store/workflow-near.yml|$protocol"
             else
-              failed_tests+=("$test_name")
-              echo "❌ Test $test_name failed"
+              tests["kv-store"]="e2e-tests-merobox/workflows/kv-store/$protocol.yml|$protocol"
             fi
+            tests["proposals"]="e2e-tests-merobox/workflows/proposals/$protocol-proposals.yml|$protocol-proposals"
+            
+            # NEAR-only tests
+            if [ "$protocol" = "near" ]; then
+              tests["kv-store-init"]="e2e-tests-merobox/workflows/kv-store/workflow-init.yml|near-init"
+              tests["kv-store-handlers"]="e2e-tests-merobox/workflows/kv-store-with-handlers/workflow.yml|near-handlers"
+              tests["blobs"]="e2e-tests-merobox/workflows/blobs/workflow.yml|near-blobs"
+              tests["collaborative-editor"]="e2e-tests-merobox/workflows/collaborative-editor/workflow.yml|near-collab"
+              tests["nested-crdt"]="e2e-tests-merobox/workflows/nested-crdt/workflow.yml|near-nested"
+              tests["team-metrics"]="e2e-tests-merobox/workflows/team-metrics/workflow.yml|near-metrics"
+              tests["concurrent-mutations"]="e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml|near-concurrent"
+              tests["open-invitation"]="e2e-tests-merobox/workflows/open-invitation/workflow.yml|near-open-invitation"
+              tests["private-data"]="e2e-tests-merobox/workflows/private-data/workflow.yml|near-private-data"
+              tests["xcall-example"]="e2e-tests-merobox/workflows/xcall-example/workflow.yml|near-xcall"
+            fi
+            
+            # Run all tests for this protocol
+            protocol_failed_tests=()
+            protocol_passed_tests=()
+            
+            for test_name in "${!tests[@]}"; do
+              IFS='|' read -r workflow_file result_protocol <<< "${tests[$test_name]}"
+              
+              echo ""
+              echo "🧪 Running test: $test_name"
+              echo "📁 Workflow: $workflow_file"
+              echo "📊 Results: $result_protocol"
+              echo "🔗 Protocol: $protocol"
+              echo ""
+              
+              if run_merobox_test "$workflow_file" "$result_protocol" "$test_name tests for $protocol"; then
+                protocol_passed_tests+=("$test_name")
+                all_passed_tests+=("$test_name")
+                echo "✅ Test $test_name passed"
+              else
+                protocol_failed_tests+=("$test_name")
+                all_failed_tests+=("$test_name")
+                echo "❌ Test $test_name failed"
+              fi
+            done
+            
+            # Report results for this protocol
+            echo ""
+            echo "📊 Results for $protocol:"
+            echo "✅ Passed: ${#protocol_passed_tests[@]} tests"
+            if [ ${#protocol_passed_tests[@]} -gt 0 ]; then
+              printf "  ✅ %s\n" "${protocol_passed_tests[@]}"
+            fi
+            echo "❌ Failed: ${#protocol_failed_tests[@]} tests"
+            if [ ${#protocol_failed_tests[@]} -gt 0 ]; then
+              printf "  ❌ %s\n" "${protocol_failed_tests[@]}"
+            fi
+            echo ""
+            
+            # Clear tests array for next protocol
+            unset tests
           done
+          
+          # Use the aggregated results for final reporting
+          failed_tests=("${all_failed_tests[@]}")
+          passed_tests=("${all_passed_tests[@]}")
           
           # Report results
           echo ""
           echo "=========================================="
-          echo "Test Summary for ${{ matrix.protocol }}"
+          echo "Test Summary for All Protocols"
           echo "=========================================="
-          total_tests=${#tests[@]}
           failed_count=${#failed_tests[@]}
           passed_count=${#passed_tests[@]}
+          total_count=$((failed_count + passed_count))
           
-          echo "Total tests: $total_tests"
+          echo "Total tests: $total_count"
           echo "Passed: $passed_count"
           echo "Failed: $failed_count"
           
@@ -294,18 +319,18 @@ jobs:
               echo "  ❌ $test"
             done
             echo ""
-            echo "❌ Some tests failed for ${{ matrix.protocol }}"
+            echo "❌ Some tests failed across all protocols"
             exit 1
           else
             echo ""
-            echo "✅ All tests passed for ${{ matrix.protocol }}"
+            echo "✅ All tests passed across all protocols"
           fi
 
       - name: Upload Test Results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.protocol }}
+          name: test-results-all-protocols
           path: e2e-tests-merobox/results/
           retention-days: 2
 
@@ -313,7 +338,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: debug-logs-data-${{ matrix.protocol }}
+          name: debug-logs-data-all-protocols
           path: |
             data/
             ~/.merobox/logs/
