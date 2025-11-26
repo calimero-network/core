@@ -250,7 +250,7 @@ steps:
   - name: Assert Clear Returned Null
     type: json_assert
     statements:
-      - "json_equal({{clear_result}}, null)"
+      - "json_equal({{clear_result}}, {\"output\": null})"
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
