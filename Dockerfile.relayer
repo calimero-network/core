@@ -63,7 +63,7 @@ WORKDIR /data
 ENV CALIMERO_HOME=/data
 
 # Default relayer configuration
-ENV RELAYER_LISTEN="0.0.0.0:${RELAYER_PORT}"
+ENV RELAYER_LISTEN_URL="0.0.0.0:${RELAYER_PORT}"
 ENV RUST_LOG="info"
 
 # Enable/disable blockchain protocols
