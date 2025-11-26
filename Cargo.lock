@@ -6542,6 +6542,8 @@ name = "mero-relayer"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
+ "borsh",
+ "bs58 0.5.1",
  "calimero-context-config",
  "chrono",
  "clap",
