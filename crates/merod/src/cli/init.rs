@@ -3,6 +3,9 @@ use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
     SyncConfig,
 };
+use calimero_node::sync::{
+    DEFAULT_SYNC_FREQUENCY_SECS, DEFAULT_SYNC_INTERVAL_SECS, DEFAULT_SYNC_TIMEOUT_SECS,
+};
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
@@ -47,9 +50,6 @@ use url::Url;
 use super::auth_mode::AuthModeArg;
 use crate::{cli, defaults};
 
-const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
 
 /// Helper struct to define protocol configuration
 #[derive(Debug)]
@@ -406,9 +406,9 @@ impl InitCommand {
                 server_config,
             ),
             SyncConfig {
-                timeout: DEFAULT_SYNC_TIMEOUT,
-                interval: DEFAULT_SYNC_INTERVAL,
-                frequency: DEFAULT_SYNC_FREQUENCY,
+                timeout: Duration::from_secs(DEFAULT_SYNC_TIMEOUT_SECS),
+                interval: Duration::from_secs(DEFAULT_SYNC_INTERVAL_SECS),
+                frequency: Duration::from_secs(DEFAULT_SYNC_FREQUENCY_SECS),
             },
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),

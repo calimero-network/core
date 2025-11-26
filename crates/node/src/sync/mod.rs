@@ -36,5 +36,7 @@ mod manager;
 pub(crate) mod stream;
 mod tracking;
 
-pub use config::SyncConfig;
+pub use config::{
+    SyncConfig, DEFAULT_SYNC_FREQUENCY_SECS, DEFAULT_SYNC_INTERVAL_SECS, DEFAULT_SYNC_TIMEOUT_SECS,
+};
 pub use manager::SyncManager;
