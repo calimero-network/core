@@ -1109,7 +1109,7 @@ mod tests {
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
         let context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
-        let mut logic = VMLogic::new(&mut storage, context, &limits, None);
+        let mut logic = VMLogic::new(&mut storage, context, &limits, None, None);
 
         let mut store = Store::default();
         let memory =

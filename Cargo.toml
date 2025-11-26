@@ -13,6 +13,7 @@ description = "Core Calimero infrastructure and tools"
 version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
+    "./apps/access-control",
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
@@ -69,6 +70,7 @@ members = [
     "./crates/version",
     "./crates/wasm-abi",
 
+    "./apps/access-control",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",

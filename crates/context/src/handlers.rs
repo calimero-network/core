@@ -10,6 +10,7 @@ pub mod execute;
 pub mod join_context;
 pub mod sync;
 pub mod update_application;
+mod utils;
 
 impl Handler<ContextMessage> for ContextManager {
     type Result = ();
