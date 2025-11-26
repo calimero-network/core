@@ -20,6 +20,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CALIMERO_CONTRACTS_VERSION: "latest"
 
 jobs:
   build:
@@ -85,11 +86,22 @@ jobs:
             target/app-release
           key: ${{ needs.build.outputs.cache-key }}
 
+      - name: Clone merobox
+        run: |
+          git clone https://github.com/calimero-network/merobox.git
+
       - name: Install merobox
         run: |
-          curl -L https://github.com/calimero-network/merobox/releases/latest/download/merobox-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          sudo mv merobox /usr/local/bin/
+          pip install -e ./merobox
+
+      - name: Verify merobox installation
+        run: |
           merobox --version
+
+      - name: Download Contracts
+        run: |
+          echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
+          ./scripts/download-contracts.sh
 
       - name: Install DFX for ICP
         if: matrix.protocol == 'icp'
@@ -122,17 +134,17 @@ jobs:
             local result_protocol="$2" 
             local test_description="$3"
             
-            echo "=========================================="
+          echo "=========================================="
             echo "Running $test_description"
-            echo "=========================================="
-            
+          echo "=========================================="
+
             # Capture exit code and run merobox
             set +e
-            merobox bootstrap run \
+          merobox bootstrap run \
               "$workflow_file" \
-              --no-docker \
-              --binary-path target/debug/merod \
-              --verbose
+            --no-docker \
+            --binary-path target/debug/merod \
+            --verbose
             local exit_code=$?
             set -e
             
