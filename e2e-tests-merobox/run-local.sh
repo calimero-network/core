@@ -12,7 +12,6 @@ NC='\033[0m' # No Color
 # Configuration
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MEROD_BIN="${PROJECT_ROOT}/target/debug/merod"
-MEROCTL_BIN="${PROJECT_ROOT}/target/debug/meroctl"
 RESULTS_DIR="${PROJECT_ROOT}/e2e-tests-merobox/results"
 
 # Default values
@@ -46,7 +45,7 @@ usage() {
     echo "                             - all (runs all tests: 16 suites)"
     echo "  -w, --workflow WORKFLOW    Path to workflow YAML file (overrides protocol)"
     echo "  -v, --verbose              Enable verbose output"
-    echo "  -b, --build                Build merod and meroctl binaries before testing"
+    echo "  -b, --build                Build merod binary before testing"
     echo "  -a, --build-apps           Build WASM applications before testing"
     echo "  -c, --check-devnets        Check if devnets are running (shows setup instructions if not)"
     echo "  --no-venv                  Don't use virtual environment (not recommended)"
@@ -217,7 +216,7 @@ fi
 if [ "$BUILD_BINARIES" = true ]; then
     echo -e "${BLUE}Building binaries...${NC}"
     cd "$PROJECT_ROOT"
-    if cargo build -p merod -p meroctl; then
+    if cargo build -p merod; then
         echo -e "${GREEN}✓ Binaries built successfully${NC}"
     else
         echo -e "${RED}Error: Failed to build binaries${NC}"
@@ -388,15 +387,8 @@ if [ ! -f "$MEROD_BIN" ]; then
     exit 1
 fi
 
-if [ ! -f "$MEROCTL_BIN" ]; then
-    echo -e "${RED}Error: meroctl binary not found at $MEROCTL_BIN${NC}"
-    echo -e "${YELLOW}Build it with: cargo build -p meroctl${NC}"
-    echo -e "${YELLOW}Or run this script with: --build${NC}"
-    exit 1
-fi
 
 echo -e "${GREEN}✓ Found merod:${NC} $MEROD_BIN"
-echo -e "${GREEN}✓ Found meroctl:${NC} $MEROCTL_BIN"
 
 # Check if apps are built
 KV_STORE_WASM="${PROJECT_ROOT}/apps/kv-store/res/kv_store.wasm"
