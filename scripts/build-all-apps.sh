@@ -11,6 +11,9 @@ BUILD_SCRIPTS=(
     "apps/nested-crdt-test/build.sh"
     "apps/team-metrics-macro/build.sh"
     "apps/team-metrics-custom/build.sh"
+    "apps/blobs/build.sh"
+    "apps/private_data/build.sh"
+    "apps/xcall-example/build.sh"
 )
 
 run_script() {

@@ -307,6 +307,16 @@ jobs:
           path: e2e-tests-merobox/results/
           retention-days: 2
 
+      - name: Upload Node Logs and Data for Debugging
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-logs-data-${{ matrix.protocol }}
+          path: |
+            data/
+            ~/.merobox/logs/
+          retention-days: 7
+
   report:
     name: Generate Test Report
     needs: test
