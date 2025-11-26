@@ -9,7 +9,7 @@ wait_timeout: 120
 nodes:
   chain_id: testnet-1
   count: 2
-  image: storage-user-frozen:24
+  image: ghcr.io/calimero-network/merod:edge
   prefix: new-calimero-node
 
 steps:
