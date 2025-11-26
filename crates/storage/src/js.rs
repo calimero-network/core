@@ -98,7 +98,7 @@ impl JsUnorderedMap {
     ///
     /// Propagates [`StoreError`] when the underlying map read fails.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        self.map.get(&key.to_vec())
+        self.map.get(key)
     }
 
     /// Removes the value for `key`, returning the previous value if it existed.
@@ -107,7 +107,7 @@ impl JsUnorderedMap {
     ///
     /// Returns any [`StoreError`] emitted by the storage layer.
     pub fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        self.map.remove(&key.to_vec())
+        self.map.remove(key)
     }
 
     /// Checks whether `key` exists within the map.
@@ -116,7 +116,7 @@ impl JsUnorderedMap {
     ///
     /// Propagates [`StoreError`] if the existence check fails.
     pub fn contains(&self, key: &[u8]) -> Result<bool, StoreError> {
-        self.map.contains(&key.to_vec())
+        self.map.contains(key)
     }
 
     /// Returns all key/value pairs currently stored in the map.
