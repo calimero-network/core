@@ -8,6 +8,7 @@ include!(env!("GENERATED_ABI_PATH"));
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
+use calimero_storage::collections::unordered_map::Entry;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use thiserror::Error;
 
@@ -61,6 +62,52 @@ impl KvStore {
         self.items.insert(key, value.into())?;
 
         Ok(())
+    }
+
+    /// Updates a value only if the key already exists, using in-place mutation.
+    ///
+    /// This demonstrates the `get_mut` API which allows modifying the value
+    /// without a read-modify-write cycle. The change is automatically persisted
+    /// with a new timestamp when the guard is dropped.
+    pub fn update_if_exists(&mut self, key: String, value: String) -> app::Result<bool> {
+        app::log!("Updating if exists: {:?} -> {:?}", key, value);
+
+        if let Some(mut v) = self.items.get_mut(&key)? {
+            // Modifying the LwwRegister via the guard
+            // This updates the value and timestamp in-place
+            v.set(value.clone());
+
+            app::emit!(Event::Updated {
+                key: &key,
+                value: &value,
+            });
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Gets a value, inserting it if it doesn't exist.
+    ///
+    /// This demonstrates the `entry` API combined with `or_insert`.
+    /// We pattern match to check existence for the event, then use the convenience method.
+    pub fn get_or_insert(&mut self, key: String, value: String) -> app::Result<String> {
+        app::log!("Get or insert: {:?} -> {:?}", key, value);
+
+        let entry = self.items.entry(key.clone())?;
+
+        // Check if vacant to emit event, without consuming the entry
+        if let Entry::Vacant(_) = &entry {
+            app::emit!(Event::Inserted {
+                key: &key,
+                value: &value,
+            });
+        }
+
+        // Use the high-level API to handle the insertion or retrieval
+        let val = entry.or_insert(LwwRegister::new(value))?;
+
+        Ok(val.get().clone())
     }
 
     pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
