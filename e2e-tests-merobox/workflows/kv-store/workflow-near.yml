@@ -105,7 +105,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 5
+    seconds: 8
 
   # ============================================================================
   # Phase 5: Test KV Operations with Custom Outputs

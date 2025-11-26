@@ -37,7 +37,7 @@ steps:
 
   - name: Wait for Context Initialization
     type: wait
-    seconds: 5
+    seconds: 8
 
   # ============================================================================
   # Phase 3: Initial Counter Operations (Map<String, Counter>)

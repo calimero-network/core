@@ -46,7 +46,7 @@ steps:
 
   - name: Wait for Identity Creation
     type: wait
-    seconds: 5
+    seconds: 8
 
   - name: Invite Node 2 from Node 1
     type: invite_identity
