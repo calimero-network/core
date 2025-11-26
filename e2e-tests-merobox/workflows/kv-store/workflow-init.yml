@@ -1,7 +1,7 @@
 name: "KV Store Init - NEAR"
 description: "KV Store with init() method test on NEAR protocol - verifies initialization and len() functionality"
 
-# Use --no-docker mode with native merod processes
+# Test configuration
 no_docker: true
 force_pull_image: false
 

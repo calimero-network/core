@@ -1,7 +1,7 @@
 name: "Collaborative Editor - NEAR"
 description: "CRDT-based collaborative text editing test on NEAR protocol - verifies RGA CRDT and concurrent edits"
 
-# Use --no-docker mode with native merod processes
+# Test configuration
 no_docker: true
 force_pull_image: false
 
