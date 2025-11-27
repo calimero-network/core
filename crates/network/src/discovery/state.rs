@@ -77,20 +77,15 @@ impl ReachabilityActions {
 }
 
 impl DiscoveryState {
-    /// Called when AutoNAT confirms an address is reachable
-    pub fn on_address_reachable(&mut self, addr: &Multiaddr) -> ReachabilityActions {
-        self.add_confirmed_external_address(addr);
+    /// Called when an address is confirmed reachable (AutoNAT or Swarm)
+    pub fn on_address_confirmed(&mut self, addr: &Multiaddr) -> ReachabilityActions {
+        self.confirmed_external_addresses.insert(addr.clone());
         self.check_transition()
     }
 
-    /// Called when AutoNAT test fails for an address
-    pub fn on_address_unreachable(&mut self, addr: &Multiaddr) -> ReachabilityActions {
-        self.remove_confirmed_external_address(addr);
-        self.check_transition()
-    }
-
-    /// Called when swarm reports external address changes
-    pub fn on_external_address_changed(&mut self) -> ReachabilityActions {
+    /// Called when an address is removed/unreachable
+    pub fn on_address_removed(&mut self, addr: &Multiaddr) -> ReachabilityActions {
+        self.confirmed_external_addresses.remove(addr);
         self.check_transition()
     }
 
@@ -265,14 +260,6 @@ impl DiscoveryState {
 
     pub(crate) fn is_peer_rendezvous(&self, peer_id: &PeerId) -> bool {
         self.rendezvous_index.contains(peer_id)
-    }
-
-    pub(crate) fn add_confirmed_external_address(&mut self, addr: &Multiaddr) {
-        _ = self.confirmed_external_addresses.insert(addr.clone());
-    }
-
-    pub(crate) fn remove_confirmed_external_address(&mut self, addr: &Multiaddr) {
-        _ = self.confirmed_external_addresses.remove(addr);
     }
 
     pub(crate) fn has_confirmed_external_addresses(&self) -> bool {

@@ -149,7 +149,9 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 trace!("New external address candidate: {}", address);
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
-                info!("External address confirmed: {}", address);
+                info!("Swarm: External address confirmed: {}", address);
+
+                // Update relay metadata
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         &relayed_addr.relay_peer,
@@ -157,14 +159,17 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                     );
                 }
 
-                // Handle external address changes for Discovery state
-                let actions = self.discovery.state.on_external_address_changed();
+                // Update our reachability state
+                // This is what tells us we're reachable, regardless of AutoNAT's internal state
+                let actions = self.discovery.state.on_address_confirmed(&address);
                 self.execute_reachability_actions(actions);
 
                 self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::ExternalAddrExpired { address } => {
-                info!("External address expired: {}", address);
+                info!("Swarm: External address expired: {}", address);
+
+                // Update relay metadata
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         relayed_addr.relay_peer_id(),
@@ -172,8 +177,9 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                     );
                 }
 
-                // Handle external address changes for Discovery state
-                let actions = self.discovery.state.on_external_address_changed();
+                // CRITICAL: Must handle here due to libp2p bug #6203
+                // AutoNAT won't retest expired addresses
+                let actions = self.discovery.state.on_address_removed(&address);
                 self.execute_reachability_actions(actions);
 
                 self.broadcast_rendezvous_registrations();
