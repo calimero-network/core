@@ -43,7 +43,7 @@ steps:
 
   - name: Wait for Context Initialization
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 3: Verify Initial State from init()
@@ -134,7 +134,7 @@ steps:
 
   - name: Wait for Identity Creation
     type: wait
-    seconds: 3
+    seconds: 2
 
   # ============================================================================
   # Phase 5: Invite and Join
@@ -175,7 +175,7 @@ steps:
 
   - name: Wait for Join and State Sync
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 6: Verify Invitees Synced Initial State
@@ -296,7 +296,7 @@ steps:
 
   - name: Wait for Broadcast
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Verify New Key on Node 1
     type: call
@@ -368,7 +368,7 @@ steps:
 
   - name: Wait for Delta Propagation
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Verify Invitee Key on Node 1
     type: call
@@ -472,7 +472,7 @@ steps:
 
   - name: Wait for Update Propagation
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Verify Updated init_key_1 on Node 1
     type: call

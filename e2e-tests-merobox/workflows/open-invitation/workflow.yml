@@ -37,7 +37,7 @@ steps:
 
   - name: Wait for Context Initialization
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 3: Set Initial Value and Verify
@@ -137,7 +137,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 7: Verify All Members Can Read Initial State
@@ -199,7 +199,7 @@ steps:
 
   - name: Wait for Broadcast Propagation
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 9: Verify All Members See Updated Value

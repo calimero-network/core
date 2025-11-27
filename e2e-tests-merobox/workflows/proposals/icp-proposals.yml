@@ -105,7 +105,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 5: Create Multiple Proposals
@@ -206,7 +206,7 @@ steps:
 
   - name: Wait for Proposal 3 Execution
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Create Proposal 4 - SetContextValue (for messages test)
     type: call
@@ -232,7 +232,7 @@ steps:
 
   - name: Wait for All Proposals to Propagate
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 6: Test Proposals API Methods - list_proposals
@@ -321,7 +321,7 @@ steps:
 
   - name: Wait for Message Broadcast
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Get Proposal Messages from Node 2
     type: call
@@ -438,7 +438,7 @@ steps:
 
   - name: Wait for Proposal 4 Execution
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 12: Test with Repeat - Create and Query Multiple Proposals

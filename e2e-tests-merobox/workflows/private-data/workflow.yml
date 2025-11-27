@@ -49,7 +49,7 @@ steps:
 
   - name: Wait for Identity Creation
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Invite Node 2 from Node 1
     type: invite_identity
@@ -90,7 +90,7 @@ steps:
 
   - name: Wait for Secret Propagation
     type: wait
-    seconds: 3
+    seconds: 2
 
   - name: View Secrets on Node 1
     type: call

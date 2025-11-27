@@ -37,7 +37,7 @@ steps:
 
   - name: Wait for Context Initialization
     type: wait
-    seconds: 8
+    seconds: 3
 
   # ============================================================================
   # Phase 3: Initial Wins Recording
@@ -253,7 +253,7 @@ steps:
 
   - name: Wait before retry attempt 2
     type: wait
-    seconds: 10
+    seconds: 3
 
   - name: Get wins from Node 3 after concurrent (attempt 2)
     type: call
@@ -266,7 +266,7 @@ steps:
 
   - name: Wait before retry attempt 3
     type: wait
-    seconds: 10
+    seconds: 3
 
   - name: Get wins from Node 3 after concurrent (attempt 3)
     type: call
@@ -281,7 +281,7 @@ steps:
 
   - name: Wait after Node 3 query
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Assert wins is 3 on all nodes (2 + 1)
     type: json_assert
@@ -305,7 +305,7 @@ steps:
 
   - name: Wait before retry Node 1 losses
     type: wait
-    seconds: 10
+    seconds: 3
 
   - name: Get losses from Node 1 (attempt 2)
     type: call
@@ -320,7 +320,7 @@ steps:
 
   - name: Wait after Node 1 losses query
     type: wait
-    seconds: 10
+    seconds: 3
 
   - name: Get losses from Node 2 (attempt 1)
     type: call
@@ -333,7 +333,7 @@ steps:
 
   - name: Wait before retry Node 2 losses
     type: wait
-    seconds: 10
+    seconds: 3
 
   - name: Get losses from Node 2 (attempt 2)
     type: call
@@ -348,7 +348,7 @@ steps:
 
   - name: Wait after Node 2 losses query
     type: wait
-    seconds: 10
+    seconds: 3
 
   - name: Get losses from Node 3 (attempt 1)
     type: call
@@ -361,7 +361,7 @@ steps:
 
   - name: Wait before retry Node 3 losses
     type: wait
-    seconds: 10
+    seconds: 3
 
   - name: Get losses from Node 3 (attempt 2)
     type: call

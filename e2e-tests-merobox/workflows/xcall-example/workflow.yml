@@ -116,7 +116,7 @@ steps:
 
   - name: Wait for Context A Join Propagation
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Node 2 Joins Context B
     type: join_context
@@ -127,7 +127,7 @@ steps:
 
   - name: Wait for Context B Join Propagation
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 4: Verify initial state in both contexts
@@ -195,7 +195,7 @@ steps:
 
   - name: Wait for XCall Execution and Broadcast (A → B)
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Check Context B Counter on Node 1 After Ping
     type: call
@@ -260,7 +260,7 @@ steps:
 
   - name: Wait for XCall Execution and Broadcast (B → A)
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Check Context A Counter on Node 1 After Ping
     type: call
@@ -306,7 +306,7 @@ steps:
 
   - name: Wait for XCall Execution (Second Ping A → B)
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Send Third Ping from Context A to Context B
     type: call
@@ -321,7 +321,7 @@ steps:
 
   - name: Wait for XCall Execution (Third Ping A → B)
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Check Final Counter on Context B (Node 1)
     type: call

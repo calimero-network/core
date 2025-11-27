@@ -37,7 +37,7 @@ steps:
 
   - name: Wait for Context Initialization
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 3: Multi-Node Setup
@@ -94,7 +94,7 @@ steps:
 
   - name: Wait for gossipsub mesh formation and sync
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 4: Establish Baseline State
@@ -188,7 +188,7 @@ steps:
 
   - name: Wait for concurrent mutations to propagate and DAG to converge
     type: wait
-    seconds: 5
+    seconds: 2
 
   # ============================================================================
   # Phase 6: Verify DAG Convergence

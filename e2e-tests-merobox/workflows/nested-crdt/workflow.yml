@@ -37,7 +37,7 @@ steps:
 
   - name: Wait for Context Initialization
     type: wait
-    seconds: 8
+    seconds: 3
 
   # ============================================================================
   # Phase 3: Initial Counter Operations (Map<String, Counter>)
@@ -133,7 +133,7 @@ steps:
 
   - name: Wait for mesh formation and sync
     type: wait
-    seconds: 10
+    seconds: 3
 
   # ============================================================================
   # Phase 5: Verify Counter Sync
@@ -225,7 +225,7 @@ steps:
 
   - name: Wait after Node 1 query
     type: wait
-    seconds: 7
+    seconds: 3
 
   - name: Get counter from Node 2 after concurrent
     type: call
@@ -240,7 +240,7 @@ steps:
 
   - name: Wait after Node 2 query
     type: wait
-    seconds: 7
+    seconds: 3
 
   - name: Get counter from Node 3 after concurrent
     type: call
@@ -342,7 +342,7 @@ steps:
 
   - name: Wait for consensus
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Get status from Node 1 after update
     type: call
@@ -483,7 +483,7 @@ steps:
 
   - name: Wait for consensus - nested map field-level merge
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Verify title still present (Node 1)
     type: call
@@ -835,7 +835,7 @@ steps:
 
   - name: Wait for concurrent tag additions to merge
     type: wait
-    seconds: 5
+    seconds: 2
 
   - name: Check if user-1 has crdt tag (Node 1)
     type: call

@@ -64,7 +64,7 @@ steps:
 
   - name: Wait for Identity Creation
     type: wait
-    seconds: 3
+    seconds: 2
 
   # ============================================================================
   # Phase 4: Invite and Join with Custom Outputs
@@ -105,7 +105,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 8
+    seconds: 2
 
   # ============================================================================
   # Phase 5: Test KV Operations with Custom Outputs
@@ -129,7 +129,7 @@ steps:
 
   - name: Wait for Set Operation
     type: wait
-    seconds: 3
+    seconds: 2
 
   - name: Get Value from Node 1
     type: call
@@ -201,7 +201,7 @@ steps:
 
   - name: Wait for Update Broadcast
     type: wait
-    seconds: 3
+    seconds: 2
 
   - name: Verify Updated Value on Node 1
     type: call
@@ -257,7 +257,7 @@ steps:
 
       - name: Wait for Consensus
         type: wait
-        seconds: 2
+        seconds: 1
 
       - name: Verify Key on Node 1
         type: call
@@ -279,7 +279,7 @@ steps:
 
       - name: Wait for Removal Broadcast
         type: wait
-        seconds: 2
+        seconds: 1
 
       - name: Verify Key Removed on Node 3
         type: call
@@ -312,7 +312,7 @@ steps:
 
   - name: Wait for Final Consensus
     type: wait
-    seconds: 3
+    seconds: 2
 
   - name: Verify Final Key on All Nodes - Node 1
     type: call

@@ -105,7 +105,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 8
+    seconds: 3
     description: "Wait for nodes to join and reach consensus"
 
   # ============================================================================
@@ -125,7 +125,7 @@ steps:
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
-    seconds: 5
+    seconds: 2
     description: "Wait for network sync and handler execution on receiving nodes"
 
   - name: Verify Insert Handler Called on Inviter
@@ -160,7 +160,7 @@ steps:
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
-    seconds: 5
+    seconds: 2
     description: "Wait for network sync and handler execution on receiving nodes"
 
   - name: Verify Update Handler Called on Invitees
@@ -199,7 +199,7 @@ steps:
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
-    seconds: 5
+    seconds: 2
     description: "Wait for network sync and handler execution on receiving nodes"
 
   - name: Verify Remove Handler Called on Invitees
@@ -234,7 +234,7 @@ steps:
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
-    seconds: 5
+    seconds: 2
     description: "Wait for network sync and handler execution on receiving nodes"
 
   - name: Clear All Key-Value Pairs
@@ -254,7 +254,7 @@ steps:
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
-    seconds: 5
+    seconds: 2
     description: "Wait for network sync and handler execution on receiving nodes"
 
   - name: Verify Clear Handler Called on Invitees

@@ -64,7 +64,7 @@ steps:
 
   - name: Wait for Identity Creation
     type: wait
-    seconds: 3
+    seconds: 1
 
   # ============================================================================
   # Phase 4: Invite and Join
@@ -105,7 +105,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 5
+    seconds: 1
 
   # ============================================================================
   # Phase 5: Create Multiple Proposals
@@ -134,7 +134,7 @@ steps:
 
   - name: Wait After Proposal 1
     type: wait
-    seconds: 2
+    seconds: 1
 
   - name: Create Proposal 2 - SetContextValue
     type: call
@@ -160,7 +160,7 @@ steps:
 
   - name: Wait After Proposal 2
     type: wait
-    seconds: 2
+    seconds: 1
 
   - name: Create Proposal 3 - SetNumApprovals
     type: call
@@ -185,7 +185,7 @@ steps:
 
   - name: Wait After Proposal 3
     type: wait
-    seconds: 2
+    seconds: 1
 
   # Approve Proposal 3 so num_approvals takes effect before creating Proposal 4
   - name: Approve Proposal 3 from Node 2 (to activate num_approvals setting)
@@ -206,7 +206,7 @@ steps:
 
   - name: Wait for Proposal 3 Execution
     type: wait
-    seconds: 5
+    seconds: 1
 
   - name: Create Proposal 4 - SetContextValue (for messages test)
     type: call
@@ -232,7 +232,7 @@ steps:
 
   - name: Wait for All Proposals to Propagate
     type: wait
-    seconds: 5
+    seconds: 1
 
   # ============================================================================
   # Phase 6: Test Proposals API Methods - list_proposals
@@ -321,7 +321,7 @@ steps:
 
   - name: Wait for Message Broadcast
     type: wait
-    seconds: 5
+    seconds: 1
 
   - name: Get Proposal Messages from Node 2
     type: call
@@ -402,7 +402,7 @@ steps:
 
   - name: Wait for First Approval to Propagate
     type: wait
-    seconds: 3
+    seconds: 1
 
   # ============================================================================
   # Phase 11: Verify Approvers After First Approval (Before Execution)
@@ -438,7 +438,7 @@ steps:
 
   - name: Wait for Proposal 4 Execution
     type: wait
-    seconds: 5
+    seconds: 1
 
   # ============================================================================
   # Phase 12: Test with Repeat - Create and Query Multiple Proposals
@@ -469,7 +469,7 @@ steps:
 
       - name: Wait After Creation
         type: wait
-        seconds: 2
+        seconds: 1
 
       - name: Get Proposal Details
         type: get_proposal
