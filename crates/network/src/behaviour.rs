@@ -89,8 +89,8 @@ impl Behaviour {
 
                         kad.set_mode(Some(kad::Mode::Server));
 
-                        for (peer_id, addr) in &bootstrap_peers {
-                            let _ = kad.add_address(&peer_id, addr.clone());
+                        for (peer_id, addr) in bootstrap_peers {
+                            let _ = kad.add_address(&peer_id, addr);
                         }
 
                         if let Err(err) = kad.bootstrap() {
@@ -99,52 +99,10 @@ impl Behaviour {
 
                         kad
                     },
-                    gossipsub: {
-                        // Create adaptive gossipsub configuration
-                        let gossipsub_config = if config.gossipsub.adaptive_mesh {
-                            // Adaptive mesh configuration based on expected network size
-                            let expected_peers = bootstrap_peers.len().max(2); // At least 2 peers expected
-                            
-                            let (mesh_n_low, mesh_n, mesh_n_high, heartbeat_interval) = match expected_peers {
-                                0..=2 => (1, 2, 3, Duration::from_millis(500)),    // Tiny networks: 1-2 mesh peers, fast heartbeat
-                                3..=5 => (2, 3, 4, Duration::from_millis(700)),    // Small networks: 2-3 mesh peers
-                                6..=10 => (3, 4, 6, Duration::from_secs(1)),       // Medium networks: 3-4 mesh peers
-                                11..=20 => (4, 6, 8, Duration::from_secs(1)),      // Large networks: 4-6 mesh peers
-                                _ => (6, 8, 12, Duration::from_secs(1)),           // Very large networks: 6-8 mesh peers
-                            };
-                            
-                            gossipsub::ConfigBuilder::default()
-                                .mesh_n_low(mesh_n_low)
-                                .mesh_n(mesh_n)
-                                .mesh_n_high(mesh_n_high)
-                                .heartbeat_interval(heartbeat_interval)
-                                .build()
-                                .expect("Valid gossipsub config")
-                        } else {
-                            // Use manual configuration or defaults
-                            let mut builder = gossipsub::ConfigBuilder::default();
-                            
-                            if let Some(mesh_n_low) = config.gossipsub.mesh_n_low {
-                                builder.mesh_n_low(mesh_n_low);
-                            }
-                            if let Some(mesh_n) = config.gossipsub.mesh_n {
-                                builder.mesh_n(mesh_n);
-                            }
-                            if let Some(mesh_n_high) = config.gossipsub.mesh_n_high {
-                                builder.mesh_n_high(mesh_n_high);
-                            }
-                            if let Some(heartbeat_ms) = config.gossipsub.heartbeat_interval_ms {
-                                builder.heartbeat_interval(Duration::from_millis(heartbeat_ms));
-                            }
-                            
-                            builder.build().expect("Valid gossipsub config")
-                        };
-                        
-                        gossipsub::Behaviour::new(
-                            gossipsub::MessageAuthenticity::Signed(key.clone()),
-                            gossipsub_config,
-                        )?
-                    },
+                    gossipsub: gossipsub::Behaviour::new(
+                        gossipsub::MessageAuthenticity::Signed(key.clone()),
+                        gossipsub::Config::default(),
+                    )?,
                     ping: ping::Behaviour::default(),
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
                     relay: relay_behaviour,

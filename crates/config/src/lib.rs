@@ -60,9 +60,6 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub discovery: DiscoveryConfig,
-
-    #[serde(default)]
-    pub gossipsub: Option<calimero_network_primitives::config::GossipsubConfig>,
 }
 
 impl NetworkConfig {
@@ -78,7 +75,6 @@ impl NetworkConfig {
             server,
             bootstrap,
             discovery,
-            gossipsub: None,
         }
     }
 }
