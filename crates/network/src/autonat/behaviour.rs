@@ -368,7 +368,7 @@ impl Behaviour {
                     result: match client_event.result {
                         Ok(_addr) => TestResult::Reachable { addr: tested_addr },
                         Err(e) => TestResult::Failed {
-                            error: format!("{:?}", e),
+                            error: format!("{e:?}"),
                         },
                     },
                 }
@@ -391,7 +391,7 @@ impl Behaviour {
                     result: match server_event.result {
                         Ok(_) => TestResult::Reachable { addr: tested_addr },
                         Err(e) => TestResult::Failed {
-                            error: format!("{:?}", e),
+                            error: format!("{e:?}"),
                         },
                     },
                 }
