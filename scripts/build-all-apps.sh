@@ -7,6 +7,7 @@ BUILD_SCRIPTS=(
     "apps/kv-store/build.sh"
     "apps/kv-store-with-handlers/build.sh"
     "apps/kv-store-init/build.sh"
+    "apps/kv-store-with-user-and-frozen-storage/build.sh"
     "apps/collaborative-editor/build.sh"
     "apps/nested-crdt-test/build.sh"
     "apps/team-metrics-macro/build.sh"
@@ -14,6 +15,7 @@ BUILD_SCRIPTS=(
     "apps/blobs/build.sh"
     "apps/private_data/build.sh"
     "apps/xcall-example/build.sh"
+    "apps/access-control/build.sh"
 )
 
 run_script() {

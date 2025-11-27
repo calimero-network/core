@@ -18,13 +18,13 @@ steps:
   # Step 1: Install bundle application on Node 1
   # Note: The bundle (.mpk) should be created by build-bundle.sh and placed in res/
   # Path is relative to where merobox runs (apps/kv-store/)
-  - name: Install Bundle Application on Node 1
+  - name: Install KV Store Application on Node 1
     type: install_application
     node: calimero-node-1
-    path: res/kv-store-1.0.0.mpk
+    path: apps/kv-store/res/kv_store.wasm
     dev: true
     outputs:
-      bundle_app_id: applicationId
+      app_id: applicationId
 
   - name: Assert Bundle Application Installed
     type: assert
@@ -42,7 +42,7 @@ steps:
   - name: Create Context with Bundle on Node 1
     type: create_context
     node: calimero-node-1
-    application_id: "{{bundle_app_id}}"
+    application_id: "{{app_id}}"
     outputs:
       context_id: contextId
       inviter_public_key: memberPublicKey
