@@ -115,7 +115,7 @@ steps:
   # Wait after Node 1 messages
   - name: Wait after Node 1 Messages
     type: wait
-    seconds: 10
+    seconds: 2
 
   # Step 11: Node2: get frozen storage
   - name: Node 2 - frozen storage get test
@@ -154,7 +154,7 @@ steps:
   # Wait after Node 2 messages
   - name: Wait after Node 2 Messages
     type: wait
-    seconds: 10
+    seconds: 2
 
   # Step 13: Node1: get frozen storage (that was set by Node2)
   - name: Node 1 - frozen storage get test (that was set by Node2)

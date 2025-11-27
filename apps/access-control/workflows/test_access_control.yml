@@ -52,7 +52,7 @@ steps:
   # 5. Wait for async propagation
   - name: Wait for Add
     type: wait
-    seconds: 20
+    seconds: 3
 
   # 6. Verify Node 2 is member
   - name: Check Node 2 Membership
@@ -100,7 +100,7 @@ steps:
   # 9. Wait for revocation
   - name: Wait for Kick
     type: wait
-    seconds: 20
+    seconds: 3
 
   # 10. List and Verify All Members
   - name: List All Members

@@ -17,7 +17,7 @@ steps:
   - name: Install Team Metrics Application on Node 1
     type: install_application
     node: metrics-near-1
-    path: "apps/team-metrics-macro/res/team_metrics_macro.wasm"
+    path: "team-metrics-macro/res/team_metrics_macro.wasm"
     dev: true
     outputs:
       app_id: applicationId
@@ -132,7 +132,7 @@ steps:
 
   - name: Wait for nodes to join and sync
     type: wait
-    seconds: 15
+    seconds: 2
 
   # ============================================================================
   # Phase 5: Verify Wins Sync
@@ -209,7 +209,7 @@ steps:
 
   - name: Wait for consensus - different field updates
     type: wait
-    seconds: 35
+    seconds: 3
 
   - name: Get wins from Node 1 after concurrent
     type: call
@@ -224,7 +224,7 @@ steps:
 
   - name: Wait after Node 1 query
     type: wait
-    seconds: 15
+    seconds: 2
 
   - name: Get wins from Node 2 after concurrent
     type: call
@@ -239,7 +239,7 @@ steps:
 
   - name: Wait after Node 2 query
     type: wait
-    seconds: 15
+    seconds: 2
 
   - name: Get wins from Node 3 after concurrent (attempt 1)
     type: call
@@ -291,7 +291,7 @@ steps:
 
   - name: Wait for losses to propagate
     type: wait
-    seconds: 20
+    seconds: 3
 
   - name: Get losses from Node 1 (attempt 1)
     type: call

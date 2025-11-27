@@ -17,7 +17,7 @@ steps:
   - name: Install KV Store Application on Node 1
     type: install_application
     node: concurrent-near-1
-    path: "apps/kv-store/res/kv_store.wasm"
+    path: "kv-store/res/kv_store.wasm"
     dev: true
     outputs:
       app_id: applicationId

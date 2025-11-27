@@ -137,7 +137,7 @@ steps:
   # Wait after Node 1 messages
   - name: Wait after Node 1 Messages
     type: wait
-    seconds: 15
+    seconds: 2
 
   # Step 11: Node2: get simple user storage for a specific user
   - name: Node 2 - Simple user storage get test for a specific user
@@ -184,7 +184,7 @@ steps:
   # Wait after Node 2 messages
   - name: Wait after Node 2 Messages
     type: wait
-    seconds: 15
+    seconds: 2
 
   # Step 14: Node1: get simple user storage for Node 2 user
   - name: Node 1 - Simple user storage get test for a specific user (from Node2)
