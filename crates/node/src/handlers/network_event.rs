@@ -31,16 +31,43 @@ impl Handler<NetworkEvent> for NodeManager {
                     return;
                 };
 
-                if !self
+                // Check if context exists - if not, it might be in the process of being created
+                // Wait briefly and check again before ignoring (handles timing issues during join)
+                let context_exists = self
                     .clients
                     .context
                     .has_context(&context_id)
-                    .unwrap_or_default()
-                {
-                    debug!(
-                        %context_id,
-                        %peer_id,
-                        "Observed subscription to unknown context, ignoring.."
+                    .unwrap_or_default();
+                
+                if !context_exists {
+                    // Context doesn't exist yet - might be in the process of being created
+                    // Spawn async task to check periodically and log when it appears
+                    let context_client = self.clients.context.clone();
+                    let context_id_clone = context_id;
+                    let peer_id_clone = peer_id;
+                    
+                    let _ignored = ctx.spawn(
+                        async move {
+                            // Check a few times with delays
+                            for attempt in 1..=5 {
+                                tokio::time::sleep(std::time::Duration::from_millis(200 * attempt)).await;
+                                if context_client.has_context(&context_id_clone).unwrap_or_default() {
+                                    info!(
+                                        %context_id_clone,
+                                        %peer_id_clone,
+                                        attempt,
+                                        "Peer subscribed to context that was being created - context now exists"
+                                    );
+                                    return;
+                                }
+                            }
+                            debug!(
+                                %context_id_clone,
+                                %peer_id_clone,
+                                "Observed subscription to unknown context (still unknown after checks)"
+                            );
+                        }
+                        .into_actor(self),
                     );
                     return;
                 }

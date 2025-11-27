@@ -116,10 +116,30 @@ async fn join_context(
         config = Some(external_config);
     };
 
-    let _ignored = context_client
+    // Sync context config - allow partial failures during join
+    // If member sync fails, we'll retry via periodic sync
+    match context_client
         .sync_context_config(context_id, config)
-        .await?;
+        .await
+    {
+        Ok(_) => {
+            // Sync succeeded
+        }
+        Err(e) => {
+            // Sync had issues - log warning but continue
+            // The periodic sync manager will retry member sync later
+            tracing::warn!(
+                %context_id,
+                %invitee_id,
+                error = ?e,
+                "Context config sync had issues during join - periodic sync will retry"
+            );
+            // Give a brief moment for any partial sync to complete
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
 
+    // Check if we're a member (required for join)
     if !context_client.has_member(&context_id, &invitee_id)? {
         eyre::bail!("unable to join context: not a member, invalid invitation?")
     }
@@ -141,9 +161,17 @@ async fn join_context(
     // because we just assigned that identity to the new context.
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
+    // CRITICAL: Subscribe AFTER context is fully set up in database
+    // This prevents "unknown context" warnings when peers see our subscription
     tracing::info!(%context_id, %invitee_id, "join_context: NEW join - calling subscribe and sync");
+    
+    // Small delay to ensure context is persisted before subscribing
+    // This helps avoid race conditions where peers see subscription before context exists
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    
     node_client.subscribe(&context_id).await?;
 
+    // Trigger sync - this will catch up on any missed deltas
     node_client.sync(Some(&context_id), None).await?;
     tracing::info!(%context_id, %invitee_id, "join_context: sync request sent successfully");
 

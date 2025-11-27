@@ -11,6 +11,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
+use eyre::{eyre, WrapErr};
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
@@ -28,6 +29,9 @@ impl ContextClient {
     const MAX_BLOB_RETRIES: u32 = 20;
     const BLOB_RETRY_DELAY_MS: u64 = 1000;
     const MEMBERS_PAGE_SIZE: usize = 100;
+    // Constants for member sync retry logic
+    const MAX_MEMBER_SYNC_RETRIES: u32 = 3;
+    const MEMBER_SYNC_RETRY_DELAY_MS: u64 = 500;
 
     /// Try to install application from URL (for HTTP/HTTPS sources)
     async fn try_install_from_url(
@@ -242,11 +246,41 @@ impl ContextClient {
             |config| Ok((config, true)),
         )?;
 
-        // Fetch the LATEST revision from the blockchain
-        let remote_members_revision = {
-            let external_client = self.external_client(&context_id, &config)?;
-            external_client.config().members_revision().await?
-        };
+        // Fetch the LATEST revision from the blockchain with retry logic
+        let external_client = self.external_client(&context_id, &config)?;
+        let mut remote_members_revision = None;
+        let mut last_error = None;
+        
+        // Retry fetching members revision
+        for attempt in 1..=Self::MAX_MEMBER_SYNC_RETRIES {
+            match external_client.config().members_revision().await {
+                Ok(rev) => {
+                    remote_members_revision = Some(rev);
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < Self::MAX_MEMBER_SYNC_RETRIES {
+                        warn!(
+                            %context_id,
+                            attempt,
+                            error = ?last_error,
+                            "Failed to fetch members revision, retrying..."
+                        );
+                        sleep(Duration::from_millis(
+                            Self::MEMBER_SYNC_RETRY_DELAY_MS * attempt as u64
+                        )).await;
+                    }
+                }
+            }
+        }
+        
+        let remote_members_revision = remote_members_revision.ok_or_else(|| {
+            last_error.unwrap_or_else(|| eyre!("Failed to fetch members revision"))
+        }).wrap_err(format!(
+            "Failed to fetch members revision after {} retries",
+            Self::MAX_MEMBER_SYNC_RETRIES
+        ))?;
 
         // Check members revision and sync members, if needed
         if context.is_none() || remote_members_revision != config.members_revision {
@@ -260,9 +294,18 @@ impl ContextClient {
             should_save_config = true;
             config.members_revision = remote_members_revision;
 
-            // Perform the sync of the members.
+            // Perform the sync of the members with retry logic
             let external_client = self.external_client(&context_id, &config)?;
-            self.sync_members(context_id, &external_client).await?;
+            // If sync_members fails, log warning but continue - periodic sync will retry
+            if let Err(e) = self.sync_members(context_id, &external_client).await {
+                warn!(
+                    %context_id,
+                    error = ?e,
+                    "Failed to sync members during join - periodic sync will retry"
+                );
+                // Don't fail the entire join - allow it to continue
+                // The periodic sync manager will retry member sync later
+            }
         } else {
             debug!(
                 %context_id,
@@ -417,14 +460,50 @@ impl ContextClient {
 
         let mut external_members = BTreeSet::new();
 
-        // Fetch ALL remote members
+        // Fetch ALL remote members with retry logic for resilience to connection failures
         for (offset, length) in (0..).map(|i| {
             (
                 Self::MEMBERS_PAGE_SIZE.saturating_mul(i),
                 Self::MEMBERS_PAGE_SIZE,
             )
         }) {
-            let members = config_client.members(offset, length).await?;
+            // Retry logic for fetching members page
+            let mut members = Vec::new();
+            let mut last_error = None;
+            
+            for attempt in 1..=Self::MAX_MEMBER_SYNC_RETRIES {
+                match config_client.members(offset, length).await {
+                    Ok(page_members) => {
+                        members = page_members;
+                        last_error = None;
+                        break;
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt < Self::MAX_MEMBER_SYNC_RETRIES {
+                            warn!(
+                                %context_id,
+                                offset,
+                                attempt,
+                                error = ?last_error,
+                                "Failed to fetch members page, retrying..."
+                            );
+                            sleep(Duration::from_millis(
+                                Self::MEMBER_SYNC_RETRY_DELAY_MS * attempt as u64
+                            )).await;
+                        }
+                    }
+                }
+            }
+            
+            // If all retries failed, return error
+            if let Some(err) = last_error {
+                return Err(err).wrap_err(format!(
+                    "Failed to fetch members page after {} retries",
+                    Self::MAX_MEMBER_SYNC_RETRIES
+                ));
+            }
+            
             if members.is_empty() {
                 break;
             }
