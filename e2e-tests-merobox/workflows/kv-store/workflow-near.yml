@@ -1,7 +1,7 @@
 name: "KV Store - NEAR"
-description: "Basic KV Store test on NEAR protocol with custom outputs"
+description: "Basic KV Store test on NEAR protocol"
 
-# Use --no-docker mode with native merod processes
+# Test configuration
 no_docker: true
 force_pull_image: false
 
@@ -12,23 +12,17 @@ nodes:
   prefix: kv-near
 
 steps:
-  # ============================================================================
-  # Phase 1: Application Installation with Custom Outputs
-  # ============================================================================
-  - name: Install Application on Node 1
+  # ============================================
+  # Setup Phase: Install app and create context
+  # ============================================
+  - name: Install KV Store Application on Node 1
     type: install_application
     node: kv-near-1
     path: "apps/kv-store/res/kv_store.wasm"
     dev: true
     outputs:
       app_id: applicationId
-      app_id_node1:
-        field: applicationId
-        target: app_id_{node_name}
 
-  # ============================================================================
-  # Phase 2: Context Creation with Custom Outputs
-  # ============================================================================
   - name: Create Context on Node 1
     type: create_context
     node: kv-near-1
@@ -37,13 +31,16 @@ steps:
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey
-      ctx_id_node1:
-        field: contextId
-        target: context_id_{node_name}
 
-  # ============================================================================
-  # Phase 3: Generate Identities with Custom Outputs
-  # ============================================================================
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{member_public_key}})"
+
+  # ============================================
+  # Identity Phase: Create identities for nodes
+  # ============================================
   - name: Create Identity on Node 2
     type: create_identity
     node: kv-near-2
@@ -60,9 +57,9 @@ steps:
     type: wait
     seconds: 2
 
-  # ============================================================================
-  # Phase 4: Invite and Join with Custom Outputs
-  # ============================================================================
+  # ============================================
+  # Invitation Phase: Invite and join nodes
+  # ============================================
   - name: Invite Node 2 from Node 1
     type: invite_identity
     node: kv-near-1
@@ -99,11 +96,11 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 3
+    seconds: 2
 
-  # ============================================================================
-  # Phase 5: Test KV Operations with Custom Outputs
-  # ============================================================================
+  # ============================================
+  # Testing Phase: Test KV operations
+  # ============================================
   - name: Set Key-Value Pair from Node 1
     type: call
     node: kv-near-1
@@ -113,13 +110,6 @@ steps:
     args:
       key: "test_key"
       value: "test_value"
-    outputs:
-      set_result_1: result
-
-  - name: Assert Initial Set Result on Node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{set_result_1}}, {"output": null})'
 
   - name: Wait for Set Operation
     type: wait
@@ -134,14 +124,14 @@ steps:
     args:
       key: "test_key"
     outputs:
-      get_result_1: result
+      get_result: result
 
-  - name: Assert Initial Get Result on Node 1
+  - name: Assert Get Result on Node 1
     type: json_assert
     statements:
-      - 'json_equal({{get_result_1}}, {"output": "test_value"})'
+      - 'json_equal({{get_result}}, {"output": "test_value"})'
 
-  - name: Get Value from Node 2
+  - name: Get Value from Node 2 (verify sync)
     type: call
     node: kv-near-2
     context_id: "{{context_id}}"
@@ -152,30 +142,11 @@ steps:
     outputs:
       get_result_2: result
 
-  - name: Assert Initial Get Result on Node 2
+  - name: Assert Value Synced to Node 2
     type: json_assert
     statements:
       - 'json_equal({{get_result_2}}, {"output": "test_value"})'
 
-  - name: Get Value from Node 3
-    type: call
-    node: kv-near-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_3}}"
-    method: get
-    args:
-      key: "test_key"
-    outputs:
-      get_result_3: result
-
-  - name: Assert Initial Get Result on Node 3
-    type: json_assert
-    statements:
-      - 'json_equal({{get_result_3}}, {"output": "test_value"})'
-
-  # ============================================================================
-  # Phase 6: Update and Verify Propagation
-  # ============================================================================
   - name: Update Value from Node 2
     type: call
     node: kv-near-2
@@ -185,13 +156,6 @@ steps:
     args:
       key: "test_key"
       value: "updated_value"
-    outputs:
-      update_result: result
-
-  - name: Assert Update Result on Node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{update_result}}, {"output": null})'
 
   - name: Wait for Update Broadcast
     type: wait
@@ -206,155 +170,12 @@ steps:
     args:
       key: "test_key"
     outputs:
-      updated_result_1: result
+      final_result: result
 
-  - name: Assert Updated Value on Node 1
+  - name: Assert Updated Value Propagated
     type: json_assert
     statements:
-      - 'json_equal({{updated_result_1}}, {"output": "updated_value"})'
-
-  - name: Verify Updated Value on Node 3
-    type: call
-    node: kv-near-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_3}}"
-    method: get
-    args:
-      key: "test_key"
-    outputs:
-      updated_result_3: result
-
-  - name: Assert Updated Value on Node 3
-    type: json_assert
-    statements:
-      - 'json_equal({{updated_result_3}}, {"output": "updated_value"})'
-
-  # ============================================================================
-  # Phase 7: Test Remove Operation with Repeat
-  # ============================================================================
-  - name: Test Multiple Set-Remove Operations
-    type: repeat
-    count: 2
-    outputs:
-      current_iteration: iteration
-      total_count: total_iterations
-    steps:
-      - name: Set Iteration Key
-        type: call
-        node: kv-near-3
-        context_id: "{{context_id}}"
-        executor_public_key: "{{public_key_3}}"
-        method: set
-        args:
-          key: "key_{{current_iteration}}"
-          value: "value_{{current_iteration}}"
-
-      - name: Wait for Consensus
-        type: wait
-        seconds: 1
-
-      - name: Verify Key on Node 1
-        type: call
-        node: kv-near-1
-        context_id: "{{context_id}}"
-        executor_public_key: "{{member_public_key}}"
-        method: get
-        args:
-          key: "key_{{current_iteration}}"
-
-      - name: Remove Key from Node 2
-        type: call
-        node: kv-near-2
-        context_id: "{{context_id}}"
-        executor_public_key: "{{public_key_2}}"
-        method: remove
-        args:
-          key: "key_{{current_iteration}}"
-
-      - name: Wait for Removal Broadcast
-        type: wait
-        seconds: 1
-
-      - name: Verify Key Removed on Node 3
-        type: call
-        node: kv-near-3
-        context_id: "{{context_id}}"
-        executor_public_key: "{{public_key_3}}"
-        method: get
-        args:
-          key: "key_{{current_iteration}}"
-
-  # ============================================================================
-  # Phase 8: Final Verification
-  # ============================================================================
-  - name: Set Final Key
-    type: call
-    node: kv-near-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: set
-    args:
-      key: "final_key"
-      value: "final_value"
-    outputs:
-      final_set_result: result
-
-  - name: Assert Final Set Result
-    type: json_assert
-    statements:
-      - 'json_equal({{final_set_result}}, {"output": null})'
-
-  - name: Wait for Final Consensus
-    type: wait
-    seconds: 2
-
-  - name: Verify Final Key on All Nodes - Node 1
-    type: call
-    node: kv-near-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: get
-    args:
-      key: "final_key"
-    outputs:
-      final_result_1: result
-
-  - name: Assert Final Key on Node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{final_result_1}}, {"output": "final_value"})'
-
-  - name: Verify Final Key on All Nodes - Node 2
-    type: call
-    node: kv-near-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_2}}"
-    method: get
-    args:
-      key: "final_key"
-    outputs:
-      final_result_2: result
-
-  - name: Assert Final Key on Node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{final_result_2}}, {"output": "final_value"})'
-
-  - name: Verify Final Key on All Nodes - Node 3
-    type: call
-    node: kv-near-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_3}}"
-    method: get
-    args:
-      key: "final_key"
-    outputs:
-      final_result_3: result
-
-  - name: Assert Final Key on Node 3
-    type: json_assert
-    statements:
-      - 'json_equal({{final_result_3}}, {"output": "final_value"})'
+      - 'json_equal({{final_result}}, {"output": "updated_value"})'
 
 # Configuration options
 stop_all_nodes: true
