@@ -40,7 +40,7 @@ impl EventHandler<Event> for NetworkManager {
             }
             Event::PeerHasServerSupport { peer_id } => {
                 info!("Peer {} has AutoNAT server support", peer_id);
-                let _ = self.discovery.state.add_autonat_server(&peer_id);
+                self.discovery.state.add_autonat_server(&peer_id);
             }
         }
     }

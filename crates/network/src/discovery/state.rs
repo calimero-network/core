@@ -267,7 +267,7 @@ impl DiscoveryState {
     }
 
     pub(crate) fn add_autonat_server(&mut self, peer_id: &PeerId) {
-        _ = self.autonat_index.insert(peer_id.clone());
+        _ = self.autonat_index.insert(*peer_id);
         _ = self.peers.entry(*peer_id).or_default();
     }
 
