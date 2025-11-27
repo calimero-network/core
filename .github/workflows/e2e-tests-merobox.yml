@@ -252,6 +252,9 @@ jobs:
               tests["open-invitation"]="workflows/open-invitation/workflow.yml|near-open-invitation"
               tests["private-data"]="apps/private_data/workflows/example.yml|near-private-data"
               tests["xcall-example"]="apps/xcall-example/workflows/xcall-example.yml|near-xcall"
+              tests["access-control"]="apps/access-control/workflows/test_access_control.yml|near-access-control"
+              tests["user-storage"]="apps/kv-store-with-user-and-frozen-storage/workflows/test_user_storage.yml|near-user-storage"
+              tests["frozen-storage"]="apps/kv-store-with-user-and-frozen-storage/workflows/test_frozen_storage.yml|near-frozen-storage"
             fi
             
             # Run all tests for this protocol

@@ -2,9 +2,10 @@ description: KV-Store user storage workflow test
 name: KV-store user storage workflow
 
 # Configuration options
+no_docker: true
 stop_all_nodes: true
-restart: true
-wait_timeout: 120
+restart: false
+wait_timeout: 60
 
 nodes:
   chain_id: testnet-1
