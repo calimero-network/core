@@ -49,18 +49,12 @@ steps:
     node: near-prop-2
     outputs:
       invitee2_key: publicKey
-      key_node2:
-        field: publicKey
-        target: public_key_{node_name}
 
   - name: Create Identity on Node 3
     type: create_identity
     node: near-prop-3
     outputs:
       invitee3_key: publicKey
-      key_node3:
-        field: publicKey
-        target: public_key_{node_name}
 
   - name: Wait for Identity Creation
     type: wait

@@ -49,18 +49,12 @@ steps:
     node: kv-near-2
     outputs:
       public_key_2: publicKey
-      key_node2:
-        field: publicKey
-        target: public_key_{node_name}
 
   - name: Create Identity on Node 3
     type: create_identity
     node: kv-near-3
     outputs:
       public_key_3: publicKey
-      key_node3:
-        field: publicKey
-        target: public_key_{node_name}
 
   - name: Wait for Identity Creation
     type: wait
