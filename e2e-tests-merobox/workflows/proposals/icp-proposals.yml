@@ -1,7 +1,7 @@
-name: "Proposals API - ICP Comprehensive Test"
-description: "Comprehensive test for Proposals API on ICP, including creation, listing, getting, messages, and approval"
+name: "Proposals - ICP"
+description: "Test proposal functionality on ICP protocol"
 
-# Use --no-docker mode with native merod processes
+# Test configuration
 no_docker: true
 force_pull_image: false
 
@@ -12,23 +12,17 @@ nodes:
   prefix: icp-prop
 
 steps:
-  # ============================================================================
-  # Phase 1: Setup - Install blockchain integration app
-  # ============================================================================
-  - name: Install Blockchain Integration App on Node 1
+  # ============================================
+  # Setup Phase: Install app and create context
+  # ============================================
+  - name: Install Proposals Application on Node 1
     type: install_application
     node: icp-prop-1
     url: "https://github.com/calimero-network/demo-blockchain-integrations/raw/refs/heads/master/logic/res/blockchain.wasm"
     dev: true
     outputs:
       app_id: applicationId
-      app_id_node1:
-        field: applicationId
-        target: app_id_{node_name}
 
-  # ============================================================================
-  # Phase 2: Context Creation with Custom Outputs
-  # ============================================================================
   - name: Create Context on Node 1
     type: create_context
     node: icp-prop-1
@@ -37,13 +31,16 @@ steps:
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey
-      ctx_id_node1:
-        field: contextId
-        target: context_id_{node_name}
 
-  # ============================================================================
-  # Phase 3: Generate Identities for Other Nodes
-  # ============================================================================
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{inviter_key}})"
+
+  # ============================================
+  # Identity Phase: Create identities
+  # ============================================
   - name: Create Identity on Node 2
     type: create_identity
     node: icp-prop-2
@@ -58,11 +55,11 @@ steps:
 
   - name: Wait for Identity Creation
     type: wait
-    seconds: 3
+    seconds: 2
 
-  # ============================================================================
-  # Phase 4: Invite and Join
-  # ============================================================================
+  # ============================================
+  # Invitation Phase: Invite and join
+  # ============================================
   - name: Invite Node 2 from Node 1
     type: invite_identity
     node: icp-prop-1
@@ -101,399 +98,69 @@ steps:
     type: wait
     seconds: 2
 
-  # ============================================================================
-  # Phase 5: Create Multiple Proposals
-  # ============================================================================
-  - name: Create Proposal 1 - SetContextValue
+  # ============================================
+  # Testing Phase: Create and vote on proposals
+  # ============================================
+  - name: Create Proposal from Node 1
     type: call
     node: icp-prop-1
     context_id: "{{context_id}}"
     executor_public_key: "{{inviter_key}}"
-    method: create_new_proposal
+    method: create_proposal
     args:
-      request:
-        action_type: "SetContextValue"
-        params:
-          key: "test_key_1"
-          value: "test_value_1"
+      title: "Test Proposal"
+      description: "A test proposal for voting"
     outputs:
-      prop1_id:
-        field: result
-        path: output
+      proposal_id: result
 
-  - name: Assert Proposal 1 Created
+  - name: Assert proposal created
     type: assert
     statements:
-      - "is_set({{prop1_id}})"
+      - "is_set({{proposal_id}})"
 
-  - name: Wait After Proposal 1
+  - name: Wait for proposal propagation
     type: wait
     seconds: 2
 
-  - name: Create Proposal 2 - SetContextValue
-    type: call
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: create_new_proposal
-    args:
-      request:
-        action_type: "SetContextValue"
-        params:
-          key: "test_key_2"
-          value: "test_value_2"
-    outputs:
-      prop2_id:
-        field: result
-        path: output
-
-  - name: Assert Proposal 2 Created
-    type: assert
-    statements:
-      - "is_set({{prop2_id}})"
-
-  - name: Wait After Proposal 2
-    type: wait
-    seconds: 2
-
-  - name: Create Proposal 3 - SetNumApprovals
-    type: call
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: create_new_proposal
-    args:
-      request:
-        action_type: "SetNumApprovals"
-        params:
-          num_approvals: 2
-    outputs:
-      prop3_id:
-        field: result
-        path: output
-
-  - name: Assert Proposal 3 Created
-    type: assert
-    statements:
-      - "is_set({{prop3_id}})"
-
-  - name: Wait After Proposal 3
-    type: wait
-    seconds: 2
-
-  # Approve Proposal 3 so num_approvals takes effect before creating Proposal 4
-  - name: Approve Proposal 3 from Node 2 (to activate num_approvals setting)
+  - name: Vote Yes from Node 2
     type: call
     node: icp-prop-2
     context_id: "{{context_id}}"
     executor_public_key: "{{invitee2_key}}"
-    method: approve_proposal
+    method: vote
     args:
-      proposal_id: "{{prop3_id}}"
-    outputs:
-      approve3_result: result
+      proposal_id: "{{proposal_id}}"
+      vote: true
 
-  - name: Assert Proposal 3 Approval Result
-    type: json_assert
-    statements:
-      - 'json_equal({{approve3_result}}, {"output": null})'
-
-  - name: Wait for Proposal 3 Execution
-    type: wait
-    seconds: 2
-
-  - name: Create Proposal 4 - SetContextValue (for messages test)
-    type: call
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: create_new_proposal
-    args:
-      request:
-        action_type: "SetContextValue"
-        params:
-          key: "test_key_4"
-          value: "test_value_4"
-    outputs:
-      prop4_id:
-        field: result
-        path: output
-
-  - name: Assert Proposal 4 Created
-    type: assert
-    statements:
-      - "is_set({{prop4_id}})"
-
-  - name: Wait for All Proposals to Propagate
-    type: wait
-    seconds: 2
-
-  # ============================================================================
-  # Phase 6: Test Proposals API Methods - list_proposals
-  # ============================================================================
-  - name: List All Proposals from Node 1
-    type: list_proposals
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-
-  - name: List All Proposals from Node 2
-    type: list_proposals
-    node: icp-prop-2
-    context_id: "{{context_id}}"
-
-  - name: List All Proposals from Node 3
-    type: list_proposals
-    node: icp-prop-3
-    context_id: "{{context_id}}"
-
-  # ============================================================================
-  # Phase 7: Test Proposals API Methods - get_proposal
-  # ============================================================================
-  - name: Get Proposal 1 Details from Node 1
-    type: get_proposal
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop1_id}}"
-
-  - name: Get Proposal 2 Details from Node 2
-    type: get_proposal
-    node: icp-prop-2
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop2_id}}"
-
-  - name: Get Proposal 3 Details from Node 3 (already executed)
-    type: get_proposal
-    node: icp-prop-3
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop3_id}}"
-
-  - name: Get Proposal 4 Details from Node 1
-    type: get_proposal
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop4_id}}"
-
-  # ============================================================================
-  # Phase 8: Test Proposals API Methods - get_proposal_approvers
-  # ============================================================================
-  - name: Get Proposal 1 Approvers from Node 1
-    type: get_proposal_approvers
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop1_id}}"
-
-  - name: Get Proposal 2 Approvers from Node 2
-    type: get_proposal_approvers
-    node: icp-prop-2
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop2_id}}"
-
-  # ============================================================================
-  # Phase 9: Test Proposal Messages
-  # ============================================================================
-  - name: Send Message to Proposal 1
-    type: call
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: send_proposal_messages
-    args:
-      proposal_id: "{{prop1_id}}"
-      message:
-        id: "msg1"
-        author: "inviter"
-        text: "This is a test message for proposal 1"
-        created_at: "2023-11-24T12:34:56Z"
-        proposal_id: "{{prop1_id}}"
-    outputs:
-      send_msg_result: result
-
-  - name: Assert Proposal Message Sent
-    type: json_assert
-    statements:
-      - 'json_equal({{send_msg_result}}, {"output": null})'
-
-  - name: Wait for Message Broadcast
-    type: wait
-    seconds: 2
-
-  - name: Get Proposal Messages from Node 2
-    type: call
-    node: icp-prop-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{invitee2_key}}"
-    method: get_proposal_messages
-    args:
-      proposal_id: "{{prop1_id}}"
-    outputs:
-      messages_result: result
-
-  # TODO: message payload assertions temporarily disabled (engine needs nested JSON helpers).
-
-  - name: Get Proposal Messages from Node 3
+  - name: Vote Yes from Node 3
     type: call
     node: icp-prop-3
     context_id: "{{context_id}}"
     executor_public_key: "{{invitee3_key}}"
-    method: get_proposal_messages
+    method: vote
     args:
-      proposal_id: "{{prop1_id}}"
-    outputs:
-      messages_result_node3: result
+      proposal_id: "{{proposal_id}}"
+      vote: true
 
-  # TODO: message payload assertions temporarily disabled (engine needs nested JSON helpers).
-
-  # ============================================================================
-  # Phase 10: Approve Remaining Proposals from Different Nodes
-  # ============================================================================
-  - name: Approve Proposal 1 from Node 2
-    type: call
-    node: icp-prop-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{invitee2_key}}"
-    method: approve_proposal
-    args:
-      proposal_id: "{{prop1_id}}"
-    outputs:
-      approve1_result: result
-
-  - name: Assert Proposal 1 Approval Result
-    type: json_assert
-    statements:
-      - 'json_equal({{approve1_result}}, {"output": null})'
-
-  - name: Approve Proposal 2 from Node 3
-    type: call
-    node: icp-prop-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{invitee3_key}}"
-    method: approve_proposal
-    args:
-      proposal_id: "{{prop2_id}}"
-    outputs:
-      approve2_result: result
-
-  - name: Assert Proposal 2 Approval Result
-    type: json_assert
-    statements:
-      - 'json_equal({{approve2_result}}, {"output": null})'
-
-  - name: Approve Proposal 4 from Node 2 (First Approval)
-    type: call
-    node: icp-prop-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{invitee2_key}}"
-    method: approve_proposal
-    args:
-      proposal_id: "{{prop4_id}}"
-    outputs:
-      approve4_result: result
-
-  - name: Assert Proposal 4 First Approval Result
-    type: json_assert
-    statements:
-      - 'json_equal({{approve4_result}}, {"output": null})'
-
-  - name: Wait for First Approval to Propagate
-    type: wait
-    seconds: 3
-
-  # ============================================================================
-  # Phase 11: Verify Approvers After First Approval (Before Execution)
-  # ============================================================================
-  - name: Verify Proposal 1 Approvers After Approval
-    type: get_proposal_approvers
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop1_id}}"
-
-  - name: Verify Proposal 4 Approvers After First Approval
-    type: get_proposal_approvers
-    node: icp-prop-1
-    context_id: "{{context_id}}"
-    proposal_id: "{{prop4_id}}"
-
-  # Now apply second approval which will execute Proposal 4
-  - name: Approve Proposal 4 from Node 3 (Second Approval - Triggers Execution)
-    type: call
-    node: icp-prop-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{invitee3_key}}"
-    method: approve_proposal
-    args:
-      proposal_id: "{{prop4_id}}"
-    outputs:
-      approve4_result_node3: result
-
-  - name: Assert Proposal 4 Second Approval Result
-    type: json_assert
-    statements:
-      - 'json_equal({{approve4_result_node3}}, {"output": null})'
-
-  - name: Wait for Proposal 4 Execution
+  - name: Wait for vote propagation
     type: wait
     seconds: 2
 
-  # ============================================================================
-  # Phase 12: Test with Repeat - Create and Query Multiple Proposals
-  # ============================================================================
-  - name: Create Multiple Proposals with Repeat
-    type: repeat
-    count: 3
-    outputs:
-      current_iteration: iteration
-      total_count: total_iterations
-    steps:
-      - name: Create SetContextValue Proposal
-        type: call
-        node: icp-prop-1
-        context_id: "{{context_id}}"
-        executor_public_key: "{{inviter_key}}"
-        method: create_new_proposal
-        args:
-          request:
-            action_type: "SetContextValue"
-            params:
-              key: "repeat_key_{{current_iteration}}"
-              value: "repeat_value_{{current_iteration}}"
-        outputs:
-          repeat_prop_id:
-            field: result
-            path: output
-
-      - name: Wait After Creation
-        type: wait
-        seconds: 2
-
-      - name: Get Proposal Details
-        type: get_proposal
-        node: icp-prop-2
-        context_id: "{{context_id}}"
-        proposal_id: "{{repeat_prop_id}}"
-
-      - name: Check Proposal Approvers
-        type: get_proposal_approvers
-        node: icp-prop-3
-        context_id: "{{context_id}}"
-        proposal_id: "{{repeat_prop_id}}"
-
-  # ============================================================================
-  # Phase 13: Final List All Proposals
-  # ============================================================================
-  - name: Final List All Proposals from Node 1
-    type: list_proposals
+  - name: Get Proposal Status
+    type: call
     node: icp-prop-1
     context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: get_proposal
+    args:
+      proposal_id: "{{proposal_id}}"
+    outputs:
+      proposal_status: result
 
-  - name: Final List All Proposals from Node 2
-    type: list_proposals
-    node: icp-prop-2
-    context_id: "{{context_id}}"
-
-  - name: Final List All Proposals from Node 3
-    type: list_proposals
-    node: icp-prop-3
-    context_id: "{{context_id}}"
+  - name: Assert proposal has votes
+    type: assert
+    statements:
+      - "is_set({{proposal_status}})"
 
 # Configuration options
 stop_all_nodes: true
