@@ -19,7 +19,7 @@ steps:
   - name: Install XCall Application on Node 1
     type: install_application
     node: calimero-node-1
-    path: res/xcall_example.wasm
+    path: apps/xcall-example/res/xcall_example.wasm
     dev: true
     outputs:
       app_id: applicationId
@@ -62,7 +62,7 @@ steps:
   - name: Install XCall Application on Node 2
     type: install_application
     node: calimero-node-2
-    path: res/xcall_example.wasm
+    path: apps/xcall-example/res/xcall_example.wasm
     dev: true
     outputs:
       app_id_node2: applicationId

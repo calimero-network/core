@@ -18,7 +18,7 @@ steps:
   - name: Install App on Node 1
     type: install_application
     node: ac-node-1
-    path: res/access_control.wasm
+    path: apps/access-control/res/access_control.wasm
     dev: true
     outputs:
       app_id: applicationId

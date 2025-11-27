@@ -21,7 +21,7 @@ steps:
   - name: Install Application on Node 1
     type: install_application
     node: node-blob-1
-    path: "blobs/res/blobs.wasm"
+    path: "apps/blobs/res/blobs.wasm"
     dev: true
     outputs:
       app_id: applicationId
@@ -85,7 +85,7 @@ steps:
   - name: Upload Real PNG to Blob Storage
     type: upload_blob
     node: node-blob-1
-    file_path: blobs/static/sample.png
+    file_path: apps/blobs/static/sample.png
     context_id: "{{context_id}}"
     outputs:
       png_blob_id: blob_id
@@ -117,7 +117,7 @@ steps:
   - name: Upload Real TXT to Blob Storage
     type: upload_blob
     node: node-blob-1
-    file_path: blobs/static/test.txt
+    file_path: apps/blobs/static/test.txt
     context_id: "{{context_id}}"
     outputs:
       txt_blob_id: blob_id
