@@ -299,6 +299,7 @@ steps:
       - 'json_equal({{final_node3}}, {"output": "done"})'
 
 # Configuration
-stop_all_nodes: false
+stop_all_nodes: true
 restart: false
-wait_timeout: 60
+wait_timeout: 45
+nuke_on_end: true

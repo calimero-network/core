@@ -368,7 +368,7 @@ steps:
 # Configuration options
 stop_all_nodes: true
 restart: false
-wait_timeout: 90
+wait_timeout: 60
 nuke_on_end: true
 
 
