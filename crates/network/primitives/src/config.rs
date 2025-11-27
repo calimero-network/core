@@ -32,6 +32,7 @@ pub struct NetworkConfig {
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
+    pub gossipsub: GossipsubConfig,
 }
 
 impl NetworkConfig {
@@ -41,12 +42,14 @@ impl NetworkConfig {
         swarm: SwarmConfig,
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
+        gossipsub: GossipsubConfig,
     ) -> Self {
         Self {
             identity,
             swarm,
             bootstrap,
             discovery,
+            gossipsub,
         }
     }
 }
@@ -231,6 +234,51 @@ impl RendezvousConfig {
             discovery_interval: default.discovery_interval,
             registrations_limit,
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct GossipsubConfig {
+    /// Adaptive mesh sizing based on network size
+    pub adaptive_mesh: bool,
+    
+    /// Manual mesh parameters (used when adaptive_mesh = false)
+    pub mesh_n_low: Option<usize>,
+    pub mesh_n: Option<usize>, 
+    pub mesh_n_high: Option<usize>,
+    
+    /// Heartbeat interval in milliseconds
+    pub heartbeat_interval_ms: Option<u64>,
+}
+
+impl GossipsubConfig {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            adaptive_mesh: true,
+            mesh_n_low: None,
+            mesh_n: None,
+            mesh_n_high: None,
+            heartbeat_interval_ms: None,
+        }
+    }
+    
+    #[must_use]
+    pub const fn with_manual_mesh(mesh_n_low: usize, mesh_n: usize, mesh_n_high: usize) -> Self {
+        Self {
+            adaptive_mesh: false,
+            mesh_n_low: Some(mesh_n_low),
+            mesh_n: Some(mesh_n),
+            mesh_n_high: Some(mesh_n_high),
+            heartbeat_interval_ms: None,
+        }
+    }
+}
+
+impl Default for GossipsubConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

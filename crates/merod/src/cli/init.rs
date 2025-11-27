@@ -225,6 +225,22 @@ pub struct InitCommand {
     )]
     pub autonat_confidence_threshold: usize,
 
+    /// Enable adaptive gossipsub mesh sizing (recommended for small networks)
+    #[arg(long, default_value_t = true)]
+    pub adaptive_gossipsub_mesh: bool,
+
+    /// Manual gossipsub mesh low threshold (only used when adaptive_gossipsub_mesh=false)
+    #[arg(long)]
+    pub gossipsub_mesh_n_low: Option<usize>,
+
+    /// Manual gossipsub mesh target (only used when adaptive_gossipsub_mesh=false)
+    #[arg(long)]
+    pub gossipsub_mesh_n: Option<usize>,
+
+    /// Manual gossipsub mesh high threshold (only used when adaptive_gossipsub_mesh=false)  
+    #[arg(long)]
+    pub gossipsub_mesh_n_high: Option<usize>,
+
     /// Force initialization even if the directory already exists
     #[clap(long)]
     pub force: bool,

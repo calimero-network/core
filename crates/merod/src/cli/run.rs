@@ -82,6 +82,7 @@ impl RunCommand {
                 network.swarm,
                 network.bootstrap,
                 network.discovery,
+                network.gossipsub.unwrap_or_default(),
             ),
             sync: SyncConfig {
                 timeout: config.sync.timeout,
