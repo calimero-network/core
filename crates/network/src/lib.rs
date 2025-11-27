@@ -63,11 +63,11 @@ impl NetworkManager {
             &config.discovery.rendezvous,
             &config.discovery.relay,
             &config.discovery.autonat,
-            config
-                .discovery
-                .advertise_address
-                .then_some(&*config.swarm.listen)
-                .unwrap_or(&[]),
+            if config.discovery.advertise_address {
+                &config.swarm.listen
+            } else {
+                &[]
+            },
         )
         .await?;
 
