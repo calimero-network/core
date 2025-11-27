@@ -133,8 +133,8 @@ jobs:
           echo "=========================================="
 
             # Create output directory and log file
-            mkdir -p "e2e-tests-merobox/results/$result_protocol"
-            local log_file="e2e-tests-merobox/results/$result_protocol/test.log"
+            mkdir -p "../e2e-tests-merobox/results/$result_protocol"
+            local log_file="../e2e-tests-merobox/results/$result_protocol/test.log"
             local start_time=$(date +%s)
             
             # Capture exit code and run merobox with logging
@@ -176,7 +176,7 @@ jobs:
             
             # Generate complete summary.json matching local script format
             if [ "$exit_code" -eq 0 ] && [ "$has_failure" = false ]; then
-              cat > "e2e-tests-merobox/results/$result_protocol/summary.json" <<SUMMARY_EOF
+              cat > "../e2e-tests-merobox/results/$result_protocol/summary.json" <<SUMMARY_EOF
           {
             "status": "passed",
             "protocol": "$result_protocol",
@@ -189,7 +189,7 @@ jobs:
           }
           SUMMARY_EOF
             else
-              cat > "e2e-tests-merobox/results/$result_protocol/summary.json" <<SUMMARY_EOF
+              cat > "../e2e-tests-merobox/results/$result_protocol/summary.json" <<SUMMARY_EOF
           {
             "status": "failed",
             "protocol": "$result_protocol",
@@ -353,7 +353,7 @@ jobs:
         with:
           name: debug-logs-data-all-protocols
           path: |
-            data/
+            apps/data/
             ~/.merobox/logs/
           retention-days: 7
 
@@ -383,7 +383,7 @@ jobs:
           echo "|----------|------------|--------|----------|" >> test-report.md
           
           # Process all summary.json files
-          find results/ -name "summary.json" | sort | while read -r file; do
+          find e2e-tests-merobox/results/ -name "summary.json" | sort | while read -r file; do
             if [ -f "$file" ]; then
               status=$(jq -r '.status' "$file" 2>/dev/null || echo "unknown")
               protocol=$(jq -r '.protocol' "$file" 2>/dev/null || echo "unknown")

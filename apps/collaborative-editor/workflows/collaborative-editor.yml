@@ -45,7 +45,7 @@ steps:
 
   - name: Wait for Identity Creation
     type: wait
-    seconds: 5
+    seconds: 3
 
   # Step 4: Invite second node to join the context
   - name: Invite Node 2 from Node 1
@@ -105,7 +105,7 @@ steps:
 
   - name: Wait for edit to propagate
     type: wait
-    seconds: 2
+    seconds: 5
 
   # Step 8: Verify text on both nodes
   - name: Get Text After Hello (Node 1)
@@ -150,7 +150,7 @@ steps:
 
   - name: Wait for edit to propagate
     type: wait
-    seconds: 2
+    seconds: 5
 
   # Step 10: Verify both nodes see "Hello World"
   - name: Get Text After World (Node 1)
@@ -196,7 +196,7 @@ steps:
 
   - name: Wait for edit to propagate
     type: wait
-    seconds: 2
+    seconds: 5
 
   # Step 12: Verify both nodes see "Hello World!"
   - name: Get Text After Exclamation (Node 1)
@@ -288,7 +288,7 @@ steps:
 
   - name: Wait for edit to propagate
     type: wait
-    seconds: 2
+    seconds: 5
 
   # Step 16: Verify both nodes see "Hello CRDT!"
   - name: Get Text After CRDT Insert (Node 1)

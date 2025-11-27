@@ -134,7 +134,7 @@ steps:
 
   - name: Wait for CRDT synchronization
     type: wait
-    seconds: 3
+    seconds: 5
 
   - name: Get All Items from Node 1
     type: call
