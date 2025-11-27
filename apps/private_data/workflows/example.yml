@@ -176,8 +176,11 @@ steps:
       - 'json_equal({{guess_bad_result}}, {"output": false})'
 
 # Configuration options
-stop_all_nodes: false   # Stop all nodes at the end of workflow
-restart: false          # Don't restart nodes at the beginning of workflow
-wait_timeout: 60
+no_docker: true
+force_pull_image: false
+stop_all_nodes: true
+restart: false
+wait_timeout: 45
+nuke_on_end: true
 
 

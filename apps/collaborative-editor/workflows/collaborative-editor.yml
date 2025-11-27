@@ -600,7 +600,10 @@ steps:
       - 'json_equal({{length_concurrent}}, {"output": 6})'
 
 # Configuration
-stop_all_nodes: false
+no_docker: true
+force_pull_image: false
+stop_all_nodes: true
 restart: false
-wait_timeout: 60
+wait_timeout: 45
+nuke_on_end: true
 

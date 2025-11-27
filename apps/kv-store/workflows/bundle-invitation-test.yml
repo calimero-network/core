@@ -165,7 +165,10 @@ steps:
       - 'json_equal({{get_result_node1}}, {"output": "test_value"})'
 
 # Configuration
-stop_all_nodes: false
+no_docker: true
+force_pull_image: false
+stop_all_nodes: true
 restart: false
-wait_timeout: 120
+wait_timeout: 30
+nuke_on_end: true
 

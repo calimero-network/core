@@ -234,24 +234,24 @@ jobs:
             
             # Tests that run on all protocols
             if [ "$protocol" = "near" ]; then
-              tests["kv-store"]="e2e-tests-merobox/workflows/kv-store/workflow-near.yml|$protocol"
+              tests["kv-store"]="apps/kv-store/workflows/bundle-invitation-test.yml|$protocol"
             else
-              tests["kv-store"]="e2e-tests-merobox/workflows/kv-store/$protocol.yml|$protocol"
+              tests["kv-store"]="apps/kv-store/workflows/$protocol.yml|$protocol"
             fi
-            tests["proposals"]="e2e-tests-merobox/workflows/proposals/$protocol-proposals.yml|$protocol-proposals"
+            tests["proposals"]="workflows/proposals/$protocol-proposals.yml|$protocol-proposals"
             
             # NEAR-only tests
             if [ "$protocol" = "near" ]; then
-              tests["kv-store-init"]="e2e-tests-merobox/workflows/kv-store/workflow-init.yml|near-init"
-              tests["kv-store-handlers"]="e2e-tests-merobox/workflows/kv-store-with-handlers/workflow.yml|near-handlers"
-              tests["blobs"]="e2e-tests-merobox/workflows/blobs/workflow.yml|near-blobs"
-              tests["collaborative-editor"]="e2e-tests-merobox/workflows/collaborative-editor/workflow.yml|near-collab"
-              tests["nested-crdt"]="e2e-tests-merobox/workflows/nested-crdt/workflow.yml|near-nested"
-              tests["team-metrics"]="e2e-tests-merobox/workflows/team-metrics/workflow.yml|near-metrics"
-              tests["concurrent-mutations"]="e2e-tests-merobox/workflows/concurrent-mutations/workflow.yml|near-concurrent"
-              tests["open-invitation"]="e2e-tests-merobox/workflows/open-invitation/workflow.yml|near-open-invitation"
-              tests["private-data"]="e2e-tests-merobox/workflows/private-data/workflow.yml|near-private-data"
-              tests["xcall-example"]="e2e-tests-merobox/workflows/xcall-example/workflow.yml|near-xcall"
+              tests["kv-store-init"]="apps/kv-store-init/workflows/workflow-init.yml|near-init"
+              tests["kv-store-handlers"]="apps/kv-store-with-handlers/workflows/workflow.yml|near-handlers"
+              tests["blobs"]="apps/blobs/workflows/blobs-example.yml|near-blobs"
+              tests["collaborative-editor"]="apps/collaborative-editor/workflows/collaborative-editor.yml|near-collab"
+              tests["nested-crdt"]="apps/nested-crdt-test/workflows/workflow.yml|near-nested"
+              tests["team-metrics"]="workflows/team-metrics/workflow.yml|near-metrics"
+              tests["concurrent-mutations"]="workflows/concurrent-mutations/workflow.yml|near-concurrent"
+              tests["open-invitation"]="workflows/open-invitation/workflow.yml|near-open-invitation"
+              tests["private-data"]="apps/private_data/workflows/example.yml|near-private-data"
+              tests["xcall-example"]="apps/xcall-example/workflows/xcall-example.yml|near-xcall"
             fi
             
             # Run all tests for this protocol

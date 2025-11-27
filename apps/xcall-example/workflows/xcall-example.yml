@@ -387,4 +387,9 @@ steps:
 # Configuration
 stop_all_nodes: false
 restart: false
-wait_timeout: 120
+no_docker: true
+force_pull_image: false
+stop_all_nodes: true
+restart: false
+wait_timeout: 60
+nuke_on_end: true
