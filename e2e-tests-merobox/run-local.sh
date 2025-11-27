@@ -441,9 +441,17 @@ run_test() {
     local duration=$((end_time - start_time))
     
     # Extract step counts from log
-    local total_steps=$(grep -c "Step " "$log_file" || echo "0")
-    local passed_steps=$(grep -c "✓\|✅\|succeeded\|completed" "$log_file" || echo "0")
-    local failed_steps=$(grep -c "✗\|❌\|failed\|error" "$log_file" || echo "0")
+    local total_steps
+    total_steps=$(grep -c "Step " "$log_file" 2>/dev/null || true)
+    total_steps=${total_steps:-0}
+    
+    local passed_steps
+    passed_steps=$(grep -c "✓\|✅\|succeeded\|completed" "$log_file" 2>/dev/null || true)
+    passed_steps=${passed_steps:-0}
+    
+    local failed_steps
+    failed_steps=$(grep -c "✗\|❌\|failed\|error" "$log_file" 2>/dev/null || true)
+    failed_steps=${failed_steps:-0}
     
     # Check for failure indicators in the log
     local has_failure=false
