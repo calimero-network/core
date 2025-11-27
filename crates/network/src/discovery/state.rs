@@ -165,6 +165,7 @@ impl DiscoveryState {
         drop(self.peers.remove(peer_id));
         let _ = self.relay_index.remove(peer_id);
         let _ = self.rendezvous_index.remove(peer_id);
+        let _ = self.autonat_index.remove(peer_id);
     }
 
     pub(crate) fn update_peer_protocols(&mut self, peer_id: &PeerId, protocols: &[StreamProtocol]) {
