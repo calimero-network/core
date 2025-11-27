@@ -144,6 +144,7 @@ jobs:
               "$workflow_file" \
             --no-docker \
             --binary-path target/debug/merod \
+            --e2e-mode \
               --verbose 2>&1 | tee "$log_file"
             local exit_code=${PIPESTATUS[0]}
             set +o pipefail
