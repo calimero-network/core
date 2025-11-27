@@ -1,9 +1,6 @@
 description: A workflow demonstrating collaborative text editing using RGA CRDT
 name: Collaborative Editor Workflow
 
-# Force pull Docker images even if they exist locally
-force_pull_image: true
-
 nodes:
   chain_id: testnet-1
   count: 2
@@ -601,9 +598,7 @@ steps:
 
 # Configuration
 no_docker: true
-force_pull_image: false
 stop_all_nodes: true
 restart: false
 wait_timeout: 45
-nuke_on_end: true
 

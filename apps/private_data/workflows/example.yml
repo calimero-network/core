@@ -177,10 +177,8 @@ steps:
 
 # Configuration options
 no_docker: true
-force_pull_image: false
 stop_all_nodes: true
 restart: false
 wait_timeout: 45
-nuke_on_end: true
 
 

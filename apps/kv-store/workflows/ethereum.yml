@@ -178,7 +178,7 @@ steps:
       - 'json_equal({{final_result}}, {"output": "updated_value"})'
 
 # Configuration options
+no_docker: true
 stop_all_nodes: true
 restart: false
 wait_timeout: 30
-nuke_on_end: true

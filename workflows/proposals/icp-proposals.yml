@@ -3,7 +3,6 @@ description: "Test proposal functionality on ICP protocol"
 
 # Test configuration
 no_docker: true
-force_pull_image: false
 
 nodes:
   chain_id: calimero-testnet
@@ -163,7 +162,7 @@ steps:
       - "is_set({{proposal_status}})"
 
 # Configuration options
+no_docker: true
 stop_all_nodes: true
 restart: false
 wait_timeout: 45
-nuke_on_end: true

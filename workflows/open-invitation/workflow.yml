@@ -3,7 +3,6 @@ description: "Open invitation workflow test on NEAR protocol - tests context joi
 
 # Use --no-docker mode with native merod processes
 no_docker: true
-force_pull_image: false
 
 nodes:
   chain_id: calimero-testnet
@@ -292,7 +291,7 @@ steps:
       - 'json_equal({{additional_get_node3}}, {"output": "test_value"})'
 
 # Configuration options
+no_docker: true
 stop_all_nodes: true
 restart: false
 wait_timeout: 45
-nuke_on_end: true

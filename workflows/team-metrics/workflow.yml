@@ -3,7 +3,6 @@ description: "Team Metrics test on NEAR protocol - verifies #[derive(Mergeable)]
 
 # Use --no-docker mode with native merod processes
 no_docker: true
-force_pull_image: false
 
 nodes:
   chain_id: calimero-testnet
@@ -385,4 +384,3 @@ steps:
 stop_all_nodes: true
 restart: false
 wait_timeout: 90
-nuke_on_end: true

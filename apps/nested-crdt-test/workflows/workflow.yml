@@ -151,7 +151,7 @@ steps:
       - "is_set({{all_items}})"
 
 # Configuration options
+no_docker: true
 stop_all_nodes: true
 restart: false
 wait_timeout: 90
-nuke_on_end: true

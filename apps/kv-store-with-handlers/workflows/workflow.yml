@@ -306,7 +306,7 @@ steps:
       - 'json_equal({{final_handlers_node3}}, {"output": 10})'
 
 # Configuration options
+no_docker: true
 stop_all_nodes: true
 restart: false
 wait_timeout: 30
-nuke_on_end: true

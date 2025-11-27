@@ -522,7 +522,7 @@ steps:
       - 'json_equal({{final_len_after_update}}, {"output": 5})'
 
 # Configuration options
+no_docker: true
 stop_all_nodes: true
 restart: false
 wait_timeout: 30
-nuke_on_end: true

@@ -3,7 +3,6 @@ description: "Concurrent mutations test on NEAR protocol - verifies DAG converge
 
 # Use --no-docker mode with native merod processes
 no_docker: true
-force_pull_image: false
 
 nodes:
   chain_id: calimero-testnet
@@ -302,4 +301,3 @@ steps:
 stop_all_nodes: true
 restart: false
 wait_timeout: 45
-nuke_on_end: true

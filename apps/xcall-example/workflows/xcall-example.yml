@@ -385,11 +385,7 @@ steps:
       - 'json_equal({{context_a_final_counter}}, {"output": 1})'
 
 # Configuration
-stop_all_nodes: false
-restart: false
 no_docker: true
-force_pull_image: false
 stop_all_nodes: true
 restart: false
 wait_timeout: 60
-nuke_on_end: true
