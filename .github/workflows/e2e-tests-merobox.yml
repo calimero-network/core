@@ -132,8 +132,8 @@ jobs:
             echo "Running $test_description"
           echo "=========================================="
 
-            # Create output directory and log file
-            mkdir -p "../e2e-tests-merobox/results/$result_protocol"
+            # Create output directory and log file (from root directory)
+            mkdir -p "e2e-tests-merobox/results/$result_protocol"
             local log_file="../e2e-tests-merobox/results/$result_protocol/test.log"
             local start_time=$(date +%s)
             
@@ -146,7 +146,7 @@ jobs:
             --no-docker \
             --binary-path ../target/debug/merod \
             --e2e-mode \
-              --verbose 2>&1 | tee "../$log_file"
+              --verbose 2>&1 | tee "$log_file"
             local exit_code=${PIPESTATUS[0]}
             set +o pipefail
             set -e
@@ -383,7 +383,7 @@ jobs:
           echo "|----------|------------|--------|----------|" >> test-report.md
           
           # Process all summary.json files
-          find e2e-tests-merobox/results/ -name "summary.json" | sort | while read -r file; do
+          find results/ -name "summary.json" | sort | while read -r file; do
             if [ -f "$file" ]; then
               status=$(jq -r '.status' "$file" 2>/dev/null || echo "unknown")
               protocol=$(jq -r '.protocol' "$file" 2>/dev/null || echo "unknown")
