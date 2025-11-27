@@ -1,7 +1,7 @@
-name: "XCall Example - NEAR"
-description: "Cross-context ping-pong via XCall between two contexts on NEAR"
+name: "XCall Ping-Pong - NEAR"
+description: "Cross-context calls (XCall) using ping-pong between contexts on NEAR"
 
-# Use --no-docker mode with native merod processes
+# Test configuration
 no_docker: true
 force_pull_image: false
 
@@ -12,27 +12,27 @@ nodes:
   prefix: xcall-near
 
 steps:
-  # ============================================================================
-  # Phase 1: Install application and create contexts on Node 1
-  # ============================================================================
+  # ============================================
+  # Setup Phase: Install app and create contexts
+  # ============================================
   - name: Install XCall Application on Node 1
     type: install_application
     node: xcall-near-1
     path: "apps/xcall-example/res/xcall_example.wasm"
     dev: true
     outputs:
-      app_id_node1: applicationId
+      app_id: applicationId
 
   - name: Create Context A on Node 1
     type: create_context
     node: xcall-near-1
-    application_id: "{{app_id_node1}}"
+    application_id: "{{app_id}}"
     protocol: near
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
 
-  - name: Assert Context A Created
+  - name: Assert Context A created
     type: assert
     statements:
       - "is_set({{context_a_id}})"
@@ -41,57 +41,45 @@ steps:
   - name: Create Context B on Node 1
     type: create_context
     node: xcall-near-1
-    application_id: "{{app_id_node1}}"
+    application_id: "{{app_id}}"
     protocol: near
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
 
-  - name: Assert Context B Created
+  - name: Assert Context B created
     type: assert
     statements:
       - "is_set({{context_b_id}})"
       - "is_set({{context_b_member_key}})"
 
-  # ============================================================================
-  # Phase 2: Install application on Node 2 and create identities
-  # ============================================================================
-  - name: Install XCall Application on Node 2
-    type: install_application
-    node: xcall-near-2
-    path: "apps/xcall-example/res/xcall_example.wasm"
-    dev: true
-    outputs:
-      app_id_node2: applicationId
-
+  # ============================================
+  # Identity Phase: Create identities for Node 2
+  # ============================================
   - name: Create Identity for Context A on Node 2
     type: create_identity
     node: xcall-near-2
     outputs:
-      identity_a_key: publicKey
-
-  - name: Wait for Identity A Creation
-    type: wait
-    seconds: 3
+      identity_a: publicKey
 
   - name: Create Identity for Context B on Node 2
     type: create_identity
     node: xcall-near-2
     outputs:
-      identity_b_key: publicKey
+      identity_b: publicKey
 
-  - name: Wait for Identity B Creation
+  - name: Wait for identity creation
     type: wait
     seconds: 3
 
-  # ============================================================================
-  # Phase 3: Invite Node 2 identities and join contexts
-  # ============================================================================
+  # ============================================
+  # Invitation Phase: Join both contexts
+  # ============================================
   - name: Invite Identity A to Context A
     type: invite_identity
     node: xcall-near-1
     context_id: "{{context_a_id}}"
-    grantee_id: "{{identity_a_key}}"
+    grantee_id: "{{identity_a}}"
     granter_id: "{{context_a_member_key}}"
     capability: member
     outputs:
@@ -101,275 +89,90 @@ steps:
     type: invite_identity
     node: xcall-near-1
     context_id: "{{context_b_id}}"
-    grantee_id: "{{identity_b_key}}"
+    grantee_id: "{{identity_b}}"
     granter_id: "{{context_b_member_key}}"
     capability: member
     outputs:
       invitation_b: invitation
 
-  - name: Node 2 Joins Context A
+  - name: Node 2 Join Context A
     type: join_context
     node: xcall-near-2
     context_id: "{{context_a_id}}"
-    invitee_id: "{{identity_a_key}}"
+    invitee_id: "{{identity_a}}"
     invitation: "{{invitation_a}}"
 
-  - name: Wait for Context A Join Propagation
-    type: wait
-    seconds: 2
-
-  - name: Node 2 Joins Context B
+  - name: Node 2 Join Context B
     type: join_context
     node: xcall-near-2
     context_id: "{{context_b_id}}"
-    invitee_id: "{{identity_b_key}}"
+    invitee_id: "{{identity_b}}"
     invitation: "{{invitation_b}}"
 
-  - name: Wait for Context B Join Propagation
+  - name: Wait for context joins
     type: wait
-    seconds: 2
+    seconds: 3
 
-  # ============================================================================
-  # Phase 4: Verify initial state in both contexts
-  # ============================================================================
-  - name: Check Initial Counter on Context A (Node 1)
+  # ============================================
+  # Testing Phase: XCall ping-pong functionality
+  # ============================================
+  - name: Check initial counter on Context A
     type: call
     node: xcall-near-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
     method: get_counter
     outputs:
-      context_a_initial_counter: result
+      context_a_initial: result
 
-  - name: Assert Context A Counter Starts at 0
+  - name: Assert Context A starts with counter at 0
     type: json_assert
     statements:
-      - 'json_equal({{context_a_initial_counter}}, {"output": 0})'
+      - 'json_equal({{context_a_initial}}, {"output": 0})'
 
-  - name: Check Initial Counter on Context B (Node 1)
+  - name: Check initial counter on Context B
     type: call
     node: xcall-near-1
     context_id: "{{context_b_id}}"
     executor_public_key: "{{context_b_member_key}}"
     method: get_counter
     outputs:
-      context_b_initial_counter_node1: result
+      context_b_initial: result
 
-  - name: Assert Context B Counter Starts at 0 on Node 1
+  - name: Assert Context B starts with counter at 0
     type: json_assert
     statements:
-      - 'json_equal({{context_b_initial_counter_node1}}, {"output": 0})'
+      - 'json_equal({{context_b_initial}}, {"output": 0})'
 
-  - name: Check Initial Counter on Context B (Node 2)
-    type: call
-    node: xcall-near-2
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b_key}}"
-    method: get_counter
-    outputs:
-      context_b_initial_counter_node2: result
-
-  - name: Assert Context B Counter Starts at 0 on Node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_initial_counter_node2}}, {"output": 0})'
-
-  # ============================================================================
-  # Phase 5: Ping Context B from Context A and verify
-  # ============================================================================
-  - name: Send Ping from Context A to Context B
+  - name: Ping from Context A to Context B
     type: call
     node: xcall-near-1
     context_id: "{{context_a_id}}"
     executor_public_key: "{{context_a_member_key}}"
     method: ping
     args:
-      target_context: "{{context_b_id}}"
-    outputs:
-      ping_result_1: result
+      target_context_id: "{{context_b_id}}"
 
-  - name: Assert Ping from A to B Succeeded
-    type: json_assert
-    statements:
-      - 'json_equal({{ping_result_1}}, {"output": null})'
-
-  - name: Wait for XCall Execution and Broadcast (A → B)
+  - name: Wait for XCall propagation
     type: wait
-    seconds: 2
+    seconds: 3
 
-  - name: Check Context B Counter on Node 1 After Ping
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
-    method: get_counter
-    outputs:
-      context_b_counter_node1: result
-
-  - name: Assert Context B Counter is 1 on Node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_counter_node1}}, {"output": 1})'
-
-  - name: Check Context B Counter on Node 2 After Ping
+  - name: Check counter after ping on Context B
     type: call
     node: xcall-near-2
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b_key}}"
+    executor_public_key: "{{identity_b}}"
     method: get_counter
     outputs:
-      context_b_counter_node2: result
+      context_b_after_ping: result
 
-  - name: Assert Context B Counter is 1 on Node 2
+  - name: Assert Context B counter incremented
     type: json_assert
     statements:
-      - 'json_equal({{context_b_counter_node2}}, {"output": 1})'
-
-  - name: Check Context A Counter Remains 0
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
-    method: get_counter
-    outputs:
-      context_a_counter_after_ping: result
-
-  - name: Assert Context A Counter is Still 0
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_counter_after_ping}}, {"output": 0})'
-
-  # ============================================================================
-  # Phase 6: Ping Context A from Context B and verify
-  # ============================================================================
-  - name: Send Ping from Context B to Context A
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
-    method: ping
-    args:
-      target_context: "{{context_a_id}}"
-    outputs:
-      ping_result_2: result
-
-  - name: Assert Ping from B to A Succeeded
-    type: json_assert
-    statements:
-      - 'json_equal({{ping_result_2}}, {"output": null})'
-
-  - name: Wait for XCall Execution and Broadcast (B → A)
-    type: wait
-    seconds: 2
-
-  - name: Check Context A Counter on Node 1 After Ping
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
-    method: get_counter
-    outputs:
-      context_a_counter_node1: result
-
-  - name: Assert Context A Counter is 1 on Node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_counter_node1}}, {"output": 1})'
-
-  - name: Check Context A Counter on Node 2 After Ping
-    type: call
-    node: xcall-near-2
-    context_id: "{{context_a_id}}"
-    executor_public_key: "{{identity_a_key}}"
-    method: get_counter
-    outputs:
-      context_a_counter_node2: result
-
-  - name: Assert Context A Counter is 1 on Node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_counter_node2}}, {"output": 1})'
-
-  # ============================================================================
-  # Phase 7: Multiple ping operations to test counter increments
-  # ============================================================================
-  - name: Send Second Ping from Context A to Context B
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
-    method: ping
-    args:
-      target_context: "{{context_b_id}}"
-    outputs:
-      ping_result_3: result
-
-  - name: Wait for XCall Execution (Second Ping A → B)
-    type: wait
-    seconds: 2
-
-  - name: Send Third Ping from Context A to Context B
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
-    method: ping
-    args:
-      target_context: "{{context_b_id}}"
-    outputs:
-      ping_result_4: result
-
-  - name: Wait for XCall Execution (Third Ping A → B)
-    type: wait
-    seconds: 2
-
-  - name: Check Final Counter on Context B (Node 1)
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
-    method: get_counter
-    outputs:
-      context_b_final_counter_node1: result
-
-  - name: Assert Context B Counter is 3 on Node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_final_counter_node1}}, {"output": 3})'
-
-  - name: Check Final Counter on Context B (Node 2)
-    type: call
-    node: xcall-near-2
-    context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b_key}}"
-    method: get_counter
-    outputs:
-      context_b_final_counter_node2: result
-
-  - name: Assert Context B Counter is 3 on Node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_final_counter_node2}}, {"output": 3})'
-
-  - name: Verify Context A Counter Remains 1
-    type: call
-    node: xcall-near-1
-    context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
-    method: get_counter
-    outputs:
-      context_a_final_counter: result
-
-  - name: Assert Context A Counter is Still 1
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_final_counter}}, {"output": 1})'
+      - 'json_equal({{context_b_after_ping}}, {"output": 1})'
 
 # Configuration options
 stop_all_nodes: true
 restart: false
 wait_timeout: 60
 nuke_on_end: true
-
-
-

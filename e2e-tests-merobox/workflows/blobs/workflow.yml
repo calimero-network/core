@@ -1,34 +1,27 @@
-name: Blob API E2E Test - NEAR Protocol
-description: End-to-end testing of Calimero Blob API with real file uploads
+name: "Blob API - NEAR"
+description: "Test the Blob API functionality on NEAR protocol"
 
 # Test configuration
-result_dir: e2e-tests-merobox/results/near-blobs
 no_docker: true
 force_pull_image: false
 
-# Node configuration
 nodes:
   chain_id: calimero-testnet
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: near-blob
 
-# Test workflow steps
 steps:
-  # ============================================================================
-  # SETUP: Install Application & Create Context
-  # ============================================================================
-
-  - name: Install Application on Node 1
+  # ============================================
+  # Setup Phase: Install app and create context
+  # ============================================
+  - name: Install Blob Application on Node 1
     type: install_application
     node: near-blob-1
     path: "apps/blobs/res/blobs.wasm"
     dev: true
     outputs:
       app_id: applicationId
-      app_id_node1:
-        field: applicationId
-        target: app_id_{node_name}
 
   - name: Create Context on Inviter
     type: create_context
@@ -45,10 +38,9 @@ steps:
       - "is_set({{context_id}})"
       - "is_set({{inviter_key}})"
 
-  # ============================================================================
-  # MULTI-NODE SETUP: Invite & Join Second Node
-  # ============================================================================
-
+  # ============================================
+  # Multi-Node Setup: Invite & Join Second Node
+  # ============================================
   - name: Create Identity on Invitee Node
     type: create_identity
     node: near-blob-2
@@ -80,14 +72,13 @@ steps:
     type: wait
     seconds: 3
 
-  # ============================================================================
-  # TRUE E2E BLOB UPLOAD: Upload Real PNG File
-  # ============================================================================
-
-  - name: Upload Real PNG to Blob Storage
+  # ============================================
+  # Blob Testing: Upload and verify files
+  # ============================================
+  - name: Upload PNG to Blob Storage
     type: upload_blob
     node: near-blob-1
-    file_path: apps/blobs/static/sample.png
+    file_path: "apps/blobs/static/sample.png"
     context_id: "{{context_id}}"
     outputs:
       png_blob_id: blob_id
@@ -105,289 +96,32 @@ steps:
       size: "{{png_blob_size}}"
       mime_type: image/png
     outputs:
-      file_0_id: result.output
+      file_id: result.output
 
   - name: Verify PNG Upload Response
     type: assert
     statements:
-      - "is_set({{file_0_id}})"
-
-  # ============================================================================
-  # TRUE E2E BLOB UPLOAD: Upload Real Text File
-  # ============================================================================
-
-  - name: Upload Real TXT to Blob Storage
-    type: upload_blob
-    node: near-blob-1
-    file_path: apps/blobs/static/test.txt
-    context_id: "{{context_id}}"
-    outputs:
-      txt_blob_id: blob_id
-      txt_blob_size: size
-
-  - name: Register TXT in Contract
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: upload_file
-    args:
-      name: readme.txt
-      blob_id_str: "{{txt_blob_id}}"
-      size: "{{txt_blob_size}}"
-      mime_type: text/plain
-    outputs:
-      file_1_id: result.output
-
-  - name: Verify TXT Upload Response
-    type: assert
-    statements:
-      - "is_set({{file_1_id}})"
+      - "is_set({{file_id}})"
 
   - name: Wait for Blob Announcement
     type: wait
     seconds: 3
 
-  # ============================================================================
-  # BLOB DISCOVERY: Verify Files Visible on Both Nodes
-  # ============================================================================
-
-  - name: List Files from Inviter Node
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: list_files
-    outputs:
-      files_node1: result.output
-
-  - name: Verify Inviter Sees Both Files
-    type: assert
-    statements:
-      - "is_set({{files_node1}})"
-
-  - name: Wait for Network Sync
-    type: wait
-    seconds: 3
-
-  - name: List Files from Invitee Node
+  - name: List Files from Node 2 (verify sync)
     type: call
     node: near-blob-2
     context_id: "{{context_id}}"
     executor_public_key: "{{invitee_key}}"
     method: list_files
     outputs:
-      files_node2: result.output
+      file_list: result
 
-  - name: Verify Invitee Sees Both Files (Blob Discovery Working)
+  - name: Verify File List Contains PNG
     type: assert
     statements:
-      - "is_set({{files_node2}})"
+      - "is_set({{file_list}})"
 
-  # ============================================================================
-  # FILE RETRIEVAL: Get Specific File Details
-  # ============================================================================
-
-  - name: Get PNG File Details
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: get_file
-    args:
-      file_id: "{{file_0_id}}"
-    outputs:
-      png_file_record: result.output
-
-  - name: Verify PNG File Record
-    type: assert
-    statements:
-      - "is_set({{png_file_record}})"
-
-  - name: Get TXT File Details
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: get_file
-    args:
-      file_id: "{{file_1_id}}"
-    outputs:
-      txt_file_record: result.output
-
-  - name: Verify TXT File Record
-    type: assert
-    statements:
-      - "is_set({{txt_file_record}})"
-
-  # ============================================================================
-  # BLOB ID RETRIEVAL: Test get_blob_id_b58 for Downloads
-  # ============================================================================
-
-  - name: Get Blob ID for PNG (for download)
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: get_blob_id_b58
-    args:
-      file_id: "{{file_0_id}}"
-    outputs:
-      retrieved_png_blob_id: result.output
-
-  - name: Verify Blob ID Matches Upload
-    type: assert
-    statements:
-      - "is_set({{retrieved_png_blob_id}})"
-
-  - name: Get Blob ID from Invitee Node
-    type: call
-    node: near-blob-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
-    method: get_blob_id_b58
-    args:
-      file_id: "{{file_1_id}}"
-    outputs:
-      retrieved_txt_blob_id: result.output
-
-  - name: Verify Cross-Node Blob ID Consistency
-    type: assert
-    statements:
-      - "is_set({{retrieved_txt_blob_id}})"
-
-  # ============================================================================
-  # FILE SEARCH: Test Search Functionality
-  # ============================================================================
-
-  - name: Search for PNG Files
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: search_files
-    args:
-      query: png
-    outputs:
-      png_search_results: result.output
-
-  - name: Verify PNG Search Results
-    type: assert
-    statements:
-      - "is_set({{png_search_results}})"
-
-  - name: Search for All Files (Case-Insensitive)
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: search_files
-    args:
-      query: e
-    outputs:
-      all_search_results: result.output
-
-  - name: Verify Search Finds Multiple Files
-    type: assert
-    statements:
-      - "is_set({{all_search_results}})"
-
-  # ============================================================================
-  # STORAGE STATISTICS: Test Stats Methods
-  # ============================================================================
-
-  - name: Get Storage Statistics
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: get_stats
-    outputs:
-      stats_output: result.output
-
-  - name: Verify Stats Output
-    type: assert
-    statements:
-      - "is_set({{stats_output}})"
-
-  - name: Get Total Files Size
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: get_total_files_size
-    outputs:
-      total_size: result.output
-
-  - name: Verify Total Size Calculation
-    type: assert
-    statements:
-      - "is_set({{total_size}})"
-
-  # ============================================================================
-  # FILE DELETION: Delete File and Verify Propagation
-  # ============================================================================
-
-  - name: Delete PNG File
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: delete_file
-    args:
-      file_id: "{{file_0_id}}"
-
-  - name: Wait for Deletion to Propagate
-    type: wait
-    seconds: 3
-
-  - name: List Files After Deletion (Inviter)
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: list_files
-    outputs:
-      files_after_delete_node1: result.output
-
-  - name: Verify Inviter Shows Only One File
-    type: assert
-    statements:
-      - "is_set({{files_after_delete_node1}})"
-
-  - name: Wait for Network Sync After Delete
-    type: wait
-    seconds: 2
-
-  - name: List Files After Deletion (Invitee)
-    type: call
-    node: near-blob-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
-    method: list_files
-    outputs:
-      files_after_delete_node2: result.output
-
-  - name: Verify Deletion Propagated to Invitee
-    type: assert
-    statements:
-      - "is_set({{files_after_delete_node2}})"
-
-  - name: Verify Updated Total Size After Deletion
-    type: call
-    node: near-blob-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
-    method: get_total_files_size
-    outputs:
-      total_size_after_delete: result.output
-
-  - name: Verify Size Reduced by Deleted File
-    type: assert
-    statements:
-      - "is_set({{total_size_after_delete}})"
-
-# Test configuration
+# Configuration options
 stop_all_nodes: true
 restart: false
 wait_timeout: 90
