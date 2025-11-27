@@ -140,12 +140,13 @@ jobs:
             # Capture exit code and run merobox with logging
             set +e
             set -o pipefail
+            cd apps
           merobox bootstrap run \
               "$workflow_file" \
             --no-docker \
-            --binary-path target/debug/merod \
+            --binary-path ../target/debug/merod \
             --e2e-mode \
-              --verbose 2>&1 | tee "$log_file"
+              --verbose 2>&1 | tee "../$log_file"
             local exit_code=${PIPESTATUS[0]}
             set +o pipefail
             set -e
@@ -234,27 +235,27 @@ jobs:
             
             # Tests that run on all protocols
             if [ "$protocol" = "near" ]; then
-              tests["kv-store"]="apps/kv-store/workflows/bundle-invitation-test.yml|$protocol"
+              tests["kv-store"]="kv-store/workflows/bundle-invitation-test.yml|$protocol"
             else
-              tests["kv-store"]="apps/kv-store/workflows/$protocol.yml|$protocol"
+              tests["kv-store"]="kv-store/workflows/$protocol.yml|$protocol"
             fi
-            tests["proposals"]="workflows/proposals/$protocol-proposals.yml|$protocol-proposals"
+            tests["proposals"]="../workflows/proposals/$protocol-proposals.yml|$protocol-proposals"
             
             # NEAR-only tests
             if [ "$protocol" = "near" ]; then
-              tests["kv-store-init"]="apps/kv-store-init/workflows/workflow-init.yml|near-init"
-              tests["kv-store-handlers"]="apps/kv-store-with-handlers/workflows/workflow.yml|near-handlers"
-              tests["blobs"]="apps/blobs/workflows/blobs-example.yml|near-blobs"
-              tests["collaborative-editor"]="apps/collaborative-editor/workflows/collaborative-editor.yml|near-collab"
-              tests["nested-crdt"]="apps/nested-crdt-test/workflows/workflow.yml|near-nested"
-              tests["team-metrics"]="workflows/team-metrics/workflow.yml|near-metrics"
-              tests["concurrent-mutations"]="workflows/concurrent-mutations/workflow.yml|near-concurrent"
-              tests["open-invitation"]="workflows/open-invitation/workflow.yml|near-open-invitation"
-              tests["private-data"]="apps/private_data/workflows/example.yml|near-private-data"
-              tests["xcall-example"]="apps/xcall-example/workflows/xcall-example.yml|near-xcall"
-              tests["access-control"]="apps/access-control/workflows/test_access_control.yml|near-access-control"
-              tests["user-storage"]="apps/kv-store-with-user-and-frozen-storage/workflows/test_user_storage.yml|near-user-storage"
-              tests["frozen-storage"]="apps/kv-store-with-user-and-frozen-storage/workflows/test_frozen_storage.yml|near-frozen-storage"
+              tests["kv-store-init"]="kv-store-init/workflows/workflow-init.yml|near-init"
+              tests["kv-store-handlers"]="kv-store-with-handlers/workflows/workflow.yml|near-handlers"
+              tests["blobs"]="blobs/workflows/blobs-example.yml|near-blobs"
+              tests["collaborative-editor"]="collaborative-editor/workflows/collaborative-editor.yml|near-collab"
+              tests["nested-crdt"]="nested-crdt-test/workflows/workflow.yml|near-nested"
+              tests["team-metrics"]="../workflows/team-metrics/workflow.yml|near-metrics"
+              tests["concurrent-mutations"]="../workflows/concurrent-mutations/workflow.yml|near-concurrent"
+              tests["open-invitation"]="../workflows/open-invitation/workflow.yml|near-open-invitation"
+              tests["private-data"]="private_data/workflows/example.yml|near-private-data"
+              tests["xcall-example"]="xcall-example/workflows/xcall-example.yml|near-xcall"
+              tests["access-control"]="access-control/workflows/test_access_control.yml|near-access-control"
+              tests["user-storage"]="kv-store-with-user-and-frozen-storage/workflows/test_user_storage.yml|near-user-storage"
+              tests["frozen-storage"]="kv-store-with-user-and-frozen-storage/workflows/test_frozen_storage.yml|near-frozen-storage"
             fi
             
             # Run all tests for this protocol

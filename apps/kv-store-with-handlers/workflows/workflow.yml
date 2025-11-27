@@ -18,7 +18,7 @@ steps:
   - name: Install KV Store with Handlers App on Node 1
     type: install_application
     node: near-kvh-1
-    path: "apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm"
+    path: "kv-store-with-handlers/res/kv_store_with_handlers.wasm"
     dev: true
     outputs:
       app_id: applicationId

@@ -16,7 +16,7 @@ steps:
   - name: Install Application on Node 1
     type: install_application
     node: calimero-node-1
-    path: apps/private_data/res/private_data.wasm
+    path: private_data/res/private_data.wasm
     dev: true
     outputs:
       app_id: applicationId          # Export 'applicationId' field as 'app_id'

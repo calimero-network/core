@@ -18,7 +18,7 @@ steps:
   - name: Install KV Store Init Application on Node 1
     type: install_application
     node: kv-init-near-1
-    path: "apps/kv-store-init/res/kv_store_init.wasm"
+    path: "kv-store-init/res/kv_store_init.wasm"
     dev: true
     outputs:
       app_id: applicationId

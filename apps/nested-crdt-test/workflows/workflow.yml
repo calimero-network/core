@@ -18,7 +18,7 @@ steps:
   - name: Install Nested CRDT Application on Node 1
     type: install_application
     node: nested-near-1
-    path: "apps/nested-crdt-test/res/nested_crdt_test.wasm"
+    path: "nested-crdt-test/res/nested_crdt_test.wasm"
     dev: true
     outputs:
       app_id: applicationId
