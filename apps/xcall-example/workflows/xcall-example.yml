@@ -121,7 +121,7 @@ steps:
 
   - name: Wait for Context A join to propagate
     type: wait
-    seconds: 5
+    seconds: 10
 
   # Step 10: Node 2 joins Context B with second identity
   - name: Node 2 Join Context B
@@ -133,7 +133,7 @@ steps:
 
   - name: Wait for Context B join to propagate
     type: wait
-    seconds: 5
+    seconds: 10
 
   # ============================================
   # Testing Phase: Ping-Pong XCall functionality

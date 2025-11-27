@@ -96,7 +96,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 3
+    seconds: 10
 
   # ============================================
   # Testing Phase: Nested CRDT operations

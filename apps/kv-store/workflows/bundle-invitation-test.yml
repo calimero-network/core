@@ -98,7 +98,7 @@ steps:
 
   - name: Wait for Context Join and Bundle Installation
     type: wait
-    seconds: 2
+    seconds: 10
 
   # ============================================
   # Verification Phase: Verify User 2 has bundle installed and can use it

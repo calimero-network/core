@@ -105,7 +105,7 @@ steps:
 
   - name: Wait for Consensus After Join
     type: wait
-    seconds: 3
+    seconds: 10
     description: "Wait for nodes to join and reach consensus"
 
   # ============================================================================
@@ -125,7 +125,7 @@ steps:
 
   - name: Wait for Broadcast and Handler Execution
     type: wait
-    seconds: 2
+    seconds: 10
     description: "Wait for network sync and handler execution on receiving nodes"
 
   - name: Verify Insert Handler Called on Inviter

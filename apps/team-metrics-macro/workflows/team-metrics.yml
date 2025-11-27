@@ -132,7 +132,7 @@ steps:
 
   - name: Wait for nodes to join and sync
     type: wait
-    seconds: 2
+    seconds: 10
 
   # ============================================================================
   # Phase 5: Verify Wins Sync

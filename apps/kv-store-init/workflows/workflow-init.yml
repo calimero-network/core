@@ -175,7 +175,7 @@ steps:
 
   - name: Wait for Join and State Sync
     type: wait
-    seconds: 2
+    seconds: 10
 
   # ============================================================================
   # Phase 6: Verify Invitees Synced Initial State
