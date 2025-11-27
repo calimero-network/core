@@ -34,6 +34,7 @@ steps:
     type: create_context
     node: near-blob-1
     application_id: "{{app_id}}"
+    protocol: near
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey
