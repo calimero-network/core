@@ -187,7 +187,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: path.to_path_buf(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: path.to_path_buf(),

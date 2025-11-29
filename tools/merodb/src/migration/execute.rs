@@ -972,7 +972,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: source_path,
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1055,7 +1054,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: source_path,
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1119,7 +1117,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1185,7 +1182,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1268,7 +1264,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1309,7 +1304,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1360,7 +1354,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: source_path,
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1440,7 +1433,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1507,7 +1499,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: source_path,
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1577,7 +1568,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1629,7 +1619,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1681,7 +1670,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: source_path,
-                wasm_file: None,
             },
             target: None, // No target!
             defaults: PlanDefaults::default(),
@@ -1730,7 +1718,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: source_path,
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1775,7 +1762,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1823,7 +1809,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1871,7 +1856,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path,
@@ -1917,7 +1901,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
@@ -1967,7 +1950,6 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: target_path.clone(),
-                wasm_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: target_path.clone(),
