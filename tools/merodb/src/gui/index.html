@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/static/css/layout.css?v=3">
     <link rel="stylesheet" href="/static/css/components.css?v=3">
     <link rel="stylesheet" href="/static/css/json-viewer.css?v=3">
+    <link rel="stylesheet" href="/static/css/folder-viewer.css?v=1">
     <link rel="stylesheet" href="/static/css/jq-panel.css?v=3">
     <link rel="stylesheet" href="/static/css/visualization.css?v=3">
 </head>
@@ -161,14 +162,28 @@
                         </div>
                         <button class="btn btn--control" id="reset-zoom">Reset Zoom</button>
                         <button class="btn btn--control" id="export-dag">Export Image</button>
+                        <div class="control-group" style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
+                            <input type="text" id="dag-additional-db-path" class="input" placeholder="Additional DB path..." style="width: 300px;">
+                            <button class="btn btn--control" id="load-dag-additional">Load Additional</button>
+                        </div>
                     </div>
 
                     <div id="dag-stats" class="stats"></div>
                     <div class="hint" style="font-size: 12px; color: #888; padding: 8px 0;">
                         💡 Tip: Hold <kbd>Ctrl</kbd> (or <kbd>Cmd</kbd> on Mac) and hover over a node to pin its tooltip. Pinned tooltips can be dragged and closed with the × button.
                     </div>
-                    <svg id="dag-svg" class="visualization__svg" role="img" aria-label="DAG visualization"></svg>
-                    <div id="dag-tooltip" class="tooltip hidden" role="tooltip"></div>
+                    <div id="dag-visualizations">
+                        <div class="dag-viz-container">
+                            <h4 style="margin: 10px 0; color: #d4d4d4;">Main Database</h4>
+                            <svg id="dag-svg" class="visualization__svg" role="img" aria-label="DAG visualization"></svg>
+                            <div id="dag-tooltip" class="tooltip hidden" role="tooltip"></div>
+                        </div>
+                        <div id="dag-additional-container" class="dag-viz-container hidden" style="margin-top: 30px;">
+                            <h4 style="margin: 10px 0; color: #d4d4d4;">Additional Database</h4>
+                            <svg id="dag-additional-svg" class="visualization__svg" role="img" aria-label="Additional DAG visualization"></svg>
+                            <div id="dag-additional-tooltip" class="tooltip hidden" role="tooltip"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- State Tree Tab -->
@@ -183,13 +198,17 @@
                             <label class="control-group__label" for="state-layout-select">Layout:</label>
                             <select id="state-layout-select" class="control-group__select" aria-label="Select layout type">
                                 <option value="tree">Tree</option>
-                                <option value="radial">Radial</option>
+                                <option value="folder" selected>Folder View</option>
                             </select>
                         </div>
                         <button class="btn btn--control" id="reset-state-zoom">Reset Zoom</button>
                         <button class="btn btn--control" id="expand-all">Expand All</button>
                         <button class="btn btn--control" id="collapse-all">Collapse All</button>
                         <button class="btn btn--control" id="export-state">Export Image</button>
+                        <div class="control-group" style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
+                            <input type="text" id="state-additional-db-path" class="input" placeholder="Additional DB path..." style="width: 300px;">
+                            <button class="btn btn--control" id="load-state-additional">Load Additional</button>
+                        </div>
                     </div>
 
                     <div id="state-loading" class="message message--loading hidden">
@@ -200,14 +219,24 @@
                     <div class="hint" style="font-size: 12px; color: #888; padding: 8px 0;">
                         💡 Tip: Hold <kbd>Ctrl</kbd> (or <kbd>Cmd</kbd> on Mac) and click a node to pin its tooltip. Pinned tooltips can be dragged and closed with the × button.
                     </div>
-                    <svg id="state-svg" class="visualization__svg" role="img" aria-label="State tree visualization"></svg>
-                    <div id="state-tooltip" class="tooltip hidden" role="tooltip"></div>
+                    <div id="state-visualizations">
+                        <div class="state-viz-container">
+                            <h4 style="margin: 10px 0; color: #d4d4d4;">Main Database</h4>
+                            <svg id="state-svg" class="visualization__svg" role="img" aria-label="State tree visualization"></svg>
+                            <div id="state-tooltip" class="tooltip hidden" role="tooltip"></div>
+                        </div>
+                        <div id="state-additional-container" class="state-viz-container hidden" style="margin-top: 30px;">
+                            <h4 style="margin: 10px 0; color: #d4d4d4;">Additional Database</h4>
+                            <svg id="state-additional-svg" class="visualization__svg" role="img" aria-label="Additional state tree visualization"></svg>
+                            <div id="state-additional-tooltip" class="tooltip hidden" role="tooltip"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>
     </div>
 
     <!-- Application Scripts (ES6 Modules) -->
-    <script type="module" src="/static/js/app.js?v=7"></script>
+    <script type="module" src="/static/js/app.js?v=24"></script>
 </body>
 </html>

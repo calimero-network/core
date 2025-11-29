@@ -10,11 +10,13 @@ import { TooltipManager } from './tooltip-manager.js';
 export class DAGVisualizer {
     /**
      * @param {import('./app-state.js').AppState} state - Application state
+     * @param {string} svgId - Optional SVG element ID (defaults to 'dag-svg')
      */
-    constructor(state) {
+    constructor(state, svgId = 'dag-svg') {
         this.state = state;
         this.currentZoom = null;
         this.tooltipManager = new TooltipManager();
+        this.svgId = svgId;
     }
 
     /**
@@ -140,7 +142,7 @@ export class DAGVisualizer {
      * Render hierarchical tree layout
      */
     renderHierarchical() {
-        const svg = d3.select('#dag-svg');
+        const svg = d3.select(`#${this.svgId}`);
         svg.selectAll('*').remove();
 
         const width = svg.node().getBoundingClientRect().width;
@@ -238,7 +240,7 @@ export class DAGVisualizer {
      * Render force-directed layout
      */
     renderForce() {
-        const svg = d3.select('#dag-svg');
+        const svg = d3.select(`#${this.svgId}`);
         svg.selectAll('*').remove();
 
         const width = svg.node().getBoundingClientRect().width;
@@ -363,7 +365,8 @@ export class DAGVisualizer {
      */
     resetZoom() {
         if (this.currentZoom) {
-            d3.select('#dag-svg')
+            const svgId = this.svgId || 'dag-svg';
+            d3.select(`#${svgId}`)
                 .transition()
                 .duration(750)
                 .call(this.currentZoom.transform, d3.zoomIdentity);
@@ -397,7 +400,8 @@ export class DAGVisualizer {
      * Export DAG as SVG file
      */
     exportImage() {
-        const svg = document.getElementById('dag-svg');
+        const svgId = this.svgId || 'dag-svg';
+        const svg = document.getElementById(svgId);
         if (!svg) return;
 
         const serializer = new XMLSerializer();

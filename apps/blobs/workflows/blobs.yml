@@ -1,0 +1,196 @@
+name: Blobs Rust Example
+description: Upload, announce, discover and delete blobs using the Rust SDK example.
+
+force_pull_image: true
+
+nodes:
+  chain_id: calimero-testnet
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rust-blob
+
+steps:
+  - name: Install Rust blobs app on inviter
+    type: install_application
+    node: rust-blob-1
+    path: "res/blobs.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create context from inviter
+    type: create_context
+    node: rust-blob-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      inviter_key: memberPublicKey
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{inviter_key}})"
+
+  - name: Create invitee identity
+    type: create_identity
+    node: rust-blob-2
+    outputs:
+      invitee_key: publicKey
+
+  - name: Invite second node
+    type: invite_identity
+    node: rust-blob-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{invitee_key}}"
+    granter_id: "{{inviter_key}}"
+    capability: member
+    outputs:
+      invitation: invitation
+
+  - name: Join context from invitee
+    type: join_context
+    node: rust-blob-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{invitee_key}}"
+    invitation: "{{invitation}}"
+
+  - name: Wait for context sync
+    type: wait
+    seconds: 3
+
+  - name: Upload sample PNG blob
+    type: upload_blob
+    node: rust-blob-1
+    file_path: static/sample.png
+    context_id: "{{context_id}}"
+    outputs:
+      png_blob_id: blob_id
+      png_blob_size: size
+
+  - name: Register PNG metadata
+    type: call
+    node: rust-blob-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: upload_file
+    args:
+      name: screenshot.png
+      blob_id_b58: "{{png_blob_id}}"
+      size: "{{png_blob_size}}"
+      mime_type: image/png
+    outputs:
+      png_file_id: result.output.id
+
+  - name: Assert PNG registered
+    type: assert
+    statements:
+      - "is_set({{png_file_id}})"
+
+  - name: Upload sample TXT blob
+    type: upload_blob
+    node: rust-blob-1
+    file_path: static/test.txt
+    context_id: "{{context_id}}"
+    outputs:
+      txt_blob_id: blob_id
+      txt_blob_size: size
+
+  - name: Register TXT metadata
+    type: call
+    node: rust-blob-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: upload_file
+    args:
+      name: readme.txt
+      blob_id_b58: "{{txt_blob_id}}"
+      size: "{{txt_blob_size}}"
+      mime_type: text/plain
+    outputs:
+      txt_file_id: result.output.id
+
+  - name: Assert TXT registered
+    type: assert
+    statements:
+      - "is_set({{txt_file_id}})"
+
+  - name: Wait for announcements
+    type: wait
+    seconds: 6
+
+  - name: List files on inviter
+    type: call
+    node: rust-blob-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: list_files
+    outputs:
+      inviter_files: result.output
+
+  - name: Assert inviter sees two files
+    type: json_assert
+    statements:
+      - "equal(len({{inviter_files}}), 2)"
+
+  - name: List files on invitee
+    type: call
+    node: rust-blob-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee_key}}"
+    method: list_files
+    outputs:
+      invitee_files: result.output
+
+  - name: Assert invitee sees two files
+    type: json_assert
+    statements:
+      - "equal(len({{invitee_files}}), 2)"
+
+  - name: Get PNG file blob id
+    type: call
+    node: rust-blob-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: get_blob_id_b58
+    args:
+      file_id: "{{png_file_id}}"
+    outputs:
+      retrieved_png_blob: result.output
+
+  - name: Assert PNG blob id matches
+    type: assert
+    statements:
+      - "equal({{retrieved_png_blob}}, {{png_blob_id}})"
+
+  - name: Delete PNG file
+    type: call
+    node: rust-blob-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{inviter_key}}"
+    method: delete_file
+    args:
+      file_id: "{{png_file_id}}"
+
+  - name: Wait for delete propagation
+    type: wait
+    seconds: 6
+
+  - name: List files after delete
+    type: call
+    node: rust-blob-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{invitee_key}}"
+    method: list_files
+    outputs:
+      final_files: result.output
+
+  - name: Assert only one file remains
+    type: json_assert
+    statements:
+      - "less_or_equal(len({{final_files}}), 1)"
+
+stop_all_nodes: false
+restart: true
+wait_timeout: 120
+

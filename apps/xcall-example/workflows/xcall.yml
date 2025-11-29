@@ -1,0 +1,188 @@
+name: XCall Rust Ping-Pong
+description: Cross-context ping/pong using the Rust SDK example.
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rust-xcall
+
+steps:
+  - name: Install app on Node 1
+    type: install_application
+    node: rust-xcall-1
+    path: res/xcall_example.wasm
+    dev: true
+    outputs:
+      app_id_node1: applicationId
+
+  - name: Install app on Node 2
+    type: install_application
+    node: rust-xcall-2
+    path: res/xcall_example.wasm
+    dev: true
+
+  - name: Create Context A
+    type: create_context
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    outputs:
+      context_a_id: contextId
+      context_a_member_key: memberPublicKey
+
+  - name: Create Context B
+    type: create_context
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    outputs:
+      context_b_id: contextId
+      context_b_member_key: memberPublicKey
+
+  - name: Create identity for Context A on Node 2
+    type: create_identity
+    node: rust-xcall-2
+    outputs:
+      identity_a: publicKey
+
+  - name: Create identity for Context B on Node 2
+    type: create_identity
+    node: rust-xcall-2
+    outputs:
+      identity_b: publicKey
+
+  - name: Invite identity A to Context A
+    type: invite_identity
+    node: rust-xcall-1
+    context_id: "{{context_a_id}}"
+    grantee_id: "{{identity_a}}"
+    granter_id: "{{context_a_member_key}}"
+    capability: member
+    outputs:
+      invitation_a: invitation
+
+  - name: Invite identity B to Context B
+    type: invite_identity
+    node: rust-xcall-1
+    context_id: "{{context_b_id}}"
+    grantee_id: "{{identity_b}}"
+    granter_id: "{{context_b_member_key}}"
+    capability: member
+    outputs:
+      invitation_b: invitation
+
+  - name: Join Context A from Node 2
+    type: join_context
+    node: rust-xcall-2
+    context_id: "{{context_a_id}}"
+    invitee_id: "{{identity_a}}"
+    invitation: "{{invitation_a}}"
+
+  - name: Join Context B from Node 2
+    type: join_context
+    node: rust-xcall-2
+    context_id: "{{context_b_id}}"
+    invitee_id: "{{identity_b}}"
+    invitation: "{{invitation_b}}"
+
+  - name: Wait for memberships to propagate
+    type: wait
+    seconds: 5
+
+  - name: Check initial counter on context A
+    type: call
+    node: rust-xcall-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: get_counter
+    outputs:
+      context_a_initial: result.output
+
+  - name: Check initial counter on context B
+    type: call
+    node: rust-xcall-1
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: get_counter
+    outputs:
+      context_b_initial: result.output
+
+  - name: Assert counters start at zero
+    type: json_assert
+    statements:
+      - "equal({{context_a_initial}}, 0)"
+      - "equal({{context_b_initial}}, 0)"
+
+  - name: Check initial counter on context B (node 2)
+    type: call
+    node: rust-xcall-2
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{identity_b}}"
+    method: get_counter
+    outputs:
+      context_b_initial_node2: result.output
+
+  - name: Assert Node 2 counter starts at zero
+    type: json_assert
+    statements:
+      - "equal({{context_b_initial_node2}}, 0)"
+
+  - name: Send ping from Context A to Context B
+    type: call
+    node: rust-xcall-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: ping
+    args:
+      target_context: "{{context_b_id}}"
+
+  - name: Wait for xcall execution
+    type: wait
+    seconds: 5
+
+  - name: Verify Context B counter incremented
+    type: call
+    node: rust-xcall-1
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: get_counter
+    outputs:
+      context_b_after_ping_node1: result.output
+
+  - name: Assert Context B counter is 1 on Node 1
+    type: json_assert
+    statements:
+      - "equal({{context_b_after_ping_node1}}, 1)"
+
+  - name: Send ping from Context B to Context A
+    type: call
+    node: rust-xcall-1
+    context_id: "{{context_b_id}}"
+    executor_public_key: "{{context_b_member_key}}"
+    method: ping
+    args:
+      target_context: "{{context_a_id}}"
+
+  - name: Wait for second xcall execution
+    type: wait
+    seconds: 5
+
+  - name: Verify Context A counter incremented
+    type: call
+    node: rust-xcall-1
+    context_id: "{{context_a_id}}"
+    executor_public_key: "{{context_a_member_key}}"
+    method: get_counter
+    outputs:
+      context_a_after_ping: result.output
+
+  - name: Assert Context A counter is 1
+    type: json_assert
+    statements:
+      - "equal({{context_a_after_ping}}, 1)"
+
+stop_all_nodes: false
+restart: true
+wait_timeout: 120
+

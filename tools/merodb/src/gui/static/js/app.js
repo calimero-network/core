@@ -18,6 +18,8 @@ export class App {
         this.jqManager = null;
         this.dagVisualizer = null;
         this.stateVisualizer = null;
+        this.dagAdditionalVisualizer = null;
+        this.stateAdditionalVisualizer = null;
 
         this.init();
     }
@@ -130,7 +132,7 @@ export class App {
                 if (filename) {
                     filename.textContent = file ? file.name : 'No file chosen';
                 }
-                
+
                 // Update schema info display
                 this.updateSchemaInfo();
             });
@@ -285,6 +287,14 @@ export class App {
             });
         }
 
+        // Additional DAG database loader
+        const loadDagAdditionalBtn = document.getElementById('load-dag-additional');
+        if (loadDagAdditionalBtn) {
+            loadDagAdditionalBtn.addEventListener('click', async () => {
+                await this.loadAdditionalDatabase('dag');
+            });
+        }
+
         // State tree controls
         const stateLayoutSelect = document.getElementById('state-layout-select');
         if (stateLayoutSelect) {
@@ -339,8 +349,228 @@ export class App {
                 }
             });
         }
+
+        // Additional State Tree database loader
+        const loadStateAdditionalBtn = document.getElementById('load-state-additional');
+        if (loadStateAdditionalBtn) {
+            loadStateAdditionalBtn.addEventListener('click', async () => {
+                await this.loadAdditionalDatabase('state');
+            });
+        }
     }
 
+    /**
+     * Load additional database for comparison in DAG or State Tree view
+     * @param {string} viewType - 'dag' or 'state'
+     */
+    async loadAdditionalDatabase(viewType) {
+        const inputId = viewType === 'dag' ? 'dag-additional-db-path' : 'state-additional-db-path';
+        const dbPathInput = document.getElementById(inputId);
+        const dbPath = dbPathInput?.value?.trim();
+
+        if (!dbPath) {
+            alert('Please enter a database path');
+            return;
+        }
+
+        console.log(`Loading additional ${viewType} database from:`, dbPath);
+
+        if (!this.state.currentStateSchemaFileContent) {
+            alert('Please load the main database first with a schema file');
+            return;
+        }
+
+        try {
+            if (viewType === 'dag') {
+                // Load DAG data for additional database
+                const dagData = await ApiService.loadDAG(dbPath);
+                
+                // Extract nodes and edges
+                const nodes = dagData.nodes || [];
+                const edges = dagData.edges || [];
+                const links = edges.map(edge => ({
+                    source: edge.source,
+                    target: edge.target
+                }));
+
+                // Extract unique contexts
+                const contextsSet = new Set();
+                nodes.forEach(node => {
+                    if (node.context_id) {
+                        contextsSet.add(node.context_id);
+                    }
+                });
+                const contexts = Array.from(contextsSet);
+
+                // Create additional visualizer if it doesn't exist
+                if (!this.dagAdditionalVisualizer) {
+                    // Create a temporary state object for the additional visualizer
+                    const additionalState = {
+                        dagData: { nodes, links, contexts },
+                        currentDbPath: dbPath,
+                        currentTab: 'dag'
+                    };
+                    this.dagAdditionalVisualizer = new DAGVisualizer(additionalState, 'dag-additional-svg');
+                } else {
+                    // Update existing visualizer
+                    this.dagAdditionalVisualizer.state.dagData = { nodes, links, contexts };
+                    this.dagAdditionalVisualizer.state.currentDbPath = dbPath;
+                }
+
+                // Show the additional container
+                const container = document.getElementById('dag-additional-container');
+                if (container) {
+                    container.classList.remove('hidden');
+                }
+
+                // Render the additional DAG
+                this.dagAdditionalVisualizer.render();
+            } else {
+                // Load contexts for additional database
+                console.log(`[loadAdditionalDatabase] Calling ApiService.listContexts with path: ${dbPath}`);
+                
+                let contextsResponse;
+                try {
+                    contextsResponse = await ApiService.listContexts(dbPath);
+                    console.log('[loadAdditionalDatabase] Received response from server:', contextsResponse);
+                } catch (error) {
+                    console.error('[loadAdditionalDatabase] Error calling listContexts:', error);
+                    alert(`Failed to connect to server or load contexts:\n${error.message}\n\nPlease check:\n1. The merodb server is running\n2. The database path is correct: ${dbPath}\n3. Check the browser console for more details`);
+                    return;
+                }
+                
+                // Handle different possible response structures
+                let contexts = [];
+                if (contextsResponse.data?.contexts) {
+                    contexts = contextsResponse.data.contexts;
+                } else if (contextsResponse.contexts) {
+                    contexts = contextsResponse.contexts;
+                } else if (Array.isArray(contextsResponse.data)) {
+                    contexts = contextsResponse.data;
+                } else if (Array.isArray(contextsResponse)) {
+                    contexts = contextsResponse;
+                }
+                
+                console.log('Additional database contexts response:', {
+                    fullResponse: contextsResponse,
+                    hasData: !!contextsResponse.data,
+                    hasContexts: !!contextsResponse.contexts,
+                    isArray: Array.isArray(contextsResponse),
+                    contextsCount: contexts.length,
+                    contexts: contexts
+                });
+                
+                if (contexts.length === 0) {
+                    console.error('No contexts found. Full response:', contextsResponse);
+                    const totalContexts = contextsResponse.data?.total_contexts ?? contextsResponse.total_contexts ?? 0;
+                    if (totalContexts === 0) {
+                        alert(`No contexts found in the additional database at:\n${dbPath}\n\nPlease verify:\n1. The database path is correct\n2. The database contains context data\n3. The database is a valid Calimero database\n\nCheck the browser console and server logs for more details.`);
+                    } else {
+                        console.warn(`Backend reported ${totalContexts} contexts but contexts array is empty`);
+                        alert(`Backend found ${totalContexts} contexts but couldn't parse them. Please check the console for details.`);
+                    }
+                    return;
+                }
+                
+                // Create additional visualizer if it doesn't exist
+                // Create a minimal state object for the additional database
+                if (!this.stateAdditionalVisualizer) {
+                    const additionalState = {
+                        currentDbPath: dbPath,
+                        currentStateSchemaFile: null,
+                        currentStateSchemaFileContent: this.state.currentStateSchemaFileContent,
+                        currentStateSchemaFileName: this.state.currentStateSchemaFileName,
+                        stateTreeData: {
+                            contexts: contexts,
+                            loadedTrees: new Map()
+                        }
+                    };
+                    this.stateAdditionalVisualizer = new StateTreeVisualizer(additionalState, 'state-additional-svg');
+                } else {
+                    // Update the state with new database path and contexts
+                    this.stateAdditionalVisualizer.state.currentDbPath = dbPath;
+                    this.stateAdditionalVisualizer.state.stateTreeData = {
+                        contexts: contexts,
+                        loadedTrees: new Map()
+                    };
+                }
+
+                // Show the additional container
+                const container = document.getElementById('state-additional-container');
+                if (container) {
+                    container.classList.remove('hidden');
+                }
+
+                // Try to find a matching context ID from the main database, otherwise use the first one
+                const mainContextSelect = document.getElementById('state-context-select');
+                let contextIdToLoad = null;
+                
+                console.log('[loadAdditionalDatabase] Contexts found:', contexts);
+                console.log('[loadAdditionalDatabase] First context structure:', contexts.length > 0 ? contexts[0] : 'none');
+                console.log('[loadAdditionalDatabase] Main context select value:', mainContextSelect?.value);
+                
+                if (mainContextSelect && mainContextSelect.value) {
+                    // Check if the main database's context exists in the additional database
+                    // Contexts might have context_id or id field
+                    const matchingContext = contexts.find(ctx => 
+                        (ctx.context_id === mainContextSelect.value) || 
+                        (ctx.id === mainContextSelect.value)
+                    );
+                    if (matchingContext) {
+                        contextIdToLoad = matchingContext.context_id || matchingContext.id;
+                        console.log('[loadAdditionalDatabase] Found matching context:', contextIdToLoad);
+                    } else {
+                        console.log('[loadAdditionalDatabase] No matching context found, will use first available');
+                    }
+                }
+                
+                // If no matching context found, use the first available context
+                if (!contextIdToLoad && contexts.length > 0) {
+                    contextIdToLoad = contexts[0].context_id || contexts[0].id;
+                    console.log('[loadAdditionalDatabase] Using first context:', contextIdToLoad);
+                }
+                
+                if (contextIdToLoad) {
+                    console.log('[loadAdditionalDatabase] Loading state tree for context:', contextIdToLoad);
+                    await this.loadAdditionalStateTree(dbPath, contextIdToLoad);
+                } else {
+                    console.error('[loadAdditionalDatabase] No context ID to load!', {
+                        contextsLength: contexts.length,
+                        contexts: contexts,
+                        mainContextValue: mainContextSelect?.value
+                    });
+                }
+            }
+        } catch (error) {
+            alert(`Error loading additional database: ${error.message}`);
+        }
+    }
+
+    /**
+     * Load state tree for additional database
+     * @param {string} dbPath - Database path
+     * @param {string} contextId - Context ID
+     */
+    async loadAdditionalStateTree(dbPath, contextId) {
+        if (!this.stateAdditionalVisualizer || !this.state.currentStateSchemaFileContent) {
+            return;
+        }
+
+        try {
+            // Ensure the visualizer's state has the correct dbPath and schema content
+            this.stateAdditionalVisualizer.state.currentDbPath = dbPath;
+            this.stateAdditionalVisualizer.state.currentStateSchemaFileContent = this.state.currentStateSchemaFileContent;
+            
+            // Load the context tree (this will cache it in state.stateTreeData.loadedTrees)
+            await this.stateAdditionalVisualizer.loadContextTree(contextId);
+            
+            // Render with the current layout
+            this.stateAdditionalVisualizer.render();
+        } catch (error) {
+            console.error('[loadAdditionalStateTree] Error:', error);
+            alert(`Error loading additional state tree: ${error.message}`);
+        }
+    }
 
     /**
      * Load database and display data
@@ -506,7 +736,7 @@ export class App {
 
         // Initialize all managers
         if (this.state.jsonData) {
-            JSONRenderer.render(this.state.jsonData, 'json-viewer');
+        JSONRenderer.render(this.state.jsonData, 'json-viewer');
         } else {
             console.error('No JSON data to render!');
             const container = document.getElementById('json-viewer');
@@ -517,6 +747,46 @@ export class App {
         this.jqManager = new JQManager(this.state);
         this.dagVisualizer = new DAGVisualizer(this.state);
         this.stateVisualizer = new StateTreeVisualizer(this.state);
+    }
+
+    /**
+     * Setup view toggle between folder and JSON view
+     */
+    setupViewToggle() {
+        const folderBtn = document.getElementById('view-toggle-folder');
+        const jsonBtn = document.getElementById('view-toggle-json');
+        const jsonViewer = document.getElementById('json-viewer');
+        const folderViewer = document.getElementById('folder-viewer');
+        
+        if (!folderBtn || !jsonBtn || !jsonViewer || !folderViewer) {
+            return;
+        }
+        
+        // Default to folder view
+        jsonViewer.style.display = 'none';
+        folderViewer.style.display = 'block';
+        folderBtn.classList.add('btn--primary');
+        folderBtn.classList.remove('btn--secondary');
+        jsonBtn.classList.add('btn--secondary');
+        jsonBtn.classList.remove('btn--primary');
+        
+        folderBtn.addEventListener('click', () => {
+            jsonViewer.style.display = 'none';
+            folderViewer.style.display = 'block';
+            folderBtn.classList.add('btn--primary');
+            folderBtn.classList.remove('btn--secondary');
+            jsonBtn.classList.add('btn--secondary');
+            jsonBtn.classList.remove('btn--primary');
+        });
+        
+        jsonBtn.addEventListener('click', () => {
+            jsonViewer.style.display = 'block';
+            folderViewer.style.display = 'none';
+            jsonBtn.classList.add('btn--primary');
+            jsonBtn.classList.remove('btn--secondary');
+            folderBtn.classList.add('btn--secondary');
+            folderBtn.classList.remove('btn--primary');
+        });
     }
 
     /**
@@ -547,6 +817,7 @@ export class App {
         UIManager.hideElement('data-view');
         UIManager.hideElement('dag-view');
         UIManager.hideElement('state-view');
+        UIManager.hideElement('compare-view');
 
         // Update state
         this.state.currentTab = tab;
@@ -556,7 +827,7 @@ export class App {
             UIManager.showElement('data-view');
         } else if (tab === 'dag') {
             UIManager.showElement('dag-view');
-            if (!this.state.dagData) {
+            if (!this.state.dagData && this.dagVisualizer) {
                 try {
                     await this.dagVisualizer.load();
                 } catch (error) {
@@ -565,7 +836,7 @@ export class App {
             }
         } else if (tab === 'state') {
             UIManager.showElement('state-view');
-            if (!this.state.stateTreeData) {
+            if (!this.state.stateTreeData && this.stateVisualizer) {
                 try {
                     await this.stateVisualizer.load();
                 } catch (error) {

@@ -95,9 +95,19 @@ export class TooltipManager {
 
         this.currentTooltip
             .html(content)
-            .style('left', `${event.pageX + 10}px`)
-            .style('top', `${event.pageY + 10}px`)
             .classed('hidden', false);
+        
+        // Calculate optimal position after content is set (so we can measure it)
+        // Use a small delay to ensure DOM has updated
+        setTimeout(() => {
+            if (this.currentTooltip && !this.tooltipPinned) {
+                const tooltipNode = this.currentTooltip.node();
+                const position = this.calculateTooltipPosition(event, tooltipNode);
+                this.currentTooltip
+                    .style('left', `${position.left}px`)
+                    .style('top', `${position.top}px`);
+            }
+        }, 0);
     }
 
     /**
@@ -113,10 +123,22 @@ export class TooltipManager {
             .attr('id', tooltipId)
             .attr('class', `tooltip ${cssClass}`)
             .style('position', 'fixed')
-            .style('left', `${event.pageX + 10}px`)
-            .style('top', `${event.pageY + 10}px`)
             .style('pointer-events', 'auto')
             .style('cursor', 'move');
+        
+        // Add content first so we can measure it
+        tooltip.append('div')
+            .attr('class', 'tooltip-content')
+            .html(content);
+        
+        // Calculate optimal position after content is added
+        setTimeout(() => {
+            const tooltipNode = tooltip.node();
+            const position = this.calculateTooltipPosition(event, tooltipNode);
+            tooltip
+                .style('left', `${position.left}px`)
+                .style('top', `${position.top}px`);
+        }, 0);
 
         // Add close button
         tooltip.append('button')
@@ -126,11 +148,6 @@ export class TooltipManager {
                 tooltip.remove();
                 this.activeTooltips = this.activeTooltips.filter(t => t.id !== tooltipId);
             });
-
-        // Add content
-        tooltip.append('div')
-            .attr('class', 'tooltip-content')
-            .html(content);
 
         // Make draggable
         this.makeDraggable(tooltip);
@@ -182,14 +199,72 @@ export class TooltipManager {
     }
 
     /**
+     * Calculate optimal tooltip position to keep it within viewport
+     * @param {MouseEvent} event - Mouse event
+     * @param {HTMLElement} tooltipElement - Tooltip DOM element
+     * @returns {{left: number, top: number}} Optimal position
+     */
+    calculateTooltipPosition(event, tooltipElement) {
+        const offset = 10;
+        const padding = 10; // Minimum padding from viewport edges
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        
+        // Get tooltip dimensions (use a temporary measurement if not yet rendered)
+        let tooltipWidth = 300; // Default width
+        let tooltipHeight = 200; // Default height
+        
+        if (tooltipElement) {
+            const rect = tooltipElement.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                tooltipWidth = rect.width;
+                tooltipHeight = rect.height;
+            }
+        }
+        
+        // Calculate initial position (below and to the right of cursor)
+        let left = event.pageX + offset;
+        let top = event.pageY + offset;
+        
+        // Check if tooltip would go off the right edge
+        if (left + tooltipWidth + padding > viewportWidth) {
+            // Position to the left of cursor instead
+            left = event.pageX - tooltipWidth - offset;
+            // Ensure it doesn't go off the left edge
+            if (left < padding) {
+                left = padding;
+            }
+        }
+        
+        // Check if tooltip would go off the bottom edge
+        if (top + tooltipHeight + padding > viewportHeight) {
+            // Position above cursor instead
+            top = event.pageY - tooltipHeight - offset;
+            // Ensure it doesn't go off the top edge
+            if (top < padding) {
+                top = padding;
+            }
+        }
+        
+        // Final bounds check - ensure tooltip stays within viewport
+        left = Math.max(padding, Math.min(left, viewportWidth - tooltipWidth - padding));
+        top = Math.max(padding, Math.min(top, viewportHeight - tooltipHeight - padding));
+        
+        return { left, top };
+    }
+
+    /**
      * Move tooltip to follow mouse
      * @param {MouseEvent} event - Mouse event
      */
     moveTooltip(event) {
         if (this.currentTooltip && !this.tooltipPinned) {
+            const tooltipNode = this.currentTooltip.node();
+            const position = this.calculateTooltipPosition(event, tooltipNode);
+            
             this.currentTooltip
-                .style('left', `${event.pageX + 10}px`)
-                .style('top', `${event.pageY + 10}px`);
+                .style('left', `${position.left}px`)
+                .style('top', `${position.top}px`);
         }
     }
 
