@@ -539,17 +539,32 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
     let key_raw = bytes[..key_end].to_vec();
 
     // For Counter values in map entries, the Counter is stored directly (not wrapped in Entry)
-    // The Entry<(K, V)> structure is: K + V + Element ID
+    // The Entry<(K, V)> structure is: K + V + Element ID (32 bytes)
     // So we deserialize V (Counter) directly, then handle the Element ID separately
-    let value_value =
-        deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.value_type, manifest)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to deserialize value (type: {:?}, remaining bytes: {})",
-                    field.value_type,
-                    bytes.len() - key_end
-                )
-            })?;
+    // Save position before deserializing to check if we need to handle Entry wrapper
+    let value_start = cursor.position();
+    let value_value = match deserializer::deserialize_type_ref_from_cursor(
+        &mut cursor,
+        &field.value_type,
+        manifest,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            // If Counter deserialization fails, log the bytes for debugging
+            let remaining = bytes.len() - key_end;
+            let bytes_to_show = remaining.min(64);
+            eprintln!(
+                "[decode_map_entry] Counter deserialization failed for field {}: {}. First {} bytes of value: {}",
+                field.name, e, bytes_to_show, hex::encode(&bytes[key_end..key_end + bytes_to_show])
+            );
+            return Err(eyre::eyre!(
+                "Failed to deserialize value (type: {:?}, remaining bytes: {}, error: {})",
+                field.value_type,
+                remaining,
+                e
+            ));
+        }
+    };
     let value_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let value_raw = bytes[key_end..value_end].to_vec();
 
