@@ -571,8 +571,12 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
     // Now deserialize Element (which contains id, timestamps, etc.)
     // Element serializes as: (id: Option<Id>, parent_id: Option<Id>, children: Option<Vec<ChildInfo>>, full_hash: [u8; 32], own_hash: [u8; 32], metadata: Metadata, deleted_at: Option<u64>)
     // For simplicity, we'll just try to read the ID (first 32 bytes if Some, or 1 byte if None)
-    let element_id = if let Ok(id) = borsh::from_slice::<Id>(&bytes[value_end..value_end + 32]) {
-        Some(hex::encode(id.as_bytes()))
+    let element_id = if value_end + 32 <= bytes.len() {
+        if let Ok(id) = borsh::from_slice::<Id>(&bytes[value_end..value_end + 32]) {
+            Some(hex::encode(id.as_bytes()))
+        } else {
+            None
+        }
     } else {
         None
     };

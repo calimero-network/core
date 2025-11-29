@@ -553,7 +553,9 @@ export class StateTreeVisualizer {
      * Update statistics display
      */
     updateStats() {
-        const container = document.getElementById('state-stats');
+        // Use different stats containers for main vs additional visualizers
+        const statsId = this.svgId === 'state-svg' ? 'state-stats' : 'state-additional-stats';
+        const container = document.getElementById(statsId);
         if (!container || !this.root) return;
 
         const nodeCount = this.root.descendants().length;

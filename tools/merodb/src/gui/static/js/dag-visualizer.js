@@ -389,7 +389,9 @@ export class DAGVisualizer {
      * Update statistics display
      */
     updateStats() {
-        const container = document.getElementById('dag-stats');
+        // Use different stats containers for main vs additional visualizers
+        const statsId = this.svgId === 'dag-svg' ? 'dag-stats' : 'dag-additional-stats';
+        const container = document.getElementById(statsId);
         if (!container || !this.state.dagData) return;
 
         // Get filtered data for accurate stats
