@@ -95,18 +95,15 @@ pub fn extract_state_schema(wasm_file: &PathBuf, output: Option<&Path>) -> eyre:
         .map_err(|e| eyre::eyre!("Failed to parse ABI manifest: {}", e))?;
 
     // Extract state schema using the Manifest method
-    let state_schema_manifest = manifest
+    let mut state_schema_manifest = manifest
         .extract_state_schema()
         .map_err(|e| eyre::eyre!("Failed to extract state schema: {}", e))?;
 
-    // Build the state schema JSON (same format as build-time emission)
-    let state_schema = serde_json::json!({
-        "state_root": state_schema_manifest.state_root,
-        "types": state_schema_manifest.types
-    });
+    // Set schema_version to match build.rs format
+    state_schema_manifest.schema_version = "wasm-abi/1".to_owned();
 
-    // Serialize with pretty printing
-    let schema_json = serde_json::to_string_pretty(&state_schema)
+    // Serialize the entire Manifest (same format as build-time emission)
+    let schema_json = serde_json::to_string_pretty(&state_schema_manifest)
         .map_err(|e| eyre::eyre!("Failed to serialize state schema: {}", e))?;
 
     // Determine output path
