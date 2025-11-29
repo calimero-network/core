@@ -184,6 +184,42 @@ fn test_invariant_detects_dangling_refs() {
 }
 
 #[test]
+fn test_invariant_detects_dangling_refs_in_inner_type() {
+    // This test ensures that dangling refs in inner_type are detected
+    // (e.g., LwwRegister<NonExistentType>)
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+
+    // Add a method with a Collection that has inner_type referencing a non-existent type
+    manifest.methods.push(Method {
+        name: "test_method".to_string(),
+        params: vec![],
+        returns: Some(TypeRef::Collection {
+            collection: calimero_wasm_abi::schema::CollectionType::Record { fields: vec![] },
+            crdt_type: Some(calimero_wasm_abi::schema::CrdtCollectionType::LwwRegister),
+            inner_type: Some(Box::new(TypeRef::Reference {
+                ref_: "NonExistentType".to_string(),
+            })),
+        }),
+        returns_nullable: None,
+        errors: vec![],
+    });
+
+    // This should fail validation because NonExistentType is referenced in inner_type
+    let result = validate_manifest(&manifest);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        calimero_wasm_abi::validate::ValidationError::InvalidTypeReference { ref_name, path } => {
+            assert_eq!(ref_name, "NonExistentType");
+            assert_eq!(path, "method test_method.returns.inner_type");
+        }
+        _ => panic!("Expected InvalidTypeReference error"),
+    }
+}
+
+#[test]
 fn test_invariant_deterministic_ordering() {
     // This test ensures that methods and events are sorted deterministically
     let mut manifest = Manifest {
