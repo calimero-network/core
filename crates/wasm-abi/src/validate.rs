@@ -137,7 +137,7 @@ fn validate_type_ref(type_ref: &TypeRef, path: &str) -> Result<(), ValidationErr
         TypeRef::Reference { .. } => {
             // Will be checked for dangling refs later
         }
-        TypeRef::Collection(collection) => match collection {
+        TypeRef::Collection { collection, .. } => match collection {
             CollectionType::Record { fields } => {
                 for field in fields {
                     validate_type_ref(&field.type_, path)?;
@@ -247,7 +247,7 @@ fn collect_refs_from_type_ref(type_ref: &TypeRef, path: &str, refs: &mut Vec<(St
         TypeRef::Reference { ref_ } => {
             refs.push((ref_.clone(), path.to_owned()));
         }
-        TypeRef::Collection(collection) => match collection {
+        TypeRef::Collection { collection, .. } => match collection {
             CollectionType::Record { fields } => {
                 for field in fields {
                     collect_refs_from_type_ref(&field.type_, path, refs);

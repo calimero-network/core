@@ -28,9 +28,11 @@ pub struct ExportArgs {
     )]
     pub columns: Option<Vec<String>>,
 
-    /// WASM file providing the ABI schema (required for export)
-    #[arg(long, value_name = "WASM_FILE")]
-    pub wasm_file: Option<PathBuf>,
+    /// State schema JSON file (extracted using `calimero-abi state`)
+    ///
+    /// This includes the state root type and its dependencies, sufficient for state deserialization.
+    #[arg(long, value_name = "SCHEMA_FILE")]
+    pub state_schema_file: Option<PathBuf>,
 
     /// Output file path (defaults to stdout if not specified)
     #[arg(short, long, value_name = "FILE")]
@@ -45,20 +47,28 @@ pub fn run_export(args: ExportArgs) -> Result<()> {
 
     let db = open_database(args.db_path.as_path())?;
 
-    let manifest = if let Some(wasm_path) = args.wasm_file {
-        if !wasm_path.exists() {
-            eyre::bail!("WASM file does not exist: {}", wasm_path.display());
+    let manifest = if let Some(schema_path) = args.state_schema_file {
+        // Prefer state schema file (faster and sufficient for state deserialization)
+        if !schema_path.exists() {
+            eyre::bail!(
+                "State schema file does not exist: {}",
+                schema_path.display()
+            );
         }
-        println!("Loading ABI from WASM file: {}", wasm_path.display());
-        match abi::extract_abi_from_wasm(&wasm_path) {
+        println!("Loading state schema from: {}", schema_path.display());
+        match abi::load_state_schema_from_json(&schema_path) {
             Ok(manifest) => {
-                println!("ABI loaded successfully");
+                println!("State schema loaded successfully");
+                if let Some(ref root) = manifest.state_root {
+                    println!("State root: {}", root);
+                }
+                println!("Types: {}", manifest.types.len());
                 manifest
             }
-            Err(e) => eyre::bail!("Failed to load ABI from WASM: {e}"),
+            Err(e) => eyre::bail!("Failed to load state schema: {e}"),
         }
     } else {
-        eyre::bail!("--wasm-file is required when exporting data");
+        eyre::bail!("--state-schema-file is required when exporting data");
     };
 
     let columns = if args.all {

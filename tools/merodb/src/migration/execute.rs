@@ -27,7 +27,7 @@
 //! Copy steps now support three types of transformations (all optional):
 //!
 //! ### 1. ABI Decoding (`decode_with_abi`)
-//! Deserializes binary-encoded values using the WASM ABI manifest, converting them to JSON.
+//! Deserializes binary-encoded values using the state schema, converting them to JSON.
 //! Requires the source database to have an associated WASM file.
 //!
 //! **Example use case**: Converting binary contract state to human-readable JSON
@@ -293,18 +293,18 @@ pub fn execute_migration(context: &MigrationContext) -> Result<ExecutionReport> 
 /// ## Transformation Features
 ///
 /// ### 1. ABI Decoding (`decode_with_abi`)
-/// When enabled, values are deserialized using the WASM ABI manifest before being written.
+/// When enabled, values are deserialized using the state schema before being written.
 /// This converts binary-encoded application state into structured JSON format.
 ///
 /// **Requirements**:
-/// - Source must have a WASM file with ABI manifest (via `source.wasm_file` or `--wasm-file`)
-/// - WASM file must contain a `calimero_abi_v1` custom section
+/// - Source must have a state schema file (via `source.state_schema_file` or `--state-schema-file`)
+/// - State schema file must contain the state root type and all transitively referenced types
 /// - Only works for columns that have ABI-decodable values (primarily State column)
 ///
 /// **Error handling** (fail-fast before processing keys):
-/// - Returns error if `decode_with_abi=true` but no WASM file is provided
-/// - Returns error if WASM file exists but has no `calimero_abi_v1` custom section
-/// - Returns error if value cannot be decoded with the provided ABI during processing
+/// - Returns error if `decode_with_abi=true` but no state schema file is provided
+/// - Returns error if state schema file exists but is invalid or missing required fields
+/// - Returns error if value cannot be decoded with the provided schema during processing
 ///
 /// ### 2. jq Transformation (`jq`)
 /// Applies a jq expression to transform values during copy. The jq filter receives the value
@@ -333,7 +333,7 @@ pub fn execute_migration(context: &MigrationContext) -> Result<ExecutionReport> 
 /// ## Execution Flow
 ///
 /// 1. Resolve transformation settings (step override > plan default > engine default)
-/// 2. Validate ABI manifest availability if `decode_with_abi=true`
+/// 2. Validate state schema availability if `decode_with_abi=true`
 /// 3. Compile jq filter if `jq` expression is provided
 /// 4. For each key in source column that matches filters:
 ///    a. Check `write_if_missing` - skip if key exists in target
@@ -348,7 +348,7 @@ pub fn execute_migration(context: &MigrationContext) -> Result<ExecutionReport> 
 /// * `index` - Step index for reporting (0-based)
 /// * `step` - Copy step configuration including transformation settings
 /// * `defaults` - Plan-level defaults for filters and transformation options
-/// * `context` - Migration context containing source/target databases and optional ABI manifest
+/// * `context` - Migration context containing source/target databases and optional state schema
 ///
 /// # Returns
 ///
@@ -360,7 +360,7 @@ pub fn execute_migration(context: &MigrationContext) -> Result<ExecutionReport> 
 /// # Errors
 ///
 /// Returns an error if:
-/// - `decode_with_abi=true` but ABI manifest is not available
+/// - `decode_with_abi=true` but state schema is not available
 /// - ABI decoding fails for a value
 /// - jq expression is invalid or produces wrong number of outputs
 /// - Value is not valid JSON when jq transformation is requested
@@ -386,18 +386,18 @@ fn execute_copy_step(
     let write_if_missing = defaults.effective_write_if_missing(step.transform.write_if_missing);
     let jq_expr = step.transform.jq.as_deref();
 
-    // Validate and prepare ABI manifest if decode_with_abi is enabled.
-    // The manifest is lazily loaded from the WASM file on first access and cached.
-    // This ensures the manifest is available before we start iterating keys, avoiding
+    // Validate and prepare state schema if decode_with_abi is enabled.
+    // The schema is lazily loaded from the state schema file on first access and cached.
+    // This ensures the schema is available before we start iterating keys, avoiding
     // partial copy failures midway through execution.
-    let abi_manifest = if decode_with_abi {
-        let manifest = context.source().abi_manifest()?.ok_or_else(|| {
+    let schema = if decode_with_abi {
+        let schema = context.source().schema()?.ok_or_else(|| {
             eyre::eyre!(
-                "decode_with_abi requested but source ABI manifest is not available. \
-                 Specify wasm_file in the plan or provide --wasm-file"
+                "decode_with_abi requested but source state schema is not available. \
+                 Specify state_schema_file in the plan or provide --state-schema-file"
             )
         })?;
-        Some(manifest)
+        Some(schema)
     } else {
         None
     };
@@ -480,15 +480,15 @@ fn execute_copy_step(
         // Both transformations are optional and can be used independently or together.
         let final_value = if decode_with_abi || jq_filter.is_some() {
             // Transformation 2: ABI decoding (optional, runs first)
-            // Deserializes binary-encoded values using the WASM ABI manifest.
+            // Deserializes binary-encoded values using the state schema.
             // The result is JSON-encoded for further processing or storage.
             let mut transformed_value = if decode_with_abi {
-                let manifest = abi_manifest.expect("ABI manifest should be available");
+                let schema = schema.expect("State schema should be available");
 
-                // Parse the binary value using column-specific ABI logic
-                let parsed =
-                    parse_value_with_abi(step.column, &value, manifest).wrap_err_with(|| {
-                        format!("Failed to parse value with ABI for key {:?}", &key[..])
+                // Parse the binary value using column-specific schema logic
+                let parsed = parse_value_with_abi(step.column, &value, schema, None)
+                    .wrap_err_with(|| {
+                        format!("Failed to parse value with schema for key {:?}", &key[..])
                     })?;
 
                 // Convert parsed JSON value to bytes for next transformation or storage

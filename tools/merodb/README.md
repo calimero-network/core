@@ -59,6 +59,53 @@ Export specific column families:
 merodb --db-path /path/to/rocksdb --export --columns Meta,Config,State --wasm-file /path/to/contract.wasm
 ```
 
+#### Using State Schema Files
+
+Instead of loading the full WASM file, you can use a pre-extracted state schema file. This is **faster**, **smaller**, and **sufficient for state deserialization**:
+
+**Benefits of State Schema:**
+- ⚡ **Faster**: No need to parse WASM files - load JSON directly
+- 📦 **Smaller**: Contains only state-related types (typically 1-10 types vs full ABI)
+- 🎯 **Focused**: Perfect for state deserialization without needing methods/events
+- 🔧 **Simple**: Use pre-generated `state-schema.json` files from build output
+
+**Option 1: Use build-time generated state schema** (recommended):
+```bash
+# State schema is automatically generated during build in res/state-schema.json
+merodb export --db-path /path/to/rocksdb --all --state-schema-file apps/kv-store/res/state-schema.json --output export.json
+```
+
+**Option 2: Extract state schema from WASM first**:
+```bash
+# Extract state schema from WASM
+cargo run --release -p mero-abi -- state contract.wasm > state-schema.json
+
+# Use the extracted schema
+merodb export --db-path /path/to/rocksdb --all --state-schema-file state-schema.json --output export.json
+```
+
+**State Schema Format:**
+The state schema is a JSON file containing:
+- `state_root`: The name of the root state type (e.g., "KvStore")
+- `types`: A map of type definitions needed to deserialize the state
+
+Example:
+```json
+{
+  "state_root": "KvStore",
+  "types": {
+    "KvStore": {
+      "kind": "record",
+      "fields": [...]
+    }
+  }
+}
+```
+
+**When to Use State Schema vs WASM:**
+- **Use State Schema** when you only need to deserialize state (export, migration, debugging)
+- **Use WASM** when you need the full ABI including methods and events (client generation)
+
 ### Validate Database
 
 Validate the database integrity by performing comprehensive checks on all column families:
@@ -127,12 +174,16 @@ The State Tree view provides an interactive visualization of your database's Mer
 
 **State Tree workflow:**
 
-1. Load a database and supply a WASM file with an ABI manifest.
+1. Load a database and supply either:
+   - A **state schema file** (recommended, faster) - JSON file with state types
+   - A **WASM file** with an ABI manifest (fallback)
 2. The GUI lists contexts immediately; the first context's tree is fetched and rendered automatically.
 3. Pick a different context from the dropdown to trigger an on-demand fetch for just that tree.
 4. Repeat the process as needed—each loaded tree is cached for the session.
 
-**Note**: The uploaded WASM file must contain a valid ABI manifest. Files without proper ABI will be rejected with an error notification.
+**Note**: 
+- **State schema files** are preferred - they're faster and sufficient for state visualization
+- **WASM files** must contain a valid ABI manifest. Files without proper ABI will be rejected with an error notification.
 
 Specify a custom port:
 
@@ -148,9 +199,16 @@ merodb --gui
 
 # 2. Open http://127.0.0.1:8080 in your browser
 # 3. Enter database path: ~/.calimero/data
-# 4. Upload WASM file: contract.wasm
+# 4. Upload either:
+#    - State schema file: state-schema.json (recommended, faster)
+#    - WASM file: contract.wasm (fallback)
 # 5. Click "Load Database" and start exploring with JQ queries
 ```
+
+**Using State Schema in GUI:**
+1. Extract state schema: `cargo run --release -p mero-abi -- state app.wasm > state-schema.json`
+2. In the GUI, select "State Schema File" (or paste JSON content)
+3. Load database - state schema is faster and produces same results as WASM
 
 The GUI automatically exports and processes the database server-side, eliminating the need for manual JSON export.
 

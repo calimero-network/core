@@ -34,8 +34,20 @@ export class StateTreeVisualizer {
      * Uses the new paginated API: first loads context list, then loads trees on-demand
      */
     async load() {
-        if (!this.state.currentWasmFile) {
-            throw new Error('WASM file is required for state tree visualization');
+        // Check if we have schema content (from file or local storage)
+        if (!this.state.currentStateSchemaFile && !this.state.currentStateSchemaFileContent) {
+            // Try to load from local storage
+            try {
+                const savedContent = localStorage.getItem('merodb_schema_content');
+                if (savedContent) {
+                    this.state.currentStateSchemaFileContent = savedContent;
+                    console.log('[StateTreeVisualizer] Loaded schema from local storage');
+                } else {
+                    throw new Error('State schema file is required for state tree visualization');
+                }
+            } catch (err) {
+                throw new Error('State schema file is required for state tree visualization');
+            }
         }
 
         UIManager.showElement('state-loading');
@@ -86,10 +98,22 @@ export class StateTreeVisualizer {
         UIManager.showElement('state-loading');
 
         try {
+            // Use cached schema content if file is not available (e.g., after refresh)
+            const schemaFile = this.state.currentStateSchemaFile;
+            const schemaContent = this.state.currentStateSchemaFileContent;
+            
+            // Debug: Log what we're sending
+            console.log('Loading context tree:', {
+                contextId,
+                hasStateSchemaFile: !!schemaFile,
+                hasSchemaContent: !!schemaContent,
+                stateSchemaFileName: schemaFile?.name || this.state.currentStateSchemaFileName || 'none'
+            });
+            
             const response = await ApiService.loadContextTree(
                 this.state.currentDbPath,
                 contextId,
-                this.state.currentWasmFile
+                schemaFile || (schemaContent ? new File([schemaContent], this.state.currentStateSchemaFileName || 'state-schema.json', { type: 'application/json' }) : null)
             );
 
             // Cache the loaded tree
@@ -174,10 +198,27 @@ export class StateTreeVisualizer {
         const tree = this.state.stateTreeData.loadedTrees?.get(selectedContextId);
 
         // Deep clone to prevent mutation of original stateTreeData
-        if (!tree) return null;
+        if (!tree) {
+            console.warn('[StateTreeVisualizer] No tree data found for context:', selectedContextId);
+            return null;
+        }
 
         try {
-            return JSON.parse(JSON.stringify(tree));
+            const cloned = JSON.parse(JSON.stringify(tree));
+            console.log('[StateTreeVisualizer] Tree structure:', {
+                hasId: !!cloned.id,
+                hasType: !!cloned.type,
+                hasChildren: !!cloned.children,
+                childrenCount: cloned.children?.length || 0,
+                firstChild: cloned.children?.[0] ? {
+                    id: cloned.children[0].id,
+                    type: cloned.children[0].type,
+                    field: cloned.children[0].field,
+                    hasChildren: !!cloned.children[0].children,
+                    childrenCount: cloned.children[0].children?.length || 0
+                } : null
+            });
+            return cloned;
         } catch (error) {
             console.error(`Failed to clone tree for context ${selectedContextId}:`, error);
             return {

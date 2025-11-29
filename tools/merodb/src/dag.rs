@@ -13,6 +13,7 @@ use crate::types::Column;
 
 /// Get detailed information about a specific delta (actions and events)
 /// This is used for on-demand loading when the user hovers over a node
+#[cfg(feature = "gui")]
 pub fn get_delta_details(
     db: &DBWithThreadMode<SingleThreaded>,
     context_id: &str,

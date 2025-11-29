@@ -1,5 +1,5 @@
-use std::fs;
 use std::path::Path;
+use std::{env, fs};
 
 use calimero_wasm_abi::emitter::emit_manifest;
 
@@ -25,5 +25,14 @@ fn main() {
     let abi_path = res_dir.join("abi.json");
     fs::write(&abi_path, json).expect("Failed to write ABI JSON");
 
-    println!("cargo:rerun-if-changed={}", abi_path.display());
+    // Extract and write the state schema
+    if let Ok(mut state_schema) = manifest.extract_state_schema() {
+        state_schema.schema_version = "wasm-abi/1".to_owned();
+
+        let state_schema_json =
+            serde_json::to_string_pretty(&state_schema).expect("Failed to serialize state schema");
+        let state_schema_path = res_dir.join("state-schema.json");
+        fs::write(&state_schema_path, state_schema_json)
+            .expect("Failed to write state schema JSON");
+    }
 }

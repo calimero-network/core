@@ -128,9 +128,9 @@ fn run_gui(port: u16) -> Result<()> {
     println!("The GUI will be available at http://127.0.0.1:{port}");
     println!();
     println!("Instructions:");
-    println!("1. Export your database using: merodb export --db-path /path/to/db --all --wasm-file contract.wasm --output export.json");
-    println!("2. Open the GUI in your browser and load the exported JSON file");
-    println!("3. Use JQ queries to explore and analyze your database");
+    println!("1. Open the GUI in your browser");
+    println!("2. Enter your database path and optionally upload a state schema file");
+    println!("3. Use the Data View, DAG View, and State Tree tabs to explore your database");
     println!();
 
     let rt = Runtime::new()?;

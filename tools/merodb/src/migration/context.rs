@@ -13,7 +13,7 @@ use super::plan::MigrationPlan;
 #[derive(Debug, Default)]
 pub struct MigrationOverrides {
     pub source_db: Option<PathBuf>,
-    pub wasm_file: Option<PathBuf>,
+    pub state_schema_file: Option<PathBuf>,
     pub target_db: Option<PathBuf>,
     pub backup_dir: Option<PathBuf>,
     pub no_backup: bool,
@@ -23,7 +23,7 @@ pub struct MigrationOverrides {
 pub struct MigrationContext {
     /// Parsed migration plan that drives the run.
     plan: MigrationPlan,
-    /// Active source database plus its optional ABI manifest.
+    /// Active source database plus its optional state schema.
     source: SourceContext,
     /// Optional target database if the plan or CLI provided one.
     target: Option<TargetContext>,
@@ -38,7 +38,7 @@ impl MigrationContext {
     /// 1. Resolving source and target database paths from the plan and CLI overrides
     /// 2. Opening the source database in read-only mode
     /// 3. Opening the target database in either read-only (dry-run) or writable (apply) mode
-    /// 4. Setting up optional ABI manifest loading for the source database
+    /// 4. Setting up optional state schema loading for the source database
     ///
     /// # Arguments
     ///
@@ -52,16 +52,17 @@ impl MigrationContext {
     pub fn new(plan: MigrationPlan, overrides: MigrationOverrides, dry_run: bool) -> Result<Self> {
         let MigrationOverrides {
             source_db,
-            wasm_file,
+            state_schema_file,
             target_db,
             backup_dir,
             no_backup,
         } = overrides;
 
         let source_db_path = source_db.unwrap_or_else(|| plan.source.db_path.clone());
-        let source_wasm_path = wasm_file.or_else(|| plan.source.wasm_file.clone());
+        let source_state_schema_path =
+            state_schema_file.or_else(|| plan.source.state_schema_file.clone());
 
-        let source = SourceContext::new(source_db_path, source_wasm_path)?;
+        let source = SourceContext::new(source_db_path, source_state_schema_path)?;
 
         let target_path = target_db.or_else(|| plan.target.as_ref().map(|t| t.db_path.clone()));
         let target_backup = if no_backup {
@@ -111,37 +112,37 @@ impl MigrationContext {
     }
 }
 
-/// Indicates how far ABI manifest loading progressed.
+/// Indicates how far schema loading progressed.
 #[derive(Debug, Clone, Copy)]
-pub enum AbiManifestStatus<'a> {
+pub enum SchemaStatus<'a> {
     NotConfigured,
-    Pending { wasm_path: &'a Path },
+    PendingStateSchema { schema_path: &'a Path },
     Loaded,
 }
 
-/// Holds source RocksDB handle and optional ABI manifest.
+/// Holds source RocksDB handle and optional state schema.
 pub struct SourceContext {
     path: PathBuf,
-    wasm_path: Option<PathBuf>,
+    state_schema_path: Option<PathBuf>,
     db: DBWithThreadMode<SingleThreaded>,
-    // Thread-safe, write-once cache of the decoded ABI manifest shared across readers.
-    manifest: OnceCell<Manifest>,
+    // Thread-safe, write-once cache of the decoded schema shared across readers.
+    schema: OnceCell<Manifest>,
 }
 
 impl SourceContext {
-    /// Open the source database and remember the optional WASM path.
-    fn new(path: PathBuf, wasm_path: Option<PathBuf>) -> Result<Self> {
+    /// Open the source database and remember the optional state schema path.
+    fn new(path: PathBuf, state_schema_path: Option<PathBuf>) -> Result<Self> {
         ensure!(
             path.exists(),
             "Source database path does not exist: {}",
             path.display()
         );
 
-        if let Some(ref wasm) = wasm_path {
+        if let Some(ref schema) = state_schema_path {
             ensure!(
-                wasm.exists(),
-                "WASM file does not exist: {}",
-                wasm.display()
+                schema.exists(),
+                "State schema file does not exist: {}",
+                schema.display()
             );
         }
 
@@ -149,9 +150,9 @@ impl SourceContext {
 
         Ok(Self {
             path,
-            wasm_path,
+            state_schema_path,
             db,
-            manifest: OnceCell::new(),
+            schema: OnceCell::new(),
         })
     }
 
@@ -160,36 +161,40 @@ impl SourceContext {
         &self.path
     }
 
-    /// Optional path to the WASM file carrying the ABI manifest.
-    pub fn wasm_path(&self) -> Option<&Path> {
-        self.wasm_path.as_deref()
+    /// Optional path to the state schema JSON file.
+    pub fn state_schema_path(&self) -> Option<&Path> {
+        self.state_schema_path.as_deref()
     }
 
-    /// Whether the ABI manifest is absent, pending load, or cached.
-    pub fn abi_status(&self) -> AbiManifestStatus<'_> {
-        self.wasm_path()
-            .map_or(AbiManifestStatus::NotConfigured, |path| {
-                if self.manifest.get().is_some() {
-                    AbiManifestStatus::Loaded
-                } else {
-                    AbiManifestStatus::Pending { wasm_path: path }
-                }
-            })
+    /// Whether the schema is absent, pending load, or cached.
+    pub fn schema_status(&self) -> SchemaStatus<'_> {
+        if self.schema.get().is_some() {
+            return SchemaStatus::Loaded;
+        }
+
+        if let Some(path) = self.state_schema_path() {
+            return SchemaStatus::PendingStateSchema { schema_path: path };
+        }
+
+        SchemaStatus::NotConfigured
     }
 
-    /// Lazily decode the ABI manifest, caching the result.
-    /// The manifest is required whenever a plan requests ABI-aware decoding (e.g. `decode_with_abi`).
-    pub fn abi_manifest(&self) -> Result<Option<&Manifest>> {
-        let Some(path) = &self.wasm_path else {
+    /// Lazily load the state schema, caching the result.
+    /// The schema is required whenever a plan requests schema-aware decoding (e.g. `decode_with_abi`).
+    ///
+    /// Loads from state schema file (sufficient for state deserialization).
+    pub fn schema(&self) -> Result<Option<&Manifest>> {
+        let schema = if let Some(schema_path) = &self.state_schema_path {
+            self.schema.get_or_try_init(|| {
+                abi::load_state_schema_from_json(schema_path).wrap_err_with(|| {
+                    format!("Failed to load state schema from {}", schema_path.display())
+                })
+            })?
+        } else {
             return Ok(None);
         };
 
-        let manifest = self.manifest.get_or_try_init(|| {
-            abi::extract_abi_from_wasm(path)
-                .wrap_err_with(|| format!("Failed to load ABI manifest from {}", path.display()))
-        })?;
-
-        Ok(Some(manifest))
+        Ok(Some(schema))
     }
 
     /// Access the underlying RocksDB handle.

@@ -6474,6 +6474,7 @@ dependencies = [
 name = "mero-abi"
 version = "0.1.0"
 dependencies = [
+ "calimero-wasm-abi",
  "clap",
  "eyre",
  "serde_json",
@@ -6658,11 +6659,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tower-http 0.5.2",
  "tracing",
- "wasmparser 0.118.2",
 ]
 
 [[package]]
@@ -7256,6 +7257,8 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
 ]
 
 [[package]]
@@ -10137,6 +10140,18 @@ dependencies = [
  "rand 0.9.2",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "state-schema-conformance"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-storage-macros",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
