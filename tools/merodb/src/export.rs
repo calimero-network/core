@@ -538,6 +538,9 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
     let key_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let key_raw = bytes[..key_end].to_vec();
 
+    // For Counter values in map entries, the Counter is stored directly (not wrapped in Entry)
+    // The Entry<(K, V)> structure is: K + V + Element ID
+    // So we deserialize V (Counter) directly, then handle the Element ID separately
     let value_value =
         deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.value_type, manifest)
             .wrap_err_with(|| {
@@ -2069,7 +2072,19 @@ fn decode_state_root_bfs(
         eprintln!("[decode_state_root_bfs] Decoding field: {}", field.name);
 
         // For collection fields, try to find a matching child from root's children list
-        let field_value = if matches!(&field.type_, TypeRef::Collection { .. }) {
+        // Counter fields are TypeRef::Collection but they're not collections - they're just Counter values
+        // So we need to distinguish between Map/List collections and Counter fields
+        let field_value = if let TypeRef::Collection { collection, .. } = &field.type_ {
+            // Only treat Map and List as collections - Counter with Record is just a Counter field
+            matches!(
+                collection,
+                CollectionType::Map { .. } | CollectionType::List { .. }
+            )
+        } else {
+            false
+        };
+
+        let field_value = if field_value {
             // Find an unused child that is a collection root
             let mut matched_child = None;
             for child_info in &root_children {
