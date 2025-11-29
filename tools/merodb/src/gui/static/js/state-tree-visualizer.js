@@ -644,10 +644,67 @@ export class StateTreeVisualizer {
             }
             // Display value for ScalarEntry types
             else if (stateData.value) {
-                html += `<div class="visualization__tooltip-row">`;
-                html += `  <span class="visualization__tooltip-label">Value:</span>`;
-                html += `  <span class="visualization__tooltip-value"><pre>${JSON.stringify(stateData.value.parsed, null, 2)}</pre></span>`;
-                html += `</div>`;
+                const value = stateData.value.parsed || stateData.value;
+                
+                // Special handling for Counter values
+                if (value && typeof value === 'object' && (value.crdt_type === 'GCounter' || value.crdt_type === 'PNCounter')) {
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Counter Type:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${value.crdt_type}</span>`;
+                    html += `</div>`;
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Total Value:</span>`;
+                    html += `  <span class="visualization__tooltip-value"><strong>${value.value}</strong></span>`;
+                    html += `</div>`;
+                    
+                    // Display positive map entries
+                    if (value.positive && value.positive.entries) {
+                        html += `<div class="visualization__tooltip-row">`;
+                        html += `  <span class="visualization__tooltip-label">Positive Entries:</span>`;
+                        html += `  <span class="visualization__tooltip-value">`;
+                        html += `    <table style="margin-top: 8px; border-collapse: collapse; width: 100%;">`;
+                        html += `      <thead><tr><th style="text-align: left; padding: 4px; border-bottom: 1px solid #ddd;">Executor ID</th><th style="text-align: right; padding: 4px; border-bottom: 1px solid #ddd;">Value</th></tr></thead>`;
+                        html += `      <tbody>`;
+                        for (const [executorId, entry] of Object.entries(value.positive.entries)) {
+                            html += `        <tr>`;
+                            html += `          <td style="padding: 4px; font-family: monospace; font-size: 11px;">${UIManager.escapeHtml(executorId)}</td>`;
+                            html += `          <td style="text-align: right; padding: 4px;">${entry.value}</td>`;
+                            html += `        </tr>`;
+                        }
+                        html += `      </tbody>`;
+                        html += `      <tfoot><tr><td style="padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">Total</td><td style="text-align: right; padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">${value.positive.total}</td></tr></tfoot>`;
+                        html += `    </table>`;
+                        html += `  </span>`;
+                        html += `</div>`;
+                    }
+                    
+                    // Display negative map entries (for PNCounter)
+                    if (value.negative && value.negative.entries) {
+                        html += `<div class="visualization__tooltip-row">`;
+                        html += `  <span class="visualization__tooltip-label">Negative Entries:</span>`;
+                        html += `  <span class="visualization__tooltip-value">`;
+                        html += `    <table style="margin-top: 8px; border-collapse: collapse; width: 100%;">`;
+                        html += `      <thead><tr><th style="text-align: left; padding: 4px; border-bottom: 1px solid #ddd;">Executor ID</th><th style="text-align: right; padding: 4px; border-bottom: 1px solid #ddd;">Value</th></tr></thead>`;
+                        html += `      <tbody>`;
+                        for (const [executorId, entry] of Object.entries(value.negative.entries)) {
+                            html += `        <tr>`;
+                            html += `          <td style="padding: 4px; font-family: monospace; font-size: 11px;">${UIManager.escapeHtml(executorId)}</td>`;
+                            html += `          <td style="text-align: right; padding: 4px;">${entry.value}</td>`;
+                            html += `        </tr>`;
+                        }
+                        html += `      </tbody>`;
+                        html += `      <tfoot><tr><td style="padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">Total</td><td style="text-align: right; padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">${value.negative.total}</td></tr></tfoot>`;
+                        html += `    </table>`;
+                        html += `  </span>`;
+                        html += `</div>`;
+                    }
+                } else {
+                    // Regular value display
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Value:</span>`;
+                    html += `  <span class="visualization__tooltip-value"><pre>${JSON.stringify(value, null, 2)}</pre></span>`;
+                    html += `</div>`;
+                }
             }
 
             html += `</div>`;
@@ -863,6 +920,15 @@ export class StateTreeVisualizer {
                     typeInfo = data.data.type;
                 }
                 
+                // Check if this is a Counter field and show the total value
+                let counterValue = null;
+                if (data.data && data.data.value) {
+                    const value = data.data.value.parsed || data.data.value;
+                    if (value && typeof value === 'object' && (value.crdt_type === 'GCounter' || value.crdt_type === 'PNCounter')) {
+                        counterValue = value.value;
+                    }
+                }
+                
                 // Format type info nicely
                 if (typeInfo) {
                     // Convert common type names to readable format
@@ -875,9 +941,17 @@ export class StateTreeVisualizer {
                         'Rga': 'rga'
                     };
                     const readableType = typeMap[typeInfo] || typeInfo.toLowerCase();
-                    labelText = `${fieldName} (${readableType})`;
+                    if (counterValue !== null) {
+                        labelText = `${fieldName} (${readableType}) = ${counterValue}`;
+                    } else {
+                        labelText = `${fieldName} (${readableType})`;
+                    }
                 } else {
-                    labelText = fieldName;
+                    if (counterValue !== null) {
+                        labelText = `${fieldName} = ${counterValue}`;
+                    } else {
+                        labelText = fieldName;
+                    }
                 }
             }
             // For Entry types, show key: value format
