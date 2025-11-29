@@ -106,14 +106,16 @@ fn test_invariant_map_string_key() {
     manifest.methods.push(Method {
         name: "test_method".to_string(),
         params: vec![],
-        returns: Some(TypeRef::Collection(
-            calimero_wasm_abi::schema::CollectionType::Map {
+        returns: Some(TypeRef::Collection {
+            collection: calimero_wasm_abi::schema::CollectionType::Map {
                 key: Box::new(TypeRef::Scalar(
                     calimero_wasm_abi::schema::ScalarType::String,
                 )),
                 value: Box::new(TypeRef::u32()),
             },
-        )),
+            crdt_type: None,
+            inner_type: None,
+        }),
         returns_nullable: None,
         errors: vec![],
     });
