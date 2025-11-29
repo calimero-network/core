@@ -71,7 +71,8 @@ if [ ! -f "$EXPECTED" ]; then
     cp "$BUILD_TIME_SCHEMA" "$EXPECTED"
 fi
 
-# Compare build-time with expected (full schemas)
+# Compare full schemas (all fields: schema_version, types, methods, events, state_root)
+# No normalization is performed - we compare the complete schema structures
 if ! diff -u "$EXPECTED" "$BUILD_TIME_SCHEMA" > /tmp/build-time-diff.txt; then
     echo "ERROR: Build-time state schema differs from expected:"
     cat /tmp/build-time-diff.txt

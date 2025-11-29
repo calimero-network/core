@@ -684,8 +684,8 @@ fn decode_state_entry(
                         "[decode_state_entry] Successfully decoded as Map entry (field: {})",
                         field.name
                     );
-                return Some(decoded);
-            }
+                    return Some(decoded);
+                }
                 Err(e) => {
                     eprintln!(
                         "[decode_state_entry] Failed to decode as Map entry (field: {}): {}",
@@ -1736,8 +1736,8 @@ fn find_child_by_parent_id(
                 // Check if this node's parent_id matches
                 if let Some(ref node_parent_id) = index.parent_id {
                     if node_parent_id.bytes == parent_id.bytes {
-                let element_id = hex::encode(index.id.as_bytes());
-                let state_key = hex::encode(&key[32..64]);
+                        let element_id = hex::encode(index.id.as_bytes());
+                        let state_key = hex::encode(&key[32..64]);
                         element_to_state.insert(element_id.clone(), state_key.clone());
                         return Ok(Some((state_key, index)));
                     }
@@ -2002,9 +2002,9 @@ fn decode_collection_entries_bfs(
             } else {
                 // Find by parent_id
                 if let Some((key, _)) = find_child_by_parent_id(
-            db,
-            state_cf,
-            context_id,
+                    db,
+                    state_cf,
+                    context_id,
                     &collection_root_element_id,
                     element_to_state,
                 )? {
@@ -2033,7 +2033,7 @@ fn decode_collection_entries_bfs(
                 collection,
                 crdt_type,
                 inner_type,
-            manifest,
+                manifest,
                 Some((db, &entry_key)),
             ) {
                 Ok(entry) => {
@@ -2183,7 +2183,7 @@ fn decode_state_field(
             }
 
             // No matching collection root found for this field
-    Ok(json!({
+            Ok(json!({
                 "field": field.name,
                 "type": format!("{:?}", collection),
                 "crdt_type": crdt_type.as_ref().map(|c| format!("{:?}", c)),

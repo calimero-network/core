@@ -1,5 +1,5 @@
+use std::fs;
 use std::path::Path;
-use std::{env, fs};
 
 use calimero_wasm_abi::emitter::emit_manifest_from_crate;
 
