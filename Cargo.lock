@@ -2094,15 +2094,18 @@ dependencies = [
  "calimero-network-primitives",
  "calimero-primitives",
  "calimero-utils-actix",
+ "either",
  "eyre",
  "futures-util",
  "hex",
  "libp2p",
  "libp2p-metrics",
  "libp2p-stream",
+ "libp2p-swarm-test",
  "multiaddr",
  "owo-colors 3.5.0",
  "prometheus-client",
+ "rand 0.8.5",
  "reqwest 0.12.24",
  "serde",
  "serde_json",
@@ -6085,6 +6088,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "libp2p-plaintext"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e659439578fc6d305da8303834beb9d62f155f40e7f5b9d81c9f2b2c69d1926"
+dependencies = [
+ "asynchronous-codec",
+ "bytes",
+ "futures",
+ "libp2p-core",
+ "libp2p-identity",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "tracing",
+]
+
+[[package]]
 name = "libp2p-quic"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6215,6 +6234,24 @@ dependencies = [
  "heck 0.5.0",
  "quote",
  "syn 2.0.108",
+]
+
+[[package]]
+name = "libp2p-swarm-test"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b149112570d507efe305838c7130835955a0b1147aa8051c1c3867a83175cf6"
+dependencies = [
+ "async-trait",
+ "futures",
+ "futures-timer",
+ "libp2p-core",
+ "libp2p-identity",
+ "libp2p-plaintext",
+ "libp2p-swarm",
+ "libp2p-tcp",
+ "libp2p-yamux",
+ "tracing",
 ]
 
 [[package]]
