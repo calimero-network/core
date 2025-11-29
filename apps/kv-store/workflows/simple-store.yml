@@ -1,0 +1,93 @@
+description: Simple Store Application Workflow (Rust)
+name: Simple Store App Test
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: simple-store-node
+
+steps:
+  - name: Install Simple Store Application
+    type: install_application
+    node: simple-store-node-1
+    path: "res/kv_store.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Simple Store Context
+    type: create_context
+    node: simple-store-node-1
+    application_id: '{{app_id}}'
+    params: '{}'
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Set Value
+    type: call
+    node: simple-store-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: greeting
+      value: hello-world
+
+  - name: Get Value
+    type: call
+    node: simple-store-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get
+    args:
+      key: greeting
+    outputs:
+      store_result: result.output
+
+  - name: Assert Value Matches
+    type: json_assert
+    statements:
+      - 'equal({{store_result}}, "hello-world")'
+
+  - name: Set Multiple Values
+    type: call
+    node: simple-store-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: foo
+      value: bar
+
+  - name: Set Another Value
+    type: call
+    node: simple-store-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set
+    args:
+      key: test
+      value: data
+
+  - name: Get All Entries
+    type: call
+    node: simple-store-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: entries
+    outputs:
+      all_entries: result.output
+
+  - name: Assert Entries Count
+    type: json_assert
+    statements:
+      - 'json_equal({{all_entries}}, {"greeting":"hello-world","foo":"bar","test":"data"})'
+
+stop_all_nodes: false
+restart: true
+wait_timeout: 120
+

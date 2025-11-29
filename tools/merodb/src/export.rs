@@ -538,23 +538,45 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
     let key_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let key_raw = bytes[..key_end].to_vec();
 
-    let value_value =
-        deserializer::deserialize_type_ref_from_cursor(&mut cursor, &field.value_type, manifest)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to deserialize value (type: {:?}, remaining bytes: {})",
-                    field.value_type,
-                    bytes.len() - key_end
-                )
-            })?;
+    // For Counter values in map entries, the Counter is stored directly (not wrapped in Entry)
+    // The Entry<(K, V)> structure is: K + V + Element ID (32 bytes)
+    // So we deserialize V (Counter) directly, then handle the Element ID separately
+    // Save position before deserializing to check if we need to handle Entry wrapper
+    let value_start = cursor.position();
+    let value_value = match deserializer::deserialize_type_ref_from_cursor(
+        &mut cursor,
+        &field.value_type,
+        manifest,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            // If Counter deserialization fails, log the bytes for debugging
+            let remaining = bytes.len() - key_end;
+            let bytes_to_show = remaining.min(64);
+            eprintln!(
+                "[decode_map_entry] Counter deserialization failed for field {}: {}. First {} bytes of value: {}",
+                field.name, e, bytes_to_show, hex::encode(&bytes[key_end..key_end + bytes_to_show])
+            );
+            return Err(eyre::eyre!(
+                "Failed to deserialize value (type: {:?}, remaining bytes: {}, error: {})",
+                field.value_type,
+                remaining,
+                e
+            ));
+        }
+    };
     let value_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let value_raw = bytes[key_end..value_end].to_vec();
 
     // Now deserialize Element (which contains id, timestamps, etc.)
     // Element serializes as: (id: Option<Id>, parent_id: Option<Id>, children: Option<Vec<ChildInfo>>, full_hash: [u8; 32], own_hash: [u8; 32], metadata: Metadata, deleted_at: Option<u64>)
     // For simplicity, we'll just try to read the ID (first 32 bytes if Some, or 1 byte if None)
-    let element_id = if let Ok(id) = borsh::from_slice::<Id>(&bytes[value_end..value_end + 32]) {
-        Some(hex::encode(id.as_bytes()))
+    let element_id = if value_end + 32 <= bytes.len() {
+        if let Ok(id) = borsh::from_slice::<Id>(&bytes[value_end..value_end + 32]) {
+            Some(hex::encode(id.as_bytes()))
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -958,6 +980,481 @@ impl Id {
     }
 }
 
+/// Try to manually decode EntityIndex when Borsh deserialization fails
+/// This is a fallback for cases where the format might be slightly different
+fn try_manual_entity_index_decode(
+    bytes: &[u8],
+    expected_id: &[u8],
+) -> Result<EntityIndex, eyre::Error> {
+    if bytes.len() < 33 {
+        return Err(eyre::eyre!("Too short for EntityIndex"));
+    }
+
+    // Read id (32 bytes)
+    let id_bytes = &bytes[0..32];
+    if id_bytes != expected_id {
+        return Err(eyre::eyre!("ID doesn't match expected context_id"));
+    }
+    let mut id_array = [0u8; 32];
+    id_array.copy_from_slice(id_bytes);
+    let id = Id { bytes: id_array };
+
+    // Read parent_id Option (1 byte + 32 bytes if Some)
+    let mut offset = 32;
+    let parent_id = if bytes[offset] == 0 {
+        offset += 1;
+        None
+    } else if bytes[offset] == 1 {
+        offset += 1;
+        if bytes.len() < offset + 32 {
+            return Err(eyre::eyre!("Not enough bytes for parent_id"));
+        }
+        let mut parent_id_array = [0u8; 32];
+        parent_id_array.copy_from_slice(&bytes[offset..offset + 32]);
+        offset += 32;
+        Some(Id {
+            bytes: parent_id_array,
+        })
+    } else {
+        return Err(eyre::eyre!(
+            "Invalid parent_id Option byte: {}",
+            bytes[offset]
+        ));
+    };
+
+    // Read children Option (1 byte + Vec data if Some)
+    let (children_offset_after, children_vec) = if bytes.len() <= offset {
+        // Not enough bytes to read the Option discriminant - return error
+        return Err(eyre::eyre!(
+            "Not enough bytes to read children Option discriminant at offset {} (buffer length: {})",
+            offset,
+            bytes.len()
+        ));
+    } else if bytes[offset] == 0 {
+        (offset + 1, Vec::new())
+    } else if bytes[offset] == 1 {
+        offset += 1;
+        if bytes.len() < offset + 4 {
+            return Err(eyre::eyre!("Not enough bytes for children Vec length"));
+        }
+        // Read Vec length (u32, little-endian)
+        let len_bytes = &bytes[offset..offset + 4];
+        let len =
+            u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
+        offset += 4;
+
+        // Properly deserialize children Vec using Borsh to handle variable-size StorageType
+        // We'll try to deserialize each ChildInfo properly
+        let children_start = offset;
+        let mut children_vec = Vec::new();
+
+        for i in 0..len {
+            // Try to deserialize this ChildInfo using Borsh
+            // If it fails, we'll skip it but continue
+            match borsh::from_slice::<ChildInfo>(&bytes[offset..]) {
+                Ok(child_info) => {
+                    // Calculate how many bytes this ChildInfo took
+                    // We'll need to serialize it back to know the size, or use a cursor
+                    // For now, let's try a different approach - deserialize the whole Vec at once
+                    children_vec.push(child_info);
+                    // We can't easily know the size without deserializing, so let's try deserializing the whole Vec
+                    break; // Break and try deserializing the whole Vec
+                }
+                Err(_) => {
+                    // If deserialization fails, we'll need to skip manually
+                    // But this is complex, so let's try deserializing the whole Vec instead
+                    break;
+                }
+            }
+        }
+
+        // Try to deserialize the whole children Vec at once
+        // Use a cursor to track how many bytes were consumed
+        eprintln!("[try_manual_entity_index_decode] Attempting to deserialize children Vec (len={}, children_start={})", len, children_start);
+        let deserialized_children = if let Ok(children) =
+            borsh::from_slice::<Vec<ChildInfo>>(&bytes[children_start..])
+        {
+            eprintln!("[try_manual_entity_index_decode] Successfully deserialized {} children using Borsh", children.len());
+            // We successfully deserialized, but we need to know the size
+            // Use a cursor to read and track bytes consumed
+            use std::io::Cursor;
+            let mut cursor = Cursor::new(&bytes[children_start..]);
+            let mut consumed = 0;
+
+            // Read the Vec length
+            if cursor.position() as usize + 4 > bytes.len() - children_start {
+                return Err(eyre::eyre!("Not enough bytes for children Vec length"));
+            }
+            let len = u32::from_le_bytes([
+                bytes[children_start + consumed],
+                bytes[children_start + consumed + 1],
+                bytes[children_start + consumed + 2],
+                bytes[children_start + consumed + 3],
+            ]) as usize;
+            consumed += 4;
+
+            // Try to deserialize each child and track bytes
+            let mut parsed_children = Vec::new();
+            for i in 0..len {
+                let child_start = children_start + consumed;
+                if let Ok(child) = borsh::from_slice::<ChildInfo>(&bytes[child_start..]) {
+                    // We need to calculate the size - let's manually skip to find it
+                    // For now, let's use a simpler approach: manually skip each child
+                    // and try to deserialize to verify
+                    parsed_children.push(child);
+                    // We'll calculate the size manually below
+                } else {
+                    break;
+                }
+            }
+
+            // If we successfully parsed all children, calculate the total size manually
+            if parsed_children.len() == len {
+                // Calculate size by manually skipping
+                let mut size_calc = 4; // Vec length
+                for i in 0..len {
+                    let child_offset = children_start + size_calc;
+                    if bytes.len() < child_offset + 32 {
+                        break;
+                    }
+                    size_calc += 32; // id
+                    if bytes.len() < child_offset + 32 + 32 {
+                        break;
+                    }
+                    size_calc += 32; // merkle_hash
+                    if bytes.len() < child_offset + 32 + 32 + 16 {
+                        break;
+                    }
+                    size_calc += 16; // metadata base
+                    if bytes.len() <= child_offset + 32 + 32 + 16 {
+                        break;
+                    }
+                    let variant = bytes[child_offset + 32 + 32 + 16];
+                    size_calc += 1;
+                    match variant {
+                        0 => {}
+                        1 => {
+                            if bytes.len() >= child_offset + 32 + 32 + 16 + 1 + 32 {
+                                size_calc += 32;
+                                if bytes.len() > child_offset + 32 + 32 + 16 + 1 + 32 {
+                                    if bytes[child_offset + 32 + 32 + 16 + 1 + 32] == 1 {
+                                        size_calc += 1 + 72;
+                                    } else {
+                                        size_calc += 1;
+                                    }
+                                }
+                            }
+                        }
+                        2 => {}
+                        _ => break,
+                    }
+                }
+                offset = children_start + size_calc;
+                eprintln!(
+                    "[try_manual_entity_index_decode] Calculated size: {}, returning {} children",
+                    size_calc,
+                    children.len()
+                );
+                children
+            } else {
+                eprintln!("[try_manual_entity_index_decode] Could not parse all {} children (only parsed {}), falling back to manual skip", len, parsed_children.len());
+                // Fallback: manually skip
+                let mut manual_offset = children_start;
+                for i in 0..len {
+                    if bytes.len() < manual_offset + 32 {
+                        return Err(eyre::eyre!("Not enough bytes for ChildInfo[{}].id", i));
+                    }
+                    manual_offset += 32;
+                    if bytes.len() < manual_offset + 32 {
+                        return Err(eyre::eyre!(
+                            "Not enough bytes for ChildInfo[{}].merkle_hash",
+                            i
+                        ));
+                    }
+                    manual_offset += 32;
+                    if bytes.len() < manual_offset + 16 {
+                        return Err(eyre::eyre!(
+                            "Not enough bytes for ChildInfo[{}].metadata",
+                            i
+                        ));
+                    }
+                    manual_offset += 16;
+                    if bytes.len() <= manual_offset {
+                        return Err(eyre::eyre!(
+                            "Not enough bytes for ChildInfo[{}].storage_type",
+                            i
+                        ));
+                    }
+                    let variant = bytes[manual_offset];
+                    manual_offset += 1;
+                    match variant {
+                        0 => {}
+                        1 => {
+                            if bytes.len() < manual_offset + 32 {
+                                return Err(eyre::eyre!(
+                                    "Not enough bytes for ChildInfo[{}].User.owner",
+                                    i
+                                ));
+                            }
+                            manual_offset += 32;
+                            if bytes.len() <= manual_offset {
+                                return Err(eyre::eyre!(
+                                    "Not enough bytes for ChildInfo[{}].User.signature_data",
+                                    i
+                                ));
+                            }
+                            if bytes[manual_offset] == 1 {
+                                manual_offset += 1 + 72;
+                            } else {
+                                manual_offset += 1;
+                            }
+                        }
+                        2 => {}
+                        _ => return Err(eyre::eyre!("Invalid StorageType variant: {}", variant)),
+                    }
+                }
+                offset = manual_offset;
+                Vec::new() // Can't deserialize, return empty
+            }
+        } else {
+            eprintln!("[try_manual_entity_index_decode] Borsh deserialization failed completely, attempting to deserialize each ChildInfo individually");
+            // Fallback: try to deserialize each ChildInfo individually
+            let mut manual_offset = children_start;
+            let mut manually_deserialized_children = Vec::new();
+            for i in 0..len {
+                eprintln!("[try_manual_entity_index_decode] Attempting to deserialize ChildInfo[{}] at offset {}", i, manual_offset);
+                // Try to deserialize this ChildInfo using Borsh
+                if let Ok(child_info) = borsh::from_slice::<ChildInfo>(&bytes[manual_offset..]) {
+                    eprintln!("[try_manual_entity_index_decode] Successfully deserialized ChildInfo[{}] using Borsh", i);
+                    manually_deserialized_children.push(child_info);
+                    // Calculate how many bytes this ChildInfo took by trying to find the next one
+                    // We'll manually skip based on the structure
+                    let child_start = manual_offset;
+                    if bytes.len() < child_start + 32 {
+                        break;
+                    }
+                    manual_offset += 32; // id
+                    if bytes.len() < manual_offset + 32 {
+                        break;
+                    }
+                    manual_offset += 32; // merkle_hash
+                    if bytes.len() < manual_offset + 16 {
+                        break;
+                    }
+                    manual_offset += 16; // metadata base
+                    if bytes.len() <= manual_offset {
+                        break;
+                    }
+                    let variant = bytes[manual_offset];
+                    manual_offset += 1;
+                    match variant {
+                        0 => {} // Public
+                        1 => {
+                            // User
+                            if bytes.len() < manual_offset + 32 {
+                                break;
+                            }
+                            manual_offset += 32;
+                            if bytes.len() <= manual_offset {
+                                break;
+                            }
+                            if bytes[manual_offset] == 1 {
+                                manual_offset += 1 + 72;
+                            } else {
+                                manual_offset += 1;
+                            }
+                        }
+                        2 => {} // Frozen
+                        _ => break,
+                    }
+                } else {
+                    eprintln!("[try_manual_entity_index_decode] Failed to deserialize ChildInfo[{}] using Borsh, attempting manual deserialization", i);
+                    // Manually deserialize ChildInfo
+                    let child_start = manual_offset;
+                    if bytes.len() < child_start + 32 {
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].id", i);
+                        break;
+                    }
+                    // Read id (32 bytes)
+                    let mut id_array = [0u8; 32];
+                    id_array.copy_from_slice(&bytes[child_start..child_start + 32]);
+                    let child_id = Id { bytes: id_array };
+                    manual_offset += 32;
+
+                    if bytes.len() < manual_offset + 32 {
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].merkle_hash", i);
+                        break;
+                    }
+                    // Read merkle_hash (32 bytes)
+                    let mut merkle_hash_array = [0u8; 32];
+                    merkle_hash_array.copy_from_slice(&bytes[manual_offset..manual_offset + 32]);
+                    manual_offset += 32;
+
+                    if bytes.len() < manual_offset + 16 {
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].metadata (created_at + updated_at)", i);
+                        break;
+                    }
+                    // Read created_at (8 bytes)
+                    let created_at_bytes = &bytes[manual_offset..manual_offset + 8];
+                    let created_at = u64::from_le_bytes([
+                        created_at_bytes[0],
+                        created_at_bytes[1],
+                        created_at_bytes[2],
+                        created_at_bytes[3],
+                        created_at_bytes[4],
+                        created_at_bytes[5],
+                        created_at_bytes[6],
+                        created_at_bytes[7],
+                    ]);
+                    manual_offset += 8;
+
+                    // Read updated_at (8 bytes)
+                    let updated_at_bytes = &bytes[manual_offset..manual_offset + 8];
+                    let updated_at_val = u64::from_le_bytes([
+                        updated_at_bytes[0],
+                        updated_at_bytes[1],
+                        updated_at_bytes[2],
+                        updated_at_bytes[3],
+                        updated_at_bytes[4],
+                        updated_at_bytes[5],
+                        updated_at_bytes[6],
+                        updated_at_bytes[7],
+                    ]);
+                    manual_offset += 8;
+                    let updated_at = UpdatedAt(updated_at_val);
+
+                    if bytes.len() <= manual_offset {
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].storage_type", i);
+                        break;
+                    }
+                    // Read storage_type (1 byte for enum tag)
+                    let variant = bytes[manual_offset];
+                    manual_offset += 1;
+                    let storage_type = match variant {
+                        0 => StorageType::Public,
+                        1 => {
+                            // User
+                            if bytes.len() < manual_offset + 32 {
+                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].User.owner", i);
+                                break;
+                            }
+                            let mut owner_bytes = [0u8; 32];
+                            owner_bytes.copy_from_slice(&bytes[manual_offset..manual_offset + 32]);
+                            manual_offset += 32;
+
+                            if bytes.len() <= manual_offset {
+                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].User.signature_data", i);
+                                break;
+                            }
+                            let signature_data = if bytes[manual_offset] == 1 {
+                                manual_offset += 1;
+                                if bytes.len() < manual_offset + 72 {
+                                    eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].User.signature_data", i);
+                                    break;
+                                }
+                                // Skip signature_data (64 bytes signature + 8 bytes nonce)
+                                manual_offset += 72;
+                                None // We don't need the actual signature data for finding children
+                            } else {
+                                manual_offset += 1;
+                                None
+                            };
+                            StorageType::User {
+                                owner: Id { bytes: owner_bytes },
+                                signature_data,
+                            }
+                        }
+                        2 => StorageType::Frozen,
+                        _ => {
+                            eprintln!("[try_manual_entity_index_decode] Invalid StorageType variant: {} for ChildInfo[{}]", variant, i);
+                            break;
+                        }
+                    };
+
+                    // Construct ChildInfo manually
+                    let metadata = Metadata {
+                        created_at,
+                        updated_at: UpdatedAt(updated_at_val),
+                        storage_type,
+                    };
+
+                    let child_info = ChildInfo {
+                        id: child_id,
+                        merkle_hash: merkle_hash_array,
+                        metadata,
+                    };
+
+                    eprintln!("[try_manual_entity_index_decode] Successfully manually deserialized ChildInfo[{}]: id={}", i, hex::encode(child_info.id.as_bytes()));
+                    manually_deserialized_children.push(child_info);
+                }
+            }
+            offset = manual_offset;
+            eprintln!(
+                "[try_manual_entity_index_decode] Manually deserialized {} out of {} children",
+                manually_deserialized_children.len(),
+                len
+            );
+            manually_deserialized_children
+        };
+
+        eprintln!(
+            "[try_manual_entity_index_decode] Final deserialized_children.len() = {}",
+            deserialized_children.len()
+        );
+        (offset, deserialized_children)
+    } else {
+        return Err(eyre::eyre!(
+            "Invalid children Option byte: {}",
+            bytes[offset]
+        ));
+    };
+
+    eprintln!(
+        "[try_manual_entity_index_decode] Deserialized {} children",
+        children_vec.len()
+    );
+
+    // full_hash should be right after the children data
+    // For a root with no children: offset = 33 (id 32 + parent_id None 1 + children None 1)
+    // For a root with children: offset = children_offset_after
+    let full_hash_offset = children_offset_after;
+
+    if bytes.len() < full_hash_offset + 64 {
+        return Err(eyre::eyre!(
+            "Not enough bytes for full_hash and own_hash (need {} bytes, have {})",
+            full_hash_offset + 64,
+            bytes.len()
+        ));
+    }
+
+    // Read full_hash (32 bytes) and own_hash (32 bytes)
+    let mut full_hash_array = [0u8; 32];
+    full_hash_array.copy_from_slice(&bytes[full_hash_offset..full_hash_offset + 32]);
+    let mut own_hash_array = [0u8; 32];
+    own_hash_array.copy_from_slice(&bytes[full_hash_offset + 32..full_hash_offset + 64]);
+
+    // Construct EntityIndex with the deserialized children
+    // We'll use default metadata and deleted_at since we can't easily parse them
+    eprintln!("[try_manual_entity_index_decode] Constructing EntityIndex with {} children (children_vec.len()={})", children_vec.len(), children_vec.len());
+    Ok(EntityIndex {
+        id,
+        parent_id,
+        children: if children_vec.is_empty() {
+            None
+        } else {
+            Some(children_vec)
+        },
+        full_hash: full_hash_array,
+        own_hash: own_hash_array,
+        metadata: Metadata {
+            created_at: 0,
+            updated_at: UpdatedAt(0),
+            storage_type: StorageType::Public,
+        },
+        deleted_at: None,
+    })
+}
+
 #[derive(borsh::BorshDeserialize)]
 #[expect(
     dead_code,
@@ -973,6 +1470,23 @@ struct ChildInfo {
 struct Metadata {
     created_at: u64,
     updated_at: UpdatedAt,
+    storage_type: StorageType,
+}
+
+#[derive(borsh::BorshDeserialize)]
+enum StorageType {
+    Public,
+    User {
+        owner: Id,
+        signature_data: Option<SignatureData>,
+    },
+    Frozen,
+}
+
+#[derive(borsh::BorshDeserialize)]
+struct SignatureData {
+    signature: [u8; 64],
+    nonce: u64,
 }
 
 #[derive(borsh::BorshDeserialize)]
@@ -1195,6 +1709,49 @@ fn find_and_build_tree_for_context(
         hex::encode(context_id)
     );
 
+    // First, try to directly construct and look up the root EntityIndex key
+    // The root EntityIndex's ID is typically the context_id itself
+    // Key::Index(id) is hashed: [0 (1 byte) + id (32 bytes)] -> SHA256 -> 32 bytes
+    use sha2::{Digest, Sha256};
+    let mut key_bytes_for_hash = Vec::with_capacity(33);
+    key_bytes_for_hash.push(0u8); // Key::Index variant
+    key_bytes_for_hash.extend_from_slice(context_id);
+    let calculated_state_key = Sha256::digest(&key_bytes_for_hash);
+
+    // Construct full key: context_id (32 bytes) + state_key (32 bytes)
+    let mut direct_key = Vec::with_capacity(64);
+    direct_key.extend_from_slice(context_id);
+    direct_key.extend_from_slice(&calculated_state_key);
+
+    eprintln!("[find_and_build_tree_for_context] Attempting direct lookup for root EntityIndex at key: {}", hex::encode(&direct_key));
+
+    // Try direct lookup first
+    if let Ok(Some(value)) = db.get_cf(state_cf, &direct_key) {
+        if let Ok(index) = borsh::from_slice::<EntityIndex>(&value) {
+            if index.full_hash == root_hash {
+                let state_key_hex = hex::encode(&calculated_state_key);
+                eprintln!("[find_and_build_tree_for_context] Found root EntityIndex via direct lookup: state_key={}, id={}, full_hash={}", 
+                    state_key_hex, hex::encode(index.id.as_bytes()), hex::encode(root_hash));
+                return decode_state_root_bfs(
+                    db,
+                    state_cf,
+                    context_id,
+                    &index,
+                    &state_key_hex,
+                    manifest,
+                    &mut std::collections::HashMap::new(),
+                );
+            } else {
+                eprintln!("[find_and_build_tree_for_context] Direct lookup found EntityIndex but full_hash doesn't match: found={}, expected={}", 
+                    hex::encode(index.full_hash), hex::encode(root_hash));
+            }
+        } else {
+            eprintln!("[find_and_build_tree_for_context] Direct lookup found entry but failed to deserialize as EntityIndex");
+        }
+    } else {
+        eprintln!("[find_and_build_tree_for_context] Direct lookup failed, falling back to scan");
+    }
+
     // Scan State column family to find the root EntityIndex by matching full_hash to root_hash
     // The root_hash from ContextMeta is the full_hash of the root EntityIndex
     // EntityIndex entries are stored in the State column, but we need to scan to find them
@@ -1215,41 +1772,140 @@ fn find_and_build_tree_for_context(
         if key.len() == 64 && &key[0..32] == context_id {
             context_entries += 1;
 
+            // Special case: if the entry starts with context_id and byte 32 is 0, it's likely the root EntityIndex
+            // Try to decode it even if standard Borsh deserialization fails
+            let is_likely_root = value.len() >= 33 && &value[..32] == context_id && value[32] == 0;
+
             // Try to decode as EntityIndex
-            // EntityIndex starts with an Option<Id> for parent_id, so first byte should be 0 or 1
-            // If it's not, this is probably state data, not an EntityIndex
-            if value.len() > 0 && (value[0] == 0 || value[0] == 1) {
-                // Try to decode as EntityIndex - use a more lenient approach
-                // EntityIndex structure: Option<Id> (parent_id), Option<Vec<ChildInfo>> (children), [u8;32] (full_hash), [u8;32] (own_hash), Metadata, Option<u64> (deleted_at)
-                // The first field is parent_id: Option<Id>
-                // For root, parent_id should be None (0)
-                // But we need to check if the structure matches EntityIndex
-                match borsh::from_slice::<EntityIndex>(&value) {
-                    Ok(index) => {
+            match borsh::from_slice::<EntityIndex>(&value) {
+                Ok(index) => {
+                    entity_index_entries += 1;
+
+                    // Check if this is the root EntityIndex:
+                    // 1. id matches context_id (root EntityIndex's ID is the context_id)
+                    // 2. parent_id is None (root has no parent)
+                    let is_root_by_id =
+                        index.id.as_bytes() == context_id && index.parent_id.is_none();
+
+                    // Also check if full_hash matches (for verification)
+                    let full_hash_matches = index.full_hash == root_hash;
+
+                    if is_root_by_id {
+                        if root_state_key.is_some() {
+                            return Err(eyre::eyre!(
+                                "Multiple root EntityIndex entries found for context {}. This indicates data corruption.",
+                                hex::encode(context_id)
+                            ));
+                        }
+                        let state_key = hex::encode(&key[32..64]);
+                        eprintln!("[find_and_build_tree_for_context] Found root EntityIndex by id/parent_id: state_key={}, id={}, full_hash={}, root_hash={}, hash_matches={}, scanned {} entries (context_entries={}, entity_index_entries={})", 
+                            state_key, hex::encode(index.id.as_bytes()), hex::encode(index.full_hash), hex::encode(root_hash), full_hash_matches, scanned_count, context_entries, entity_index_entries);
+                        root_state_key = Some(state_key);
+                        root_index = Some(index);
+                        // Don't break yet - continue to check if full_hash matches for verification
+                        if full_hash_matches {
+                            eprintln!("[find_and_build_tree_for_context] Root EntityIndex full_hash matches root_hash from ContextMeta - perfect match!");
+                            break;
+                        } else {
+                            eprintln!("[find_and_build_tree_for_context] WARNING: Root EntityIndex found but full_hash doesn't match ContextMeta root_hash. Using it anyway based on id/parent_id criteria.");
+                        }
+                    } else if full_hash_matches {
+                        // Fallback: if full_hash matches but id doesn't, still use it (might be a different root)
+                        if root_state_key.is_some() {
+                            return Err(eyre::eyre!(
+                                "Multiple nodes with root_hash found for context {}. This indicates data corruption.",
+                                hex::encode(context_id)
+                            ));
+                        }
+                        let state_key = hex::encode(&key[32..64]);
+                        eprintln!("[find_and_build_tree_for_context] Found root EntityIndex by full_hash match: state_key={}, id={}, full_hash={}, scanned {} entries (context_entries={}, entity_index_entries={})", 
+                            state_key, hex::encode(index.id.as_bytes()), hex::encode(root_hash), scanned_count, context_entries, entity_index_entries);
+                        root_state_key = Some(state_key);
+                        root_index = Some(index);
+                        break;
+                    } else {
+                        // Log mismatches for debugging (only first few to avoid spam)
+                        if entity_index_entries <= 5 {
+                            eprintln!("[find_and_build_tree_for_context] EntityIndex {} has full_hash={}, expected={}, id={}, parent_id={:?}", 
+                                hex::encode(index.id.as_bytes()), hex::encode(index.full_hash), hex::encode(root_hash),
+                                hex::encode(index.id.as_bytes()), index.parent_id.as_ref().map(|p| hex::encode(p.as_bytes())));
+                        }
+                    }
+                }
+                Err(e) => {
+                    // For all entries that might be EntityIndex, try to extract full_hash manually
+                    // This includes entries that fail to deserialize but might still be EntityIndex
+
+                    // Try manual decode to extract full_hash
+                    if let Ok(index) = try_manual_entity_index_decode(&value, context_id) {
                         entity_index_entries += 1;
 
-                        // Check if this node's full_hash matches the root_hash from ContextMeta
-                        if index.full_hash == root_hash {
+                        eprintln!("[find_and_build_tree_for_context] Entry {} manually decoded: id={}, full_hash={}, parent_id={:?}", 
+                            scanned_count, hex::encode(index.id.as_bytes()), hex::encode(index.full_hash),
+                            index.parent_id.as_ref().map(|p| hex::encode(p.as_bytes())));
+
+                        // Check if this is the root EntityIndex by id/parent_id
+                        let is_root_by_id =
+                            index.id.as_bytes() == context_id && index.parent_id.is_none();
+                        let full_hash_matches = index.full_hash == root_hash;
+
+                        if is_root_by_id {
+                            if root_state_key.is_some() {
+                                return Err(eyre::eyre!(
+                                    "Multiple root EntityIndex entries found for context {}. This indicates data corruption.",
+                                    hex::encode(context_id)
+                                ));
+                            }
+                            eprintln!("[find_and_build_tree_for_context] Found root EntityIndex via manual decode (by id/parent_id): state_key={}, id={}, full_hash={}, root_hash={}, hash_matches={}", 
+                                hex::encode(&key[32..64]), hex::encode(index.id.as_bytes()), hex::encode(index.full_hash), hex::encode(root_hash), full_hash_matches);
+                            let state_key = hex::encode(&key[32..64]);
+                            root_state_key = Some(state_key);
+                            root_index = Some(index);
+                            if full_hash_matches {
+                                eprintln!("[find_and_build_tree_for_context] Root EntityIndex full_hash matches root_hash from ContextMeta - perfect match!");
+                                break;
+                            } else {
+                                eprintln!("[find_and_build_tree_for_context] WARNING: Root EntityIndex found but full_hash doesn't match ContextMeta root_hash. Using it anyway based on id/parent_id criteria.");
+                            }
+                        } else if full_hash_matches {
+                            // Fallback: if full_hash matches but id doesn't, still use it
                             if root_state_key.is_some() {
                                 return Err(eyre::eyre!(
                                     "Multiple nodes with root_hash found for context {}. This indicates data corruption.",
                                     hex::encode(context_id)
                                 ));
                             }
+                            eprintln!("[find_and_build_tree_for_context] Found root EntityIndex via manual decode (by full_hash): state_key={}, id={}, full_hash={}", 
+                                hex::encode(&key[32..64]), hex::encode(index.id.as_bytes()), hex::encode(root_hash));
                             let state_key = hex::encode(&key[32..64]);
-                            eprintln!("[find_and_build_tree_for_context] Found root EntityIndex: state_key={}, id={}, full_hash={}, scanned {} entries (context_entries={}, entity_index_entries={})", 
-                                state_key, hex::encode(index.id.as_bytes()), hex::encode(root_hash), scanned_count, context_entries, entity_index_entries);
                             root_state_key = Some(state_key);
                             root_index = Some(index);
-                            break; // Found root, stop scanning
+                            break;
                         }
+                    } else if is_likely_root {
+                        // If it looks like root but manual decode failed, try to extract full_hash from a likely position
+                        // EntityIndex structure: id (32) + parent_id (1+32?) + children (variable) + full_hash (32) + own_hash (32) + metadata + deleted_at
+                        // For root, parent_id is None (1 byte = 0), so full_hash might be at offset 33 + children_size
+                        // But without knowing children size, we can't reliably extract it
+                        eprintln!("[find_and_build_tree_for_context] Entry {} looks like root but manual decode failed", scanned_count);
                     }
-                    Err(e) => {
-                        // Not an EntityIndex, skip silently
-                        // Only log if we haven't found many EntityIndex entries yet
-                        if entity_index_entries < 5 && scanned_count % 20 == 0 {
-                            eprintln!("[find_and_build_tree_for_context] Failed to decode as EntityIndex (entry {}): {}", scanned_count, e);
-                        }
+
+                    // Not an EntityIndex, skip silently
+                    // Log first few failures to help debug, especially for entries that might be EntityIndex
+                    if entity_index_entries == 0 && context_entries <= 15 {
+                        let value_len = value.len();
+                        let first_32_bytes = if value_len >= 32 {
+                            hex::encode(&value[..32])
+                        } else {
+                            hex::encode(&value[..])
+                        };
+                        let byte_32 = if value_len > 32 {
+                            format!("byte_32={:02x}", value[32])
+                        } else {
+                            "byte_32=N/A".to_string()
+                        };
+                        eprintln!("[find_and_build_tree_for_context] Failed to decode as EntityIndex (entry {}, value_len={}, first_32_bytes={}, {}, error={})", 
+                            scanned_count, value_len, first_32_bytes, byte_32, e);
                     }
                 }
             }
@@ -1267,7 +1923,7 @@ fn find_and_build_tree_for_context(
 
             eyre::eyre!(
                 "Root EntityIndex not found for context {}. root_hash={}. Scanned {} entries, found {} context entries, {} EntityIndex entries.",
-                hex::encode(context_id),
+            hex::encode(context_id),
                 hex::encode(root_hash),
                 scanned_count,
                 context_entries,
@@ -1365,19 +2021,53 @@ fn decode_state_root_bfs(
 
     for child_info in &root_children {
         let child_element_id = hex::encode(child_info.id.as_bytes());
-        // Find state key for this child by scanning State column family
-        // The state key is the last 32 bytes of the RocksDB key
-        let mut found = false;
-        for item in db.iterator_cf(state_cf, rocksdb::IteratorMode::Start) {
-            if let Ok((key_bytes, value_bytes)) = item {
-                if key_bytes.len() == 64 && &key_bytes[0..32] == context_id {
-                    if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&value_bytes) {
-                        if child_index.id.as_bytes() == child_info.id.as_bytes() {
-                            let state_key = hex::encode(&key_bytes[32..64]);
-                            element_to_state.insert(child_element_id.clone(), state_key);
+
+        // Construct the state key directly from the child's ID
+        // Key::Index(id) is hashed: [0 (1 byte) + id (32 bytes)] -> SHA256 -> 32 bytes
+        use sha2::{Digest, Sha256};
+        let mut key_bytes_for_hash = Vec::with_capacity(33);
+        key_bytes_for_hash.push(0u8); // Key::Index variant
+        key_bytes_for_hash.extend_from_slice(child_info.id.as_bytes());
+        let state_key = hex::encode(Sha256::digest(&key_bytes_for_hash));
+
+        // Verify the key exists in the database
+        let mut full_key = Vec::with_capacity(64);
+        full_key.extend_from_slice(context_id);
+        full_key.extend_from_slice(&hex::decode(&state_key).unwrap_or_default());
+
+        if db.get_cf(state_cf, &full_key).ok().flatten().is_some() {
+            element_to_state.insert(child_element_id.clone(), state_key.clone());
+            eprintln!(
+                "[decode_state_root_bfs] Mapped child {} to state key {} (constructed from ID)",
+                child_element_id, state_key
+            );
+        } else {
+            // Fallback: scan to find it (might be a data entry, not EntityIndex)
+            let mut found = false;
+            for item in db.iterator_cf(state_cf, rocksdb::IteratorMode::Start) {
+                if let Ok((key_bytes, _value_bytes)) = item {
+                    if key_bytes.len() == 64 && &key_bytes[0..32] == context_id {
+                        let candidate_state_key = hex::encode(&key_bytes[32..64]);
+                        // Try to decode as EntityIndex first
+                        if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&_value_bytes) {
+                            if child_index.id.as_bytes() == child_info.id.as_bytes() {
+                                element_to_state
+                                    .insert(child_element_id.clone(), candidate_state_key.clone());
+                                eprintln!(
+                                    "[decode_state_root_bfs] Mapped child {} to state key {} (found via scan as EntityIndex)",
+                                    child_element_id, candidate_state_key
+                                );
+                                found = true;
+                                break;
+                            }
+                        }
+                        // Also check if the state_key matches what we calculated
+                        if candidate_state_key == state_key {
+                            element_to_state
+                                .insert(child_element_id.clone(), candidate_state_key.clone());
                             eprintln!(
-                                "[decode_state_root_bfs] Mapped child {} to state key",
-                                child_element_id
+                                "[decode_state_root_bfs] Mapped child {} to state key {} (found via scan, matches calculated key)",
+                                child_element_id, candidate_state_key
                             );
                             found = true;
                             break;
@@ -1385,12 +2075,12 @@ fn decode_state_root_bfs(
                     }
                 }
             }
-        }
-        if !found {
-            eprintln!(
-                "[decode_state_root_bfs] Warning: Could not find state key for child {}",
-                child_element_id
-            );
+            if !found {
+                eprintln!(
+                    "[decode_state_root_bfs] Warning: Could not find state key for child {} (calculated: {})",
+                    child_element_id, state_key
+                );
+            }
         }
     }
 
@@ -1406,7 +2096,19 @@ fn decode_state_root_bfs(
         eprintln!("[decode_state_root_bfs] Decoding field: {}", field.name);
 
         // For collection fields, try to find a matching child from root's children list
-        let field_value = if matches!(&field.type_, TypeRef::Collection { .. }) {
+        // Counter fields are TypeRef::Collection but they're not collections - they're just Counter values
+        // So we need to distinguish between Map/List collections and Counter fields
+        let field_value = if let TypeRef::Collection { collection, .. } = &field.type_ {
+            // Only treat Map and List as collections - Counter with Record is just a Counter field
+            matches!(
+                collection,
+                CollectionType::Map { .. } | CollectionType::List { .. }
+            )
+        } else {
+            false
+        };
+
+        let field_value = if field_value {
             // Find an unused child that is a collection root
             let mut matched_child = None;
             for child_info in &root_children {
@@ -1425,12 +2127,31 @@ fn decode_state_root_bfs(
                     child_key.extend_from_slice(&child_key_bytes);
 
                     if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
-                        if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&child_value) {
-                            // This is a collection root - it matches this collection field
-                            matched_child = Some((state_key.clone(), child_index));
-                            used_children.insert(child_element_id);
-                            break;
-                        }
+                        // Try standard Borsh deserialization first
+                        let child_index = match borsh::from_slice::<EntityIndex>(&child_value) {
+                            Ok(index) => {
+                                eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex for field {}: {} children", field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0));
+                                index
+                            }
+                            Err(e) => {
+                                // Try manual deserialization as fallback
+                                eprintln!("[decode_state_root_bfs] Failed to decode collection root EntityIndex for field {} using Borsh: {}. Attempting manual decode...", field.name, e);
+                                match try_manual_entity_index_decode(&child_value, context_id) {
+                                    Ok(index) => {
+                                        eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex manually for field {}: {} children", field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0));
+                                        index
+                                    }
+                                    Err(manual_err) => {
+                                        eprintln!("[decode_state_root_bfs] Manual decode also failed for collection root: {}", manual_err);
+                                        continue; // Skip this child
+                                    }
+                                }
+                            }
+                        };
+                        // This is a collection root - it matches this collection field
+                        matched_child = Some((state_key.clone(), child_index));
+                        used_children.insert(child_element_id);
+                        break;
                     }
                 }
             }
@@ -1460,14 +2181,119 @@ fn decode_state_root_bfs(
                 })
             }
         } else {
-            // Non-collection field - decode directly (these are stored in the root itself)
-            json!({
-                "field": field.name,
-                "type": "scalar_or_record",
-                "value": null,
-                "children": [],
-                "note": "Non-collection fields are stored in the state root itself"
-            })
+            // Non-collection field - could be a Record (Counter, etc.) or scalar
+            // Try to find a child that matches this field
+            // For Record types like Counter, they're stored as children of the root
+            let mut matched_child = None;
+            for child_info in &root_children {
+                let child_element_id = hex::encode(child_info.id.as_bytes());
+                if used_children.contains(&child_element_id) {
+                    continue;
+                }
+
+                // Check if this child matches the field by trying to decode it
+                if let Some(state_key) = element_to_state.get(&child_element_id) {
+                    let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
+                        format!("Failed to decode child_state_key: {}", state_key)
+                    })?;
+                    let mut child_key = Vec::with_capacity(64);
+                    child_key.extend_from_slice(context_id);
+                    child_key.extend_from_slice(&child_key_bytes);
+
+                    if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                        eprintln!("[decode_state_root_bfs] Attempting to decode child {} for field {} (value length: {})", child_element_id, field.name, child_value.len());
+                        // First, try to decode directly as the field's type (for Counter, etc.)
+                        // This handles cases where the value is stored as Entry<T> where T is the field type
+                        let decoded = if let TypeRef::Collection {
+                            collection: CollectionType::Record { .. },
+                            crdt_type,
+                            inner_type,
+                        } = &field.type_
+                        {
+                            eprintln!("[decode_state_root_bfs] Field {} is Record type, trying decode_record_entry (crdt_type: {:?})", field.name, crdt_type);
+                            // For Record types like Counter, try to decode as Entry<T>
+                            match decode_record_entry(
+                                &child_value,
+                                field,
+                                crdt_type,
+                                inner_type,
+                                manifest,
+                            ) {
+                                Ok(v) => {
+                                    eprintln!("[decode_state_root_bfs] decode_record_entry succeeded for field {}: {:?}", field.name, v);
+                                    // Extract value from Entry structure
+                                    if let Some(obj) = v.as_object() {
+                                        let extracted = obj.get("value").cloned().unwrap_or(v);
+                                        eprintln!("[decode_state_root_bfs] Extracted value from Entry: {:?}", extracted);
+                                        Some(extracted)
+                                    } else {
+                                        Some(v)
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[decode_state_root_bfs] decode_record_entry failed for field {}: {}", field.name, e);
+                                    None
+                                }
+                            }
+                        } else {
+                            eprintln!("[decode_state_root_bfs] Field {} is not Record type, trying decode_state_entry", field.name);
+                            // For other types, try decode_state_entry
+                            decode_state_entry(&child_value, manifest, Some((db, &child_key))).map(
+                                |v| {
+                                    // Extract value from decoded entry
+                                    if let Some(obj) = v.as_object() {
+                                        obj.get("value")
+                                            .or_else(|| obj.get("data"))
+                                            .cloned()
+                                            .unwrap_or(v)
+                                    } else {
+                                        v
+                                    }
+                                },
+                            )
+                        };
+
+                        if let Some(decoded_value) = decoded {
+                            // Skip if decoding failed (has "error" field)
+                            if let Some(obj) = decoded_value.as_object() {
+                                if obj.contains_key("error") {
+                                    eprintln!("[decode_state_root_bfs] Skipping child with decode error for field {}: {}", field.name, obj.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                                    continue;
+                                }
+                            }
+                            matched_child = Some((state_key.clone(), decoded_value));
+                            used_children.insert(child_element_id);
+                            eprintln!("[decode_state_root_bfs] Found matching child for non-collection field {}: state_key={}, value={:?}", field.name, state_key, matched_child.as_ref().unwrap().1);
+                            break;
+                        } else {
+                            eprintln!(
+                                "[decode_state_root_bfs] Failed to decode child {} for field {}",
+                                child_element_id, field.name
+                            );
+                        }
+                    }
+                }
+            }
+
+            if let Some((state_key, decoded_value)) = matched_child {
+                eprintln!("[decode_state_root_bfs] Successfully decoded Counter field {} with value: {:?}", field.name, decoded_value);
+                json!({
+                    "field": field.name,
+                    "type": format!("{:?}", field.type_),
+                    "value": decoded_value,
+                    "state_key": state_key,
+                    "children": [],
+                })
+            } else {
+                // No matching child found
+                json!({
+                    "field": field.name,
+                    "type": format!("{:?}", field.type_),
+                    "value": null,
+                    "children": [],
+                    "note": "Field not found in state"
+                })
+            }
         };
 
         eprintln!(
@@ -1502,34 +2328,76 @@ fn decode_state_root_bfs(
     for (field_name, field_value) in state_fields {
         // Each field becomes a child node
         // If the field_value has children (collections), extract them to be direct children
-        let (field_data_without_children, field_children) =
-            if let Some(field_obj) = field_value.as_object() {
-                // Check if this field has a "children" array (from collections)
-                if let Some(children_array) = field_obj.get("children").and_then(|v| v.as_array()) {
-                    // Extract children and create a new field object without nested children
-                    let mut field_data = field_obj.clone();
-                    field_data.remove("children");
-                    (json!(field_data), Some(children_array.clone()))
-                } else {
-                    (field_value.clone(), None)
-                }
+        let (field_data_without_children, field_children) = if let Some(field_obj) =
+            field_value.as_object()
+        {
+            // Check if this field has a "children" array (from collections)
+            if let Some(children_array) = field_obj.get("children").and_then(|v| v.as_array()) {
+                eprintln!(
+                    "[decode_state_root_bfs] Field {} has {} children in field_value",
+                    field_name,
+                    children_array.len()
+                );
+                // Extract children and create a new field object without nested children
+                let mut field_data = field_obj.clone();
+                field_data.remove("children");
+                (json!(field_data), Some(children_array.clone()))
             } else {
+                eprintln!("[decode_state_root_bfs] Field {} has no children array in field_value. Keys: {:?}", field_name, field_obj.keys().collect::<Vec<_>>());
                 (field_value.clone(), None)
-            };
+            }
+        } else {
+            eprintln!(
+                "[decode_state_root_bfs] Field {} value is not an object: {:?}",
+                field_name, field_value
+            );
+            (field_value.clone(), None)
+        };
+
+        // For Counter fields, ensure the value is visible in the data
+        let mut field_data_final = field_data_without_children.clone();
+        if let Some(field_obj_data) = field_data_without_children.as_object() {
+            if let Some(value) = field_obj_data.get("value") {
+                // If there's a value, ensure it's visible in the data
+                if let Some(field_data_final_obj) = field_data_final.as_object_mut() {
+                    // The value is already in field_data_without_children, so it will be in data
+                    eprintln!(
+                        "[decode_state_root_bfs] Field {} has value in data: {:?}",
+                        field_name, value
+                    );
+                }
+            }
+        }
 
         let mut field_obj = json!({
             "id": format!("{}_{}", root_element_id, field_name),
             "type": "Field",
             "field": field_name,
-            "data": field_data_without_children,
+            "data": field_data_final,
             "parent_id": root_element_id,
         });
 
         // If we extracted children, add them as direct children of the field node
         if let Some(field_children_array) = field_children {
+            eprintln!(
+                "[decode_state_root_bfs] Adding {} children to field {} node",
+                field_children_array.len(),
+                field_name
+            );
             if let Some(field_obj_map) = field_obj.as_object_mut() {
                 field_obj_map.insert("children".to_string(), json!(field_children_array));
+                eprintln!(
+                    "[decode_state_root_bfs] Successfully added children to field {} node",
+                    field_name
+                );
+            } else {
+                eprintln!("[decode_state_root_bfs] ERROR: field_obj is not an object, cannot add children!");
             }
+        } else {
+            eprintln!(
+                "[decode_state_root_bfs] Field {} has no children to add",
+                field_name
+            );
         }
 
         children.push(field_obj);
@@ -1539,6 +2407,27 @@ fn decode_state_root_bfs(
         "[decode_state_root_bfs] Created {} children for root node",
         children.len()
     );
+
+    // Log details about each child
+    for (idx, child) in children.iter().enumerate() {
+        if let Some(child_obj) = child.as_object() {
+            let field_name = child_obj
+                .get("field")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let child_children = child_obj
+                .get("children")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            eprintln!(
+                "[decode_state_root_bfs] Child {}: field={}, has {} children",
+                idx + 1,
+                field_name,
+                child_children
+            );
+        }
+    }
 
     // Debug: Log the structure of the first child if it exists
     if !children.is_empty() {
@@ -1928,8 +2817,18 @@ fn decode_collection_field_with_root(
 
         // Convert entries to children for D3 hierarchy
         let entries_count = entries.len();
+        eprintln!(
+            "[decode_collection_field_with_root] Converting {} entries to children for field {}",
+            entries_count, field.name
+        );
         let mut entry_children = Vec::new();
-        for entry in &entries {
+        for (idx, entry) in entries.iter().enumerate() {
+            eprintln!(
+                "[decode_collection_field_with_root] Processing entry {}/{}: {:?}",
+                idx + 1,
+                entries_count,
+                entry
+            );
             if let Some(entry_obj) = entry.as_object() {
                 let entry_data = entry_obj.get("entry").cloned().unwrap_or(json!(null));
                 let state_key = entry_obj
@@ -1937,16 +2836,27 @@ fn decode_collection_field_with_root(
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
 
-                entry_children.push(json!({
+                let entry_child = json!({
                     "id": state_key,
                     "type": "Entry",
                     "field": field.name,
                     "data": entry_data,
                     "parent_id": format!("{}_{}", parent_element_id, field.name),
-                }));
+                });
+                eprintln!(
+                    "[decode_collection_field_with_root] Created entry child: {:?}",
+                    entry_child
+                );
+                entry_children.push(entry_child);
+            } else {
+                eprintln!(
+                    "[decode_collection_field_with_root] Entry {} is not an object: {:?}",
+                    idx, entry
+                );
             }
         }
 
+        eprintln!("[decode_collection_field_with_root] Created {} entry children for field {} (from {} entries)", entry_children.len(), field.name, entries_count);
         Ok(json!({
             "field": field.name,
             "type": format!("{:?}", collection),
@@ -1992,25 +2902,77 @@ fn decode_collection_entries_bfs(
 
     // Find all children of collection root (entries in the collection)
     // Use the children list from EntityIndex if available, otherwise scan by parent_id
+    eprintln!(
+        "[decode_collection_entries_bfs] Collection root EntityIndex children: {:?}",
+        collection_root_index
+            .children
+            .as_ref()
+            .map(|c| c.len())
+            .unwrap_or(0)
+    );
+
     if let Some(children) = &collection_root_index.children {
-        for child_info in children {
+        eprintln!(
+            "[decode_collection_entries_bfs] Collection root has {} children, processing...",
+            children.len()
+        );
+        for (idx, child_info) in children.iter().enumerate() {
+            eprintln!(
+                "[decode_collection_entries_bfs] Processing child {}/{}: {}",
+                idx + 1,
+                children.len(),
+                hex::encode(child_info.id.as_bytes())
+            );
             let entry_element_id = hex::encode(child_info.id.as_bytes());
 
             // Get or find state key for this entry
             let entry_state_key = if let Some(key) = element_to_state.get(&entry_element_id) {
                 key.clone()
             } else {
-                // Find by parent_id
-                if let Some((key, _)) = find_child_by_parent_id(
-                    db,
-                    state_cf,
-                    context_id,
-                    &collection_root_element_id,
-                    element_to_state,
-                )? {
-                    key
+                // Construct the state key directly from the entry's ID
+                // Key::Entry(id) is hashed: [1 (1 byte) + id (32 bytes)] -> SHA256 -> 32 bytes
+                use sha2::{Digest, Sha256};
+                let mut key_bytes_for_hash = Vec::with_capacity(33);
+                key_bytes_for_hash.push(1u8); // Key::Entry variant
+                key_bytes_for_hash.extend_from_slice(child_info.id.as_bytes());
+                let calculated_state_key = hex::encode(Sha256::digest(&key_bytes_for_hash));
+
+                // Verify the key exists in the database
+                let mut full_key = Vec::with_capacity(64);
+                full_key.extend_from_slice(context_id);
+                full_key.extend_from_slice(&hex::decode(&calculated_state_key).unwrap_or_default());
+
+                if db.get_cf(state_cf, &full_key).ok().flatten().is_some() {
+                    element_to_state.insert(entry_element_id.clone(), calculated_state_key.clone());
+                    calculated_state_key
                 } else {
-                    continue; // Entry not found
+                    // Try Key::Index instead of Key::Entry (entry might be stored as EntityIndex)
+                    let mut key_bytes_for_hash_index = Vec::with_capacity(33);
+                    key_bytes_for_hash_index.push(0u8); // Key::Index variant
+                    key_bytes_for_hash_index.extend_from_slice(child_info.id.as_bytes());
+                    let calculated_state_key_index =
+                        hex::encode(Sha256::digest(&key_bytes_for_hash_index));
+
+                    let mut full_key_index = Vec::with_capacity(64);
+                    full_key_index.extend_from_slice(context_id);
+                    full_key_index.extend_from_slice(
+                        &hex::decode(&calculated_state_key_index).unwrap_or_default(),
+                    );
+
+                    if db
+                        .get_cf(state_cf, &full_key_index)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        eprintln!("[decode_collection_entries_bfs] Found entry {} as EntityIndex (Key::Index) instead of Entry", entry_element_id);
+                        element_to_state
+                            .insert(entry_element_id.clone(), calculated_state_key_index.clone());
+                        calculated_state_key_index
+                    } else {
+                        eprintln!("[decode_collection_entries_bfs] Warning: Could not find state key for entry {} (tried Entry: {}, Index: {})", entry_element_id, calculated_state_key, calculated_state_key_index);
+                        continue; // Entry not found
+                    }
                 }
             };
 
@@ -2037,16 +2999,29 @@ fn decode_collection_entries_bfs(
                 Some((db, &entry_key)),
             ) {
                 Ok(entry) => {
+                    eprintln!(
+                        "[decode_collection_entries_bfs] Successfully decoded entry {}: {:?}",
+                        entry_state_key, entry
+                    );
                     entries.push(json!({
                         "state_key": entry_state_key,
                         "entry": entry
                     }));
                 }
                 Err(e) => {
-                    eprintln!("Failed to decode entry {}: {}", entry_state_key, e);
+                    eprintln!(
+                        "[decode_collection_entries_bfs] Failed to decode entry {}: {}",
+                        entry_state_key, e
+                    );
                 }
             }
         }
+        eprintln!(
+            "[decode_collection_entries_bfs] Decoded {} entries total",
+            entries.len()
+        );
+    } else {
+        eprintln!("[decode_collection_entries_bfs] WARNING: Collection root has no children list!");
     }
 
     Ok(entries)
@@ -2159,13 +3134,14 @@ fn decode_state_field(
                                 Some((db, &entry_key)),
                             ) {
                                 Ok(entry) => {
+                                    eprintln!("[decode_collection_entries_bfs] Successfully decoded entry {}: {:?}", entry_state_key, entry);
                                     entries.push(json!({
                                         "state_key": entry_state_key,
                                         "entry": entry
                                     }));
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to decode entry {}: {}", entry_state_key, e);
+                                    eprintln!("[decode_collection_entries_bfs] Failed to decode entry {}: {}", entry_state_key, e);
                                 }
                             }
                         }

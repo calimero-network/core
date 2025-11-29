@@ -85,6 +85,7 @@ export class ApiService {
      * @throws {Error} If the request fails
      */
     static async listContexts(dbPath) {
+        console.log('[ApiService.listContexts] Calling /api/contexts with db_path:', dbPath);
         const formData = new FormData();
         formData.append('db_path', dbPath);
 
@@ -93,12 +94,25 @@ export class ApiService {
             body: formData
         });
 
+        console.log('[ApiService.listContexts] Response status:', response.status, response.statusText);
+        console.log('[ApiService.listContexts] Response headers:', Object.fromEntries(response.headers.entries()));
+
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || 'Failed to list contexts');
+            let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+            try {
+                const error = await response.json();
+                errorMessage = error.error || errorMessage;
+            } catch (e) {
+                const text = await response.text();
+                console.error('[ApiService.listContexts] Failed to parse error response:', text);
+                errorMessage = text || errorMessage;
+            }
+            throw new Error(errorMessage);
         }
 
-        return response.json();
+        const json = await response.json();
+        console.log('[ApiService.listContexts] Response JSON:', json);
+        return json;
     }
 
     /**

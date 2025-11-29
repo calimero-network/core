@@ -10,11 +10,13 @@ import { TooltipManager } from './tooltip-manager.js';
 export class DAGVisualizer {
     /**
      * @param {import('./app-state.js').AppState} state - Application state
+     * @param {string} svgId - Optional SVG element ID (defaults to 'dag-svg')
      */
-    constructor(state) {
+    constructor(state, svgId = 'dag-svg') {
         this.state = state;
         this.currentZoom = null;
         this.tooltipManager = new TooltipManager();
+        this.svgId = svgId;
     }
 
     /**
@@ -140,8 +142,13 @@ export class DAGVisualizer {
      * Render hierarchical tree layout
      */
     renderHierarchical() {
-        const svg = d3.select('#dag-svg');
+        const svg = d3.select(`#${this.svgId}`);
         svg.selectAll('*').remove();
+
+        if (!svg.node()) {
+            console.error(`[DAGVisualizer.renderHierarchical] SVG element #${this.svgId} not found`);
+            return;
+        }
 
         const width = svg.node().getBoundingClientRect().width;
         const height = 500;
@@ -192,44 +199,46 @@ export class DAGVisualizer {
             }
         });
 
-        // Draw nodes
-        nodes.forEach((node, i) => {
-            const pos = nodePositions.get(node.id);
+        // Draw nodes using D3 data binding
+        const nodeGroups = g.selectAll('g.dag-node')
+            .data(nodes)
+            .enter()
+            .append('g')
+            .attr('class', 'dag-node')
+            .attr('transform', (d) => {
+                const pos = nodePositions.get(d.id);
+                return `translate(${pos.x},${pos.y})`;
+            })
+            .style('cursor', 'pointer')
+            .on('mouseover', async (event, d) => {
+                const nodeId = d.delta_id || d.id;
 
-            const nodeGroup = g.append('g')
-                .attr('class', 'dag-node')
-                .attr('transform', `translate(${pos.x},${pos.y})`)
-                .style('cursor', 'pointer')
-                .on('mouseover', async (event) => {
-                    const nodeId = node.delta_id || node.id;
+                // Show initial tooltip with basic info
+                const content = this.formatTooltipContent(d);
+                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
 
-                    // Show initial tooltip with basic info
-                    const content = this.formatTooltipContent(node);
-                    this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
+                // Load detailed info on demand (actions and events)
+                await this.loadAndUpdateTooltip(event, d);
+            })
+            .on('mousemove', (event) => {
+                this.tooltipManager.moveTooltip(event);
+            })
+            .on('mouseout', () => {
+                this.tooltipManager.hideTooltip();
+            });
 
-                    // Load detailed info on demand (actions and events)
-                    await this.loadAndUpdateTooltip(event, node);
-                })
-                .on('mousemove', (event) => {
-                    this.tooltipManager.moveTooltip(event);
-                })
-                .on('mouseout', () => {
-                    this.tooltipManager.hideTooltip();
-                });
+        nodeGroups.append('circle')
+            .attr('r', 20)
+            .attr('fill', '#0e639c')
+            .attr('stroke', '#007acc')
+            .attr('stroke-width', 2);
 
-            nodeGroup.append('circle')
-                .attr('r', 20)
-                .attr('fill', '#0e639c')
-                .attr('stroke', '#007acc')
-                .attr('stroke-width', 2);
-
-            nodeGroup.append('text')
-                .attr('text-anchor', 'middle')
-                .attr('dy', 4)
-                .attr('fill', '#d4d4d4')
-                .attr('font-size', '10px')
-                .text((node.delta_id || node.id).substring(0, 8));
-        });
+        nodeGroups.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('dy', 4)
+            .attr('fill', '#d4d4d4')
+            .attr('font-size', '10px')
+            .text((d) => (d.delta_id || d.id).substring(0, 8));
 
         this.setupZoom(svg, g);
     }
@@ -238,8 +247,13 @@ export class DAGVisualizer {
      * Render force-directed layout
      */
     renderForce() {
-        const svg = d3.select('#dag-svg');
+        const svg = d3.select(`#${this.svgId}`);
         svg.selectAll('*').remove();
+
+        if (!svg.node()) {
+            console.error(`[DAGVisualizer.renderForce] SVG element #${this.svgId} not found`);
+            return;
+        }
 
         const width = svg.node().getBoundingClientRect().width;
         const height = 500;
@@ -363,7 +377,8 @@ export class DAGVisualizer {
      */
     resetZoom() {
         if (this.currentZoom) {
-            d3.select('#dag-svg')
+            const svgId = this.svgId || 'dag-svg';
+            d3.select(`#${svgId}`)
                 .transition()
                 .duration(750)
                 .call(this.currentZoom.transform, d3.zoomIdentity);
@@ -374,7 +389,9 @@ export class DAGVisualizer {
      * Update statistics display
      */
     updateStats() {
-        const container = document.getElementById('dag-stats');
+        // Use different stats containers for main vs additional visualizers
+        const statsId = this.svgId === 'dag-svg' ? 'dag-stats' : 'dag-additional-stats';
+        const container = document.getElementById(statsId);
         if (!container || !this.state.dagData) return;
 
         // Get filtered data for accurate stats
@@ -397,7 +414,8 @@ export class DAGVisualizer {
      * Export DAG as SVG file
      */
     exportImage() {
-        const svg = document.getElementById('dag-svg');
+        const svgId = this.svgId || 'dag-svg';
+        const svg = document.getElementById(svgId);
         if (!svg) return;
 
         const serializer = new XMLSerializer();

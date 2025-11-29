@@ -1,0 +1,197 @@
+name: Private Data Rust Example
+description: Private data storage example using the Rust SDK.
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rust-private-data
+
+steps:
+  - name: Install Private Data Application
+    type: install_application
+    node: rust-private-data-1
+    path: res/private_data.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Private Data Context
+    type: create_context
+    node: rust-private-data-1
+    application_id: "{{app_id}}"
+    params: "{}"
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Wait for Context Creation
+    type: wait
+    seconds: 1
+
+  - name: Create Node 2 Identity
+    type: create_identity
+    node: rust-private-data-2
+    outputs:
+      node_2_member_public_key: publicKey
+
+  - name: Wait After Identity Creation
+    type: wait
+    seconds: 1
+
+  - name: Invite Node 2 To Context
+    type: invite_identity
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{node_2_member_public_key}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      node_2_invitation: invitation
+
+  - name: Node 2 Join Context
+    type: join_context
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{node_2_member_public_key}}"
+    invitation: "{{node_2_invitation}}"
+
+  - name: Wait After Node 2 Join
+    type: wait
+    seconds: 4
+
+  - name: Node 1 Add Secret
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_secret
+    args:
+      game_id: game1
+      secret: node1-secret-123
+
+  - name: Node 1 Add Another Secret
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_secret
+    args:
+      game_id: game2
+      secret: node1-secret-456
+
+  - name: Wait After Node 1 Updates
+    type: wait
+    seconds: 6
+
+  - name: Node 1 Get Own Secrets
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: my_secrets
+    outputs:
+      node_1_secrets: result.output
+
+  - name: Assert Node 1 Has Secrets
+    type: json_assert
+    statements:
+      - "is_set({{node_1_secrets}})"
+
+  - name: Node 1 Get Games
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: games
+    outputs:
+      node_1_games: result.output
+
+  - name: Assert Games Are Visible
+    type: json_assert
+    statements:
+      - "is_set({{node_1_games}})"
+
+  - name: Wait Before Node 2 Read
+    type: wait
+    seconds: 4
+
+  - name: Node 2 Get Games
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node_2_member_public_key}}"
+    method: games
+    outputs:
+      node_2_games: result.output
+
+  - name: Assert Node 2 Sees Games
+    type: json_assert
+    statements:
+      - "is_set({{node_2_games}})"
+
+  - name: Node 2 Get Own Secrets
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node_2_member_public_key}}"
+    method: my_secrets
+    outputs:
+      node_2_secrets: result.output
+
+  - name: Assert Node 2 Has No Secrets Initially
+    type: json_assert
+    statements:
+      - "equal(len({{node_2_secrets}}), 0)"
+
+  - name: Node 2 Add Secret
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node_2_member_public_key}}"
+    method: add_secret
+    args:
+      game_id: game3
+      secret: node2-secret-789
+
+  - name: Wait After Node 2 Update
+    type: wait
+    seconds: 1
+
+  - name: Node 1 Get Own Secrets Again
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: my_secrets
+    outputs:
+      node_1_secrets_again: result.output
+
+  - name: Assert Node 1 Secrets Unchanged
+    type: json_assert
+    statements:
+      - "is_set({{node_1_secrets_again}})"
+
+  - name: Node 2 Try To Guess
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node_2_member_public_key}}"
+    method: add_guess
+    args:
+      game_id: game1
+      guess: wrong-guess
+    outputs:
+      guess_result: result.output
+
+  - name: Assert Guess Failed
+    type: json_assert
+    statements:
+      - "equal({{guess_result}}, false)"
+
+stop_all_nodes: false
+restart: true
+wait_timeout: 120
+

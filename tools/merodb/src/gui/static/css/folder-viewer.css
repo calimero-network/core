@@ -1,0 +1,209 @@
+/**
+ * Folder Viewer Component
+ * File/folder browser style data viewer
+ */
+
+.folder-viewer {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    font-family: var(--font-family-base);
+}
+
+.folder-viewer__search {
+    padding: 12px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-secondary);
+}
+
+.folder-viewer__search-input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    font-size: var(--font-size-base);
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+}
+
+.folder-viewer__search-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px rgba(var(--color-primary-rgb), 0.1);
+}
+
+.folder-viewer__tree {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+}
+
+.folder-viewer__folder {
+    margin: 2px 0;
+}
+
+.folder-viewer__folder--root {
+    margin: 0;
+}
+
+.folder-viewer__header {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.folder-viewer__header:hover {
+    background: var(--color-bg-tertiary);
+}
+
+.folder-viewer__icon {
+    margin-right: 8px;
+    font-size: 16px;
+    width: 20px;
+    text-align: center;
+}
+
+.folder-viewer__name {
+    flex: 1;
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-primary);
+}
+
+.folder-viewer__count {
+    margin-left: 8px;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-tertiary);
+}
+
+.folder-viewer__expand {
+    margin-left: 8px;
+    font-size: 12px;
+    color: var(--color-text-tertiary);
+    transition: transform 0.2s;
+}
+
+.folder-viewer__content {
+    margin-left: 24px;
+    border-left: 2px solid var(--color-border);
+    padding-left: 12px;
+}
+
+.folder-viewer__item {
+    display: flex;
+    align-items: center;
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+    margin: 1px 0;
+}
+
+.folder-viewer__item:hover {
+    background: var(--color-bg-tertiary);
+}
+
+.folder-viewer__value {
+    margin-left: auto;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    max-width: 50%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.folder-viewer__value--string {
+    color: var(--color-json-string);
+}
+
+.folder-viewer__value--number {
+    color: var(--color-json-number);
+}
+
+.folder-viewer__value--boolean {
+    color: var(--color-json-boolean);
+    font-weight: var(--font-weight-medium);
+}
+
+.folder-viewer__value--null {
+    color: var(--color-json-null);
+    font-style: italic;
+}
+
+.folder-viewer__empty {
+    padding: 40px;
+    text-align: center;
+    color: var(--color-text-tertiary);
+}
+
+/* Modal for viewing full values */
+.folder-viewer__modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 20px;
+}
+
+.folder-viewer__modal-content {
+    background: var(--color-bg-primary);
+    border-radius: 8px;
+    max-width: 80%;
+    max-height: 80%;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.folder-viewer__modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.folder-viewer__modal-header h3 {
+    margin: 0;
+    font-size: var(--font-size-lg);
+    color: var(--color-text-primary);
+}
+
+.folder-viewer__modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.folder-viewer__modal-close:hover {
+    background: var(--color-bg-tertiary);
+}
+
+.folder-viewer__modal-body {
+    padding: 20px;
+    overflow: auto;
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+}
+

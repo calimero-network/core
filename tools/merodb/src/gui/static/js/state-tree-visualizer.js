@@ -11,13 +11,15 @@ import { TooltipManager } from './tooltip-manager.js';
 export class StateTreeVisualizer {
     /**
      * @param {import('./app-state.js').AppState} state - Application state
+     * @param {string} svgId - Optional SVG element ID (defaults to 'state-svg')
      */
-    constructor(state) {
+    constructor(state, svgId = 'state-svg') {
         this.state = state;
         this.currentZoom = null;
         this.root = null;
         this.updateFn = null;
         this.tooltipManager = new TooltipManager();
+        this.svgId = svgId;
     }
 
     /**
@@ -95,7 +97,10 @@ export class StateTreeVisualizer {
             return;
         }
 
-        UIManager.showElement('state-loading');
+        // Only show loading indicator for main visualizer (not additional)
+        if (this.svgId === 'state-svg') {
+            UIManager.showElement('state-loading');
+        }
 
         try {
             // Use cached schema content if file is not available (e.g., after refresh)
@@ -105,6 +110,7 @@ export class StateTreeVisualizer {
             // Debug: Log what we're sending
             console.log('Loading context tree:', {
                 contextId,
+                svgId: this.svgId,
                 hasStateSchemaFile: !!schemaFile,
                 hasSchemaContent: !!schemaContent,
                 stateSchemaFileName: schemaFile?.name || this.state.currentStateSchemaFileName || 'none'
@@ -125,7 +131,10 @@ export class StateTreeVisualizer {
             console.error(`Failed to load tree for context ${contextId}:`, error);
             throw error;
         } finally {
-            UIManager.hideElement('state-loading');
+            // Only hide loading indicator for main visualizer (not additional)
+            if (this.svgId === 'state-svg') {
+                UIManager.hideElement('state-loading');
+            }
         }
     }
 
@@ -133,6 +142,10 @@ export class StateTreeVisualizer {
      * Populate context selector dropdown with available contexts
      */
     populateContextSelector() {
+        // Only populate the main context selector, not for additional visualizers
+        if (this.svgId !== 'state-svg') {
+            return;
+        }
         const select = document.getElementById('state-context-select');
         if (!select || !this.state.stateTreeData?.contexts) return;
 
@@ -183,6 +196,25 @@ export class StateTreeVisualizer {
      */
     getSelectedContextTree() {
         if (!this.state.stateTreeData?.contexts) return null;
+
+        // For additional visualizer, use the first (and only) loaded context
+        if (this.svgId !== 'state-svg') {
+            // Get the first (and likely only) context from loadedTrees
+            const loadedTrees = this.state.stateTreeData.loadedTrees;
+            if (loadedTrees && loadedTrees.size > 0) {
+                const firstContextId = Array.from(loadedTrees.keys())[0];
+                const tree = loadedTrees.get(firstContextId);
+                if (tree) {
+                    try {
+                        return JSON.parse(JSON.stringify(tree));
+                    } catch (e) {
+                        console.error('[StateTreeVisualizer] Failed to clone tree:', e);
+                        return null;
+                    }
+                }
+            }
+            return null;
+        }
 
         const select = document.getElementById('state-context-select');
         const selectedContextId = select?.value;
@@ -236,12 +268,12 @@ export class StateTreeVisualizer {
         // Clean up existing tooltips before re-render to prevent memory leaks
         this.tooltipManager.cleanupTooltips();
 
-        const layout = document.getElementById('state-layout-select')?.value || 'tree';
+        const layout = document.getElementById('state-layout-select')?.value || 'folder';
 
         if (layout === 'tree') {
             this.renderTree();
-        } else {
-            this.renderRadial();
+        } else if (layout === 'folder') {
+            this.renderFolder();
         }
 
         this.updateStats();
@@ -251,10 +283,15 @@ export class StateTreeVisualizer {
      * Render top-down tree layout with collapsible nodes
      */
     renderTree() {
-        const svg = d3.select('#state-svg');
+        const svg = d3.select(`#${this.svgId}`);
         svg.selectAll('*').remove();
 
-        const width = svg.node().getBoundingClientRect().width;
+        const svgNode = svg.node();
+        if (!svgNode) {
+            console.error(`SVG element with id "${this.svgId}" not found`);
+            return;
+        }
+        const width = svgNode.getBoundingClientRect().width;
         const height = 600;
         svg.attr('viewBox', [0, 0, width, height]);
 
@@ -422,87 +459,6 @@ export class StateTreeVisualizer {
     }
 
     /**
-     * Render radial tree layout
-     */
-    renderRadial() {
-        const svg = d3.select('#state-svg');
-        svg.selectAll('*').remove();
-
-        const width = svg.node().getBoundingClientRect().width;
-        const height = 600;
-        const radius = Math.min(width, height) / 2 - 50;
-
-        svg.attr('viewBox', [0, 0, width, height]);
-
-        const g = svg.append('g')
-            .attr('transform', `translate(${width / 2},${height / 2})`);
-
-        const hierarchyData = this.getSelectedContextTree();
-        if (!hierarchyData) {
-            console.error('No tree data available for selected context');
-            return;
-        }
-        const root = d3.hierarchy(hierarchyData);
-
-        const treeLayout = d3.tree()
-            .size([2 * Math.PI, radius])
-            .separation((a, b) => (a.parent == b.parent ? 1 : 2) / a.depth);
-
-        treeLayout(root);
-
-        // Draw links
-        g.selectAll('.state-link')
-            .data(root.links())
-            .enter().append('path')
-            .attr('class', 'state-link')
-            .attr('d', d3.linkRadial()
-                .angle(d => d.x)
-                .radius(d => d.y));
-
-        // Draw nodes
-        const nodes = g.selectAll('.state-node')
-            .data(root.descendants())
-            .enter().append('g')
-            .attr('class', 'state-node')
-            .attr('transform', d => `rotate(${d.x * 180 / Math.PI - 90}) translate(${d.y},0)`);
-
-        nodes.append('circle')
-            .attr('r', 4)
-            .attr('class', d => {
-                if (this.hasDecodedData(d)) return 'has-data';
-                if (!d.children) return 'leaf';
-                return '';
-            })
-            .on('mouseover', (event, d) => {
-                const content = this.formatTooltipContent(d);
-                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
-            })
-            .on('mousemove', (event) => {
-                this.tooltipManager.moveTooltip(event);
-            })
-            .on('mouseout', () => {
-                this.tooltipManager.hideTooltip();
-            });
-
-        // Add node ID labels for radial layout
-        nodes.append('text')
-            .attr('dy', '0.31em')
-            .attr('x', d => d.x < Math.PI === !d.children ? 6 : -6)
-            .attr('text-anchor', d => d.x < Math.PI === !d.children ? 'start' : 'end')
-            .attr('transform', d => d.x >= Math.PI ? 'rotate(180)' : null)
-            .text(d => {
-                const id = d.data.id || 'N/A';
-                return id !== 'N/A' ? `${id.substring(0, 8)}...` : 'N/A';
-            })
-            .style('font-size', '10px')
-            .style('fill', '#bbb')
-            .style('pointer-events', 'none');
-
-        this.root = root;
-        this.setupZoom(svg, g);
-    }
-
-    /**
      * Setup D3 zoom behavior
      * @param {d3.Selection} svg - SVG element
      * @param {d3.Selection} g - Group element
@@ -528,7 +484,7 @@ export class StateTreeVisualizer {
      */
     resetZoom() {
         if (this.currentZoom) {
-            d3.select('#state-svg')
+            d3.select(`#${this.svgId}`)
                 .transition()
                 .duration(750)
                 .call(this.currentZoom.transform, d3.zoomIdentity);
@@ -597,7 +553,9 @@ export class StateTreeVisualizer {
      * Update statistics display
      */
     updateStats() {
-        const container = document.getElementById('state-stats');
+        // Use different stats containers for main vs additional visualizers
+        const statsId = this.svgId === 'state-svg' ? 'state-stats' : 'state-additional-stats';
+        const container = document.getElementById(statsId);
         if (!container || !this.root) return;
 
         const nodeCount = this.root.descendants().length;
@@ -624,7 +582,7 @@ export class StateTreeVisualizer {
      * Export state tree as SVG file
      */
     exportImage() {
-        const svg = document.getElementById('state-svg');
+        const svg = document.getElementById(this.svgId);
         if (!svg) return;
 
         const serializer = new XMLSerializer();
@@ -688,10 +646,67 @@ export class StateTreeVisualizer {
             }
             // Display value for ScalarEntry types
             else if (stateData.value) {
-                html += `<div class="visualization__tooltip-row">`;
-                html += `  <span class="visualization__tooltip-label">Value:</span>`;
-                html += `  <span class="visualization__tooltip-value"><pre>${JSON.stringify(stateData.value.parsed, null, 2)}</pre></span>`;
-                html += `</div>`;
+                const value = stateData.value.parsed || stateData.value;
+                
+                // Special handling for Counter values
+                if (value && typeof value === 'object' && (value.crdt_type === 'GCounter' || value.crdt_type === 'PNCounter')) {
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Counter Type:</span>`;
+                    html += `  <span class="visualization__tooltip-value">${value.crdt_type}</span>`;
+                    html += `</div>`;
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Total Value:</span>`;
+                    html += `  <span class="visualization__tooltip-value"><strong>${value.value}</strong></span>`;
+                    html += `</div>`;
+                    
+                    // Display positive map entries
+                    if (value.positive && value.positive.entries) {
+                        html += `<div class="visualization__tooltip-row">`;
+                        html += `  <span class="visualization__tooltip-label">Positive Entries:</span>`;
+                        html += `  <span class="visualization__tooltip-value">`;
+                        html += `    <table style="margin-top: 8px; border-collapse: collapse; width: 100%;">`;
+                        html += `      <thead><tr><th style="text-align: left; padding: 4px; border-bottom: 1px solid #ddd;">Executor ID</th><th style="text-align: right; padding: 4px; border-bottom: 1px solid #ddd;">Value</th></tr></thead>`;
+                        html += `      <tbody>`;
+                        for (const [executorId, entry] of Object.entries(value.positive.entries)) {
+                            html += `        <tr>`;
+                            html += `          <td style="padding: 4px; font-family: monospace; font-size: 11px;">${UIManager.escapeHtml(executorId)}</td>`;
+                            html += `          <td style="text-align: right; padding: 4px;">${entry.value}</td>`;
+                            html += `        </tr>`;
+                        }
+                        html += `      </tbody>`;
+                        html += `      <tfoot><tr><td style="padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">Total</td><td style="text-align: right; padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">${value.positive.total}</td></tr></tfoot>`;
+                        html += `    </table>`;
+                        html += `  </span>`;
+                        html += `</div>`;
+                    }
+                    
+                    // Display negative map entries (for PNCounter)
+                    if (value.negative && value.negative.entries) {
+                        html += `<div class="visualization__tooltip-row">`;
+                        html += `  <span class="visualization__tooltip-label">Negative Entries:</span>`;
+                        html += `  <span class="visualization__tooltip-value">`;
+                        html += `    <table style="margin-top: 8px; border-collapse: collapse; width: 100%;">`;
+                        html += `      <thead><tr><th style="text-align: left; padding: 4px; border-bottom: 1px solid #ddd;">Executor ID</th><th style="text-align: right; padding: 4px; border-bottom: 1px solid #ddd;">Value</th></tr></thead>`;
+                        html += `      <tbody>`;
+                        for (const [executorId, entry] of Object.entries(value.negative.entries)) {
+                            html += `        <tr>`;
+                            html += `          <td style="padding: 4px; font-family: monospace; font-size: 11px;">${UIManager.escapeHtml(executorId)}</td>`;
+                            html += `          <td style="text-align: right; padding: 4px;">${entry.value}</td>`;
+                            html += `        </tr>`;
+                        }
+                        html += `      </tbody>`;
+                        html += `      <tfoot><tr><td style="padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">Total</td><td style="text-align: right; padding: 4px; border-top: 1px solid #ddd; font-weight: bold;">${value.negative.total}</td></tr></tfoot>`;
+                        html += `    </table>`;
+                        html += `  </span>`;
+                        html += `</div>`;
+                    }
+                } else {
+                    // Regular value display
+                    html += `<div class="visualization__tooltip-row">`;
+                    html += `  <span class="visualization__tooltip-label">Value:</span>`;
+                    html += `  <span class="visualization__tooltip-value"><pre>${JSON.stringify(value, null, 2)}</pre></span>`;
+                    html += `</div>`;
+                }
             }
 
             html += `</div>`;
@@ -740,5 +755,397 @@ export class StateTreeVisualizer {
         html += `</div>`;
 
         return html;
+    }
+
+    /**
+     * Render folder/file tree view using D3.js
+     * Displays the state tree as a file browser with folders and files
+     */
+    renderFolder() {
+        const svg = d3.select(`#${this.svgId}`);
+        svg.selectAll('*').remove();
+
+        const svgNode = svg.node();
+        if (!svgNode) {
+            console.error(`SVG element with id "${this.svgId}" not found`);
+            return;
+        }
+        const width = svgNode.getBoundingClientRect().width;
+        const height = 600;
+        svg.attr('viewBox', [0, 0, width, height]);
+
+        const g = svg.append('g')
+            .attr('transform', 'translate(20,20)');
+
+        // Get tree data
+        const hierarchyData = this.getSelectedContextTree();
+        if (!hierarchyData) {
+            console.error('No tree data available for selected context');
+            return;
+        }
+
+        const root = d3.hierarchy(hierarchyData);
+        
+        // Initialize tree with all nodes collapsed except root's children
+        root.descendants().forEach((d, i) => {
+            d.id = i;
+            d._children = d.children;
+            if (d.depth > 1) {
+                d.children = null;
+            }
+        });
+
+        this.root = root;
+        
+        // Calculate layout - vertical file tree with dynamic heights
+        const baseNodeHeight = 20;
+        const indent = 20;
+        
+        let y = 0;
+        const nodes = [];
+        
+        const calculateLayout = (node) => {
+            // Calculate height based on content length
+            const data = node.data;
+            let contentLength = 0;
+            if (data.data) {
+                const stateData = data.data;
+                if (stateData.value && stateData.value.parsed !== undefined) {
+                    contentLength = JSON.stringify(stateData.value.parsed).length;
+                } else if (stateData.key && stateData.key.parsed !== undefined) {
+                    contentLength = JSON.stringify(stateData.key.parsed).length;
+                }
+            }
+            // Estimate lines needed (assuming ~80 chars per line)
+            const estimatedLines = Math.max(1, Math.ceil(contentLength / 80));
+            const nodeHeight = baseNodeHeight + (estimatedLines - 1) * 14;
+            
+            node.y = y;
+            node.x = node.depth * indent;
+            node._height = nodeHeight; // Store height for rendering
+            nodes.push(node);
+            y += nodeHeight;
+            
+            if (node.children) {
+                node.children.forEach(calculateLayout);
+            }
+        };
+        
+        calculateLayout(root);
+
+        // Draw very subtle connection lines (similar to tree view)
+        const links = g.append('g').attr('class', 'folder-links');
+        nodes.forEach(node => {
+            if (node.parent && nodes.includes(node.parent)) {
+                const parentHeight = node.parent._height || baseNodeHeight;
+                // Draw a very subtle vertical line from parent to child
+                links.append('line')
+                    .attr('x1', node.parent.x)
+                    .attr('y1', node.parent.y + parentHeight)
+                    .attr('x2', node.x)
+                    .attr('y2', node.y)
+                    .attr('stroke', '#555')
+                    .attr('stroke-width', 0.5)
+                    .attr('opacity', 0.2);
+            }
+        });
+
+        // Draw nodes as folder/file icons
+        const nodeGroup = g.append('g').attr('class', 'folder-nodes');
+        
+        const nodesEnter = nodeGroup.selectAll('.folder-node')
+            .data(nodes)
+            .enter()
+            .append('g')
+            .attr('class', 'folder-node')
+            .attr('transform', d => `translate(${d.x},${d.y})`)
+            .style('cursor', 'pointer');
+
+        // Add circles only for leaf nodes (last elements)
+        nodesEnter.filter(d => !d.children && !d._children)
+            .append('circle')
+            .attr('r', 4)
+            .attr('cx', 0)
+            .attr('cy', d => (d._height || baseNodeHeight) / 2)
+            .attr('fill', d => {
+                const data = d.data;
+                // Check if deleted
+                if (data.deleted_at) {
+                    return '#9E9E9E'; // Gray for deleted items
+                }
+                if (this.hasDecodedData(d)) return '#4CAF50'; // Green for nodes with data
+                return '#2196F3'; // Blue for leaves
+            })
+            .attr('stroke', d => {
+                const data = d.data;
+                return data.deleted_at ? '#666' : '#666';
+            })
+            .attr('stroke-width', 1)
+            .attr('opacity', d => {
+                const data = d.data;
+                return data.deleted_at ? 0.5 : 1.0; // Reduced opacity for deleted items
+            });
+
+        // Add node label - show full values with text wrapping
+        nodesEnter.each(function(d) {
+            const nodeHeight = d._height || baseNodeHeight;
+            const g = d3.select(this);
+            const data = d.data;
+            
+            // Check if item is deleted
+            const isDeleted = data.deleted_at !== null && data.deleted_at !== undefined;
+            
+            // Create text element that can wrap
+            const text = g.append('text')
+                .attr('x', (!d.children && !d._children) ? 8 : 0) // Offset for leaf nodes with circles
+                .attr('y', nodeHeight / 2)
+                .attr('dy', '0.35em')
+                .attr('font-size', '11px')
+                .attr('fill', isDeleted ? '#888' : '#d4d4d4') // Grayed out for deleted
+                .attr('opacity', isDeleted ? 0.6 : 1.0); // Reduced opacity for deleted
+            
+            let labelText = '';
+            
+            // For Field types (collapsible), show field name with type information
+            if (data.type === 'Field') {
+                const fieldName = data.field || 'Field';
+                let typeInfo = '';
+                
+                // Get type information from data
+                if (data.crdt_type) {
+                    typeInfo = data.crdt_type;
+                } else if (data.type_info) {
+                    typeInfo = data.type_info;
+                } else if (data.data && data.data.crdt_type) {
+                    typeInfo = data.data.crdt_type;
+                } else if (data.data && data.data.type) {
+                    typeInfo = data.data.type;
+                }
+                
+                // Check if this is a Counter field and show the total value
+                let counterValue = null;
+                if (data.data && data.data.value) {
+                    const value = data.data.value.parsed || data.data.value;
+                    if (value && typeof value === 'object' && (value.crdt_type === 'GCounter' || value.crdt_type === 'PNCounter')) {
+                        counterValue = value.value;
+                    }
+                }
+                
+                // Format type info nicely
+                if (typeInfo) {
+                    // Convert common type names to readable format
+                    const typeMap = {
+                        'UnorderedMap': 'unordered_map',
+                        'UnorderedSet': 'unordered_set',
+                        'Vector': 'vector',
+                        'LwwRegister': 'lww_register',
+                        'Counter': 'counter',
+                        'Rga': 'rga'
+                    };
+                    const readableType = typeMap[typeInfo] || typeInfo.toLowerCase();
+                    if (counterValue !== null) {
+                        labelText = `${fieldName} (${readableType}) = ${counterValue}`;
+                    } else {
+                        labelText = `${fieldName} (${readableType})`;
+                    }
+                } else {
+                    if (counterValue !== null) {
+                        labelText = `${fieldName} = ${counterValue}`;
+                    } else {
+                        labelText = fieldName;
+                    }
+                }
+            }
+            // For Entry types, show key: value format
+            else if (data.type === 'Entry') {
+                if (data.data) {
+                    const stateData = data.data;
+                    let keyStr = '';
+                    let valueStr = '';
+                    
+                    // Get key
+                    if (stateData.key && stateData.key.parsed !== undefined) {
+                        keyStr = JSON.stringify(stateData.key.parsed, null, 0);
+                    } else if (stateData.key) {
+                        keyStr = String(stateData.key);
+                    }
+                    
+                    // Get value
+                    if (stateData.value && stateData.value.parsed !== undefined) {
+                        valueStr = JSON.stringify(stateData.value.parsed, null, 0);
+                    } else if (stateData.value) {
+                        valueStr = String(stateData.value);
+                    }
+                    
+                    // Format as "key: value"
+                    if (keyStr && valueStr) {
+                        labelText = `${keyStr}: ${valueStr}`;
+                    } else if (keyStr) {
+                        labelText = `Key: ${keyStr}`;
+                    } else if (valueStr) {
+                        labelText = valueStr;
+                    } else {
+                        labelText = data.id ? `${data.id.substring(0, 8)}...` : 'Entry';
+                    }
+                } else {
+                    labelText = data.id ? `${data.id.substring(0, 8)}...` : 'Entry';
+                }
+            }
+            // For Root
+            else if (data.type === 'Root') {
+                labelText = 'Root';
+            }
+            // Fallback
+            else {
+                labelText = data.id ? `${data.id.substring(0, 8)}...` : 'Node';
+            }
+            
+            // Add deleted indicator before the text if deleted
+            if (isDeleted) {
+                text.append('tspan')
+                    .attr('x', (!d.children && !d._children) ? 8 : 0)
+                    .attr('dy', '0')
+                    .attr('fill', '#f44336')
+                    .text('🗑️ ');
+            }
+            
+            // Split long text into lines (wrap at ~80 characters)
+            const maxWidth = 600; // Approximate max width in pixels
+            const words = labelText.split(/(\s+)/);
+            let line = '';
+            const startX = (!d.children && !d._children) ? (isDeleted ? 20 : 8) : (isDeleted ? 12 : 0);
+            let tspan = text.append('tspan')
+                .attr('x', startX)
+                .attr('dy', '0');
+            
+            words.forEach(word => {
+                const testLine = line + word;
+                // Rough estimate: 6 pixels per character
+                if (testLine.length * 6 > maxWidth && line.length > 0) {
+                    tspan.text(line);
+                    line = word;
+                    tspan = text.append('tspan')
+                        .attr('x', startX)
+                        .attr('dy', '14'); // Line height
+                } else {
+                    line = testLine;
+                }
+            });
+            tspan.text(line);
+            
+            // Add strikethrough line for deleted items
+            if (isDeleted && labelText) {
+                // Estimate text width (rough approximation)
+                const textWidth = labelText.length * 6; // ~6 pixels per character
+                const textX = startX;
+                const textY = nodeHeight / 2;
+                const lineY = textY - 2; // Slightly above center for strikethrough
+                
+                g.append('line')
+                    .attr('x1', textX)
+                    .attr('y1', lineY)
+                    .attr('x2', textX + Math.min(textWidth, maxWidth))
+                    .attr('y2', lineY)
+                    .attr('stroke', '#f44336')
+                    .attr('stroke-width', 1)
+                    .attr('opacity', 0.7);
+            }
+        });
+
+        // Add expand/collapse indicator for folders (clickable)
+        const expandableNodes = nodesEnter.filter(d => d.children || d._children);
+        expandableNodes.insert('text', ':first-child')
+            .attr('x', -8)
+            .attr('y', d => (d._height || baseNodeHeight) / 2)
+            .attr('dy', '0.35em')
+            .attr('font-size', '10px')
+            .attr('fill', '#999')
+            .style('cursor', 'pointer')
+            .text(d => d.children ? '▼' : '▶');
+
+        // Add hover effect (same as tree view)
+        nodesEnter
+            .on('mouseover', function(event, d) {
+                // Highlight circle if present
+                const circle = d3.select(this).select('circle');
+                if (!circle.empty()) {
+                    circle.attr('stroke-width', 2).attr('stroke', '#fff');
+                }
+                // Highlight all text elements
+                d3.select(this).selectAll('text').attr('fill', '#fff');
+                // Show tooltip (same as tree view)
+                const content = this.formatTooltipContent(d);
+                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp');
+            }.bind(this))
+            .on('mousemove', (event) => {
+                this.tooltipManager.moveTooltip(event);
+            })
+            .on('mouseout', function(event, d) {
+                const data = d.data;
+                const isDeleted = data.deleted_at !== null && data.deleted_at !== undefined;
+                
+                // Reset circle if present
+                const circle = d3.select(this).select('circle');
+                if (!circle.empty()) {
+                    circle.attr('stroke-width', 1).attr('stroke', '#666');
+                }
+                // Reset all text elements
+                d3.select(this).selectAll('text').each(function() {
+                    const textEl = d3.select(this);
+                    const textContent = textEl.text();
+                    const textNodes = d3.select(this.parentNode).selectAll('text').nodes();
+                    const isFirst = this === textNodes[0];
+                    
+                    if (textContent.includes('🗑️')) {
+                        textEl.attr('fill', '#f44336'); // Keep deleted icon red
+                    } else if (isFirst) {
+                        textEl.attr('fill', '#999'); // Expand/collapse indicator
+                    } else {
+                        textEl.attr('fill', isDeleted ? '#888' : '#d4d4d4'); // Grayed for deleted, normal for others
+                    }
+                });
+                this.tooltipManager.hideTooltip();
+            }.bind(this))
+            .on('click', function(event, d) {
+                event.stopPropagation();
+                // Toggle expand/collapse
+                if (d.children) {
+                    d._children = d.children;
+                    d.children = null;
+                } else if (d._children) {
+                    d.children = d._children;
+                    d._children = null;
+                }
+                // Re-render to show updated state
+                this.renderFolder();
+            }.bind(this));
+        
+        // Make expand/collapse indicators clickable too
+        expandableNodes.select('text')
+            .on('click', function(event, d) {
+                event.stopPropagation();
+                // Toggle expand/collapse
+                if (d.children) {
+                    d._children = d.children;
+                    d.children = null;
+                } else if (d._children) {
+                    d.children = d._children;
+                    d._children = null;
+                }
+                // Re-render to show updated state
+                this.renderFolder();
+            }.bind(this));
+
+        // Setup zoom
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 3])
+            .on('zoom', (event) => {
+                g.attr('transform', `translate(${event.transform.x + 20},${event.transform.y + 20}) scale(${event.transform.k})`);
+            });
+
+        svg.call(zoom);
+
+        // Store zoom for reset
+        this.currentZoom = zoom;
     }
 }

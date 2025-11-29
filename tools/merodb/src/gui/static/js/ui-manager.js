@@ -57,6 +57,13 @@ export class UIManager {
     }
 
     /**
+     * Hide the viewer UI
+     */
+    static hideViewer() {
+        this.hideElement('viewer-view');
+    }
+
+    /**
      * Show the upload UI (hide viewer)
      */
     static showUpload() {
