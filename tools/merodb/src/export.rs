@@ -2162,13 +2162,57 @@ fn decode_state_root_bfs(
                     child_key.extend_from_slice(&child_key_bytes);
 
                     if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
-                        // Try to decode as the field's type (e.g., Entry<Counter>)
-                        if let Some(decoded) =
-                            decode_state_entry(&child_value, manifest, Some((db, &child_key)))
+                        // First, try to decode directly as the field's type (for Counter, etc.)
+                        // This handles cases where the value is stored as Entry<T> where T is the field type
+                        let decoded = if let TypeRef::Collection {
+                            collection: CollectionType::Record { .. },
+                            crdt_type,
+                            inner_type,
+                        } = &field.type_
                         {
-                            // Check if this decoded value matches the field type
-                            // For now, assume it matches if decoding succeeded
-                            matched_child = Some((state_key.clone(), decoded));
+                            // For Record types like Counter, try to decode as Entry<T>
+                            decode_record_entry(
+                                &child_value,
+                                field,
+                                crdt_type,
+                                inner_type,
+                                manifest,
+                            )
+                            .ok()
+                            .map(|v| {
+                                // Extract value from Entry structure
+                                if let Some(obj) = v.as_object() {
+                                    obj.get("value").cloned().unwrap_or(v)
+                                } else {
+                                    v
+                                }
+                            })
+                        } else {
+                            // For other types, try decode_state_entry
+                            decode_state_entry(&child_value, manifest, Some((db, &child_key))).map(
+                                |v| {
+                                    // Extract value from decoded entry
+                                    if let Some(obj) = v.as_object() {
+                                        obj.get("value")
+                                            .or_else(|| obj.get("data"))
+                                            .cloned()
+                                            .unwrap_or(v)
+                                    } else {
+                                        v
+                                    }
+                                },
+                            )
+                        };
+
+                        if let Some(decoded_value) = decoded {
+                            // Skip if decoding failed (has "error" field)
+                            if let Some(obj) = decoded_value.as_object() {
+                                if obj.contains_key("error") {
+                                    eprintln!("[decode_state_root_bfs] Skipping child with decode error for field {}: {}", field.name, obj.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                                    continue;
+                                }
+                            }
+                            matched_child = Some((state_key.clone(), decoded_value));
                             used_children.insert(child_element_id);
                             eprintln!("[decode_state_root_bfs] Found matching child for non-collection field {}: state_key={}", field.name, state_key);
                             break;
@@ -2178,21 +2222,10 @@ fn decode_state_root_bfs(
             }
 
             if let Some((state_key, decoded_value)) = matched_child {
-                // Extract the actual value from the decoded entry
-                let value = if let Some(decoded_obj) = decoded_value.as_object() {
-                    decoded_obj
-                        .get("value")
-                        .or_else(|| decoded_obj.get("data"))
-                        .cloned()
-                        .unwrap_or(decoded_value)
-                } else {
-                    decoded_value
-                };
-
                 json!({
                     "field": field.name,
                     "type": format!("{:?}", field.type_),
-                    "value": value,
+                    "value": decoded_value,
                     "state_key": state_key,
                     "children": [],
                 })
