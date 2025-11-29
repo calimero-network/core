@@ -85,26 +85,42 @@ EXPECTED="apps/state-schema-conformance/state-schema.expected.json"
 
 if [ ! -f "$EXPECTED" ]; then
     echo "WARNING: Expected state schema not found, creating from build-time schema..."
-    cp /tmp/build-time-state-schema.json "$EXPECTED"
+    cp "$BUILD_TIME_SCHEMA" "$EXPECTED"
 fi
 
-# Compare build-time with expected
-if ! diff -u "$EXPECTED" /tmp/build-time-state-schema.json > /tmp/build-time-diff.txt; then
+# Normalize expected file for comparison (extract only state_root and types)
+python3 << 'PYTHON_SCRIPT'
+import json
+
+with open('apps/state-schema-conformance/state-schema.expected.json') as f:
+    schema = json.load(f)
+
+normalized = {
+    'state_root': schema.get('state_root'),
+    'types': schema.get('types', {})
+}
+
+with open('/tmp/expected-state-schema.json', 'w') as f:
+    json.dump(normalized, f, indent=2, sort_keys=True)
+PYTHON_SCRIPT
+
+# Compare build-time with expected (both normalized)
+if ! diff -u /tmp/expected-state-schema.json /tmp/build-time-state-schema.json > /tmp/build-time-diff.txt; then
     echo "ERROR: Build-time state schema differs from expected:"
     cat /tmp/build-time-diff.txt
     exit 1
 fi
 echo "✅ Build-time schema matches expected"
 
-# Compare WASM-extracted with expected
-if ! diff -u "$EXPECTED" /tmp/wasm-extracted-state-schema.json > /tmp/wasm-diff.txt; then
+# Compare WASM-extracted with expected (both normalized)
+if ! diff -u /tmp/expected-state-schema.json /tmp/wasm-extracted-state-schema.json > /tmp/wasm-diff.txt; then
     echo "ERROR: WASM-extracted state schema differs from expected:"
     cat /tmp/wasm-diff.txt
     exit 1
 fi
 echo "✅ WASM-extracted schema matches expected"
 
-# Compare build-time with WASM-extracted
+# Compare build-time with WASM-extracted (both normalized)
 if ! diff -u /tmp/build-time-state-schema.json /tmp/wasm-extracted-state-schema.json > /tmp/cross-diff.txt; then
     echo "ERROR: Build-time and WASM-extracted schemas differ:"
     cat /tmp/cross-diff.txt

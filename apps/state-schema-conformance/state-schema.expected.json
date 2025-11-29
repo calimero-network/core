@@ -1,7 +1,8 @@
 {
-  "state_root": "StateSchemaConformance",
+  "schema_version": "wasm-abi/1",
   "types": {
     "Person": {
+      "kind": "record",
       "fields": [
         {
           "name": "id",
@@ -21,316 +22,315 @@
             "kind": "u32"
           }
         }
-      ],
-      "kind": "record"
+      ]
     },
     "Profile": {
+      "kind": "record",
       "fields": [
         {
           "name": "bio",
           "type": {
-            "crdt_type": "lww_register",
+            "kind": "record",
             "fields": [],
+            "crdt_type": "lww_register",
             "inner_type": {
               "kind": "string"
-            },
-            "kind": "record"
+            }
           }
         },
         {
           "name": "visit_count",
           "type": {
-            "crdt_type": "counter",
+            "kind": "record",
             "fields": [],
-            "kind": "record"
+            "crdt_type": "counter"
           }
         }
-      ],
-      "kind": "record"
+      ]
     },
     "StateSchemaConformance": {
+      "kind": "record",
       "fields": [
         {
           "name": "string_map",
           "type": {
-            "crdt_type": "unordered_map",
+            "kind": "map",
             "key": {
               "kind": "string"
             },
-            "kind": "map",
             "value": {
-              "crdt_type": "lww_register",
+              "kind": "record",
               "fields": [],
+              "crdt_type": "lww_register",
               "inner_type": {
                 "kind": "string"
-              },
-              "kind": "record"
-            }
+              }
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
           "name": "int_map",
           "type": {
-            "crdt_type": "unordered_map",
+            "kind": "map",
             "key": {
               "kind": "string"
             },
-            "kind": "map",
             "value": {
-              "crdt_type": "lww_register",
+              "kind": "record",
               "fields": [],
+              "crdt_type": "lww_register",
               "inner_type": {
                 "kind": "u32"
-              },
-              "kind": "record"
-            }
+              }
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
           "name": "record_map",
           "type": {
-            "crdt_type": "unordered_map",
+            "kind": "map",
             "key": {
               "kind": "string"
             },
-            "kind": "map",
             "value": {
-              "crdt_type": "lww_register",
+              "kind": "record",
               "fields": [],
+              "crdt_type": "lww_register",
               "inner_type": {
                 "$ref": "Person"
-              },
-              "kind": "record"
-            }
+              }
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
           "name": "nested_map",
           "type": {
-            "crdt_type": "unordered_map",
+            "kind": "map",
             "key": {
               "kind": "string"
             },
-            "kind": "map",
             "value": {
-              "crdt_type": "unordered_map",
+              "kind": "map",
               "key": {
                 "kind": "string"
               },
-              "kind": "map",
               "value": {
-                "crdt_type": "lww_register",
+                "kind": "record",
                 "fields": [],
+                "crdt_type": "lww_register",
                 "inner_type": {
                   "kind": "u32"
-                },
-                "kind": "record"
-              }
-            }
+                }
+              },
+              "crdt_type": "unordered_map"
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
           "name": "counter_list",
           "type": {
-            "crdt_type": "vector",
+            "kind": "list",
             "items": {
-              "crdt_type": "counter",
+              "kind": "record",
               "fields": [],
-              "kind": "record"
+              "crdt_type": "counter"
             },
-            "kind": "list"
+            "crdt_type": "vector"
           }
         },
         {
           "name": "register_list",
           "type": {
-            "crdt_type": "vector",
+            "kind": "list",
             "items": {
-              "crdt_type": "lww_register",
+              "kind": "record",
               "fields": [],
+              "crdt_type": "lww_register",
               "inner_type": {
                 "kind": "string"
-              },
-              "kind": "record"
+              }
             },
-            "kind": "list"
+            "crdt_type": "vector"
           }
         },
         {
           "name": "record_list",
           "type": {
-            "crdt_type": "vector",
+            "kind": "list",
             "items": {
-              "crdt_type": "lww_register",
+              "kind": "record",
               "fields": [],
+              "crdt_type": "lww_register",
               "inner_type": {
                 "$ref": "Person"
-              },
-              "kind": "record"
+              }
             },
-            "kind": "list"
+            "crdt_type": "vector"
           }
         },
         {
           "name": "nested_list",
           "type": {
-            "crdt_type": "vector",
+            "kind": "list",
             "items": {
-              "crdt_type": "vector",
+              "kind": "list",
               "items": {
-                "crdt_type": "counter",
+                "kind": "record",
                 "fields": [],
-                "kind": "record"
+                "crdt_type": "counter"
               },
-              "kind": "list"
+              "crdt_type": "vector"
             },
-            "kind": "list"
+            "crdt_type": "vector"
           }
         },
         {
           "name": "map_of_counters",
           "type": {
-            "crdt_type": "unordered_map",
+            "kind": "map",
             "key": {
               "kind": "string"
             },
-            "kind": "map",
             "value": {
-              "crdt_type": "counter",
+              "kind": "record",
               "fields": [],
-              "kind": "record"
-            }
+              "crdt_type": "counter"
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
           "name": "map_of_lists",
           "type": {
-            "crdt_type": "unordered_map",
+            "kind": "map",
             "key": {
               "kind": "string"
             },
-            "kind": "map",
             "value": {
-              "crdt_type": "vector",
+              "kind": "list",
               "items": {
-                "crdt_type": "counter",
+                "kind": "record",
                 "fields": [],
-                "kind": "record"
+                "crdt_type": "counter"
               },
-              "kind": "list"
-            }
+              "crdt_type": "vector"
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
           "name": "list_of_maps",
           "type": {
-            "crdt_type": "vector",
+            "kind": "list",
             "items": {
-              "crdt_type": "unordered_map",
+              "kind": "map",
               "key": {
                 "kind": "string"
               },
-              "kind": "map",
               "value": {
-                "crdt_type": "lww_register",
+                "kind": "record",
                 "fields": [],
+                "crdt_type": "lww_register",
                 "inner_type": {
                   "kind": "u32"
-                },
-                "kind": "record"
-              }
+                }
+              },
+              "crdt_type": "unordered_map"
             },
-            "kind": "list"
+            "crdt_type": "vector"
           }
         },
         {
           "name": "string_set",
           "type": {
-            "crdt_type": "unordered_set",
+            "kind": "list",
             "items": {
               "kind": "string"
             },
-            "kind": "list"
+            "crdt_type": "unordered_set"
           }
         },
         {
           "name": "visit_counter",
           "type": {
-            "crdt_type": "counter",
+            "kind": "record",
             "fields": [],
-            "kind": "record"
+            "crdt_type": "counter"
           }
         },
         {
           "name": "profile_map",
           "type": {
-            "crdt_type": "unordered_map",
+            "kind": "map",
             "key": {
               "kind": "string"
             },
-            "kind": "map",
             "value": {
               "$ref": "Profile"
-            }
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
           "name": "status",
           "type": {
-            "crdt_type": "lww_register",
+            "kind": "record",
             "fields": [],
+            "crdt_type": "lww_register",
             "inner_type": {
               "$ref": "Status"
-            },
-            "kind": "record"
+            }
           }
         },
         {
           "name": "user_id",
           "type": {
-            "crdt_type": "lww_register",
+            "kind": "record",
             "fields": [],
+            "crdt_type": "lww_register",
             "inner_type": {
               "$ref": "UserId32"
-            },
-            "kind": "record"
+            }
           }
         },
         {
           "name": "counter",
           "type": {
-            "crdt_type": "lww_register",
+            "kind": "record",
             "fields": [],
+            "crdt_type": "lww_register",
             "inner_type": {
               "kind": "u64"
-            },
-            "kind": "record"
+            }
           }
         },
         {
           "name": "name",
           "type": {
-            "crdt_type": "lww_register",
+            "kind": "record",
             "fields": [],
+            "crdt_type": "lww_register",
             "inner_type": {
               "kind": "string"
-            },
-            "kind": "record"
+            }
           }
         },
         {
           "name": "active",
           "type": {
-            "crdt_type": "lww_register",
+            "kind": "record",
             "fields": [],
+            "crdt_type": "lww_register",
             "inner_type": {
               "kind": "bool"
-            },
-            "kind": "record"
+            }
           }
         }
-      ],
-      "kind": "record"
+      ]
     },
     "Status": {
       "kind": "variant",
@@ -353,6 +353,7 @@
       ]
     },
     "Status_Active": {
+      "kind": "record",
       "fields": [
         {
           "name": "timestamp",
@@ -360,10 +361,10 @@
             "kind": "u64"
           }
         }
-      ],
-      "kind": "record"
+      ]
     },
     "Status_Pending": {
+      "kind": "record",
       "fields": [
         {
           "name": "reason",
@@ -371,8 +372,7 @@
             "kind": "string"
           }
         }
-      ],
-      "kind": "record"
+      ]
     },
     "UserId32": {
       "kind": "alias",
@@ -381,5 +381,8 @@
         "size": 32
       }
     }
-  }
+  },
+  "methods": [],
+  "events": [],
+  "state_root": "StateSchemaConformance"
 }
