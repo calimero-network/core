@@ -1682,6 +1682,49 @@ fn find_and_build_tree_for_context(
         hex::encode(context_id)
     );
 
+    // First, try to directly construct and look up the root EntityIndex key
+    // The root EntityIndex's ID is typically the context_id itself
+    // Key::Index(id) is hashed: [0 (1 byte) + id (32 bytes)] -> SHA256 -> 32 bytes
+    use sha2::{Digest, Sha256};
+    let mut key_bytes_for_hash = Vec::with_capacity(33);
+    key_bytes_for_hash.push(0u8); // Key::Index variant
+    key_bytes_for_hash.extend_from_slice(context_id);
+    let calculated_state_key = Sha256::digest(&key_bytes_for_hash);
+
+    // Construct full key: context_id (32 bytes) + state_key (32 bytes)
+    let mut direct_key = Vec::with_capacity(64);
+    direct_key.extend_from_slice(context_id);
+    direct_key.extend_from_slice(&calculated_state_key);
+
+    eprintln!("[find_and_build_tree_for_context] Attempting direct lookup for root EntityIndex at key: {}", hex::encode(&direct_key));
+
+    // Try direct lookup first
+    if let Ok(Some(value)) = db.get_cf(state_cf, &direct_key) {
+        if let Ok(index) = borsh::from_slice::<EntityIndex>(&value) {
+            if index.full_hash == root_hash {
+                let state_key_hex = hex::encode(&calculated_state_key);
+                eprintln!("[find_and_build_tree_for_context] Found root EntityIndex via direct lookup: state_key={}, id={}, full_hash={}", 
+                    state_key_hex, hex::encode(index.id.as_bytes()), hex::encode(root_hash));
+                return decode_state_root_bfs(
+                    db,
+                    state_cf,
+                    context_id,
+                    &index,
+                    &state_key_hex,
+                    manifest,
+                    &mut std::collections::HashMap::new(),
+                );
+            } else {
+                eprintln!("[find_and_build_tree_for_context] Direct lookup found EntityIndex but full_hash doesn't match: found={}, expected={}", 
+                    hex::encode(index.full_hash), hex::encode(root_hash));
+            }
+        } else {
+            eprintln!("[find_and_build_tree_for_context] Direct lookup found entry but failed to deserialize as EntityIndex");
+        }
+    } else {
+        eprintln!("[find_and_build_tree_for_context] Direct lookup failed, falling back to scan");
+    }
+
     // Scan State column family to find the root EntityIndex by matching full_hash to root_hash
     // The root_hash from ContextMeta is the full_hash of the root EntityIndex
     // EntityIndex entries are stored in the State column, but we need to scan to find them
@@ -1711,8 +1754,36 @@ fn find_and_build_tree_for_context(
                 Ok(index) => {
                     entity_index_entries += 1;
 
-                    // Check if this node's full_hash matches the root_hash from ContextMeta
-                    if index.full_hash == root_hash {
+                    // Check if this is the root EntityIndex:
+                    // 1. id matches context_id (root EntityIndex's ID is the context_id)
+                    // 2. parent_id is None (root has no parent)
+                    let is_root_by_id =
+                        index.id.as_bytes() == context_id && index.parent_id.is_none();
+
+                    // Also check if full_hash matches (for verification)
+                    let full_hash_matches = index.full_hash == root_hash;
+
+                    if is_root_by_id {
+                        if root_state_key.is_some() {
+                            return Err(eyre::eyre!(
+                                "Multiple root EntityIndex entries found for context {}. This indicates data corruption.",
+                                hex::encode(context_id)
+                            ));
+                        }
+                        let state_key = hex::encode(&key[32..64]);
+                        eprintln!("[find_and_build_tree_for_context] Found root EntityIndex by id/parent_id: state_key={}, id={}, full_hash={}, root_hash={}, hash_matches={}, scanned {} entries (context_entries={}, entity_index_entries={})", 
+                            state_key, hex::encode(index.id.as_bytes()), hex::encode(index.full_hash), hex::encode(root_hash), full_hash_matches, scanned_count, context_entries, entity_index_entries);
+                        root_state_key = Some(state_key);
+                        root_index = Some(index);
+                        // Don't break yet - continue to check if full_hash matches for verification
+                        if full_hash_matches {
+                            eprintln!("[find_and_build_tree_for_context] Root EntityIndex full_hash matches root_hash from ContextMeta - perfect match!");
+                            break;
+                        } else {
+                            eprintln!("[find_and_build_tree_for_context] WARNING: Root EntityIndex found but full_hash doesn't match ContextMeta root_hash. Using it anyway based on id/parent_id criteria.");
+                        }
+                    } else if full_hash_matches {
+                        // Fallback: if full_hash matches but id doesn't, still use it (might be a different root)
                         if root_state_key.is_some() {
                             return Err(eyre::eyre!(
                                 "Multiple nodes with root_hash found for context {}. This indicates data corruption.",
@@ -1720,47 +1791,76 @@ fn find_and_build_tree_for_context(
                             ));
                         }
                         let state_key = hex::encode(&key[32..64]);
-                        eprintln!("[find_and_build_tree_for_context] Found root EntityIndex: state_key={}, id={}, full_hash={}, scanned {} entries (context_entries={}, entity_index_entries={})", 
+                        eprintln!("[find_and_build_tree_for_context] Found root EntityIndex by full_hash match: state_key={}, id={}, full_hash={}, scanned {} entries (context_entries={}, entity_index_entries={})", 
                             state_key, hex::encode(index.id.as_bytes()), hex::encode(root_hash), scanned_count, context_entries, entity_index_entries);
                         root_state_key = Some(state_key);
                         root_index = Some(index);
-                        break; // Found root, stop scanning
+                        break;
+                    } else {
+                        // Log mismatches for debugging (only first few to avoid spam)
+                        if entity_index_entries <= 5 {
+                            eprintln!("[find_and_build_tree_for_context] EntityIndex {} has full_hash={}, expected={}, id={}, parent_id={:?}", 
+                                hex::encode(index.id.as_bytes()), hex::encode(index.full_hash), hex::encode(root_hash),
+                                hex::encode(index.id.as_bytes()), index.parent_id.as_ref().map(|p| hex::encode(p.as_bytes())));
+                        }
                     }
                 }
                 Err(e) => {
-                    // If this looks like the root but deserialization failed, try to extract full_hash manually
-                    // and check if it matches root_hash
-                    if is_likely_root {
-                        eprintln!("[find_and_build_tree_for_context] Entry {} looks like root (starts with context_id, byte_32=00), attempting manual decode...", scanned_count);
+                    // For all entries that might be EntityIndex, try to extract full_hash manually
+                    // This includes entries that fail to deserialize but might still be EntityIndex
 
-                        // Try manual decode first - it will calculate the correct full_hash position
-                        match try_manual_entity_index_decode(&value, context_id) {
-                            Ok(index) => {
-                                eprintln!("[find_and_build_tree_for_context] Manual decode succeeded! full_hash={}, root_hash={}", 
-                                    hex::encode(index.full_hash), hex::encode(root_hash));
+                    // Try manual decode to extract full_hash
+                    if let Ok(index) = try_manual_entity_index_decode(&value, context_id) {
+                        entity_index_entries += 1;
 
-                                // Check if this node's full_hash matches the root_hash from ContextMeta
-                                if index.full_hash == root_hash {
-                                    if root_state_key.is_some() {
-                                        return Err(eyre::eyre!(
-                                            "Multiple nodes with root_hash found for context {}. This indicates data corruption.",
-                                            hex::encode(context_id)
-                                        ));
-                                    }
-                                    eprintln!("[find_and_build_tree_for_context] Found root EntityIndex via manual decode: state_key={}, id={}, full_hash={}", 
-                                        hex::encode(&key[32..64]), hex::encode(index.id.as_bytes()), hex::encode(root_hash));
-                                    let state_key = hex::encode(&key[32..64]);
-                                    root_state_key = Some(state_key);
-                                    root_index = Some(index);
-                                    break;
-                                } else {
-                                    eprintln!("[find_and_build_tree_for_context] Manual decode succeeded but full_hash doesn't match root_hash");
-                                }
+                        eprintln!("[find_and_build_tree_for_context] Entry {} manually decoded: id={}, full_hash={}, parent_id={:?}", 
+                            scanned_count, hex::encode(index.id.as_bytes()), hex::encode(index.full_hash),
+                            index.parent_id.as_ref().map(|p| hex::encode(p.as_bytes())));
+
+                        // Check if this is the root EntityIndex by id/parent_id
+                        let is_root_by_id =
+                            index.id.as_bytes() == context_id && index.parent_id.is_none();
+                        let full_hash_matches = index.full_hash == root_hash;
+
+                        if is_root_by_id {
+                            if root_state_key.is_some() {
+                                return Err(eyre::eyre!(
+                                    "Multiple root EntityIndex entries found for context {}. This indicates data corruption.",
+                                    hex::encode(context_id)
+                                ));
                             }
-                            Err(manual_err) => {
-                                eprintln!("[find_and_build_tree_for_context] Manual decode also failed: {}", manual_err);
+                            eprintln!("[find_and_build_tree_for_context] Found root EntityIndex via manual decode (by id/parent_id): state_key={}, id={}, full_hash={}, root_hash={}, hash_matches={}", 
+                                hex::encode(&key[32..64]), hex::encode(index.id.as_bytes()), hex::encode(index.full_hash), hex::encode(root_hash), full_hash_matches);
+                            let state_key = hex::encode(&key[32..64]);
+                            root_state_key = Some(state_key);
+                            root_index = Some(index);
+                            if full_hash_matches {
+                                eprintln!("[find_and_build_tree_for_context] Root EntityIndex full_hash matches root_hash from ContextMeta - perfect match!");
+                                break;
+                            } else {
+                                eprintln!("[find_and_build_tree_for_context] WARNING: Root EntityIndex found but full_hash doesn't match ContextMeta root_hash. Using it anyway based on id/parent_id criteria.");
                             }
+                        } else if full_hash_matches {
+                            // Fallback: if full_hash matches but id doesn't, still use it
+                            if root_state_key.is_some() {
+                                return Err(eyre::eyre!(
+                                    "Multiple nodes with root_hash found for context {}. This indicates data corruption.",
+                                    hex::encode(context_id)
+                                ));
+                            }
+                            eprintln!("[find_and_build_tree_for_context] Found root EntityIndex via manual decode (by full_hash): state_key={}, id={}, full_hash={}", 
+                                hex::encode(&key[32..64]), hex::encode(index.id.as_bytes()), hex::encode(root_hash));
+                            let state_key = hex::encode(&key[32..64]);
+                            root_state_key = Some(state_key);
+                            root_index = Some(index);
+                            break;
                         }
+                    } else if is_likely_root {
+                        // If it looks like root but manual decode failed, try to extract full_hash from a likely position
+                        // EntityIndex structure: id (32) + parent_id (1+32?) + children (variable) + full_hash (32) + own_hash (32) + metadata + deleted_at
+                        // For root, parent_id is None (1 byte = 0), so full_hash might be at offset 33 + children_size
+                        // But without knowing children size, we can't reliably extract it
+                        eprintln!("[find_and_build_tree_for_context] Entry {} looks like root but manual decode failed", scanned_count);
                     }
 
                     // Not an EntityIndex, skip silently
@@ -2042,14 +2142,70 @@ fn decode_state_root_bfs(
                 })
             }
         } else {
-            // Non-collection field - decode directly (these are stored in the root itself)
-            json!({
-                "field": field.name,
-                "type": "scalar_or_record",
-                "value": null,
-                "children": [],
-                "note": "Non-collection fields are stored in the state root itself"
-            })
+            // Non-collection field - could be a Record (Counter, etc.) or scalar
+            // Try to find a child that matches this field
+            // For Record types like Counter, they're stored as children of the root
+            let mut matched_child = None;
+            for child_info in &root_children {
+                let child_element_id = hex::encode(child_info.id.as_bytes());
+                if used_children.contains(&child_element_id) {
+                    continue;
+                }
+
+                // Check if this child matches the field by trying to decode it
+                if let Some(state_key) = element_to_state.get(&child_element_id) {
+                    let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
+                        format!("Failed to decode child_state_key: {}", state_key)
+                    })?;
+                    let mut child_key = Vec::with_capacity(64);
+                    child_key.extend_from_slice(context_id);
+                    child_key.extend_from_slice(&child_key_bytes);
+
+                    if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                        // Try to decode as the field's type (e.g., Entry<Counter>)
+                        if let Some(decoded) =
+                            decode_state_entry(&child_value, manifest, Some((db, &child_key)))
+                        {
+                            // Check if this decoded value matches the field type
+                            // For now, assume it matches if decoding succeeded
+                            matched_child = Some((state_key.clone(), decoded));
+                            used_children.insert(child_element_id);
+                            eprintln!("[decode_state_root_bfs] Found matching child for non-collection field {}: state_key={}", field.name, state_key);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some((state_key, decoded_value)) = matched_child {
+                // Extract the actual value from the decoded entry
+                let value = if let Some(decoded_obj) = decoded_value.as_object() {
+                    decoded_obj
+                        .get("value")
+                        .or_else(|| decoded_obj.get("data"))
+                        .cloned()
+                        .unwrap_or(decoded_value)
+                } else {
+                    decoded_value
+                };
+
+                json!({
+                    "field": field.name,
+                    "type": format!("{:?}", field.type_),
+                    "value": value,
+                    "state_key": state_key,
+                    "children": [],
+                })
+            } else {
+                // No matching child found
+                json!({
+                    "field": field.name,
+                    "type": format!("{:?}", field.type_),
+                    "value": null,
+                    "children": [],
+                    "note": "Field not found in state"
+                })
+            }
         };
 
         eprintln!(
@@ -2687,8 +2843,33 @@ fn decode_collection_entries_bfs(
                     element_to_state.insert(entry_element_id.clone(), calculated_state_key.clone());
                     calculated_state_key
                 } else {
-                    eprintln!("[decode_collection_entries_bfs] Warning: Could not find state key for entry {} (calculated: {})", entry_element_id, calculated_state_key);
-                    continue; // Entry not found
+                    // Try Key::Index instead of Key::Entry (entry might be stored as EntityIndex)
+                    let mut key_bytes_for_hash_index = Vec::with_capacity(33);
+                    key_bytes_for_hash_index.push(0u8); // Key::Index variant
+                    key_bytes_for_hash_index.extend_from_slice(child_info.id.as_bytes());
+                    let calculated_state_key_index =
+                        hex::encode(Sha256::digest(&key_bytes_for_hash_index));
+
+                    let mut full_key_index = Vec::with_capacity(64);
+                    full_key_index.extend_from_slice(context_id);
+                    full_key_index.extend_from_slice(
+                        &hex::decode(&calculated_state_key_index).unwrap_or_default(),
+                    );
+
+                    if db
+                        .get_cf(state_cf, &full_key_index)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        eprintln!("[decode_collection_entries_bfs] Found entry {} as EntityIndex (Key::Index) instead of Entry", entry_element_id);
+                        element_to_state
+                            .insert(entry_element_id.clone(), calculated_state_key_index.clone());
+                        calculated_state_key_index
+                    } else {
+                        eprintln!("[decode_collection_entries_bfs] Warning: Could not find state key for entry {} (tried Entry: {}, Index: {})", entry_element_id, calculated_state_key, calculated_state_key_index);
+                        continue; // Entry not found
+                    }
                 }
             };
 
