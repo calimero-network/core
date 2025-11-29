@@ -2162,6 +2162,7 @@ fn decode_state_root_bfs(
                     child_key.extend_from_slice(&child_key_bytes);
 
                     if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                        eprintln!("[decode_state_root_bfs] Attempting to decode child {} for field {} (value length: {})", child_element_id, field.name, child_value.len());
                         // First, try to decode directly as the field's type (for Counter, etc.)
                         // This handles cases where the value is stored as Entry<T> where T is the field type
                         let decoded = if let TypeRef::Collection {
@@ -2170,24 +2171,33 @@ fn decode_state_root_bfs(
                             inner_type,
                         } = &field.type_
                         {
+                            eprintln!("[decode_state_root_bfs] Field {} is Record type, trying decode_record_entry (crdt_type: {:?})", field.name, crdt_type);
                             // For Record types like Counter, try to decode as Entry<T>
-                            decode_record_entry(
+                            match decode_record_entry(
                                 &child_value,
                                 field,
                                 crdt_type,
                                 inner_type,
                                 manifest,
-                            )
-                            .ok()
-                            .map(|v| {
-                                // Extract value from Entry structure
-                                if let Some(obj) = v.as_object() {
-                                    obj.get("value").cloned().unwrap_or(v)
-                                } else {
-                                    v
+                            ) {
+                                Ok(v) => {
+                                    eprintln!("[decode_state_root_bfs] decode_record_entry succeeded for field {}: {:?}", field.name, v);
+                                    // Extract value from Entry structure
+                                    if let Some(obj) = v.as_object() {
+                                        let extracted = obj.get("value").cloned().unwrap_or(v);
+                                        eprintln!("[decode_state_root_bfs] Extracted value from Entry: {:?}", extracted);
+                                        Some(extracted)
+                                    } else {
+                                        Some(v)
+                                    }
                                 }
-                            })
+                                Err(e) => {
+                                    eprintln!("[decode_state_root_bfs] decode_record_entry failed for field {}: {}", field.name, e);
+                                    None
+                                }
+                            }
                         } else {
+                            eprintln!("[decode_state_root_bfs] Field {} is not Record type, trying decode_state_entry", field.name);
                             // For other types, try decode_state_entry
                             decode_state_entry(&child_value, manifest, Some((db, &child_key))).map(
                                 |v| {
@@ -2214,14 +2224,20 @@ fn decode_state_root_bfs(
                             }
                             matched_child = Some((state_key.clone(), decoded_value));
                             used_children.insert(child_element_id);
-                            eprintln!("[decode_state_root_bfs] Found matching child for non-collection field {}: state_key={}", field.name, state_key);
+                            eprintln!("[decode_state_root_bfs] Found matching child for non-collection field {}: state_key={}, value={:?}", field.name, state_key, matched_child.as_ref().unwrap().1);
                             break;
+                        } else {
+                            eprintln!(
+                                "[decode_state_root_bfs] Failed to decode child {} for field {}",
+                                child_element_id, field.name
+                            );
                         }
                     }
                 }
             }
 
             if let Some((state_key, decoded_value)) = matched_child {
+                eprintln!("[decode_state_root_bfs] Successfully decoded Counter field {} with value: {:?}", field.name, decoded_value);
                 json!({
                     "field": field.name,
                     "type": format!("{:?}", field.type_),
@@ -2299,11 +2315,26 @@ fn decode_state_root_bfs(
             (field_value.clone(), None)
         };
 
+        // For Counter fields, ensure the value is visible in the data
+        let mut field_data_final = field_data_without_children.clone();
+        if let Some(field_obj_data) = field_data_without_children.as_object() {
+            if let Some(value) = field_obj_data.get("value") {
+                // If there's a value, ensure it's visible in the data
+                if let Some(field_data_final_obj) = field_data_final.as_object_mut() {
+                    // The value is already in field_data_without_children, so it will be in data
+                    eprintln!(
+                        "[decode_state_root_bfs] Field {} has value in data: {:?}",
+                        field_name, value
+                    );
+                }
+            }
+        }
+
         let mut field_obj = json!({
             "id": format!("{}_{}", root_element_id, field_name),
             "type": "Field",
             "field": field_name,
-            "data": field_data_without_children,
+            "data": field_data_final,
             "parent_id": root_element_id,
         });
 
