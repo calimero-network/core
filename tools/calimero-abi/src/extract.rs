@@ -190,7 +190,46 @@ pub fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> 
             json_str
         }
         None => {
-            eyre::bail!("No 'calimero_abi_v1' custom section found in WASM file");
+            // Fall back to reading from abi.json file
+            // Look for abi.json in the same directory as the WASM file, or in a res/ subdirectory
+            let wasm_dir = wasm_file
+                .parent()
+                .ok_or_else(|| eyre::eyre!("WASM file has no parent directory"))?;
+
+            let abi_json_paths = vec![
+                wasm_dir.join("abi.json"),
+                wasm_dir.join("res/abi.json"),
+                wasm_dir
+                    .parent()
+                    .map(|p| p.join("res/abi.json"))
+                    .unwrap_or_else(|| wasm_dir.join("abi.json")),
+            ];
+
+            let mut found_abi = None;
+            for path in &abi_json_paths {
+                if path.exists() {
+                    found_abi = Some(fs::read_to_string(path)?);
+                    break;
+                }
+            }
+
+            match found_abi {
+                Some(json_str) => {
+                    // Validate JSON
+                    drop(serde_json::from_str::<serde_json::Value>(&json_str)?);
+                    json_str
+                }
+                None => {
+                    eyre::bail!(
+                        "No 'calimero_abi_v1' custom section found in WASM file and no abi.json file found. \
+                        Checked: {}",
+                        abi_json_paths.iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
         }
     };
 
