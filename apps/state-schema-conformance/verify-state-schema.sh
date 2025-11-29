@@ -22,23 +22,14 @@ if [ ! -f "$BUILD_TIME_SCHEMA" ]; then
     exit 1
 fi
 
-# Normalize build-time schema (extract only state_root and types)
+# Read build-time schema info
 python3 << 'PYTHON_SCRIPT'
 import json
-import sys
 
 with open('apps/state-schema-conformance/res/state-schema.json') as f:
     schema = json.load(f)
 
-normalized = {
-    'state_root': schema.get('state_root'),
-    'types': schema.get('types', {})
-}
-
-with open('/tmp/build-time-state-schema.json', 'w') as f:
-    json.dump(normalized, f, indent=2, sort_keys=True)
-
-print(f"✅ Build-time schema: state_root={normalized['state_root']}, types={len(normalized['types'])}")
+print(f"✅ Build-time schema: state_root={schema.get('state_root')}, types={len(schema.get('types', {}))}, methods={len(schema.get('methods', []))}, events={len(schema.get('events', []))}")
 PYTHON_SCRIPT
 
 # Build the extractor if needed
@@ -60,22 +51,14 @@ fi
 
 "$EXTRACTOR" state "$WASM_FILE" -o /tmp/wasm-extracted-state-schema.json
 
-# Normalize WASM-extracted schema
+# Read WASM-extracted schema info
 python3 << 'PYTHON_SCRIPT'
 import json
 
 with open('/tmp/wasm-extracted-state-schema.json') as f:
     schema = json.load(f)
 
-normalized = {
-    'state_root': schema.get('state_root'),
-    'types': schema.get('types', {})
-}
-
-with open('/tmp/wasm-extracted-state-schema.json', 'w') as f:
-    json.dump(normalized, f, indent=2, sort_keys=True)
-
-print(f"✅ WASM-extracted schema: state_root={normalized['state_root']}, types={len(normalized['types'])}")
+print(f"✅ WASM-extracted schema: state_root={schema.get('state_root')}, types={len(schema.get('types', {}))}, methods={len(schema.get('methods', []))}, events={len(schema.get('events', []))}")
 PYTHON_SCRIPT
 
 # Compare with expected
@@ -88,40 +71,24 @@ if [ ! -f "$EXPECTED" ]; then
     cp "$BUILD_TIME_SCHEMA" "$EXPECTED"
 fi
 
-# Normalize expected file for comparison (extract only state_root and types)
-python3 << 'PYTHON_SCRIPT'
-import json
-
-with open('apps/state-schema-conformance/state-schema.expected.json') as f:
-    schema = json.load(f)
-
-normalized = {
-    'state_root': schema.get('state_root'),
-    'types': schema.get('types', {})
-}
-
-with open('/tmp/expected-state-schema.json', 'w') as f:
-    json.dump(normalized, f, indent=2, sort_keys=True)
-PYTHON_SCRIPT
-
-# Compare build-time with expected (both normalized)
-if ! diff -u /tmp/expected-state-schema.json /tmp/build-time-state-schema.json > /tmp/build-time-diff.txt; then
+# Compare build-time with expected (full schemas)
+if ! diff -u "$EXPECTED" "$BUILD_TIME_SCHEMA" > /tmp/build-time-diff.txt; then
     echo "ERROR: Build-time state schema differs from expected:"
     cat /tmp/build-time-diff.txt
     exit 1
 fi
 echo "✅ Build-time schema matches expected"
 
-# Compare WASM-extracted with expected (both normalized)
-if ! diff -u /tmp/expected-state-schema.json /tmp/wasm-extracted-state-schema.json > /tmp/wasm-diff.txt; then
+# Compare WASM-extracted with expected (full schemas)
+if ! diff -u "$EXPECTED" /tmp/wasm-extracted-state-schema.json > /tmp/wasm-diff.txt; then
     echo "ERROR: WASM-extracted state schema differs from expected:"
     cat /tmp/wasm-diff.txt
     exit 1
 fi
 echo "✅ WASM-extracted schema matches expected"
 
-# Compare build-time with WASM-extracted (both normalized)
-if ! diff -u /tmp/build-time-state-schema.json /tmp/wasm-extracted-state-schema.json > /tmp/cross-diff.txt; then
+# Compare build-time with WASM-extracted (full schemas)
+if ! diff -u "$BUILD_TIME_SCHEMA" /tmp/wasm-extracted-state-schema.json > /tmp/cross-diff.txt; then
     echo "ERROR: Build-time and WASM-extracted schemas differ:"
     cat /tmp/cross-diff.txt
     exit 1
