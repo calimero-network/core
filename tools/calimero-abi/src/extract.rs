@@ -191,19 +191,64 @@ pub fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> 
         }
         None => {
             // Fall back to reading from abi.json file
-            // Look for abi.json in the same directory as the WASM file, or in a res/ subdirectory
+            // First, try to find workspace root and app directory
             let wasm_dir = wasm_file
                 .parent()
                 .ok_or_else(|| eyre::eyre!("WASM file has no parent directory"))?;
 
-            let abi_json_paths = vec![
+            // Extract app name from WASM filename (e.g., "abi_conformance.wasm" -> "abi_conformance")
+            let wasm_stem = wasm_file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| eyre::eyre!("WASM file has no valid filename"))?;
+
+            // Find workspace root by looking for Cargo.toml going up from WASM file
+            let mut workspace_root = wasm_dir.to_path_buf();
+            let mut found_workspace = false;
+            for _ in 0..10 {
+                // Limit search depth
+                if workspace_root.join("Cargo.toml").exists() {
+                    found_workspace = true;
+                    break;
+                }
+                if let Some(parent) = workspace_root.parent() {
+                    workspace_root = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+
+            let mut abi_json_paths = Vec::new();
+
+            // If we found workspace root, look in apps/{app_name}/res/abi.json
+            if found_workspace {
+                abi_json_paths.push(
+                    workspace_root
+                        .join("apps")
+                        .join(wasm_stem)
+                        .join("res/abi.json"),
+                );
+                // Also try with underscores converted to hyphens (e.g., "kv-store" vs "kv_store")
+                let app_name_hyphenated = wasm_stem.replace('_', "-");
+                if app_name_hyphenated != wasm_stem {
+                    abi_json_paths.push(
+                        workspace_root
+                            .join("apps")
+                            .join(&app_name_hyphenated)
+                            .join("res/abi.json"),
+                    );
+                }
+            }
+
+            // Also check relative to WASM file location (for backwards compatibility)
+            abi_json_paths.extend(vec![
                 wasm_dir.join("abi.json"),
                 wasm_dir.join("res/abi.json"),
                 wasm_dir
                     .parent()
                     .map(|p| p.join("res/abi.json"))
                     .unwrap_or_else(|| wasm_dir.join("abi.json")),
-            ];
+            ]);
 
             let mut found_abi = None;
             for path in &abi_json_paths {
