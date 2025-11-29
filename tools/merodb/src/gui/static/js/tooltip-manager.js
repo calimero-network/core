@@ -223,13 +223,14 @@ export class TooltipManager {
         }
         
         // Calculate initial position (below and to the right of cursor)
-        let left = event.pageX + offset;
-        let top = event.pageY + offset;
+        // Use clientX/clientY for viewport coordinates since tooltips use position: fixed
+        let left = event.clientX + offset;
+        let top = event.clientY + offset;
         
         // Check if tooltip would go off the right edge
         if (left + tooltipWidth + padding > viewportWidth) {
             // Position to the left of cursor instead
-            left = event.pageX - tooltipWidth - offset;
+            left = event.clientX - tooltipWidth - offset;
             // Ensure it doesn't go off the left edge
             if (left < padding) {
                 left = padding;
@@ -239,7 +240,7 @@ export class TooltipManager {
         // Check if tooltip would go off the bottom edge
         if (top + tooltipHeight + padding > viewportHeight) {
             // Position above cursor instead
-            top = event.pageY - tooltipHeight - offset;
+            top = event.clientY - tooltipHeight - offset;
             // Ensure it doesn't go off the top edge
             if (top < padding) {
                 top = padding;

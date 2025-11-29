@@ -1020,7 +1020,12 @@ fn try_manual_entity_index_decode(
 
     // Read children Option (1 byte + Vec data if Some)
     let (children_offset_after, children_vec) = if bytes.len() <= offset {
-        (offset + 1, Vec::new())
+        // Not enough bytes to read the Option discriminant - return error
+        return Err(eyre::eyre!(
+            "Not enough bytes to read children Option discriminant at offset {} (buffer length: {})",
+            offset,
+            bytes.len()
+        ));
     } else if bytes[offset] == 0 {
         (offset + 1, Vec::new())
     } else if bytes[offset] == 1 {

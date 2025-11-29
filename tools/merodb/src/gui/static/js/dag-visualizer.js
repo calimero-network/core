@@ -145,6 +145,11 @@ export class DAGVisualizer {
         const svg = d3.select(`#${this.svgId}`);
         svg.selectAll('*').remove();
 
+        if (!svg.node()) {
+            console.error(`[DAGVisualizer.renderHierarchical] SVG element #${this.svgId} not found`);
+            return;
+        }
+
         const width = svg.node().getBoundingClientRect().width;
         const height = 500;
         svg.attr('viewBox', [0, 0, width, height]);
@@ -242,6 +247,11 @@ export class DAGVisualizer {
     renderForce() {
         const svg = d3.select(`#${this.svgId}`);
         svg.selectAll('*').remove();
+
+        if (!svg.node()) {
+            console.error(`[DAGVisualizer.renderForce] SVG element #${this.svgId} not found`);
+            return;
+        }
 
         const width = svg.node().getBoundingClientRect().width;
         const height = 500;
