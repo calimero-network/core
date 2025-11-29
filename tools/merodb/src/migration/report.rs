@@ -187,6 +187,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: path.to_path_buf(),
+                state_schema_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: path.to_path_buf(),
