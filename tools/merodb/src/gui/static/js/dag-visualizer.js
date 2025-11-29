@@ -199,44 +199,46 @@ export class DAGVisualizer {
             }
         });
 
-        // Draw nodes
-        nodes.forEach((node, i) => {
-            const pos = nodePositions.get(node.id);
+        // Draw nodes using D3 data binding
+        const nodeGroups = g.selectAll('g.dag-node')
+            .data(nodes)
+            .enter()
+            .append('g')
+            .attr('class', 'dag-node')
+            .attr('transform', (d) => {
+                const pos = nodePositions.get(d.id);
+                return `translate(${pos.x},${pos.y})`;
+            })
+            .style('cursor', 'pointer')
+            .on('mouseover', async (event, d) => {
+                const nodeId = d.delta_id || d.id;
 
-            const nodeGroup = g.append('g')
-                .attr('class', 'dag-node')
-                .attr('transform', `translate(${pos.x},${pos.y})`)
-                .style('cursor', 'pointer')
-                .on('mouseover', async (event) => {
-                    const nodeId = node.delta_id || node.id;
+                // Show initial tooltip with basic info
+                const content = this.formatTooltipContent(d);
+                this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
 
-                    // Show initial tooltip with basic info
-                    const content = this.formatTooltipContent(node);
-                    this.tooltipManager.showTooltip(event, content, 'state-tooltip-temp', nodeId);
+                // Load detailed info on demand (actions and events)
+                await this.loadAndUpdateTooltip(event, d);
+            })
+            .on('mousemove', (event) => {
+                this.tooltipManager.moveTooltip(event);
+            })
+            .on('mouseout', () => {
+                this.tooltipManager.hideTooltip();
+            });
 
-                    // Load detailed info on demand (actions and events)
-                    await this.loadAndUpdateTooltip(event, node);
-                })
-                .on('mousemove', (event) => {
-                    this.tooltipManager.moveTooltip(event);
-                })
-                .on('mouseout', () => {
-                    this.tooltipManager.hideTooltip();
-                });
+        nodeGroups.append('circle')
+            .attr('r', 20)
+            .attr('fill', '#0e639c')
+            .attr('stroke', '#007acc')
+            .attr('stroke-width', 2);
 
-            nodeGroup.append('circle')
-                .attr('r', 20)
-                .attr('fill', '#0e639c')
-                .attr('stroke', '#007acc')
-                .attr('stroke-width', 2);
-
-            nodeGroup.append('text')
-                .attr('text-anchor', 'middle')
-                .attr('dy', 4)
-                .attr('fill', '#d4d4d4')
-                .attr('font-size', '10px')
-                .text((node.delta_id || node.id).substring(0, 8));
-        });
+        nodeGroups.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('dy', 4)
+            .attr('fill', '#d4d4d4')
+            .attr('font-size', '10px')
+            .text((d) => (d.delta_id || d.id).substring(0, 8));
 
         this.setupZoom(svg, g);
     }
