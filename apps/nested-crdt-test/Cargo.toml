@@ -12,3 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
+
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true

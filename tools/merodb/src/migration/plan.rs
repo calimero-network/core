@@ -149,8 +149,11 @@ impl MigrationPlan {
 #[derive(Debug, Deserialize)]
 pub struct SourceEndpoint {
     pub db_path: PathBuf,
+    /// State schema JSON file (extracted using `calimero-abi state`)
+    ///
+    /// This includes the state root type and its dependencies, sufficient for state deserialization.
     #[serde(default)]
-    pub wasm_file: Option<PathBuf>,
+    pub state_schema_file: Option<PathBuf>,
 }
 
 impl SourceEndpoint {
@@ -159,7 +162,7 @@ impl SourceEndpoint {
     /// This method performs early validation on the source endpoint configuration to
     /// ensure that:
     /// 1. The database path is not an empty string
-    /// 2. If a WASM ABI file is specified, its path is not empty
+    /// 2. If a state schema file is specified, its path is not empty
     ///
     /// This prevents downstream errors during database opening and ensures that path
     /// strings are usable for filesystem operations.
@@ -174,16 +177,16 @@ impl SourceEndpoint {
     ///
     /// # Errors
     ///
-    /// Returns an error if the db_path is empty or if wasm_file is Some but empty.
+    /// Returns an error if the db_path is empty or if state_schema_file is Some but empty.
     fn validate(&self, context: &str) -> Result<()> {
         ensure!(
             !self.db_path.as_os_str().is_empty(),
             "{context}: db_path must not be empty",
         );
-        if let Some(path) = &self.wasm_file {
+        if let Some(path) = &self.state_schema_file {
             ensure!(
                 !path.as_os_str().is_empty(),
-                "{context}: wasm_file must not be empty when provided",
+                "{context}: state_schema_file must not be empty when provided",
             );
         }
         Ok(())
@@ -747,7 +750,7 @@ impl CopyStep {
 ///
 /// When multiple transformations are enabled, they are applied in this order:
 /// 1. **write_if_missing check**: Skip if key exists in target (no transformation)
-/// 2. **decode_with_abi**: Deserialize binary value using WASM ABI manifest → JSON
+/// 2. **decode_with_abi**: Deserialize binary value using state schema → JSON
 /// 3. **jq**: Apply jq expression to modify the JSON value
 ///
 /// ## Field Descriptions
@@ -755,18 +758,18 @@ impl CopyStep {
 /// ### `decode_with_abi`
 /// - **Type**: `Option<bool>`
 /// - **Default**: Inherits from `defaults.decode_with_abi`, or `false` if not set
-/// - **Purpose**: Deserialize binary-encoded application state using the WASM ABI manifest
+/// - **Purpose**: Deserialize binary-encoded application state using the state schema
 /// - **Requirements**:
-///   - Source database must have an associated WASM file (via `source.wasm_file` or `--wasm-file`)
-///   - WASM file must contain a `calimero_abi_v1` custom section with the ABI manifest
+///   - Source database must have an associated state schema file (via `source.state_schema_file` or `--state-schema-file`)
+///   - State schema file must contain the state root type and all transitively referenced types
 ///   - Primarily useful for the State column (other columns may not be ABI-decodable)
 /// - **Output format**: JSON-encoded bytes
 /// - **Example use case**: Converting binary contract state to human-readable JSON for inspection or transformation
 /// - **Error behavior**:
-///   - If `decode_with_abi=true` but no WASM file is provided: Migration fails immediately with
-///     "decode_with_abi requested but source ABI manifest is not available"
-///   - If WASM file exists but lacks ABI custom section: Migration fails with
-///     "No 'calimero_abi_v1' custom section found in WASM file"
+///   - If `decode_with_abi=true` but no state schema file is provided: Migration fails immediately with
+///     "decode_with_abi requested but source state schema is not available"
+///   - If state schema file exists but is invalid: Migration fails with
+///     "Failed to load state schema" or "State schema missing 'state_root' field"
 ///   - Validation happens before processing any keys (fail-fast to prevent partial migrations)
 ///
 /// ### `jq`
@@ -820,8 +823,8 @@ impl CopyStep {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CopyTransform {
-    /// Deserialize values using WASM ABI manifest before copying.
-    /// Requires source database to have an associated WASM file.
+    /// Deserialize values using state schema before copying.
+    /// Requires source database to have an associated state schema file.
     #[serde(default)]
     pub decode_with_abi: Option<bool>,
 
@@ -1308,7 +1311,7 @@ mod validation_tests {
             description: None,
             source: SourceEndpoint {
                 db_path: PathBuf::from("/tmp/source-db"),
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1480,7 +1483,7 @@ name: sample-plan
 description: Copy a subset of state and assert record counts
 source:
   db_path: /var/lib/source-db
-  wasm_file: ./contracts/sample.wasm
+  state_schema_file: ./schemas/sample-state-schema.json
 target:
   db_path: /var/lib/target-db
   backup_dir: ./backups/latest

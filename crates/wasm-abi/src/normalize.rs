@@ -1,6 +1,6 @@
 use syn::{GenericArgument, Type, TypePath};
 
-use crate::schema::{ScalarType, TypeRef};
+use crate::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeRef};
 
 /// Error types for type normalization
 #[derive(Debug, thiserror::Error)]
@@ -198,6 +198,7 @@ fn normalize_generic_type(
         // Collection types - normalize to semantic ABI types
         "BTreeMap" | "HashMap" | "UnorderedMap" | "IndexMap" => {
             // All map types -> map<K, V> (normalize to semantic type)
+            // UnorderedMap preserves CRDT type metadata
             if args.args.len() != 2 {
                 return Err(NormalizeError::TypePathError(format!(
                     "invalid {ident_str} type - expected 2 type arguments"
@@ -223,9 +224,21 @@ fn normalize_generic_type(
             let _key_type = normalize_type(key_ty, wasm32, resolver)?;
             let value_type = normalize_type(value_ty, wasm32, resolver)?;
 
-            // For now, we'll create a simple map type
-            // TODO: We might want to support different key types in the future
-            Ok(TypeRef::map(value_type))
+            // Preserve CRDT type for UnorderedMap
+            let crdt_type = if ident_str == "UnorderedMap" {
+                Some(CrdtCollectionType::UnorderedMap)
+            } else {
+                None
+            };
+
+            Ok(TypeRef::Collection {
+                collection: CollectionType::Map {
+                    key: Box::new(TypeRef::Scalar(ScalarType::String)),
+                    value: Box::new(value_type),
+                },
+                crdt_type,
+                inner_type: None, // Inner types are in Map.key and Map.value
+            })
         }
         // Set types - normalize to semantic list type (sets are just lists without duplicates)
         "HashSet" | "BTreeSet" | "IndexSet" => {
@@ -273,7 +286,7 @@ fn normalize_generic_type(
                 ));
             }
         }
-        // CRDT types - unwrap to inner type for ABI
+        // CRDT types - unwrap to inner type for ABI but preserve CRDT type metadata
         "LwwRegister"
         | "Counter"
         | "ReplicatedGrowableArray"
@@ -281,19 +294,34 @@ fn normalize_generic_type(
         | "UnorderedSet"
         | "FrozenValue" => {
             // These CRDT wrappers unwrap to their inner type for ABI purposes
-            // LwwRegister<T> -> T, Counter -> u64, etc.
+            // but we preserve the CRDT type so deserializers know the format
 
             if ident_str == "Counter" || ident_str == "ReplicatedGrowableArray" {
                 // Counter and RGA don't have generic args (or are opaque)
-                // Counter -> u64, RGA -> string
+                // Counter -> bytes (but preserve Counter type), RGA -> string (but preserve RGA type)
                 if ident_str == "Counter" {
-                    return Ok(TypeRef::Scalar(ScalarType::U64));
+                    // Counter serializes as (positive: UnorderedMap<String, u64>, negative?: UnorderedMap<String, u64>)
+                    // We represent it as bytes with CRDT type metadata
+                    return Ok(TypeRef::Collection {
+                        collection: CollectionType::Record {
+                            fields: vec![], // Placeholder - Counter has complex internal structure
+                        },
+                        crdt_type: Some(CrdtCollectionType::Counter),
+                        inner_type: None, // Counter doesn't wrap another type
+                    });
                 } else {
-                    return Ok(TypeRef::Scalar(ScalarType::String));
+                    // RGA serializes as a string with CRDT metadata
+                    return Ok(TypeRef::Collection {
+                        collection: CollectionType::Record {
+                            fields: vec![], // Placeholder
+                        },
+                        crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
+                        inner_type: None,
+                    });
                 }
             }
 
-            // LwwRegister<T>, Vector<T>, UnorderedSet<T> -> unwrap T
+            // LwwRegister<T>, Vector<T>, UnorderedSet<T> -> unwrap T but preserve CRDT type
             if args.args.is_empty() {
                 return Err(NormalizeError::TypePathError(format!(
                     "invalid {ident_str} type - expected 1 type argument"
@@ -305,7 +333,50 @@ fn normalize_generic_type(
                     "invalid CRDT argument".to_owned(),
                 ));
             };
-            normalize_type(ty, wasm32, resolver)
+            let inner_type = normalize_type(ty, wasm32, resolver)?;
+
+            // Wrap the inner type in a Collection with CRDT metadata
+            match ident_str.as_str() {
+                "LwwRegister" => {
+                    // LwwRegister<T> wraps a single value T with CRDT metadata
+                    // We preserve the inner type so deserializer knows how to deserialize the value
+                    // The deserializer will handle the (value: T, timestamp, node_id) format
+                    Ok(TypeRef::Collection {
+                        collection: CollectionType::Record {
+                            fields: vec![], // Placeholder - inner_type stores the actual type
+                        },
+                        crdt_type: Some(CrdtCollectionType::LwwRegister),
+                        inner_type: Some(Box::new(inner_type)),
+                    })
+                }
+                "Vector" => {
+                    // Vector<T> -> List<T> with CRDT type
+                    // The inner_type is already in the List's items field
+                    Ok(TypeRef::Collection {
+                        collection: CollectionType::List {
+                            items: Box::new(inner_type),
+                        },
+                        crdt_type: Some(CrdtCollectionType::Vector),
+                        inner_type: None, // Inner type is in List.items
+                    })
+                }
+                "UnorderedSet" => {
+                    // UnorderedSet<T> -> List<T> with CRDT type
+                    // The inner_type is already in the List's items field
+                    Ok(TypeRef::Collection {
+                        collection: CollectionType::List {
+                            items: Box::new(inner_type),
+                        },
+                        crdt_type: Some(CrdtCollectionType::UnorderedSet),
+                        inner_type: None, // Inner type is in List.items
+                    })
+                }
+                "FrozenValue" => {
+                    // FrozenValue is not a CRDT, just a wrapper - no CRDT metadata
+                    Ok(inner_type)
+                }
+                _ => Ok(inner_type),
+            }
         }
         // Handle UserStorage and FrozenStorage
         "UserStorage" | "FrozenStorage" => {
@@ -323,7 +394,16 @@ fn normalize_generic_type(
                 ));
             };
             let value_type = normalize_type(ty, wasm32, resolver)?;
-            Ok(TypeRef::map(value_type)) // Becomes map<string, T>
+
+            // UserStorage and FrozenStorage are not CRDTs, just storage wrappers
+            Ok(TypeRef::Collection {
+                collection: CollectionType::Map {
+                    key: Box::new(TypeRef::Scalar(ScalarType::String)),
+                    value: Box::new(value_type),
+                },
+                crdt_type: None,
+                inner_type: None,
+            })
         }
         _ => Err(NormalizeError::TypePathError(format!(
             "unknown generic type: {ident}"
@@ -394,7 +474,20 @@ fn normalize_scalar_type(
             Ok(TypeRef::bytes_with_size(32, None))
         }
         // Storage CRDT wrappers – treat as opaque blobs until ABI definitions exist.
-        "Counter" | "ReplicatedGrowableArray" => Ok(TypeRef::bytes()),
+        "Counter" => Ok(TypeRef::Collection {
+            collection: CollectionType::Record {
+                fields: vec![], // Placeholder - Counter has complex internal structure
+            },
+            crdt_type: Some(CrdtCollectionType::Counter),
+            inner_type: None, // Counter doesn't wrap another type
+        }),
+        "ReplicatedGrowableArray" => Ok(TypeRef::Collection {
+            collection: CollectionType::Record {
+                fields: vec![], // Placeholder
+            },
+            crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
+            inner_type: None,
+        }),
         _ => {
             // Check if it's a local type
             resolver.resolve_local(&ident.to_string()).map_or_else(

@@ -11,13 +11,13 @@
     <script src="https://d3js.org/d3.v7.min.js"></script>
 
     <!-- Stylesheets -->
-    <link rel="stylesheet" href="/static/css/variables.css">
-    <link rel="stylesheet" href="/static/css/base.css">
-    <link rel="stylesheet" href="/static/css/layout.css">
-    <link rel="stylesheet" href="/static/css/components.css">
-    <link rel="stylesheet" href="/static/css/json-viewer.css">
-    <link rel="stylesheet" href="/static/css/jq-panel.css">
-    <link rel="stylesheet" href="/static/css/visualization.css">
+    <link rel="stylesheet" href="/static/css/variables.css?v=3">
+    <link rel="stylesheet" href="/static/css/base.css?v=3">
+    <link rel="stylesheet" href="/static/css/layout.css?v=3">
+    <link rel="stylesheet" href="/static/css/components.css?v=3">
+    <link rel="stylesheet" href="/static/css/json-viewer.css?v=3">
+    <link rel="stylesheet" href="/static/css/jq-panel.css?v=3">
+    <link rel="stylesheet" href="/static/css/visualization.css?v=3">
 </head>
 <body>
     <div class="app-container">
@@ -34,7 +34,7 @@
                 <div class="form-container">
                     <div class="form-container__icon">📊</div>
                     <h2 class="form-container__title">Load Database</h2>
-                    <p class="form-container__description">Specify the database path and optionally upload a WASM file for state decoding</p>
+                    <p class="form-container__description">Specify the database path and optionally upload a state schema file for state decoding</p>
 
                     <form id="load-form" class="form">
                         <div class="form-group">
@@ -50,18 +50,19 @@
                         </div>
 
                         <div class="form-group">
-                            <label for="wasm-input" class="form-group__label">WASM File (Optional)</label>
+                            <label for="state-schema-input" class="form-group__label">State Schema File</label>
                             <div>
-                                <label for="wasm-input" class="file-button">Choose File</label>
+                                <label for="state-schema-input" class="file-button">Choose File</label>
                                 <input
                                     type="file"
-                                    id="wasm-input"
+                                    id="state-schema-input"
                                     class="input--hidden"
-                                    accept=".wasm"
-                                    aria-label="WASM file"
+                                    accept=".json"
+                                    aria-label="State schema file"
                                 >
-                                <span id="wasm-filename" class="file-button__filename">No file chosen</span>
+                                <span id="state-schema-filename" class="file-button__filename">No file chosen</span>
                             </div>
+                            <small class="form-group__hint">Required for state deserialization</small>
                         </div>
 
                         <button type="submit" id="load-button" class="btn btn--primary">Load Database</button>
@@ -81,7 +82,13 @@
             <div id="viewer-view" class="viewer-container hidden">
                 <!-- File Info Bar -->
                 <div class="file-info">
+                    <button class="btn btn--secondary" id="back-button" style="margin-right: 10px;">← Back to Main</button>
                     <span class="file-info__name" id="current-db-path"></span>
+                    <span class="file-info__schema" id="current-schema-info" style="margin-right: 10px; color: #888; font-size: 0.9em;"></span>
+                    <label for="viewer-state-schema-input" class="btn btn--secondary" style="margin-right: 10px; cursor: pointer;">
+                        📄 Select State Schema
+                        <input type="file" id="viewer-state-schema-input" class="input--hidden" accept=".json" style="display: none;">
+                    </label>
                     <button class="btn btn--secondary" id="reload-button">Reload Database</button>
                 </div>
 
@@ -201,6 +208,6 @@
     </div>
 
     <!-- Application Scripts (ES6 Modules) -->
-    <script type="module" src="/static/js/app.js"></script>
+    <script type="module" src="/static/js/app.js?v=7"></script>
 </body>
 </html>

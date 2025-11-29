@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::types::Column;
 
-use super::context::{AbiManifestStatus, MigrationContext};
+use super::context::{MigrationContext, SchemaStatus};
 use super::dry_run::DryRunReport;
 use super::plan::PlanFilters;
 #[cfg(test)]
@@ -89,7 +89,12 @@ pub fn build_report_payload(
             "db_path": plan.source.db_path.display().to_string(),
             "wasm_file": plan
                 .source
-                .wasm_file
+                .state_schema_file
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            "state_schema_file": plan
+                .source
+                .state_schema_file
                 .as_ref()
                 .map(|path| path.display().to_string()),
         },
@@ -98,16 +103,16 @@ pub fn build_report_payload(
         "steps": plan_steps,
     });
 
-    let abi_status = match context.source().abi_status() {
-        AbiManifestStatus::NotConfigured => json!({
+    let schema_status = match context.source().schema_status() {
+        SchemaStatus::NotConfigured => json!({
             "status": "not_configured",
         }),
-        AbiManifestStatus::Loaded => json!({
+        SchemaStatus::Loaded => json!({
             "status": "loaded",
         }),
-        AbiManifestStatus::Pending { wasm_path } => json!({
+        SchemaStatus::PendingStateSchema { schema_path } => json!({
             "status": "pending",
-            "wasm_path": wasm_path.display().to_string(),
+            "state_schema_path": schema_path.display().to_string(),
         }),
     };
 
@@ -128,7 +133,7 @@ pub fn build_report_payload(
         "context": {
             "source": {
                 "db_path": context.source().path().display().to_string(),
-                "abi": abi_status,
+                "schema": schema_status,
             },
             "target": target_context,
         },
@@ -182,7 +187,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: path.to_path_buf(),
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(TargetEndpoint {
                 db_path: path.to_path_buf(),

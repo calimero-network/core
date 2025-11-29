@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use axum::http::HeaderValue;
 use axum::{
     extract::Multipart,
     http::StatusCode,
@@ -9,9 +10,10 @@ use axum::{
 };
 use rocksdb::{DBWithThreadMode, Options, SingleThreaded};
 use serde::Serialize;
-use tower_http::services::ServeDir;
+use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
 use crate::{abi, dag, export, types::Column};
+use calimero_wasm_abi::schema::Manifest;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
@@ -36,6 +38,8 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
     let static_dir = gui_dir.join("static");
 
     // Serve static files from /static/*
+    // Note: Browser caching can be an issue during development
+    // Use hard refresh (Cmd+Shift+R / Ctrl+Shift+R) to bypass cache
     let serve_static = ServeDir::new(&static_dir).append_index_html_on_directories(false);
 
     let app = Router::new()
@@ -47,7 +51,12 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
         .route("/api/contexts", post(handle_list_contexts))
         .route("/api/context-tree", post(handle_context_tree))
         .route("/api/validate-abi", post(handle_validate_abi))
-        .nest_service("/static", serve_static);
+        .nest_service("/static", serve_static)
+        .fallback(render_app) // Fallback to app for any unmatched routes (SPA behavior)
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+        ));
 
     let addr = format!("127.0.0.1:{port}");
     println!("Starting GUI server at http://{addr}");
@@ -71,29 +80,53 @@ async fn render_app() -> Html<String> {
 
 async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
     let mut db_path: Option<PathBuf> = None;
-    let mut wasm_bytes: Option<Vec<u8>> = None;
+    let mut state_schema_text: Option<String> = None;
 
     // Parse multipart form data
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_owned();
+        eprintln!("DEBUG: Received field: {}", name);
 
         match name.as_str() {
             "db_path" => {
                 if let Ok(value) = field.text().await {
+                    eprintln!("DEBUG: db_path value: {}", value);
                     db_path = Some(PathBuf::from(value));
+                } else {
+                    eprintln!("WARNING: Failed to read db_path as text");
+                }
+            }
+            "state_schema_file" => {
+                if let Ok(text) = field.text().await {
+                    eprintln!("DEBUG: state_schema_file size: {} chars", text.len());
+                    state_schema_text = Some(text);
+                } else {
+                    eprintln!("WARNING: Failed to read state_schema_file as text");
                 }
             }
             "wasm_file" => {
-                if let Ok(bytes) = field.bytes().await {
-                    wasm_bytes = Some(bytes.to_vec());
+                eprintln!("WARNING: Received 'wasm_file' field - this is deprecated. Please use 'state_schema_file' instead.");
+                // Try to read it as text (in case it's actually a JSON schema file)
+                if let Ok(text) = field.text().await {
+                    eprintln!("WARNING: wasm_file contains text ({} chars), treating as state_schema_file", text.len());
+                    // Check if it looks like JSON
+                    if text.trim_start().starts_with('{') {
+                        eprintln!(
+                            "WARNING: wasm_file appears to be JSON, using as state_schema_file"
+                        );
+                        state_schema_text = Some(text);
+                    }
                 }
             }
-            _ => {}
+            _ => {
+                eprintln!("DEBUG: Ignoring unknown field: {}", name);
+            }
         }
     }
 
     // Validate inputs
     let Some(db_path) = db_path else {
+        eprintln!("ERROR: Database path is missing in export request");
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -103,8 +136,15 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     };
 
+    eprintln!("DEBUG: Export request - db_path: {}", db_path.display());
+    eprintln!(
+        "DEBUG: Export request - has state_schema: {}",
+        state_schema_text.is_some()
+    );
+
     // Check if database path exists first
     if !db_path.exists() {
+        eprintln!("ERROR: Database path does not exist: {}", db_path.display());
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -116,29 +156,38 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
 
     // Validate path to prevent traversal attacks (requires path to exist)
     if let Err(e) = validate_db_path(&db_path) {
+        eprintln!("ERROR: Path validation failed: {}", e);
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
-    // Extract ABI from WASM bytes (if provided)
+    // Load state schema file
     let mut warning_message = None;
     let mut info_message = None;
-    let abi_manifest = if let Some(wasm_bytes) = wasm_bytes {
-        match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
-            Ok(manifest) => {
-                info_message = Some(
-                    "Successfully extracted ABI from WASM file. State values will be decoded using the ABI schema.".to_string()
-                );
-                Some(manifest)
-            }
+    let schema = if let Some(schema_text) = state_schema_text {
+        match serde_json::from_str::<serde_json::Value>(&schema_text) {
+            Ok(schema_value) => match abi::load_state_schema_from_json_value(&schema_value) {
+                Ok(schema) => {
+                    info_message = Some(
+                            "Successfully loaded state schema. State values will be decoded using the schema.".to_string()
+                        );
+                    Some(schema)
+                }
+                Err(e) => {
+                    let warning = format!("Failed to load state schema. Error: {e}");
+                    eprintln!("Warning: {warning}");
+                    warning_message = Some(warning);
+                    None
+                }
+            },
             Err(e) => {
-                let warning = format!("The uploaded WASM file does not contain an exported ABI. The file may not have been built with ABI support. State values will not be decoded. Error: {e}");
+                let warning = format!("Failed to parse state schema JSON. Error: {e}");
                 eprintln!("Warning: {warning}");
                 warning_message = Some(warning);
                 None
             }
         }
     } else {
-        eprintln!("No WASM file provided - state values will not be decoded");
+        eprintln!("No state schema file provided - state values will not be decoded");
         None
     };
 
@@ -158,8 +207,8 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
 
     // Export all columns
     let columns = Column::all().to_vec();
-    let data = if let Some(manifest) = abi_manifest {
-        match export::export_data(&db, &columns, &manifest) {
+    let data = if let Some(schema) = schema {
+        match export::export_data(&db, &columns, &schema) {
             Ok(data) => data,
             Err(e) => {
                 return (
@@ -202,7 +251,7 @@ async fn handle_export(mut multipart: Multipart) -> impl IntoResponse {
 /// Use /api/contexts and /api/context-tree instead for better performance
 async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
     let mut db_path: Option<PathBuf> = None;
-    let mut wasm_bytes: Option<Vec<u8>> = None;
+    let mut state_schema_text: Option<String> = None;
 
     // Parse multipart form data
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -214,9 +263,9 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
                     db_path = Some(PathBuf::from(value));
                 }
             }
-            "wasm_file" => {
-                if let Ok(bytes) = field.bytes().await {
-                    wasm_bytes = Some(bytes.to_vec());
+            "state_schema_file" => {
+                if let Ok(text) = field.text().await {
+                    state_schema_text = Some(text);
                 }
             }
             _ => {}
@@ -250,29 +299,39 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
-    // WASM is required for state tree extraction
-    let Some(wasm_bytes) = wasm_bytes else {
+    // State schema is required for state tree extraction
+    let schema = if let Some(schema_text) = state_schema_text {
+        match serde_json::from_str::<serde_json::Value>(&schema_text) {
+            Ok(schema_value) => match abi::load_state_schema_from_json_value(&schema_value) {
+                Ok(manifest) => manifest,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("Failed to load state schema: {e}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Failed to parse state schema JSON: {e}"),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "WASM file is required for state tree extraction".to_owned(),
+                error: "State schema file is required for state tree extraction".to_owned(),
             }),
         )
             .into_response();
-    };
-
-    // Extract ABI from WASM bytes
-    let abi_manifest = match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
-        Ok(manifest) => manifest,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Failed to extract ABI from WASM: {e}"),
-                }),
-            )
-                .into_response();
-        }
     };
 
     // Open database
@@ -311,7 +370,7 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
             None => continue,
         };
 
-        match export::extract_context_tree(&db, context_id, &abi_manifest) {
+        match export::extract_context_tree(&db, context_id, &schema) {
             Ok(tree) => context_trees.push(tree),
             Err(e) => {
                 eprintln!("Warning: Failed to build tree for context {context_id}: {e}");
@@ -421,7 +480,7 @@ async fn handle_list_contexts(mut multipart: Multipart) -> impl IntoResponse {
 /// Extract state tree for a specific context
 async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
     let mut db_path: Option<PathBuf> = None;
-    let mut wasm_bytes: Option<Vec<u8>> = None;
+    let mut state_schema_text: Option<String> = None;
     let mut context_id: Option<String> = None;
 
     // Parse multipart form data
@@ -434,9 +493,9 @@ async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
                     db_path = Some(PathBuf::from(value));
                 }
             }
-            "wasm_file" => {
-                if let Ok(bytes) = field.bytes().await {
-                    wasm_bytes = Some(bytes.to_vec());
+            "state_schema_file" => {
+                if let Ok(text) = field.text().await {
+                    state_schema_text = Some(text);
                 }
             }
             "context_id" => {
@@ -485,29 +544,39 @@ async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
-    // WASM is required for state tree extraction
-    let Some(wasm_bytes) = wasm_bytes else {
+    // State schema is required for state tree extraction
+    let schema = if let Some(schema_text) = state_schema_text {
+        match serde_json::from_str::<serde_json::Value>(&schema_text) {
+            Ok(schema_value) => match abi::load_state_schema_from_json_value(&schema_value) {
+                Ok(schema) => schema,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("Failed to load state schema: {e}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Failed to parse state schema JSON: {e}"),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "WASM file is required for state tree extraction".to_owned(),
+                error: "State schema file is required for state tree extraction".to_owned(),
             }),
         )
             .into_response();
-    };
-
-    // Extract ABI from WASM bytes
-    let abi_manifest = match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
-        Ok(manifest) => manifest,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Failed to extract ABI from WASM: {e}"),
-                }),
-            )
-                .into_response();
-        }
     };
 
     // Open database
@@ -525,7 +594,7 @@ async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
     };
 
     // Extract tree for specific context
-    let tree_data = match export::extract_context_tree(&db, &context_id, &abi_manifest) {
+    let tree_data = match export::extract_context_tree(&db, &context_id, &schema) {
         Ok(data) => data,
         Err(e) => {
             return (
@@ -728,42 +797,51 @@ async fn handle_dag_delta_details(mut multipart: Multipart) -> impl IntoResponse
 }
 
 async fn handle_validate_abi(mut multipart: Multipart) -> impl IntoResponse {
-    let mut wasm_bytes: Option<Vec<u8>> = None;
+    let mut state_schema_text: Option<String> = None;
 
     // Parse multipart form data
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_owned();
-        if name.as_str() == "wasm_file" {
-            if let Ok(bytes) = field.bytes().await {
-                wasm_bytes = Some(bytes.to_vec());
+        if name.as_str() == "state_schema_file" {
+            if let Ok(text) = field.text().await {
+                state_schema_text = Some(text);
             }
         }
     }
 
-    // Check if WASM file was provided
-    let Some(wasm_bytes) = wasm_bytes else {
+    // Check if state schema file was provided
+    let Some(schema_text) = state_schema_text else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "No WASM file provided".to_string(),
+                error: "No state schema file provided".to_string(),
             }),
         )
             .into_response();
     };
 
-    // Try to extract ABI from WASM bytes
-    let response = match abi::extract_abi_from_wasm_bytes(&wasm_bytes) {
-        Ok(_manifest) => ExportResponse {
-            data: serde_json::json!({"has_abi": true}),
-            warning: None,
-            info: Some(
-                "Successfully extracted ABI from WASM file. State values will be decoded using the ABI schema.".to_string()
-            ),
+    // Try to load state schema
+    let response = match serde_json::from_str::<serde_json::Value>(&schema_text) {
+        Ok(schema_value) => match abi::load_state_schema_from_json_value(&schema_value) {
+            Ok(_manifest) => ExportResponse {
+                data: serde_json::json!({"has_schema": true}),
+                warning: None,
+                info: Some(
+                    "Successfully loaded state schema. State values will be decoded using the schema.".to_string()
+                ),
+            },
+            Err(e) => ExportResponse {
+                data: serde_json::json!({"has_schema": false}),
+                warning: Some(format!(
+                    "Failed to load state schema. Error: {e}"
+                )),
+                info: None,
+            },
         },
         Err(e) => ExportResponse {
-            data: serde_json::json!({"has_abi": false}),
+            data: serde_json::json!({"has_schema": false}),
             warning: Some(format!(
-                "The uploaded WASM file does not contain an exported ABI. The file may not have been built with ABI support. State values will not be decoded. Error: {e}"
+                "Failed to parse state schema JSON. Error: {e}"
             )),
             info: None,
         },

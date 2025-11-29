@@ -98,7 +98,7 @@ impl AbiState {
 
     // Check that ps parameter is a list of Person references
     match &ps_param.type_ {
-        TypeRef::Collection(collection) => match collection {
+        TypeRef::Collection { collection, .. } => match collection {
             calimero_wasm_abi::schema::CollectionType::List { items } => match &**items {
                 TypeRef::Reference { ref_ } => {
                     assert_eq!(ref_, "Person");
@@ -113,7 +113,7 @@ impl AbiState {
     // Check return type is also a list of Person references
     let returns = list_records.returns.as_ref().expect("Expected return type");
     match returns {
-        TypeRef::Collection(collection) => match collection {
+        TypeRef::Collection { collection, .. } => match collection {
             calimero_wasm_abi::schema::CollectionType::List { items } => match &**items {
                 TypeRef::Reference { ref_ } => {
                     assert_eq!(ref_, "Person");
@@ -138,7 +138,7 @@ impl AbiState {
 
     // Check that xs parameter is a list of UserId32 references
     match &xs_param.type_ {
-        TypeRef::Collection(collection) => match collection {
+        TypeRef::Collection { collection, .. } => match collection {
             calimero_wasm_abi::schema::CollectionType::List { items } => match &**items {
                 TypeRef::Reference { ref_ } => {
                     assert_eq!(ref_, "UserId32");
@@ -163,7 +163,7 @@ impl AbiState {
 
     // Check that m parameter is a map with string key and Person value
     match &m_param.type_ {
-        TypeRef::Collection(collection) => {
+        TypeRef::Collection { collection, .. } => {
             match collection {
                 calimero_wasm_abi::schema::CollectionType::Map { key, value } => {
                     // Check key is string

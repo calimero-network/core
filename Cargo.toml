@@ -24,6 +24,7 @@ exclude = [
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",
     "./apps/private_data",
+    "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./e2e-tests",
     "./crates/merod",
@@ -82,6 +83,7 @@ members = [
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/abi_conformance",
+    "./apps/state-schema-conformance",
     "./apps/xcall-example",
 
     "./e2e-tests",

@@ -12,8 +12,8 @@
 //!
 //! See [`event`] module documentation for detailed requirements and examples.
 
-// Re-export the embed_abi macro from wasm-abi
-pub use calimero_wasm_abi::embed_abi;
+// Note: embed_abi macro is deprecated - use JSON files instead
+// pub use calimero_wasm_abi::embed_abi;
 pub use {borsh, serde, serde_json};
 
 pub mod env;

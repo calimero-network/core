@@ -9,9 +9,6 @@ use thiserror::Error;
 pub mod custom_types;
 pub use custom_types::{CustomRecord, NestedRecord, Status};
 
-// Include the generated ABI code
-include!(env!("GENERATED_ABI_PATH"));
-
 // Newtype bytes
 #[derive(
     Clone,

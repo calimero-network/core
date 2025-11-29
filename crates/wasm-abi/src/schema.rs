@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -115,8 +115,29 @@ pub enum TypeRef {
     },
     /// Inline scalar type
     Scalar(ScalarType),
-    /// Inline collection type
-    Collection(CollectionType),
+    /// Inline collection type with optional CRDT metadata
+    Collection {
+        #[serde(flatten)]
+        collection: CollectionType,
+        /// Original Calimero CRDT collection type (if applicable)
+        ///
+        /// This is preserved when CRDT types are "unwrapped" during normalization.
+        /// For example, `LwwRegister<String>` normalizes to a Collection with empty Record
+        /// but preserves `crdt_type: LwwRegister` and the inner type in the collection structure.
+        /// Deserializers use this to expect the CRDT format:
+        /// - `LwwRegister<T>`: `(value: T, timestamp: HybridTimestamp, node_id: [u8; 32])`
+        /// - `Counter`: `(positive: UnorderedMap<String, u64>, negative?: UnorderedMap<String, u64>)`
+        /// - `UnorderedMap<K, V>`: entries with element IDs
+        /// - `Vector<T>`: list with CRDT metadata
+        #[serde(skip_serializing_if = "Option::is_none", rename = "crdt_type")]
+        crdt_type: Option<CrdtCollectionType>,
+        /// Inner type for CRDT wrappers (e.g., LwwRegister<T> needs to know T)
+        ///
+        /// This is used when the CRDT type wraps another type that was "unwrapped" during normalization.
+        /// For LwwRegister<T>, this stores T so the deserializer knows what type to deserialize the value as.
+        #[serde(skip_serializing_if = "Option::is_none", rename = "inner_type")]
+        inner_type: Option<Box<TypeRef>>,
+    },
 }
 
 /// Scalar types
@@ -148,6 +169,27 @@ pub enum ScalarType {
     },
     #[serde(rename = "unit")]
     Unit,
+}
+
+/// Calimero CRDT collection types
+///
+/// These types have special serialization formats that include CRDT metadata
+/// (timestamps, node IDs, element IDs, etc.) and must be preserved for correct deserialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrdtCollectionType {
+    /// Last-Write-Wins Register: `(value: T, timestamp, node_id)`
+    LwwRegister,
+    /// Counter: `(positive: UnorderedMap<String, u64>, negative?: UnorderedMap<String, u64>)`
+    Counter,
+    /// Vector: List with CRDT metadata
+    Vector,
+    /// UnorderedMap: Map with element IDs and CRDT metadata
+    UnorderedMap,
+    /// UnorderedSet: Set with CRDT metadata
+    UnorderedSet,
+    /// ReplicatedGrowableArray: String with character-level CRDT
+    ReplicatedGrowableArray,
 }
 
 /// Collection types
@@ -230,6 +272,158 @@ impl Manifest {
             events: Vec::new(),
             state_root: None,
         }
+    }
+
+    /// Extract the state schema (state root type and all its dependencies)
+    ///
+    /// Returns a new Manifest containing only the state root type and all types
+    /// it references recursively. This is useful for serialization/deserialization
+    /// of state without needing the full ABI.
+    ///
+    /// # Errors
+    /// Returns an error if no state_root is defined or if type dependencies cannot be resolved.
+    pub fn extract_state_schema(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        let state_root_name = self
+            .state_root
+            .as_ref()
+            .ok_or_else(|| "No state_root defined in manifest")?;
+
+        // Recursively collect all types referenced by the state root
+        let mut collected_types = BTreeMap::new();
+        let mut visited = HashSet::new();
+        Self::collect_type_dependencies(
+            state_root_name,
+            &self.types,
+            &mut collected_types,
+            &mut visited,
+        )?;
+
+        Ok(Self {
+            schema_version: self.schema_version.clone(),
+            types: collected_types,
+            methods: Vec::new(),
+            events: Vec::new(),
+            state_root: Some(state_root_name.clone()),
+        })
+    }
+
+    /// Recursively collect all type dependencies starting from a root type
+    fn collect_type_dependencies(
+        type_name: &str,
+        all_types: &BTreeMap<String, TypeDef>,
+        collected: &mut BTreeMap<String, TypeDef>,
+        visited: &mut HashSet<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Avoid infinite recursion
+        if visited.contains(type_name) {
+            return Ok(());
+        }
+        visited.insert(type_name.to_string());
+
+        // Get the type definition
+        let type_def = all_types
+            .get(type_name)
+            .ok_or_else(|| format!("Type '{}' not found in ABI types", type_name))?;
+
+        // Add this type to collected types
+        collected.insert(type_name.to_string(), type_def.clone());
+
+        // Recursively collect dependencies from this type
+        Self::collect_dependencies_from_type_def(type_def, all_types, collected, visited)?;
+
+        Ok(())
+    }
+
+    /// Collect all type references from a TypeDef
+    fn collect_dependencies_from_type_def(
+        type_def: &TypeDef,
+        all_types: &BTreeMap<String, TypeDef>,
+        collected: &mut BTreeMap<String, TypeDef>,
+        visited: &mut HashSet<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match type_def {
+            TypeDef::Record { fields } => {
+                for field in fields {
+                    Self::collect_dependencies_from_type_ref(
+                        &field.type_,
+                        all_types,
+                        collected,
+                        visited,
+                    )?;
+                }
+            }
+            TypeDef::Variant { variants } => {
+                for variant in variants {
+                    if let Some(ref payload) = variant.payload {
+                        Self::collect_dependencies_from_type_ref(
+                            payload, all_types, collected, visited,
+                        )?;
+                    }
+                }
+            }
+            TypeDef::Alias { target } => {
+                Self::collect_dependencies_from_type_ref(target, all_types, collected, visited)?;
+            }
+            TypeDef::Bytes { .. } => {
+                // No dependencies
+            }
+        }
+        Ok(())
+    }
+
+    /// Collect all type references from a TypeRef
+    fn collect_dependencies_from_type_ref(
+        type_ref: &TypeRef,
+        all_types: &BTreeMap<String, TypeDef>,
+        collected: &mut BTreeMap<String, TypeDef>,
+        visited: &mut HashSet<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match type_ref {
+            TypeRef::Reference { ref_ } => {
+                // This is a reference to another type - collect it recursively
+                Self::collect_type_dependencies(ref_, all_types, collected, visited)?;
+            }
+            TypeRef::Scalar(_) => {
+                // Scalar types have no dependencies
+            }
+            TypeRef::Collection {
+                collection,
+                inner_type,
+                ..
+            } => {
+                // Also collect dependencies from inner_type if present (e.g., for LwwRegister<T>)
+                if let Some(inner) = inner_type {
+                    Self::collect_dependencies_from_type_ref(inner, all_types, collected, visited)?;
+                }
+
+                match collection {
+                    CollectionType::List { items } => {
+                        Self::collect_dependencies_from_type_ref(
+                            items, all_types, collected, visited,
+                        )?;
+                    }
+                    CollectionType::Map { key, value } => {
+                        Self::collect_dependencies_from_type_ref(
+                            key, all_types, collected, visited,
+                        )?;
+                        Self::collect_dependencies_from_type_ref(
+                            value, all_types, collected, visited,
+                        )?;
+                    }
+                    CollectionType::Record { fields } => {
+                        for field in fields {
+                            Self::collect_dependencies_from_type_ref(
+                                &field.type_,
+                                all_types,
+                                collected,
+                                visited,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -317,18 +511,26 @@ impl TypeRef {
     /// Create a list type
     #[must_use]
     pub fn list(items: Self) -> Self {
-        Self::Collection(CollectionType::List {
-            items: Box::new(items),
-        })
+        Self::Collection {
+            collection: CollectionType::List {
+                items: Box::new(items),
+            },
+            crdt_type: None,
+            inner_type: None,
+        }
     }
 
     /// Create a map type (key must be string)
     #[must_use]
     pub fn map(value: Self) -> Self {
-        Self::Collection(CollectionType::Map {
-            key: Box::new(Self::string()),
-            value: Box::new(value),
-        })
+        Self::Collection {
+            collection: CollectionType::Map {
+                key: Box::new(Self::string()),
+                value: Box::new(value),
+            },
+            crdt_type: None,
+            inner_type: None,
+        }
     }
 }
 
