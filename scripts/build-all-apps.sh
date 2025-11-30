@@ -4,13 +4,20 @@
 set -ex
 
 BUILD_SCRIPTS=(
-    "apps/kv-store/build.sh"
-    "apps/kv-store-with-handlers/build.sh"
-    "apps/kv-store-init/build.sh"
+    "apps/abi_conformance/build.sh"
+    "apps/access-control/build.sh"
+    "apps/blobs/build.sh"
     "apps/collaborative-editor/build.sh"
+    "apps/kv-store-init/build.sh"
+    "apps/kv-store-with-handlers/build.sh"
+    "apps/kv-store-with-user-and-frozen-storage/build.sh"
+    "apps/kv-store/build.sh"
     "apps/nested-crdt-test/build.sh"
-    "apps/team-metrics-macro/build.sh"
+    "apps/private_data/build.sh"
+    "apps/state-schema-conformance/build.sh"
     "apps/team-metrics-custom/build.sh"
+    "apps/team-metrics-macro/build.sh"
+    "apps/xcall-example/build.sh"
 )
 
 run_script() {
