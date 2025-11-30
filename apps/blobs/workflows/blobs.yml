@@ -191,6 +191,6 @@ steps:
       - "less_or_equal(len({{final_files}}), 1)"
 
 stop_all_nodes: false
-restart: true
+restart: false
 wait_timeout: 120
 

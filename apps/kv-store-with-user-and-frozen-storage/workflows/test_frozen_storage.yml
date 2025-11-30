@@ -3,7 +3,7 @@ name: KV-store frozen storage workflow
 
 # Configuration options
 stop_all_nodes: true
-restart: true
+restart: false  
 wait_timeout: 120
 
 nodes:

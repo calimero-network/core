@@ -99,11 +99,16 @@ jobs:
                   cd apps
                   for workflow in */workflows/*.yml */workflows/*.yaml; do
                       if [ -f "$workflow" ]; then
-                          echo "Running workflow: $workflow"
-                          merobox bootstrap run \
-                              "$workflow" \
-                              --no-docker \
-                              --binary-path ../target/debug/merod \
-                              --e2e-mode
+                          app_dir=$(dirname "$(dirname "$workflow")")
+                          workflow_file=$(basename "$workflow")
+                          echo "Running workflow: $workflow (from app directory: $app_dir)"
+                          (
+                              cd "$app_dir"
+                              merobox bootstrap run \
+                                  "workflows/$workflow_file" \
+                                  --no-docker \
+                                  --binary-path ../../target/debug/merod \
+                                  --e2e-mode
+                          )
                       fi
                   done

@@ -192,6 +192,6 @@ steps:
       - "equal({{guess_result}}, false)"
 
 stop_all_nodes: false
-restart: true
+restart: false  
 wait_timeout: 120
 
