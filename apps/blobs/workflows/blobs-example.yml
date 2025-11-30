@@ -10,7 +10,7 @@ nodes:
   chain_id: calimero-testnet
   count: 2
   image: ghcr.io/calimero-network/merod:edge
-  prefix: near-blob
+  prefix: node-blob
 
 # Test workflow steps
 steps:
