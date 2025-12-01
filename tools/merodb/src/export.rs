@@ -5,7 +5,6 @@ use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{
     CollectionType, CrdtCollectionType, Field, Manifest, ScalarType, TypeDef, TypeRef,
 };
-use core::convert::TryFrom;
 use core::ops::Deref;
 use eyre::{Result, WrapErr};
 use rocksdb::{DBWithThreadMode, IteratorMode, SingleThreaded};
@@ -147,20 +146,14 @@ fn try_decode_collection_entry_from_index(
             return None;
         }
         Err(e) => {
-            eprintln!(
-                "[try_decode_collection_entry_from_index] Error looking up entry: {}",
-                e
-            );
+            eprintln!("[try_decode_collection_entry_from_index] Error looking up entry: {e}");
             return None;
         }
     };
 
     // Get state root fields to find matching collection types
     let root_name = manifest.state_root.as_ref()?;
-    eprintln!(
-        "[try_decode_collection_entry_from_index] State root: {}",
-        root_name
-    );
+    eprintln!("[try_decode_collection_entry_from_index] State root: {root_name}");
 
     let TypeDef::Record {
         fields: record_fields,
@@ -239,7 +232,7 @@ fn try_decode_collection_entry_from_index(
                     return add_index_metadata(decoded, index);
                 }
                 Err(e) => {
-                    eprintln!("[try_decode_collection_entry_from_index] Failed to decode as Map entry: {}", e);
+                    eprintln!("[try_decode_collection_entry_from_index] Failed to decode as Map entry: {e}");
                 }
             }
         }
@@ -263,7 +256,7 @@ fn try_decode_collection_entry_from_index(
                     return add_index_metadata(decoded, index);
                 }
                 Err(e) => {
-                    eprintln!("[try_decode_collection_entry_from_index] Failed to decode as List entry: {}", e);
+                    eprintln!("[try_decode_collection_entry_from_index] Failed to decode as List entry: {e}");
                 }
             }
         }
@@ -285,7 +278,7 @@ fn try_decode_collection_entry_from_index(
                     return add_index_metadata(decoded, index);
                 }
                 Err(e) => {
-                    eprintln!("[try_decode_collection_entry_from_index] Failed to decode as Record entry: {}", e);
+                    eprintln!("[try_decode_collection_entry_from_index] Failed to decode as Record entry: {e}");
                 }
             }
         }
@@ -307,7 +300,7 @@ fn decode_list_entry(
     // Deserialize the item value
     let item_value =
         deserializer::deserialize_type_ref_from_cursor(&mut cursor, item_type, manifest)
-            .wrap_err_with(|| format!("Failed to deserialize list item (type: {:?})", item_type))?;
+            .wrap_err_with(|| format!("Failed to deserialize list item (type: {item_type:?})"))?;
     let item_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let item_raw = bytes[..item_end].to_vec();
 
@@ -490,7 +483,7 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
         // Sanity check: String length should be reasonable (< 1MB) and the entry should be long enough
         if key_length > 1_000_000 || bytes.len() < 4 + key_length {
             eprintln!("[decode_map_entry] First 4 bytes don't look like a valid string length: {} (u32: {})", 
-                hex::encode(&length_bytes), key_length);
+                hex::encode(length_bytes), key_length);
             return Err(eyre::eyre!(
                 "Entry doesn't appear to be Entry<(String, V)> format (invalid string length: {})",
                 key_length
@@ -531,18 +524,13 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
                     hex::encode(&bytes[..bytes.len().min(32)])
                 )
             })?;
-    eprintln!(
-        "[decode_map_entry] Successfully deserialized key: {:?}",
-        key_value
-    );
+    eprintln!("[decode_map_entry] Successfully deserialized key: {key_value:?}");
     let key_end = usize::try_from(cursor.position()).unwrap_or(bytes.len());
     let key_raw = bytes[..key_end].to_vec();
 
     // For Counter values in map entries, the Counter is stored directly (not wrapped in Entry)
     // The Entry<(K, V)> structure is: K + V + Element ID (32 bytes)
     // So we deserialize V (Counter) directly, then handle the Element ID separately
-    // Save position before deserializing to check if we need to handle Entry wrapper
-    let value_start = cursor.position();
     let value_value = match deserializer::deserialize_type_ref_from_cursor(
         &mut cursor,
         &field.value_type,
@@ -662,15 +650,12 @@ fn decode_state_entry(
 
     // Get all fields from the state root
     let root_name = manifest.state_root.as_ref()?;
-    eprintln!("[decode_state_entry] State root type: {}", root_name);
+    eprintln!("[decode_state_entry] State root type: {root_name}");
     let Some(TypeDef::Record {
         fields: record_fields,
     }) = manifest.types.get(root_name)
     else {
-        eprintln!(
-            "[decode_state_entry] State root type '{}' not found in manifest types",
-            root_name
-        );
+        eprintln!("[decode_state_entry] State root type '{root_name}' not found in manifest types");
         return None;
     };
 
@@ -720,10 +705,7 @@ fn decode_state_entry(
     }
 
     if map_fields_tried > 0 {
-        eprintln!(
-            "[decode_state_entry] Tried {} map fields, all failed",
-            map_fields_tried
-        );
+        eprintln!("[decode_state_entry] Tried {map_fields_tried} map fields, all failed");
     }
 
     // Try to decode as List entries (Vector, UnorderedSet) - Entry<T>
@@ -759,10 +741,7 @@ fn decode_state_entry(
     }
 
     if list_fields_tried > 0 {
-        eprintln!(
-            "[decode_state_entry] Tried {} list fields, all failed",
-            list_fields_tried
-        );
+        eprintln!("[decode_state_entry] Tried {list_fields_tried} list fields, all failed");
     }
 
     // Try to decode as Record entries (Counter, ReplicatedGrowableArray) - Entry<T>
@@ -846,10 +825,7 @@ fn decode_state_entry(
     }
 
     if record_fields_tried > 0 {
-        eprintln!(
-            "[decode_state_entry] Tried {} record fields, all failed",
-            record_fields_tried
-        );
+        eprintln!("[decode_state_entry] Tried {record_fields_tried} record fields, all failed");
     }
 
     // Try to decode as scalar entry (Entry<T> where T is a scalar/enum/reference)
@@ -982,6 +958,10 @@ impl Id {
 
 /// Try to manually decode EntityIndex when Borsh deserialization fails
 /// This is a fallback for cases where the format might be slightly different
+#[expect(
+    dead_code,
+    reason = "Kept as fallback for debugging EntityIndex format issues"
+)]
 fn try_manual_entity_index_decode(
     bytes: &[u8],
     expected_id: &[u8],
@@ -1044,33 +1024,11 @@ fn try_manual_entity_index_decode(
         offset += 4;
 
         // Properly deserialize children Vec using Borsh to handle variable-size StorageType
-        // We'll try to deserialize each ChildInfo properly
         let children_start = offset;
-        let mut children_vec = Vec::new();
-
-        for i in 0..len {
-            // Try to deserialize this ChildInfo using Borsh
-            // If it fails, we'll skip it but continue
-            match borsh::from_slice::<ChildInfo>(&bytes[offset..]) {
-                Ok(child_info) => {
-                    // Calculate how many bytes this ChildInfo took
-                    // We'll need to serialize it back to know the size, or use a cursor
-                    // For now, let's try a different approach - deserialize the whole Vec at once
-                    children_vec.push(child_info);
-                    // We can't easily know the size without deserializing, so let's try deserializing the whole Vec
-                    break; // Break and try deserializing the whole Vec
-                }
-                Err(_) => {
-                    // If deserialization fails, we'll need to skip manually
-                    // But this is complex, so let's try deserializing the whole Vec instead
-                    break;
-                }
-            }
-        }
 
         // Try to deserialize the whole children Vec at once
         // Use a cursor to track how many bytes were consumed
-        eprintln!("[try_manual_entity_index_decode] Attempting to deserialize children Vec (len={}, children_start={})", len, children_start);
+        eprintln!("[try_manual_entity_index_decode] Attempting to deserialize children Vec (len={len}, children_start={children_start})");
         let deserialized_children = if let Ok(children) =
             borsh::from_slice::<Vec<ChildInfo>>(&bytes[children_start..])
         {
@@ -1078,7 +1036,7 @@ fn try_manual_entity_index_decode(
             // We successfully deserialized, but we need to know the size
             // Use a cursor to read and track bytes consumed
             use std::io::Cursor;
-            let mut cursor = Cursor::new(&bytes[children_start..]);
+            let cursor = Cursor::new(&bytes[children_start..]);
             let mut consumed = 0;
 
             // Read the Vec length
@@ -1095,7 +1053,7 @@ fn try_manual_entity_index_decode(
 
             // Try to deserialize each child and track bytes
             let mut parsed_children = Vec::new();
-            for i in 0..len {
+            for _ in 0..len {
                 let child_start = children_start + consumed;
                 if let Ok(child) = borsh::from_slice::<ChildInfo>(&bytes[child_start..]) {
                     // We need to calculate the size - let's manually skip to find it
@@ -1112,7 +1070,7 @@ fn try_manual_entity_index_decode(
             if parsed_children.len() == len {
                 // Calculate size by manually skipping
                 let mut size_calc = 4; // Vec length
-                for i in 0..len {
+                for _ in 0..len {
                     let child_offset = children_start + size_calc;
                     if bytes.len() < child_offset + 32 {
                         break;
@@ -1222,10 +1180,10 @@ fn try_manual_entity_index_decode(
             let mut manual_offset = children_start;
             let mut manually_deserialized_children = Vec::new();
             for i in 0..len {
-                eprintln!("[try_manual_entity_index_decode] Attempting to deserialize ChildInfo[{}] at offset {}", i, manual_offset);
+                eprintln!("[try_manual_entity_index_decode] Attempting to deserialize ChildInfo[{i}] at offset {manual_offset}");
                 // Try to deserialize this ChildInfo using Borsh
                 if let Ok(child_info) = borsh::from_slice::<ChildInfo>(&bytes[manual_offset..]) {
-                    eprintln!("[try_manual_entity_index_decode] Successfully deserialized ChildInfo[{}] using Borsh", i);
+                    eprintln!("[try_manual_entity_index_decode] Successfully deserialized ChildInfo[{i}] using Borsh");
                     manually_deserialized_children.push(child_info);
                     // Calculate how many bytes this ChildInfo took by trying to find the next one
                     // We'll manually skip based on the structure
@@ -1268,11 +1226,11 @@ fn try_manual_entity_index_decode(
                         _ => break,
                     }
                 } else {
-                    eprintln!("[try_manual_entity_index_decode] Failed to deserialize ChildInfo[{}] using Borsh, attempting manual deserialization", i);
+                    eprintln!("[try_manual_entity_index_decode] Failed to deserialize ChildInfo[{i}] using Borsh, attempting manual deserialization");
                     // Manually deserialize ChildInfo
                     let child_start = manual_offset;
                     if bytes.len() < child_start + 32 {
-                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].id", i);
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].id");
                         break;
                     }
                     // Read id (32 bytes)
@@ -1282,7 +1240,7 @@ fn try_manual_entity_index_decode(
                     manual_offset += 32;
 
                     if bytes.len() < manual_offset + 32 {
-                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].merkle_hash", i);
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].merkle_hash");
                         break;
                     }
                     // Read merkle_hash (32 bytes)
@@ -1291,7 +1249,7 @@ fn try_manual_entity_index_decode(
                     manual_offset += 32;
 
                     if bytes.len() < manual_offset + 16 {
-                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].metadata (created_at + updated_at)", i);
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].metadata (created_at + updated_at)");
                         break;
                     }
                     // Read created_at (8 bytes)
@@ -1321,10 +1279,10 @@ fn try_manual_entity_index_decode(
                         updated_at_bytes[7],
                     ]);
                     manual_offset += 8;
-                    let updated_at = UpdatedAt(updated_at_val);
+                    let _updated_at = UpdatedAt(updated_at_val);
 
                     if bytes.len() <= manual_offset {
-                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].storage_type", i);
+                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].storage_type");
                         break;
                     }
                     // Read storage_type (1 byte for enum tag)
@@ -1335,7 +1293,7 @@ fn try_manual_entity_index_decode(
                         1 => {
                             // User
                             if bytes.len() < manual_offset + 32 {
-                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].User.owner", i);
+                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].User.owner");
                                 break;
                             }
                             let mut owner_bytes = [0u8; 32];
@@ -1343,13 +1301,13 @@ fn try_manual_entity_index_decode(
                             manual_offset += 32;
 
                             if bytes.len() <= manual_offset {
-                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].User.signature_data", i);
+                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].User.signature_data");
                                 break;
                             }
                             let signature_data = if bytes[manual_offset] == 1 {
                                 manual_offset += 1;
                                 if bytes.len() < manual_offset + 72 {
-                                    eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{}].User.signature_data", i);
+                                    eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].User.signature_data");
                                     break;
                                 }
                                 // Skip signature_data (64 bytes signature + 8 bytes nonce)
@@ -1366,7 +1324,7 @@ fn try_manual_entity_index_decode(
                         }
                         2 => StorageType::Frozen,
                         _ => {
-                            eprintln!("[try_manual_entity_index_decode] Invalid StorageType variant: {} for ChildInfo[{}]", variant, i);
+                            eprintln!("[try_manual_entity_index_decode] Invalid StorageType variant: {variant} for ChildInfo[{i}]");
                             break;
                         }
                     };
@@ -1467,6 +1425,10 @@ struct ChildInfo {
 }
 
 #[derive(borsh::BorshDeserialize)]
+#[expect(
+    dead_code,
+    reason = "Fields required for Borsh deserialization structure"
+)]
 struct Metadata {
     created_at: u64,
     updated_at: UpdatedAt,
@@ -1474,6 +1436,10 @@ struct Metadata {
 }
 
 #[derive(borsh::BorshDeserialize)]
+#[expect(
+    dead_code,
+    reason = "Variants required for Borsh deserialization structure"
+)]
 enum StorageType {
     Public,
     User {
@@ -1484,6 +1450,10 @@ enum StorageType {
 }
 
 #[derive(borsh::BorshDeserialize)]
+#[expect(
+    dead_code,
+    reason = "Fields required for Borsh deserialization structure"
+)]
 struct SignatureData {
     signature: [u8; 64],
     nonce: u64,
