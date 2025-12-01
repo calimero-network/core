@@ -47,9 +47,10 @@ use url::Url;
 use super::auth_mode::AuthModeArg;
 use crate::{cli, defaults};
 
-const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
+// Sync configuration - aggressive defaults for fast CRDT convergence
+const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
 
 /// Helper struct to define protocol configuration
 #[derive(Debug)]

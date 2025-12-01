@@ -32,8 +32,8 @@ use calimero_server_primitives::admin::{
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
 use eyre::Result;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use url::Url;
 
 // Local crate
