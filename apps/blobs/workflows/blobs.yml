@@ -131,7 +131,8 @@ steps:
   - name: Assert inviter sees two files
     type: assert
     statements:
-      - "is_set({{inviter_files}})"
+      - "contains({{inviter_files}}, '{{png_file_id}}')"
+      - "contains({{inviter_files}}, '{{txt_file_id}}')"
 
   - name: List files on invitee
     type: call
@@ -145,7 +146,8 @@ steps:
   - name: Assert invitee sees two files
     type: assert
     statements:
-      - "is_set({{invitee_files}})"
+      - "contains({{invitee_files}}, '{{png_file_id}}')"
+      - "contains({{invitee_files}}, '{{txt_file_id}}')"
 
   - name: Get PNG file blob id
     type: call
@@ -188,7 +190,8 @@ steps:
   - name: Assert only one file remains
     type: assert
     statements:
-      - "is_set({{final_files}})"
+      - "contains({{final_files}}, '{{txt_file_id}}')"
+      - "not_contains({{final_files}}, '{{png_file_id}}')"
 
 stop_all_nodes: false
 restart: false
