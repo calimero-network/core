@@ -32,8 +32,8 @@ use calimero_server_primitives::admin::{
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
 use eyre::Result;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use url::Url;
 
 // Local crate
@@ -539,7 +539,7 @@ where
     pub async fn sync_context(&self, context_id: &ContextId) -> Result<SyncContextResponse> {
         let response = self
             .connection
-            .post_no_body(&format!("admin-api/contexts/{context_id}/sync"))
+            .post_no_body(&format!("admin-api/contexts/sync/{context_id}"))
             .await?;
         Ok(response)
     }
