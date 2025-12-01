@@ -27,8 +27,6 @@
 use eyre::Result;
 use rocksdb::{DBWithThreadMode, SingleThreaded};
 
-use core::convert::TryFrom;
-
 use crate::types::Column;
 
 use super::plan::VerificationAssertion;
