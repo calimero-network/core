@@ -792,9 +792,12 @@ impl SyncManager {
                         .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                         .await?;
 
-                    if !matches!(result, SyncProtocol::None) {
-                        return Ok(Some(result));
+                    // If peer had no data or unexpected response, return error to try next peer
+                    if matches!(result, SyncProtocol::None) {
+                        bail!("Peer has no data or unexpected response for this context, will try next peer");
                     }
+
+                    return Ok(Some(result));
                 } else {
                     // Same heads but different root hash - may have deltas that haven't been applied yet
                     warn!(
@@ -806,9 +809,12 @@ impl SyncManager {
                         .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                         .await?;
 
-                    if !matches!(result, SyncProtocol::None) {
-                        return Ok(Some(result));
+                    // If peer had no data or unexpected response, return error to try next peer
+                    if matches!(result, SyncProtocol::None) {
+                        bail!("Peer has no data or unexpected response for this context, will try next peer");
                     }
+
+                    return Ok(Some(result));
                 }
             } else {
                 debug!(
