@@ -41,3 +41,15 @@ run_script() {
 for script in "${BUILD_SCRIPTS[@]}"; do
     run_script "$script"
 done
+
+# Build bundles 
+BUNDLE_SCRIPTS=(
+    "apps/kv-store/build-bundle.sh"
+    "apps/access-control/build-bundle.sh"
+)
+
+for script in "${BUNDLE_SCRIPTS[@]}"; do
+    if [ -f "$script" ] && [ -x "$script" ]; then
+        run_script "$script"
+    fi
+done

@@ -63,6 +63,7 @@ jobs:
                       target/debug/merod
                       target/app-release
                       apps/*/res/*.wasm
+                      apps/*/res/*.mpk
                   key: ${{ steps.cache-key.outputs.key }}
 
     test:
@@ -80,6 +81,7 @@ jobs:
                       target/debug/merod
                       target/app-release
                       apps/*/res/*.wasm
+                      apps/*/res/*.mpk
                   key: ${{ needs.build.outputs.cache-key }}
 
             - name: Clone merobox
