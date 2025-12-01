@@ -96,7 +96,7 @@ steps:
       node_1_secrets: result.output
 
   - name: Assert Node 1 Has Secrets
-    type: json_assert
+    type: assert
     statements:
       - "is_set({{node_1_secrets}})"
 
@@ -110,7 +110,7 @@ steps:
       node_1_games: result.output
 
   - name: Assert Games Are Visible
-    type: json_assert
+    type: assert
     statements:
       - "is_set({{node_1_games}})"
 
@@ -128,7 +128,7 @@ steps:
       node_2_games: result.output
 
   - name: Assert Node 2 Sees Games
-    type: json_assert
+    type: assert
     statements:
       - "is_set({{node_2_games}})"
 
@@ -142,9 +142,9 @@ steps:
       node_2_secrets: result.output
 
   - name: Assert Node 2 Has No Secrets Initially
-    type: json_assert
+    type: assert
     statements:
-      - "equal(len({{node_2_secrets}}), 0)"
+      - "is_empty({{node_2_secrets}})"
 
   - name: Node 2 Add Secret
     type: call
@@ -170,7 +170,7 @@ steps:
       node_1_secrets_again: result.output
 
   - name: Assert Node 1 Secrets Unchanged
-    type: json_assert
+    type: assert
     statements:
       - "is_set({{node_1_secrets_again}})"
 
@@ -187,11 +187,10 @@ steps:
       guess_result: result.output
 
   - name: Assert Guess Failed
-    type: json_assert
+    type: assert
     statements:
-      - "equal({{guess_result}}, false)"
+      - "{{guess_result}} == False"
 
 stop_all_nodes: false
-restart: false  
+restart: false
 wait_timeout: 120
-
