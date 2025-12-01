@@ -60,7 +60,7 @@ pub fn run_export(args: ExportArgs) -> Result<()> {
             Ok(manifest) => {
                 println!("State schema loaded successfully");
                 if let Some(ref root) = manifest.state_root {
-                    println!("State root: {}", root);
+                    println!("State root: {root}");
                 }
                 println!("Types: {}", manifest.types.len());
                 manifest
