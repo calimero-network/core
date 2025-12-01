@@ -13,7 +13,7 @@ TARGET="${CARGO_TARGET_DIR:-../../target}"
 mkdir -p res/bundle-temp
 
 # Copy WASM file
-cp res/kv_store.wasm res/bundle-temp/app.wasm
+cp res/access_control.wasm res/bundle-temp/app.wasm
 
 # Copy ABI file if it exists
 if [ -f res/abi.json ]; then
@@ -21,7 +21,7 @@ if [ -f res/abi.json ]; then
 fi
 
 # Get file sizes for manifest
-WASM_SIZE=$(stat -f%z res/kv_store.wasm 2>/dev/null || stat -c%s res/kv_store.wasm 2>/dev/null || echo 0)
+WASM_SIZE=$(stat -f%z res/access_control.wasm 2>/dev/null || stat -c%s res/access_control.wasm 2>/dev/null || echo 0)
 ABI_SIZE=$(stat -f%z res/abi.json 2>/dev/null || stat -c%s res/abi.json 2>/dev/null || echo 0)
 
 # Create manifest.json
