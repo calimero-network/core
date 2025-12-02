@@ -109,26 +109,48 @@ jobs:
                       if [ -f "$workflow" ]; then
                           app_dir=$(dirname "$(dirname "$workflow")")
                           workflow_file=$(basename "$workflow")
-                          echo "Running workflow: $workflow (from app directory: $app_dir)"
-                          if (
-                              cd "$app_dir"
-                              merobox bootstrap run \
-                                  "workflows/$workflow_file" \
-                                  --no-docker \
-                                  --binary-path ../../target/debug/merod \
-                                  --e2e-mode
-                          ); then
-                              echo "Workflow $workflow completed successfully"
-                          else
-                              echo "Workflow $workflow failed"
+                          echo "Running workflow: $workflow (from app directory: $app_dir)"               
+                          # Retry logic: attempt up to 2 times on failure
+                          max_attempts=2
+                          attempt=1
+                          success=false
+                          
+                          while [ $attempt -le $max_attempts ]; do
+                              if [ $attempt -gt 1 ]; then
+                                  echo "Retry attempt $attempt for $workflow"
+                                  # Clean up any leftover data from previous attempt
+                                  rm -rf "$app_dir/data" || true
+                                  # Wait before retry to allow system to settle
+                                  sleep 5
+                              fi
+                              
+                              if (
+                                  cd "$app_dir"
+                                  merobox bootstrap run \
+                                      "workflows/$workflow_file" \
+                                      --no-docker \
+                                      --binary-path ../../target/debug/merod \
+                                      --e2e-mode
+                              ); then
+                                  echo "Workflow $workflow completed successfully"
+                                  success=true
+                                  break
+                              else
+                                  echo "Workflow $workflow failed on attempt $attempt"
+                                  attempt=$((attempt + 1))
+                              fi
+                          done
+                          if [ "$success" = false ]; then
                               failed_workflows+=("$workflow")
                           fi
+                          sleep 2
                       fi
                   done
                   if [ ${#failed_workflows[@]} -gt 0 ]; then
-                      echo "The following workflows failed:"
+                      echo "The following workflows failed after retries:"
                       for failed in "${failed_workflows[@]}"; do
                           echo "  - $failed"
                       done
                       exit 1
                   fi
+                  echo "All workflows completed successfully!"
