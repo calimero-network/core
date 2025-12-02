@@ -29,54 +29,16 @@ steps:
         field: applicationId
         target: app_id_{node_name}
 
-  - name: Create Context on Inviter
-    type: create_context
-    node: node-blob-1
+  - name: Create Mesh
+    type: create_mesh
+    context_node: node-blob-1
     application_id: "{{app_id}}"
+    nodes:
+      - node-blob-2
+    capability: member
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey
-
-  - name: Verify Context Creation
-    type: assert
-    statements:
-      - "is_set({{context_id}})"
-      - "is_set({{inviter_key}})"
-
-  # ============================================================================
-  # MULTI-NODE SETUP: Invite & Join Second Node
-  # ============================================================================
-
-  - name: Create Identity on Invitee Node
-    type: create_identity
-    node: node-blob-2
-    outputs:
-      invitee_key: publicKey
-
-  - name: Wait for Identity Propagation
-    type: wait
-    seconds: 2
-
-  - name: Invite Second Node
-    type: invite_identity
-    node: node-blob-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{invitee_key}}"
-    granter_id: "{{inviter_key}}"
-    capability: member
-    outputs:
-      invitation: invitation
-
-  - name: Join Context from Invitee
-    type: join_context
-    node: node-blob-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{invitee_key}}"
-    invitation: "{{invitation}}"
-
-  - name: Wait for Context Sync
-    type: wait
-    seconds: 3
 
   # ============================================================================
   # TRUE E2E BLOB UPLOAD: Upload Real PNG File
@@ -172,7 +134,7 @@ steps:
     type: call
     node: node-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
+    executor_public_key: "{{public_key_node-blob-2}}"
     method: list_files
     outputs:
       files_node2: result.output
@@ -242,7 +204,7 @@ steps:
     type: call
     node: node-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
+    executor_public_key: "{{public_key_node-blob-2}}"
     method: get_blob_id_b58
     args:
       file_id: "{{file_1_id}}"
@@ -361,7 +323,7 @@ steps:
     type: call
     node: node-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
+    executor_public_key: "{{public_key_node-blob-2}}"
     method: list_files
     outputs:
       files_after_delete_node2: result.output

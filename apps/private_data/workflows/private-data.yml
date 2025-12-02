@@ -18,49 +18,16 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create Private Data Context
-    type: create_context
-    node: rust-private-data-1
+  - name: Create Mesh
+    type: create_mesh
+    context_node: rust-private-data-1
     application_id: "{{app_id}}"
-    params: "{}"
+    nodes:
+      - rust-private-data-2
+    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey
-
-  - name: Wait for Context Creation
-    type: wait
-    seconds: 1
-
-  - name: Create Node 2 Identity
-    type: create_identity
-    node: rust-private-data-2
-    outputs:
-      node_2_member_public_key: publicKey
-
-  - name: Wait After Identity Creation
-    type: wait
-    seconds: 1
-
-  - name: Invite Node 2 To Context
-    type: invite_identity
-    node: rust-private-data-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{node_2_member_public_key}}"
-    granter_id: "{{member_public_key}}"
-    capability: member
-    outputs:
-      node_2_invitation: invitation
-
-  - name: Node 2 Join Context
-    type: join_context
-    node: rust-private-data-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{node_2_member_public_key}}"
-    invitation: "{{node_2_invitation}}"
-
-  - name: Wait After Node 2 Join
-    type: wait
-    seconds: 4
 
   - name: Node 1 Add Secret
     type: call
@@ -122,7 +89,7 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{node_2_member_public_key}}"
+    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: games
     outputs:
       node_2_games: result.output
@@ -136,7 +103,7 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{node_2_member_public_key}}"
+    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: my_secrets
     outputs:
       node_2_secrets: result.output
@@ -150,7 +117,7 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{node_2_member_public_key}}"
+    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: add_secret
     args:
       game_id: game3
@@ -178,7 +145,7 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{node_2_member_public_key}}"
+    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: add_guess
     args:
       game_id: game1
