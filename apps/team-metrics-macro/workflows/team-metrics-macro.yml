@@ -1,0 +1,297 @@
+name: Team Metrics Macro Test
+description: Test team metrics with derive(Mergeable) macro implementation
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: team-macro-node
+
+steps:
+  - name: Install Team Metrics Macro Application on Node 1
+    type: install_application
+    node: team-macro-node-1
+    path: res/team_metrics_macro.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: team-macro-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - team-macro-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Record win for team-alpha (Node 1)
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: record_win
+    args:
+      team_id: team-alpha
+    outputs:
+      win_1: result.output
+
+  - name: Assert win count is 1
+    type: assert
+    statements:
+      - "{{win_1}} == 1"
+
+  - name: Record another win for team-alpha (Node 1)
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: record_win
+    args:
+      team_id: team-alpha
+    outputs:
+      win_2: result.output
+
+  - name: Assert win count is 2
+    type: assert
+    statements:
+      - "{{win_2}} == 2"
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get wins from Node 1
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_wins
+    args:
+      team_id: team-alpha
+    outputs:
+      wins_node1: result.output
+
+  - name: Get wins from Node 2
+    type: call
+    node: team-macro-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_team-macro-node-2}}"
+    method: get_wins
+    args:
+      team_id: team-alpha
+    outputs:
+      wins_node2: result.output
+
+  - name: Assert all nodes have wins=2
+    type: assert
+    statements:
+      - "{{wins_node1}} == 2"
+      - "{{wins_node2}} == 2"
+
+  - name: Node 1 records win
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: record_win
+    args:
+      team_id: team-alpha
+
+  - name: Node 2 records win concurrently
+    type: call
+    node: team-macro-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_team-macro-node-2}}"
+    method: record_win
+    args:
+      team_id: team-alpha
+
+  - name: Wait for concurrent wins to merge
+    type: wait
+    seconds: 5
+
+  - name: Get wins from Node 1 after concurrent
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_wins
+    args:
+      team_id: team-alpha
+    outputs:
+      wins_after_concurrent_1: result.output
+
+  - name: Get wins from Node 2 after concurrent
+    type: call
+    node: team-macro-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_team-macro-node-2}}"
+    method: get_wins
+    args:
+      team_id: team-alpha
+    outputs:
+      wins_after_concurrent_2: result.output
+
+  - name: Assert wins is 4 on all nodes (2 + 1 + 1)
+    type: assert
+    statements:
+      - "{{wins_after_concurrent_1}} == 4"
+      - "{{wins_after_concurrent_2}} == 4"
+
+  - name: Record loss for team-alpha (Node 1)
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: record_loss
+    args:
+      team_id: team-alpha
+    outputs:
+      loss_1: result.output
+
+  - name: Assert loss count is 1
+    type: assert
+    statements:
+      - "{{loss_1}} == 1"
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get losses from Node 2
+    type: call
+    node: team-macro-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_team-macro-node-2}}"
+    method: get_losses
+    args:
+      team_id: team-alpha
+    outputs:
+      losses_node2: result.output
+
+  - name: Assert Node 2 sees loss
+    type: assert
+    statements:
+      - "{{losses_node2}} == 1"
+
+  - name: Record draw for team-alpha (Node 2)
+    type: call
+    node: team-macro-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_team-macro-node-2}}"
+    method: record_draw
+    args:
+      team_id: team-alpha
+    outputs:
+      draw_1: result.output
+
+  - name: Assert draw count is 1
+    type: assert
+    statements:
+      - "{{draw_1}} == 1"
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get draws from Node 1
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_draws
+    args:
+      team_id: team-alpha
+    outputs:
+      draws_node1: result.output
+
+  - name: Assert Node 1 sees draw
+    type: assert
+    statements:
+      - "{{draws_node1}} == 1"
+
+  - name: Test different team (Node 2)
+    type: call
+    node: team-macro-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_team-macro-node-2}}"
+    method: record_win
+    args:
+      team_id: team-beta
+    outputs:
+      beta_win_1: result.output
+
+  - name: Assert team-beta win is 1
+    type: assert
+    statements:
+      - "{{beta_win_1}} == 1"
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get team-beta wins from Node 1
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_wins
+    args:
+      team_id: team-beta
+    outputs:
+      beta_wins_node1: result.output
+
+  - name: Assert Node 1 sees team-beta
+    type: assert
+    statements:
+      - "{{beta_wins_node1}} == 1"
+
+  - name: Verify team-alpha stats still correct on Node 1
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_wins
+    args:
+      team_id: team-alpha
+    outputs:
+      final_wins_alpha: result.output
+
+  - name: Verify team-alpha losses on Node 1
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_losses
+    args:
+      team_id: team-alpha
+    outputs:
+      final_losses_alpha: result.output
+
+  - name: Verify team-alpha draws on Node 1
+    type: call
+    node: team-macro-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_draws
+    args:
+      team_id: team-alpha
+    outputs:
+      final_draws_alpha: result.output
+
+  - name: Assert team-alpha final stats
+    type: assert
+    statements:
+      - "{{final_wins_alpha}} == 4"
+      - "{{final_losses_alpha}} == 1"
+      - "{{final_draws_alpha}} == 1"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
+
