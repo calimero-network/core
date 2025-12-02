@@ -11,6 +11,7 @@ on:
       - "workflows/proposals/**"
       - "scripts/icp/**"
       - "scripts/ethereum/**"
+      - "scripts/download-contracts.sh"
       - ".github/workflows/merobox-proposals.yml"
   workflow_dispatch:
 
