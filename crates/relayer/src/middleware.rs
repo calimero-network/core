@@ -7,6 +7,24 @@ use axum::response::IntoResponse;
 
 use crate::metrics::RelayerMetrics;
 
+/// RAII guard to ensure http_requests_active is decremented even on panic
+struct ActiveRequestGuard {
+    metrics: Arc<RelayerMetrics>,
+}
+
+impl ActiveRequestGuard {
+    fn new(metrics: Arc<RelayerMetrics>) -> Self {
+        metrics.inc_http_active();
+        Self { metrics }
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.metrics.dec_http_active();
+    }
+}
+
 /// Normalize HTTP method to prevent cardinality explosion
 /// Only standard HTTP methods are tracked individually, others are aggregated
 fn normalize_http_method(method: &axum::http::Method) -> &'static str {
@@ -57,7 +75,8 @@ pub async fn track_metrics(
     // Normalize HTTP method to prevent cardinality explosion
     let method = normalize_http_method(req.method());
 
-    metrics.inc_http_active();
+    // Use RAII guard to ensure active count is decremented even on panic/cancellation
+    let _active_guard = ActiveRequestGuard::new(metrics.clone());
 
     // Track request size, use 0 if content-length header is missing
     let request_size = req
@@ -71,7 +90,7 @@ pub async fn track_metrics(
 
     let response = next.run(req).await;
 
-    metrics.dec_http_active();
+    // Guard will decrement active count when dropped (even on panic)
 
     let status_code = response.status().as_u16().to_string();
     let duration = start.elapsed();

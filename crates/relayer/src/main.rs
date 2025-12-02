@@ -17,7 +17,9 @@ use calimero_context_config::client::config::{
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
 };
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
-use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
+use calimero_context_config::client::transport::{
+    Operation, Transport, TransportArguments, TransportRequest,
+};
 use calimero_context_config::client::Client;
 use clap::Parser;
 use color_eyre::install;
@@ -47,47 +49,41 @@ use prometheus_client::registry::Registry;
 /// Only known protocols are tracked individually, others are aggregated as "other"
 fn normalize_protocol_name(protocol: &str) -> &str {
     match protocol {
-        protocols::near::NAME => "near",
-        protocols::starknet::NAME => "starknet",
-        protocols::icp::NAME => "icp",
-        protocols::ethereum::NAME => "ethereum",
-        protocols::mock_relayer::NAME => "mock-relayer",
+        protocols::near::NAME
+        | protocols::starknet::NAME
+        | protocols::icp::NAME
+        | protocols::ethereum::NAME
+        | protocols::mock_relayer::NAME => protocol,
         _ => "other",
     }
 }
 
 /// Normalize method name to prevent cardinality explosion
 /// Only known methods from handlers.rs are tracked individually, others are aggregated
-fn normalize_method_name(
-    operation: &calimero_context_config::client::transport::Operation<'_>,
-) -> &'static str {
-    use calimero_context_config::client::transport::Operation;
-
+fn normalize_method_name<'a>(operation: &'a Operation<'a>) -> &'a str {
     match operation {
         Operation::Read { method } => match method.as_ref() {
-            // Context-config query methods (from handlers.rs)
-            "application" => "application",
-            "application_revision" => "application_revision",
-            "members" => "members",
-            "members_revision" => "members_revision",
-            "has_member" => "has_member",
-            "privileges" => "privileges",
-            "get_proxy_contract" => "get_proxy_contract",
-            "fetch_nonce" => "fetch_nonce",
-            // Proxy query methods (from handlers.rs)
-            "proposals" => "proposals",
-            "proposal" => "proposal",
-            "get_number_of_active_proposals" => "get_number_of_active_proposals",
-            "get_number_of_proposal_approvals" => "get_number_of_proposal_approvals",
-            "get_proposal_approvers" => "get_proposal_approvers",
-            "get_context_value" => "get_context_value",
-            "get_context_storage_entries" => "get_context_storage_entries",
+            // Known read methods (from handlers.rs)
+            "application"
+            | "application_revision"
+            | "members"
+            | "members_revision"
+            | "has_member"
+            | "privileges"
+            | "get_proxy_contract"
+            | "fetch_nonce"
+            | "proposals"
+            | "proposal"
+            | "get_number_of_active_proposals"
+            | "get_number_of_proposal_approvals"
+            | "get_proposal_approvers"
+            | "get_context_value"
+            | "get_context_storage_entries" => method.as_ref(),
             _ => "other_read",
         },
         Operation::Write { method } => match method.as_ref() {
-            // Context-config mutate methods (from handlers.rs)
-            "mutate" => "mutate",
-            "proxy_mutate" => "proxy_mutate",
+            // Known write methods (from handlers.rs)
+            "mutate" | "proxy_mutate" => method.as_ref(),
             _ => "other_write",
         },
     }
@@ -248,17 +244,17 @@ impl RelayerService {
                     metrics.set_queue_depth(rx.len() as i64);
                 }
 
+                // Clone and normalize protocol name to prevent cardinality explosion
+                let protocol_str = request.protocol.clone();
+                let protocol_name = normalize_protocol_name(&protocol_str);
+                let start = std::time::Instant::now();
+
+                if let Some(ref metrics) = metrics {
+                    metrics.inc_protocol_requests(protocol_name);
+                }
+
                 // Check if this is a mock-relayer request
                 if request.protocol == protocols::mock_relayer::NAME {
-                    // Clone and normalize protocol name to prevent cardinality explosion
-                    let protocol_str = request.protocol.clone();
-                    let protocol_name = normalize_protocol_name(&protocol_str);
-                    if let Some(ref metrics) = metrics {
-                        metrics.inc_protocol_requests(protocol_name);
-                    }
-
-                    let start = std::time::Instant::now();
-
                     if let Some(ref mock) = mock_relayer {
                         debug!(
                             "Handling mock-relayer request for operation: {:?}",
@@ -332,13 +328,6 @@ impl RelayerService {
                     }
                 }
 
-                // Handle regular blockchain protocols
-                // Clone and normalize protocol name to prevent cardinality explosion
-                let protocol_str = request.protocol.clone();
-                let protocol_name = normalize_protocol_name(&protocol_str);
-
-                let start = std::time::Instant::now();
-
                 let args = TransportArguments {
                     protocol: request.protocol,
                     request: TransportRequest {
@@ -364,9 +353,6 @@ impl RelayerService {
                 // - Ok(Err(...)) = transport error (network, contract, etc.)
                 // - Err(...) = unsupported protocol
                 if let Some(ref metrics) = metrics {
-                    // Track the protocol request after we know the normalized name
-                    metrics.inc_protocol_requests(protocol_name);
-
                     let duration = start.elapsed();
                     let (status, error_type) = match &res {
                         Ok(Ok(_)) => ("success", None),
