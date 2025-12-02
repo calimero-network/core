@@ -431,6 +431,7 @@ fn delta_delete_action_recorded() {
     push_action(Action::DeleteRef {
         id,
         deleted_at: time_now(),
+        metadata: Metadata::default(),
     });
 
     let delta = commit_causal_delta(&[1; 32]).unwrap().unwrap();

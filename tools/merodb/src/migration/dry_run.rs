@@ -2,7 +2,7 @@
 //! Dry-run engine for the `migrate` command.
 //!
 //! The goal of this module is to preview a migration plan without mutating RocksDB. It wires the
-//! plan, the source database handle, and optional ABI manifest together to produce a
+//! plan, the source database handle, and optional state schema together to produce a
 //! per-step summary containing:
 //!
 //! - **Resolved filters** – merge plan defaults with step overrides, interpret context IDs,
@@ -77,7 +77,7 @@ impl StepDetail {}
 /// Generate a comprehensive dry-run report for all migration steps without modifying the database.
 ///
 /// This function orchestrates the preview process by:
-/// 1. Extracting the migration plan, source database, and optional ABI manifest from context
+/// 1. Extracting the migration plan, source database, and optional state schema from context
 /// 2. Iterating through each step in the plan sequentially
 /// 3. Dispatching each step to its type-specific preview handler
 /// 4. Aggregating individual step reports into a complete migration preview
@@ -90,7 +90,7 @@ impl StepDetail {}
 ///
 /// # Arguments
 ///
-/// * `context` - Migration context containing the plan, source database, and ABI manifest
+/// * `context` - Migration context containing the plan, source database, and state schema
 ///
 /// # Returns
 ///
@@ -106,7 +106,7 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     let plan = context.plan();
     let source_db = context.source().db();
     let target_db = context.target().map(|target| target.db());
-    let abi_manifest = context.source().abi_manifest()?;
+    let schema = context.source().schema()?;
 
     let mut steps = Vec::with_capacity(plan.steps.len());
 
@@ -114,7 +114,7 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
     for (index, step) in plan.steps.iter().enumerate() {
         let report = match step {
             PlanStep::Copy(copy) => {
-                preview_copy_step(index, copy, &plan.defaults, source_db, abi_manifest)?
+                preview_copy_step(index, copy, &plan.defaults, source_db, schema)?
             }
             PlanStep::Delete(delete) => {
                 let target_db = target_db.ok_or_else(|| {
@@ -154,7 +154,7 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
 /// This function simulates a copy step without performing any writes. It:
 /// 1. Merges plan defaults with step-specific filters to determine the final filter set
 /// 2. Resolves filters into byte-oriented predicates (context IDs, prefixes, ranges, etc.)
-/// 3. Validates ABI decoding configuration and warns if the manifest is missing
+/// 3. Validates ABI decoding configuration and warns if the state schema is missing
 /// 4. Scans the source column to count matching keys and capture representative samples
 /// 5. Assembles a detailed report including match counts, samples, and any warnings
 ///
@@ -170,7 +170,7 @@ pub fn generate_report(context: &MigrationContext) -> Result<DryRunReport> {
 /// * `step` - The copy step configuration from the plan
 /// * `defaults` - Plan-level defaults that may override step settings
 /// * `db` - Source database handle for reading keys
-/// * `abi_manifest` - Optional ABI manifest for validating decode_with_abi requests
+/// * `schema` - Optional state schema for validating decode_with_abi requests
 ///
 /// # Returns
 ///
@@ -184,18 +184,18 @@ fn preview_copy_step(
     step: &CopyStep,
     defaults: &PlanDefaults,
     db: &DBWithThreadMode<SingleThreaded>,
-    abi_manifest: Option<&Manifest>,
+    schema: Option<&Manifest>,
 ) -> Result<StepReport> {
     // Merge plan-level and step-level filters to get the effective filter set
     let filters = defaults.merge_filters(&step.filters);
     let mut resolved = ResolvedFilters::resolve(step.column, &filters);
 
-    // Check if ABI decoding is requested and validate manifest availability
+    // Check if ABI decoding is requested and validate state schema availability
     let decode_with_abi = defaults.effective_decode_with_abi(step.transform.decode_with_abi);
-    if decode_with_abi && abi_manifest.is_none() {
+    if decode_with_abi && schema.is_none() {
         resolved
             .warnings
-            .push("decode_with_abi requested but source ABI manifest is unavailable".into());
+            .push("decode_with_abi requested but source state schema is unavailable".into());
     }
 
     // Scan the source column to count matches and collect sample keys
@@ -556,7 +556,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path: path.to_path_buf(),
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target_config(path)),
             defaults: PlanDefaults {
@@ -668,7 +668,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target),
             defaults: PlanDefaults::default(),
@@ -715,7 +715,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -759,7 +759,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target),
             defaults: PlanDefaults::default(),
@@ -853,7 +853,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -900,7 +900,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target),
             defaults: PlanDefaults::default(),
@@ -951,7 +951,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target),
             defaults: PlanDefaults::default(),
@@ -1019,7 +1019,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1051,21 +1051,21 @@ mod tests {
     }
 
     #[test]
-    /// Test that requesting ABI decoding without providing an ABI manifest emits a warning.
+    /// Test that requesting ABI decoding without providing a state schema emits a warning.
     fn dry_run_warns_missing_abi_when_decode_requested() -> Result<()> {
         let temp = TempDir::new()?;
         let db_path = temp.path().join("db");
 
         setup_db(&db_path)?;
 
-        // Plan requests decode_with_abi but no wasm_file is provided
+        // Plan requests decode_with_abi but no state_schema_file is provided
         let plan = MigrationPlan {
             version: PlanVersion::latest(),
             name: None,
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None, // No ABI manifest
+                state_schema_file: None, // No state schema
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1092,14 +1092,14 @@ mod tests {
         ensure!(report.steps.len() == 1, "expected one step");
         let copy = &report.steps[0];
 
-        // Should emit a warning about missing ABI manifest
+        // Should emit a warning about missing state schema
         ensure!(
             !copy.warnings.is_empty(),
-            "expected warnings about missing ABI"
+            "expected warnings about missing state schema"
         );
         ensure!(
-            copy.warnings.iter().any(|w| w.contains("ABI manifest")),
-            "expected warning to mention ABI manifest, got: {:?}",
+            copy.warnings.iter().any(|w| w.contains("state schema")),
+            "expected warning to mention state schema, got: {:?}",
             copy.warnings
         );
 
@@ -1121,7 +1121,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1175,7 +1175,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1239,7 +1239,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1298,7 +1298,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1370,7 +1370,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1452,7 +1452,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target),
             defaults: PlanDefaults::default(),
@@ -1558,7 +1558,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target),
             defaults: PlanDefaults::default(),
@@ -1660,7 +1660,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: Some(target),
             defaults: PlanDefaults::default(),
@@ -1771,7 +1771,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1837,7 +1837,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1909,7 +1909,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),
@@ -1970,7 +1970,7 @@ mod tests {
             description: None,
             source: SourceEndpoint {
                 db_path,
-                wasm_file: None,
+                state_schema_file: None,
             },
             target: None,
             defaults: PlanDefaults::default(),

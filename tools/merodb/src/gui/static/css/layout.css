@@ -1,0 +1,121 @@
+/**
+ * Layout Components
+ * Main application structure and containers
+ */
+
+/* App Container */
+.app-container {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header */
+.app-header {
+    background: var(--color-bg-secondary);
+    padding: var(--space-xl) var(--space-4xl);
+    border-bottom: 1px solid var(--color-border-default);
+}
+
+.app-header__title {
+    color: var(--color-text-primary);
+    margin: 0;
+    font-size: var(--font-size-3xl);
+    font-weight: var(--font-weight-semibold);
+}
+
+.app-header__subtitle {
+    color: var(--color-text-tertiary);
+    margin: 5px 0 0 0;
+    font-size: var(--font-size-md);
+}
+
+/* Main Content */
+.app-main {
+    flex: 1;
+    padding: var(--space-4xl);
+}
+
+/* Upload Container */
+.upload-container {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+/* Viewer Container */
+.viewer-container {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 140px);
+}
+
+/* File Info Bar */
+.file-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-lg) var(--space-xl);
+    background: var(--color-bg-secondary);
+    border-radius: var(--radius-lg);
+    margin-bottom: var(--space-xl);
+    border: 1px solid var(--color-border-default);
+}
+
+.file-info__name {
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-primary);
+}
+
+/* Content Panels (Data View) */
+.content-panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-xl);
+    flex: 1;
+    overflow: hidden;
+}
+
+.content-panels__panel {
+    background: var(--color-bg-secondary);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl);
+    overflow: auto;
+    border: 1px solid var(--color-border-default);
+    display: flex;
+    flex-direction: column;
+}
+
+.content-panels__title {
+    color: var(--color-text-primary);
+    margin-bottom: var(--space-lg);
+    font-size: var(--font-size-xl);
+    flex-shrink: 0;
+}
+
+/* Container for DAG and State Tree */
+.visualization-container {
+    background: var(--color-bg-secondary);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl);
+    min-height: 600px;
+    position: relative;
+}
+
+/* Hint Text Styling */
+.hint {
+    text-align: center;
+    margin: 8px 0;
+}
+
+.hint kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-primary);
+    border: 1px solid var(--color-border-default);
+    border-radius: 3px;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
+    font-family: monospace;
+}

@@ -137,25 +137,36 @@ fn validate_type_ref(type_ref: &TypeRef, path: &str) -> Result<(), ValidationErr
         TypeRef::Reference { .. } => {
             // Will be checked for dangling refs later
         }
-        TypeRef::Collection(collection) => match collection {
-            CollectionType::Record { fields } => {
-                for field in fields {
-                    validate_type_ref(&field.type_, path)?;
+        TypeRef::Collection {
+            collection,
+            inner_type,
+            ..
+        } => {
+            // Validate inner_type if present (e.g., for LwwRegister<T>)
+            if let Some(inner) = inner_type {
+                validate_type_ref(inner, &format!("{path}.inner_type"))?;
+            }
+
+            match collection {
+                CollectionType::Record { fields } => {
+                    for field in fields {
+                        validate_type_ref(&field.type_, path)?;
+                    }
+                }
+                CollectionType::List { items } => {
+                    validate_type_ref(items, &format!("{path}.items"))?;
+                }
+                CollectionType::Map { key, value, .. } => {
+                    // Check that key is string
+                    if !matches!(&**key, TypeRef::Scalar(ScalarType::String)) {
+                        return Err(ValidationError::InvalidMapKeyType {
+                            path: path.to_owned(),
+                        });
+                    }
+                    validate_type_ref(value, &format!("{path}.value"))?;
                 }
             }
-            CollectionType::List { items } => {
-                validate_type_ref(items, &format!("{path}.items"))?;
-            }
-            CollectionType::Map { key, value, .. } => {
-                // Check that key is string
-                if !matches!(&**key, TypeRef::Scalar(ScalarType::String)) {
-                    return Err(ValidationError::InvalidMapKeyType {
-                        path: path.to_owned(),
-                    });
-                }
-                validate_type_ref(value, &format!("{path}.value"))?;
-            }
-        },
+        }
     }
     Ok(())
 }
@@ -247,19 +258,30 @@ fn collect_refs_from_type_ref(type_ref: &TypeRef, path: &str, refs: &mut Vec<(St
         TypeRef::Reference { ref_ } => {
             refs.push((ref_.clone(), path.to_owned()));
         }
-        TypeRef::Collection(collection) => match collection {
-            CollectionType::Record { fields } => {
-                for field in fields {
-                    collect_refs_from_type_ref(&field.type_, path, refs);
+        TypeRef::Collection {
+            collection,
+            inner_type,
+            ..
+        } => {
+            // Collect refs from inner_type if present (e.g., for LwwRegister<T>)
+            if let Some(inner) = inner_type {
+                collect_refs_from_type_ref(inner, &format!("{path}.inner_type"), refs);
+            }
+
+            match collection {
+                CollectionType::Record { fields } => {
+                    for field in fields {
+                        collect_refs_from_type_ref(&field.type_, path, refs);
+                    }
+                }
+                CollectionType::List { items } => {
+                    collect_refs_from_type_ref(items, &format!("{path}.items"), refs);
+                }
+                CollectionType::Map { value, .. } => {
+                    collect_refs_from_type_ref(value, &format!("{path}.value"), refs);
                 }
             }
-            CollectionType::List { items } => {
-                collect_refs_from_type_ref(items, &format!("{path}.items"), refs);
-            }
-            CollectionType::Map { value, .. } => {
-                collect_refs_from_type_ref(value, &format!("{path}.value"), refs);
-            }
-        },
+        }
     }
 }
 

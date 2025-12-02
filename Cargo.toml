@@ -13,15 +13,18 @@ description = "Core Calimero infrastructure and tools"
 version = "0.0.0" # crates_version
 exclude = [
     "./apps/abi_conformance",
+    "./apps/access-control",
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
+	"./apps/kv-store-with-user-and-frozen-storage",
     "./apps/nested-crdt-test",
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",
     "./apps/private_data",
+    "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./e2e-tests",
     "./crates/merod",
@@ -49,6 +52,7 @@ members = [
     "./crates/network/primitives",
     "./crates/node",
     "./crates/node/primitives",
+    "./crates/prelude",
     "./crates/primitives",
     "./crates/runtime",
     "./crates/sdk",
@@ -67,9 +71,11 @@ members = [
     "./crates/version",
     "./crates/wasm-abi",
 
+    "./apps/access-control",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
+	"./apps/kv-store-with-user-and-frozen-storage",
     "./apps/nested-crdt-test",
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",
@@ -77,6 +83,7 @@ members = [
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/abi_conformance",
+    "./apps/state-schema-conformance",
     "./apps/xcall-example",
 
     "./e2e-tests",
@@ -120,6 +127,7 @@ either = "1.13.0"
 ethabi = "18.0.0"
 eyre = "0.6.12"
 fixedstr = "0.5.7"
+flate2 = "1.0"
 fragile = "2.0.0"
 futures-util = "0.3.30"
 generic-array = "1.0.0"
@@ -172,7 +180,9 @@ starknet-crypto = "0.8.1"
 starknet-types-core = "0.2.0"
 strum = "0.26.2"
 syn = { version = "2.0", features = ["full"] }
+tar = "0.4"
 tempdir = "0.3.7"
+tempfile = "3.10"
 tdx-quote = "0.0.4"
 tdx_workload_attestation = "0.1.0"
 thiserror = "1.0.56"

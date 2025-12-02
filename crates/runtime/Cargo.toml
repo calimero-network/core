@@ -12,6 +12,7 @@ publish = true
 borsh = { workspace = true, features = ["derive"] }
 bytes.workspace = true
 eyre.workspace = true
+ed25519-dalek.workspace = true
 fragile.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 ouroboros.workspace = true

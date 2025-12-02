@@ -351,7 +351,9 @@ fn generate_mergeable_impl(
                 || type_str.contains("UnorderedSet")
                 || type_str.contains("Counter")
                 || type_str.contains("ReplicatedGrowableArray")
-                || type_str.contains("LwwRegister");
+                || type_str.contains("LwwRegister")
+                || type_str.contains("UserStorage")
+                || type_str.contains("FrozenStorage");
 
             if !is_crdt {
                 // Skip non-CRDT fields

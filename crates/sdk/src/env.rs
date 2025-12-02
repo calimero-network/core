@@ -501,6 +501,119 @@ pub fn time_now() -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+/// Verifies an Ed25519 signature.
+///
+/// This function calls the host environment to cryptographically verify that
+/// a given signature was produced by the given public key for the given message.
+///
+/// # Arguments
+///
+/// * `signature` - The 64-byte Ed25519 signature.
+/// * `public_key` - The 32-byte Ed25519 public key.
+/// * `message` - The message bytes that were signed.
+///
+/// # Returns
+///
+/// * `true` if the signature is valid.
+/// * `false` if the signature is invalid.
+///
+/// # Panics
+///
+/// Panics if the host returns a value other than `0` or `1`.
+#[inline]
+pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool {
+    // Create buffer descriptors for the host
+    let signature_buf = Buffer::from(&signature[..]);
+    let public_key_buf = Buffer::from(&public_key[..]);
+    let message_buf = Buffer::from(message);
+
+    // Call the host function via FFI
+    let result = unsafe {
+        sys::ed25519_verify(
+            Ref::new(&signature_buf),
+            Ref::new(&public_key_buf),
+            Ref::new(&message_buf),
+        )
+    };
+
+    // Convert the sys::Bool (repr(C) u32) to a bool, panicking if it's not 0 or 1.
+    result.try_into().unwrap_or_else(expected_boolean)
+}
+
+// ========================================
+// CONTEXT MANAGEMENT API
+// ========================================
+
+/// Checks if a given public key is a member of the current context.
+///
+/// # Arguments
+///
+/// * `public_key` - The 32-byte public key to check.
+///
+/// # Returns
+///
+/// * `true` if the identity is a member.
+/// * `false` if the identity is not a member.
+#[inline]
+pub fn context_is_member(public_key: &[u8; 32]) -> bool {
+    unsafe {
+        sys::context_is_member(Ref::new(&Buffer::from(&public_key[..])))
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    }
+}
+
+/// Requests adding a member to the current context.
+///
+/// This is an asynchronous operation. The request is recorded and executed by the host node
+/// after the WASM execution completes successfully.
+///
+/// # Arguments
+///
+/// * `public_key` - The 32-byte public key of the identity to invite.
+#[inline]
+pub fn context_add_member(public_key: &[u8; 32]) {
+    unsafe {
+        sys::context_add_member(Ref::new(&Buffer::from(&public_key[..])));
+    }
+}
+
+/// Requests removing a member from the current context.
+///
+/// This is an asynchronous operation. The request is recorded and executed by the host node
+/// after the WASM execution completes successfully.
+///
+/// # Arguments
+///
+/// * `public_key` - The 32-byte public key of the identity to remove.
+#[inline]
+pub fn context_remove_member(public_key: &[u8; 32]) {
+    unsafe {
+        sys::context_remove_member(Ref::new(&Buffer::from(&public_key[..])));
+    }
+}
+
+/// Returns a list of all members in the current context.
+///
+/// # Returns
+///
+/// A vector of 32-byte public keys representing all members.
+#[inline]
+pub fn context_members() -> Vec<[u8; 32]> {
+    unsafe {
+        sys::context_members(DATA_REGISTER);
+    }
+    let data = read_register(DATA_REGISTER).unwrap_or_default();
+    if data.is_empty() {
+        return Vec::new();
+    }
+
+    // The data is a Borsh-serialized Vec<[u8; 32]>
+    borsh::from_slice(&data).unwrap_or_else(|_| {
+        panic_str("Failed to deserialize context members");
+    })
+}
+
 // ========================================
 // STREAMING BLOB API
 // ========================================

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use calimero_context_primitives::client::ContextClient;
 use calimero_dag::{ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats};
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::delta::StorageDelta;
@@ -96,8 +97,8 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             warn!(
                 context_id = %self.context_id,
                 delta_id = ?delta.id,
-                computed_hash = ?computed_hash.as_ref(),
-                expected_hash = ?delta.expected_root_hash,
+                computed_hash = ?computed_hash,
+                expected_hash = ?Hash::from(delta.expected_root_hash),
                 "Root hash mismatch - using expected hash for consistency"
             );
 

@@ -9,8 +9,8 @@ use calimero_context_config::client::config::{
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
-    ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,
-    starknet as starknet_protocol,
+    ethereum as ethereum_protocol, icp as icp_protocol, mock_relayer as mock_relayer_protocol,
+    near as near_protocol, starknet as starknet_protocol,
 };
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
@@ -47,9 +47,10 @@ use url::Url;
 use super::auth_mode::AuthModeArg;
 use crate::{cli, defaults};
 
-const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
+// Sync configuration - aggressive defaults for fast CRDT convergence
+const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
 
 /// Helper struct to define protocol configuration
 #[derive(Debug)]
@@ -108,6 +109,14 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
         networks: &[("sepolia", "https://sepolia.drpc.org")],
         protocol: ConfigProtocol::Ethereum,
     },
+    ProtocolConfig {
+        name: "mock-relayer",
+        default_network: "local",
+        default_contract: "mock-context-config",
+        signer_type: ClientSelectedSigner::Relayer,
+        networks: &[("local", "http://localhost:9812")],
+        protocol: ConfigProtocol::MockRelayer,
+    },
 ];
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -116,6 +125,7 @@ pub enum ConfigProtocol {
     Starknet,
     Icp,
     Ethereum,
+    MockRelayer,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -496,5 +506,13 @@ fn generate_local_signer(
                 }),
             })
         }
+        ConfigProtocol::MockRelayer => Ok(ClientLocalSigner {
+            rpc_url,
+            credentials: Credentials::Raw(mock_relayer_protocol::Credentials {
+                account_id: None,
+                public_key: "mock-public-key".to_string(),
+                secret_key: "mock-secret-key".to_string(),
+            }),
+        }),
     }
 }

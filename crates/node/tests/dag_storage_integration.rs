@@ -384,6 +384,7 @@ async fn test_dag_storage_delete_via_delta() {
     let delete_action = Action::DeleteRef {
         id,
         deleted_at: time_now(),
+        metadata: Metadata::default(),
     };
 
     let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![delete_action]);

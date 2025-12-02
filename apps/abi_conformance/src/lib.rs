@@ -9,9 +9,6 @@ use thiserror::Error;
 pub mod custom_types;
 pub use custom_types::{CustomRecord, NestedRecord, Status};
 
-// Include the generated ABI code
-include!(env!("GENERATED_ABI_PATH"));
-
 // Newtype bytes
 #[derive(
     Clone,
@@ -80,6 +77,8 @@ pub enum Action {
     Ping,
     SetName(String),
     Update(UpdatePayload),
+    MultiTuple(u32, String), // Tuple variant with multiple unnamed fields
+    MultiStruct { x: u32, y: String }, // Struct variant with multiple named fields
 }
 
 #[derive(Debug, Error, Serialize)]
@@ -101,6 +100,8 @@ pub enum Event {
     Data(Vec<u8>),
     PersonUpdated(Person),
     ActionTaken(Action),
+    TupleEvent(u32, String), // Tuple variant with multiple unnamed fields
+    StructEvent { id: u32, name: String }, // Struct variant with multiple named fields
 }
 
 // State
@@ -249,6 +250,25 @@ impl AbiState {
             Action::Ping => 1,
             Action::SetName(_) => 2,
             Action::Update(payload) => payload.age,
+            Action::MultiTuple(x, _) => x,
+            Action::MultiStruct { x, .. } => x,
+        }
+    }
+
+    // Test methods for enum variants with multiple fields
+    #[must_use]
+    pub fn handle_multi_tuple(a: Action) -> String {
+        match a {
+            Action::MultiTuple(_, s) => s,
+            _ => String::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn handle_multi_struct(a: Action) -> u32 {
+        match a {
+            Action::MultiStruct { x, .. } => x,
+            _ => 0,
         }
     }
 

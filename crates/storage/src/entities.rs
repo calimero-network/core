@@ -13,6 +13,7 @@
 #[path = "tests/entities.rs"]
 mod tests;
 
+use calimero_primitives::identity::PublicKey;
 use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -92,12 +93,13 @@ pub trait Data: BorshDeserialize + BorshSerialize {
 }
 
 /// Child element metadata stored in parent's index.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ChildInfo {
     id: Id,
     pub(crate) merkle_hash: [u8; 32],
-    pub(crate) metadata: Metadata,
+    /// Metadata of the child.
+    pub metadata: Metadata,
 }
 
 impl Ord for ChildInfo {
@@ -186,6 +188,7 @@ impl Element {
             metadata: Metadata {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
             },
             merkle_hash: [0; 32],
         }
@@ -201,6 +204,7 @@ impl Element {
             metadata: Metadata {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
             },
             merkle_hash: [0; 32],
         }
@@ -263,6 +267,21 @@ impl Element {
     pub fn updated_at_mut(&mut self) -> &mut u64 {
         &mut *self.metadata.updated_at
     }
+
+    /// Helper to set the storage domain to `User`.
+    pub fn set_user_domain(&mut self, owner: PublicKey) {
+        self.metadata.storage_type = StorageType::User {
+            owner,
+            signature_data: None, // Will be signed later
+        };
+        self.update(); // Mark as dirty
+    }
+
+    /// Helper to set the storage domain to `Frozen.`
+    pub fn set_frozen_domain(&mut self) {
+        self.metadata.storage_type = StorageType::Frozen;
+        self.update(); // Mark as dirty
+    }
 }
 
 #[cfg(test)]
@@ -279,6 +298,56 @@ impl Display for Element {
     }
 }
 
+/// Data for a user-owned, signed action.
+#[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SignatureData {
+    /// Ed25519 signature.
+    pub signature: [u8; 64],
+    /// Nonce (counter/timestamp) to avoid replaying attacks.
+    pub nonce: u64,
+}
+
+/// Defines the type of storage and its associated authorization rules.
+/// Enum to define the storage domain and its associated data.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum StorageType {
+    /// Public data, accessible to all members of context.
+    Public,
+    /// Verifiable, user-signed, synchronized storage.
+    User {
+        /// The owner of the data where this storage type is applied.
+        owner: PublicKey,
+        /// A signature and nonce for the data. The signature should be done by the `owner`.
+        signature_data: Option<SignatureData>,
+    },
+    /// Data that can be set only once, can'be modified or deleted.
+    Frozen,
+}
+
+// Default to `Public` for backward compatibility
+impl Default for StorageType {
+    fn default() -> Self {
+        Self::Public
+    }
+}
+
+/// System metadata (timestamps in u64 nanoseconds).
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
+)]
+#[non_exhaustive]
+pub struct Metadata {
+    /// Timestamp of creation time in u64 nanoseconds.
+    pub created_at: u64,
+    /// Timestamp of update time in u64 nanoseconds.
+    pub updated_at: UpdatedAt,
+
+    /// Storage type represents the Public/Frozen/User storage type. Each of the types has
+    /// different characteristics of handling in the node.
+    /// See `StorageType`.
+    pub storage_type: StorageType,
+}
+
 impl Metadata {
     /// Creates new metadata with the provided timestamps.
     #[must_use]
@@ -286,6 +355,7 @@ impl Metadata {
         Self {
             created_at,
             updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
         }
     }
 
@@ -305,16 +375,6 @@ impl Metadata {
     pub fn updated_at(&self) -> u64 {
         *self.updated_at
     }
-}
-
-/// System metadata (timestamps in u64 nanoseconds).
-#[derive(
-    BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
-)]
-#[non_exhaustive]
-pub struct Metadata {
-    pub(crate) created_at: u64,
-    pub(crate) updated_at: UpdatedAt,
 }
 
 /// Update timestamp (PartialEq always true for CRDT semantics).

@@ -88,6 +88,8 @@ pub enum HostError {
     BadUTF8,
     #[error("deserialization error")]
     DeserializationError,
+    #[error("serialization error")]
+    SerializationError,
     #[error("integer overflow")]
     IntegerOverflow,
     #[error("key length overflow")]
@@ -128,6 +130,8 @@ pub enum HostError {
     BlobHandleLimitExceeded,
     #[error("total blob memory usage exceeds limit")]
     BlobMemoryLimitExceeded,
+    #[error("incorrect ed25519 public key")]
+    Ed25519IncorrectPublicKey,
 }
 
 #[derive(Copy, Clone, Debug, Serialize)]

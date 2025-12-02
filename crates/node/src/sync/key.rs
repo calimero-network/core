@@ -71,7 +71,8 @@ impl SyncManager {
 
         // Deterministic tie-breaker: use lexicographic comparison to prevent deadlock
         // when both peers initiate simultaneously. Both will agree on who is initiator.
-        let is_initiator = our_identity.as_ref() > their_identity.as_ref();
+        let is_initiator = <PublicKey as AsRef<[u8; 32]>>::as_ref(&our_identity)
+            > <PublicKey as AsRef<[u8; 32]>>::as_ref(&their_identity);
 
         debug!(
             context_id=%context.id,
@@ -115,7 +116,8 @@ impl SyncManager {
 
         // Use same deterministic tie-breaker as initiate_key_share_process
         // Both peers must agree on roles to prevent deadlock
-        let is_initiator = our_identity.as_ref() > their_identity.as_ref();
+        let is_initiator = <PublicKey as AsRef<[u8; 32]>>::as_ref(&our_identity)
+            > <PublicKey as AsRef<[u8; 32]>>::as_ref(&their_identity);
 
         debug!(
             context_id=%context.id,

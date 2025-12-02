@@ -146,7 +146,7 @@ where
                                 updated_at = metadata.updated_at(),
                                 "captured root snapshot from delta replay"
                             );
-                            root_snapshot = Some((data.clone(), *metadata));
+                            root_snapshot = Some((data.clone(), metadata.clone()));
                         }
                         _ => {}
                     }

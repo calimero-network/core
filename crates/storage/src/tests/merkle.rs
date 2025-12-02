@@ -230,7 +230,7 @@ fn merkle_hash_convergence_after_sync() {
         id: page1.id(),
         data: borsh::to_vec(&page1).unwrap(),
         ancestors: vec![],
-        metadata: page1.element().metadata,
+        metadata: page1.element().metadata.clone(),
     };
 
     Interface::<Storage2>::apply_action(action).unwrap();

@@ -44,6 +44,52 @@
           "payload": {
             "$ref": "UpdatePayload"
           }
+        },
+        {
+          "name": "MultiTuple",
+          "payload": {
+            "$ref": "Action_MultiTuple"
+          }
+        },
+        {
+          "name": "MultiStruct",
+          "payload": {
+            "$ref": "Action_MultiStruct"
+          }
+        }
+      ]
+    },
+    "Action_MultiStruct": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "x",
+          "type": {
+            "kind": "u32"
+          }
+        },
+        {
+          "name": "y",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "Action_MultiTuple": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "field_0",
+          "type": {
+            "kind": "u32"
+          }
+        },
+        {
+          "name": "field_1",
+          "type": {
+            "kind": "string"
+          }
         }
       ]
     },
@@ -80,6 +126,40 @@
           "name": "active",
           "type": {
             "kind": "bool"
+          }
+        }
+      ]
+    },
+    "Event_StructEvent": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "u32"
+          }
+        },
+        {
+          "name": "name",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "Event_TupleEvent": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "field_0",
+          "type": {
+            "kind": "u32"
+          }
+        },
+        {
+          "name": "field_1",
+          "type": {
+            "kind": "string"
           }
         }
       ]
@@ -651,6 +731,34 @@
       }
     },
     {
+      "name": "handle_multi_tuple",
+      "params": [
+        {
+          "name": "a",
+          "type": {
+            "$ref": "Action"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "handle_multi_struct",
+      "params": [
+        {
+          "name": "a",
+          "type": {
+            "$ref": "Action"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "u32"
+      }
+    },
+    {
       "name": "roundtrip_id",
       "params": [
         {
@@ -809,6 +917,18 @@
       "name": "ActionTaken",
       "payload": {
         "$ref": "Action"
+      }
+    },
+    {
+      "name": "TupleEvent",
+      "payload": {
+        "$ref": "Event_TupleEvent"
+      }
+    },
+    {
+      "name": "StructEvent",
+      "payload": {
+        "$ref": "Event_StructEvent"
       }
     }
   ],

@@ -36,7 +36,7 @@ docker-compose -f docker-compose.relayer.yml up -d
 The relayer supports the following environment variables:
 
 #### General Settings
-- `RELAYER_LISTEN`: Listen address (default: `0.0.0.0:63529`)
+- `RELAYER_LISTEN_URL`: Listen address (default: `0.0.0.0:63529`)
 - `RUST_LOG`: Logging level (default: `info`)
 
 #### Protocol Control

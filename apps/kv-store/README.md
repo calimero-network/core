@@ -19,6 +19,37 @@ To extract the ABI from the compiled WASM:
 calimero-abi extract target/wasm32-unknown-unknown/debug/kv_store.wasm -o apps/kv-store/res/abi.json
 ```
 
+## State Schema
+
+The state schema (state root type and all its dependencies) is automatically generated during build and written to `res/state-schema.json`. This schema contains only the types needed for state serialization/deserialization, making it useful for tools like `merodb` that need to decode state without loading the full WASM module.
+
+### Build-time Generation
+
+The state schema is automatically emitted during build:
+
+```bash
+cargo build -p kv-store --target wasm32-unknown-unknown
+# res/state-schema.json is automatically created
+```
+
+### Extraction from WASM
+
+You can also extract the state schema from a compiled WASM file:
+
+```bash
+# Build the calimero-abi tool
+cargo build -p mero-abi
+
+# Extract state schema from WASM
+./target/debug/calimero-abi state apps/kv-store/res/kv-store.wasm -o state-schema.json
+```
+
+Both methods produce the same format, which can be used with `merodb`:
+
+```bash
+merodb export --db-path /path/to/db --all --state-schema-file res/state-schema.json --output export.json
+```
+
 ## Canonical Types
 
 The ABI uses the following canonical WASM types:

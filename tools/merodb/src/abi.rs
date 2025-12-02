@@ -3,49 +3,67 @@ use std::path::Path;
 
 use calimero_wasm_abi::schema::Manifest;
 use eyre::Result;
-use wasmparser::{Parser, Payload};
 
-/// Extract ABI from a WASM file
+/// Load state schema from a JSON value
 ///
-/// Reads the WASM file and extracts the ABI schema from the "calimero_abi_v1" custom section
-pub fn extract_abi_from_wasm(wasm_path: &Path) -> Result<Manifest> {
-    let wasm_bytes = fs::read(wasm_path)?;
-    extract_abi_from_wasm_bytes(&wasm_bytes)
-}
-
-/// Extract ABI from WASM bytes
+/// The JSON value should be in the format produced by `calimero-abi state`:
+/// ```json
+/// {
+///   "state_root": "TypeName",
+///   "types": { ... }
+/// }
+/// ```
 ///
-/// Extracts the ABI schema from the "calimero_abi_v1" custom section in the provided WASM bytes
-pub fn extract_abi_from_wasm_bytes(wasm_bytes: &[u8]) -> Result<Manifest> {
-    // Parse the WASM file
-    let parser = Parser::new(0);
-    let mut abi_section: Option<Vec<u8>> = None;
+/// This creates a schema containing only the state root type and its dependencies,
+/// which is sufficient for deserializing state.
+pub fn load_state_schema_from_json_value(schema_value: &serde_json::Value) -> Result<Manifest> {
+    // Extract state_root and types
+    let state_root = schema_value
+        .get("state_root")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| eyre::eyre!("State schema missing 'state_root' field"))?
+        .to_string();
 
-    for payload in parser.parse_all(wasm_bytes) {
-        if let Payload::CustomSection(section) = payload? {
-            if section.name() == "calimero_abi_v1" {
-                abi_section = Some(section.data().to_vec());
-            }
-        }
-    }
+    let types_value = schema_value
+        .get("types")
+        .ok_or_else(|| eyre::eyre!("State schema missing 'types' field"))?;
 
-    // Check if we found the ABI section
-    let abi_json = match abi_section {
-        Some(data) => {
-            let json_str = String::from_utf8(data)?;
+    // Parse types into BTreeMap<String, TypeDef>
+    use calimero_wasm_abi::schema::TypeDef;
+    use std::collections::BTreeMap;
+    let types: BTreeMap<String, TypeDef> = serde_json::from_value(types_value.clone())
+        .map_err(|e| eyre::eyre!("Failed to parse types from state schema: {}", e))?;
 
-            // Validate JSON
-            drop(serde_json::from_str::<serde_json::Value>(&json_str)?);
-
-            json_str
-        }
-        None => {
-            eyre::bail!("No 'calimero_abi_v1' custom section found in WASM file");
-        }
+    // Create a schema with just the state types (Manifest is used as the container type)
+    let schema = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        types,
+        methods: Vec::new(),
+        events: Vec::new(),
+        state_root: Some(state_root),
     };
 
-    // Parse the Manifest
-    let manifest: Manifest = serde_json::from_str(&abi_json)?;
+    Ok(schema)
+}
 
-    Ok(manifest)
+/// Load state schema from a JSON file
+///
+/// The JSON file should be in the format produced by `calimero-abi state`:
+/// ```json
+/// {
+///   "state_root": "TypeName",
+///   "types": { ... }
+/// }
+/// ```
+///
+/// This creates a schema containing only the state root type and its dependencies,
+/// which is sufficient for deserializing state.
+pub fn load_state_schema_from_json(schema_path: &Path) -> Result<Manifest> {
+    let schema_json = fs::read_to_string(schema_path)
+        .map_err(|e| eyre::eyre!("Failed to read state schema file: {}", e))?;
+
+    let schema_value: serde_json::Value = serde_json::from_str(&schema_json)
+        .map_err(|e| eyre::eyre!("Failed to parse state schema JSON: {}", e))?;
+
+    load_state_schema_from_json_value(&schema_value)
 }

@@ -7,6 +7,7 @@ use core::cell::RefCell;
 use std::io;
 
 use crate::action::Action;
+use crate::entities::{Metadata, SignatureData, StorageType};
 use crate::env;
 use crate::integration::Comparison;
 use crate::logical_clock::{logical_counter, HybridTimestamp};
@@ -78,16 +79,23 @@ impl CausalDelta {
         // Serialize only the content-addressable parts: id, data, ancestors (without timestamps)
         for action in actions {
             match action {
-                Action::Add { id, data, .. } | Action::Update { id, data, .. } => {
+                Action::Add {
+                    id, data, metadata, ..
+                }
+                | Action::Update {
+                    id, data, metadata, ..
+                } => {
                     let id_bytes: [u8; 32] = (*id).into();
                     hasher.update(&id_bytes);
                     hasher.update(data);
                     // Metadata and ancestors excluded - they contain timestamps
+                    hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
-                Action::DeleteRef { id, .. } => {
+                Action::DeleteRef { id, metadata, .. } => {
                     let id_bytes: [u8; 32] = (*id).into();
                     hasher.update(&id_bytes);
                     // deleted_at excluded - it's a timestamp
+                    hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
                 Action::Compare { id } => {
                     let id_bytes: [u8; 32] = (*id).into();
@@ -314,4 +322,27 @@ pub fn reset_delta_context() {
     DELTA_CONTEXT.with(|ctx| {
         *ctx.borrow_mut() = DeltaContext::new();
     });
+}
+
+// Helper function to hash Metadata storage type
+fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
+    match &metadata.storage_type {
+        StorageType::Public | StorageType::Frozen => {
+            hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
+        }
+        StorageType::User {
+            owner,
+            signature_data,
+        } => {
+            // Hash the User variant *without* the signature
+            let partial_type = StorageType::User {
+                owner: *owner,
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
+    }
 }

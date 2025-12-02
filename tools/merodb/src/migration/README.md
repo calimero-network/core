@@ -26,7 +26,7 @@ This document explains the structure, runtime behaviour, and roadmap of the `mer
 ```
 
 1. **Plan loading** – `migration::loader::load_plan` parses the YAML, producing `MigrationPlan`. Validation rejects unsupported versions, bad filters, empty step lists, etc.
-2. **Context construction** – `migration::context::MigrationContext::new` applies CLI overrides, opens the RocksDB handles read-only, and wires the optional ABI manifest.
+2. **Context construction** – `migration::context::MigrationContext::new` applies CLI overrides, opens the RocksDB handles read-only, and wires the optional state schema.
 3. **Dry-run report** – `migration::dry_run::generate_report` walks every plan step, applies filters, inspects the source database, and returns a `DryRunReport`.
 4. **CLI output** – `run_migrate` (in `main.rs`) prints metadata, dry-run summaries, warnings, and confirms that dry-run mode is in effect.
 
@@ -42,7 +42,8 @@ name: optional-name
 description: optional description
 source:
   db_path: /path/to/source
-  wasm_file: /path/to/contract.wasm
+  wasm_file: /path/to/contract.wasm  # Optional, use state_schema_file instead (preferred)
+  state_schema_file: /path/to/state-schema.json  # Preferred: faster and sufficient for state deserialization
 target:
   db_path: /path/to/target
   backup_dir: /optional/backup
@@ -119,21 +120,21 @@ Copy steps support three optional transformations that can modify values before 
 
 #### `decode_with_abi` (boolean)
 
-Deserializes binary-encoded values using the WASM ABI manifest, converting them to JSON format.
+Deserializes binary-encoded values using the state schema, converting them to JSON format.
 
 **Requirements:**
-- Source must have a WASM file (via `source.wasm_file` or `--wasm-file`)
-- WASM file must contain a `calimero_abi_v1` custom section
+- Source must have a state schema file (via `source.state_schema_file` or `--state-schema-file`)
+- State schema file must contain the state root type and all transitively referenced types
 - Primarily useful for the State column
 
 **Behavior:**
-- Validates ABI availability before processing any keys (fail-fast)
-- Parses each value using column-specific ABI logic
+- Validates state schema availability before processing any keys (fail-fast)
+- Parses each value using column-specific schema logic
 - Outputs JSON-encoded bytes
 
 **Error handling:**
-- If `decode_with_abi=true` but no WASM file: "decode_with_abi requested but source ABI manifest is not available"
-- If WASM lacks ABI section: "No 'calimero_abi_v1' custom section found in WASM file"
+- If `decode_with_abi=true` but no state schema file: "decode_with_abi requested but source state schema is not available"
+- If state schema file is invalid: "Failed to load state schema" or "State schema missing 'state_root' field"
 - If value decode fails: Migration aborts with specific key reference
 
 **Example:**

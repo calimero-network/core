@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::address::Id;
-use crate::entities::{ChildInfo, Data, Metadata};
+use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
@@ -83,10 +83,10 @@ impl<S: StorageAdaptor> Interface<S> {
 
         <Index<S>>::add_child_to(
             parent_id,
-            ChildInfo::new(child.id(), own_hash, child.element().metadata),
+            ChildInfo::new(child.id(), own_hash, child.element().metadata.clone()),
         )?;
 
-        let Some(hash) = Self::save_raw(child.id(), data, child.element().metadata)? else {
+        let Some(hash) = Self::save_raw(child.id(), data, child.element().metadata.clone())? else {
             return Ok(false);
         };
 
@@ -106,6 +106,193 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `ActionNotAllowed` if Compare action is passed directly
     ///
     pub fn apply_action(action: Action) -> Result<(), StorageError> {
+        crate::env::log("apply_action");
+        // TODO: refactor to a separate function.
+        // Run verification logic before applying
+        match &action {
+            Action::Add {
+                metadata, data, id, ..
+            }
+            | Action::Update {
+                metadata, data, id, ..
+            } => {
+                Self::verify_action_update(&action)?;
+
+                match &metadata.storage_type {
+                    StorageType::User {
+                        owner,
+                        signature_data,
+                    } => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            %owner,
+                            ?owner,
+                            data_len = data.len(),
+                            "Interface::apply_action received upsert user action"
+                        );
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: \
+                            \n=== Id: {id};\
+                            \n=== created_at: {0};  updated_at: {1};\
+                            \n=== owner: {owner}; data_len: {2}",
+                            metadata.created_at,
+                            metadata.updated_at(),
+                            data.len()
+                        ));
+
+                        let sig_data = signature_data.as_ref().ok_or(StorageError::InvalidData(
+                            "Remote User action must be signed".to_owned(),
+                        ))?;
+
+                        debug!(
+                            %id,
+                            ?id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            %owner,
+                            ?owner,
+                            data_len = data.len(),
+                            ?sig_data.signature,
+                            sig_data.nonce,
+                            "Interface::apply_action received upsert user action: sig data"
+                        );
+
+                        let payload = action.payload_for_signing();
+
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: sig data \
+                            \n=== Signature: {:?}; signature_len: {}, nonce: {}; \
+                            \n=== owner: {}; owner_bytes: {:?} \
+                            \n=== payload: {:?}",
+                            sig_data.signature,
+                            sig_data.signature.len(),
+                            sig_data.nonce,
+                            owner,
+                            owner.digest(),
+                            payload,
+                        ));
+                        crate::env::log("Interface::apply_action received upsert user action: getting last nonce from storage");
+
+                        // Replay protection check
+                        let new_nonce = sig_data.nonce;
+                        let last_nonce = <Index<S>>::get_metadata(*id)?
+                            .map(|m| *m.updated_at)
+                            .unwrap_or(0);
+
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: last nonce from storage \
+                            \n=== new_nonce: {}; last_nonce: {}",
+                            new_nonce, last_nonce
+                        ));
+
+                        if new_nonce <= last_nonce {
+                            return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
+                        }
+
+                        let verification_result = crate::env::ed25519_verify(
+                            &sig_data.signature,
+                            owner.digest(),
+                            &payload,
+                        );
+
+                        crate::env::log(&format!(
+                            "Interface::apply_action received upsert user action: verify signature\
+                            \n=== Id: {id}; Signature_verification_result: {0}; owner: {owner:?}; owner:{owner}",
+                            verification_result,
+                        ));
+
+                        if !verification_result {
+                            return Err(StorageError::InvalidSignature);
+                        }
+                    }
+                    StorageType::Frozen => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            data_len = data.len(),
+                            "Interface::apply_action received upsert frozen action"
+                        );
+                        verify_frozen_action_upsert(&action, data)?;
+                    }
+                    StorageType::Public => { /* No special checks */ }
+                }
+            }
+            Action::DeleteRef { id, metadata, .. } => {
+                // Get the metadata of the item being deleted to check its domain
+                let existing_metadata =
+                    <Index<S>>::get_metadata(*id)?.ok_or(StorageError::IndexNotFound(*id))?;
+
+                match existing_metadata.storage_type {
+                    StorageType::Frozen => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            "Interface::apply_action received delete frozen action"
+                        );
+                        return Err(StorageError::ActionNotAllowed(
+                            "Frozen data cannot be deleted".to_owned(),
+                        ));
+                    }
+                    StorageType::User {
+                        owner: existing_owner,
+                        ..
+                    } => {
+                        // Verify the action's metadata, which contains the signature
+                        match &metadata.storage_type {
+                            StorageType::User {
+                                owner,
+                                signature_data,
+                            } => {
+                                // Check it matches the owner on record
+                                if *owner != existing_owner {
+                                    return Err(StorageError::InvalidSignature);
+                                }
+
+                                let sig_data =
+                                    signature_data.as_ref().ok_or(StorageError::InvalidData(
+                                        "Remote User delete must be signed".to_owned(),
+                                    ))?;
+
+                                // TODO: refactor to a separate function.
+                                // Replay protection check
+                                let new_nonce = sig_data.nonce;
+                                // The nonce is the `deleted_at` time. We check it against the
+                                // last `updated_at` time stored in the index.
+                                let last_nonce = *existing_metadata.updated_at;
+
+                                if new_nonce <= last_nonce {
+                                    return Err(StorageError::NonceReplay(Box::new((
+                                        *owner, new_nonce,
+                                    ))));
+                                }
+
+                                let payload = action.payload_for_signing();
+                                let verification_result = crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    owner.digest(),
+                                    &payload,
+                                );
+
+                                if !verification_result {
+                                    return Err(StorageError::InvalidSignature);
+                                }
+                            }
+                            _ => {
+                                // Action metadata is not User, but existing is.
+                                return Err(StorageError::InvalidSignature);
+                            }
+                        }
+                    }
+                    StorageType::Public => { /* No special checks */ }
+                }
+            }
+            Action::Compare { .. } => { /* No checks needed */ }
+        }
+
         match action {
             Action::Add {
                 id,
@@ -146,7 +333,7 @@ impl<S: StorageAdaptor> Interface<S> {
                             ancestor = %this.id(),
                             "Creating ancestor as root index entry (no parent yet)"
                         );
-                        <Index<S>>::add_root(*this)?;
+                        <Index<S>>::add_root(this.clone())?;
 
                         continue;
                     };
@@ -157,14 +344,14 @@ impl<S: StorageAdaptor> Interface<S> {
                         child = %this.id(),
                         "Linking ancestor to parent in index"
                     );
-                    <Index<S>>::add_child_to(parent.id(), *this)?;
+                    <Index<S>>::add_child_to(parent.id(), this.clone())?;
                 }
 
                 // For new entities, create a minimal index entry first to avoid orphan errors
                 if !<Index<S>>::has_index(id) {
                     if id.is_root() {
                         debug!(%id, "Creating root index entry for entity");
-                        <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata))?;
+                        <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata.clone()))?;
                     } else if let Some(parent) = parent {
                         // Create minimal index entry with placeholder hash
                         let placeholder_hash = Sha256::digest(&data).into();
@@ -176,13 +363,14 @@ impl<S: StorageAdaptor> Interface<S> {
                         );
                         <Index<S>>::add_child_to(
                             parent.id(),
-                            ChildInfo::new(id, placeholder_hash, metadata),
+                            ChildInfo::new(id, placeholder_hash, metadata.clone()),
                         )?;
                     }
                 }
 
                 // Save data (might merge, producing different hash)
-                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata)? else {
+                let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata.clone())?
+                else {
                     debug!(
                         %id,
                         "Remote action produced no storage change (save_internal returned None)"
@@ -210,7 +398,10 @@ impl<S: StorageAdaptor> Interface<S> {
                         own_hash = ?own_hash,
                         "Updating parent child info with final hash"
                     );
-                    <Index<S>>::add_child_to(parent.id(), ChildInfo::new(id, own_hash, metadata))?;
+                    <Index<S>>::add_child_to(
+                        parent.id(),
+                        ChildInfo::new(id, own_hash, metadata.clone()),
+                    )?;
                 }
 
                 crate::delta::push_action(Action::Compare { id });
@@ -219,7 +410,7 @@ impl<S: StorageAdaptor> Interface<S> {
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
-            Action::DeleteRef { id, deleted_at } => {
+            Action::DeleteRef { id, deleted_at, .. } => {
                 debug!(%id, deleted_at, "Applying DeleteRef action");
                 Self::apply_delete_ref_action(id, deleted_at)?;
             }
@@ -621,16 +812,37 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
+        // This will act as our nonce
         let deleted_at = time_now();
+
+        // Get metadata before removing index
+        let mut metadata =
+            <Index<S>>::get_metadata(child_id)?.ok_or(StorageError::IndexNotFound(child_id))?;
+
+        // If this is a local user action, set the nonce
+        if let StorageType::User { owner, .. } = metadata.storage_type {
+            if *owner == crate::env::executor_id() {
+                // Use the deletion timestamp as the nonce
+                metadata.storage_type = StorageType::User {
+                    owner,
+                    signature_data: Some(SignatureData {
+                        signature: [0; 64], // Placeholder, added by signer
+                        nonce: deleted_at,
+                    }),
+                };
+            }
+        }
 
         <Index<S>>::remove_child_from(parent_id, child_id)?;
 
-        // Use DeleteRef for efficient tombstone-based deletion
-        // More efficient than Delete: only sends ID + timestamp vs full ancestor tree
-        // The tombstone is created by remove_child_from, we just broadcast the deletion
+        // Use DeleteRef for efficient tombstone-based deletion.
+        // More efficient than Delete: only sends ID + timestamp + metadata vs full ancestor tree.
+        // The tombstone is created by remove_child_from, we just broadcast the deletion.
         crate::delta::push_action(Action::DeleteRef {
             id: child_id,
             deleted_at,
+            // Pass the full metadata
+            metadata,
         });
 
         Ok(true)
@@ -668,7 +880,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
             let data = to_vec(&root).map_err(|e| StorageError::SerializationError(e.into()))?;
 
-            Self::save_raw(id, data, root.element().metadata)?
+            Self::save_raw(id, data, root.element().metadata.clone())?
         } else {
             <Index<S>>::get_hashes_for(id)?.map(|(full_hash, _)| full_hash)
         };
@@ -707,7 +919,8 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let data = to_vec(entity).map_err(|e| StorageError::SerializationError(e.into()))?;
 
-        let Some(hash) = Self::save_raw(entity.id(), data, entity.element().metadata)? else {
+        let Some(hash) = Self::save_raw(entity.id(), data, entity.element().metadata.clone())?
+        else {
             return Ok(false);
         };
 
@@ -769,7 +982,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         } else {
             if id.is_root() {
-                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata))?;
+                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
             }
             data.to_vec()
         };
@@ -832,7 +1045,28 @@ impl<S: StorageAdaptor> Interface<S> {
             return Err(StorageError::CannotCreateOrphan(id));
         }
 
-        let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata)? else {
+        let mut metadata = metadata.clone();
+        // If this is a local user action, set the nonce
+        if let StorageType::User {
+            owner,
+            signature_data,
+        } = metadata.storage_type
+        {
+            if *owner == crate::env::executor_id() && signature_data.is_none() {
+                // This is a new local action. Set the nonce.
+                // Use the `updated_at` timestamp as the nonce.
+                let nonce = *metadata.updated_at;
+                metadata.storage_type = StorageType::User {
+                    owner,
+                    signature_data: Some(SignatureData {
+                        signature: [0; 64], // Placeholder, added by signer
+                        nonce,
+                    }),
+                };
+            }
+        }
+
+        let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata.clone())? else {
             return Ok(None);
         };
 
@@ -873,4 +1107,112 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
+
+    /// Helper to verify a new `Update` action.
+    fn verify_action_update(action: &Action) -> Result<(), StorageError> {
+        let (metadata, _data, id) = match action {
+            Action::Update {
+                metadata, data, id, ..
+            } => (metadata, data, *id),
+            // Should not happen
+            _ => return Ok(()),
+        };
+
+        // Get existing metadata
+        let existing_metadata = <Index<S>>::get_metadata(id)?;
+
+        // Try to get existing metadata to determine if this is an Update or an Add (upsert)
+        match existing_metadata {
+            // This is indeed an update operation
+            Some(existing_metadata) => {
+                // Compare storage types and owners
+                match (&existing_metadata.storage_type, &metadata.storage_type) {
+                    (StorageType::Public, StorageType::Public) => {
+                        // no checks needed for Public storage
+                        Ok(())
+                    }
+                    (StorageType::Frozen, StorageType::Frozen) => {
+                        // Mutability is verified in the main `apply_action()` function later
+                        Ok(())
+                    }
+                    (
+                        StorageType::User {
+                            owner: existing_owner,
+                            ..
+                        },
+                        StorageType::User { owner, .. },
+                    ) => {
+                        // Check owner hasn't changed
+                        if *owner != *existing_owner {
+                            return Err(StorageError::ActionNotAllowed(
+                                "Cannot change owner of User storage".to_owned(),
+                            ));
+                        }
+
+                        Ok(())
+                    }
+                    (existing, new) => {
+                        // All other combinations are invalid
+                        crate::env::log(&format!(
+                            "Invalid storage type change attempted: {:?} -> {:?}",
+                            existing, new
+                        ));
+                        Err(StorageError::ActionNotAllowed(
+                            "Cannot change StorageType (e.g., User->Public/User->Frozen/etc)"
+                                .to_owned(),
+                        ))
+                    }
+                }
+            }
+            None => {
+                // This is an "add" (upsert).
+                // TODO: refactor
+                // The item doesn't exist. Run the "Add" verification logic (that is currently
+                // located in the main `apply_function()`.
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Verifies an incoming `Frozen` action.
+fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), StorageError> {
+    // Block all Updates.
+    if let Action::Update { .. } = action {
+        return Err(StorageError::ActionNotAllowed(
+            "Frozen data cannot be updated".to_owned(),
+        ));
+    }
+
+    // Verify the content-addressing via byte-slicing.
+    // The data blob is: [key_hash (32 bytes)] + [value_bytes (N bytes)] + [element_id (32 bytes)]
+    const KEY_HASH_SIZE: usize = 32;
+    const ELEMENT_ID_SIZE: usize = 32;
+    const MIN_LEN: usize = KEY_HASH_SIZE + ELEMENT_ID_SIZE;
+
+    if data.len() < MIN_LEN {
+        return Err(StorageError::InvalidData(
+            "Frozen data blob is too small.".to_owned(),
+        ));
+    }
+
+    // Extract the three components
+    let key_from_entry = &data[..KEY_HASH_SIZE];
+    // We don't need the `Element::Id` from the end, but we know it's there and
+    // we need to remove it from the value_bytes.
+    let value_bytes = &data[KEY_HASH_SIZE..data.len() - ELEMENT_ID_SIZE];
+
+    // Re-calculate the hash of the `value bytes`
+    let calculated_hash: [u8; 32] = Sha256::digest(value_bytes).into();
+
+    // Check: The key inside the `Entry` must match the hash
+    // of the value inside the `Entry`.
+    if key_from_entry != calculated_hash {
+        return Err(StorageError::InvalidData(
+            "Frozen data corruption: Entry key does not match hash of Entry value.".to_owned(),
+        ));
+    }
+
+    // If this check passes, the data is verified.
+    Ok(())
 }

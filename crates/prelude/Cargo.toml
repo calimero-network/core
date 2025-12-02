@@ -1,0 +1,13 @@
+[package]
+name = "calimero-prelude"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
+publish = true
+
+[dependencies]
+borsh = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }

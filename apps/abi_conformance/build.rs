@@ -1,7 +1,6 @@
+use std::fs;
 use std::path::Path;
-use std::{env, fs};
 
-use calimero_wasm_abi::embed::generate_embed_code;
 use calimero_wasm_abi::emitter::emit_manifest_from_crate;
 
 fn main() {
@@ -29,18 +28,13 @@ fn main() {
     }
     fs::write("res/abi.json", abi_json).expect("Failed to write ABI JSON");
 
-    // Generate the embed code
-    let embed_code = generate_embed_code(&manifest);
+    // Extract and write the state schema
+    if let Ok(mut state_schema) = manifest.extract_state_schema() {
+        state_schema.schema_version = "wasm-abi/1".to_owned();
 
-    // Write the generated code to a file that will be included in the build
-    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
-    let generated_path = Path::new(&out_dir).join("generated_abi.rs");
-
-    fs::write(&generated_path, embed_code).expect("Failed to write generated ABI code");
-
-    // Tell Cargo to include our generated file
-    println!(
-        "cargo:rustc-env=GENERATED_ABI_PATH={}",
-        generated_path.display()
-    );
+        let state_schema_json =
+            serde_json::to_string_pretty(&state_schema).expect("Failed to serialize state schema");
+        fs::write("res/state-schema.json", state_schema_json)
+            .expect("Failed to write state schema JSON");
+    }
 }

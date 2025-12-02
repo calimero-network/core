@@ -1,7 +1,9 @@
 use std::io::{Cursor, Read};
 
 use borsh::BorshDeserialize;
-use calimero_wasm_abi::schema::{CollectionType, Manifest, ScalarType, TypeDef, TypeRef};
+use calimero_wasm_abi::schema::{
+    CollectionType, CrdtCollectionType, Manifest, ScalarType, TypeDef, TypeRef,
+};
 use eyre::{Result, WrapErr};
 use serde_json::{json, Value};
 
@@ -96,7 +98,11 @@ fn deserialize_type_ref(
             deserialize_type_def(cursor, type_definition, manifest)
         }
         TypeRef::Scalar(scalar) => deserialize_scalar(cursor, scalar),
-        TypeRef::Collection(collection) => deserialize_collection(cursor, collection, manifest),
+        TypeRef::Collection {
+            collection,
+            crdt_type,
+            inner_type,
+        } => deserialize_collection_with_crdt(cursor, collection, crdt_type, inner_type, manifest),
     }
 }
 
@@ -152,11 +158,299 @@ fn deserialize_scalar(cursor: &mut Cursor<&[u8]>, scalar_type: &ScalarType) -> R
     }
 }
 
-fn deserialize_collection(
+fn deserialize_collection_with_crdt(
     cursor: &mut Cursor<&[u8]>,
     collection: &CollectionType,
+    crdt_type: &Option<CrdtCollectionType>,
+    inner_type: &Option<Box<TypeRef>>,
     manifest: &Manifest,
 ) -> Result<Value> {
+    // Handle CRDT types with their special serialization formats
+    if let Some(crdt) = crdt_type {
+        return match crdt {
+            CrdtCollectionType::LwwRegister => {
+                // LwwRegister<T> serializes as (value: T, timestamp: HybridTimestamp, node_id: [u8; 32])
+                // Use inner_type to deserialize the value correctly
+                let value_type = inner_type
+                    .as_ref()
+                    .map(|t| t.as_ref())
+                    .ok_or_else(|| eyre::eyre!("LwwRegister missing inner_type in schema"))?;
+
+                let value = deserialize_type_ref(cursor, value_type, manifest)?;
+                let timestamp = u64::deserialize_reader(cursor)
+                    .wrap_err("Failed to deserialize LwwRegister timestamp")?;
+                let mut node_id = [0_u8; 32];
+                cursor
+                    .read_exact(&mut node_id)
+                    .wrap_err("Failed to deserialize LwwRegister node_id")?;
+
+                Ok(json!({
+                    "value": value,
+                    "timestamp": timestamp,
+                    "node_id": hex::encode(node_id),
+                    "crdt_type": "LwwRegister"
+                }))
+            }
+            CrdtCollectionType::Counter => {
+                // Counter serializes as (positive: UnorderedMap<String, u64>, negative?: UnorderedMap<String, u64>)
+                // UnorderedMap<String, u64> serializes as: length (u32), then for each entry: key (String), value (u64), element_id ([u8; 32])
+
+                // Deserialize positive map
+                let pos_len = u32::deserialize_reader(cursor)
+                    .wrap_err("Failed to deserialize Counter positive map length")?;
+
+                let mut positive_entries = serde_json::Map::new();
+                let mut positive_total: u64 = 0;
+
+                for _ in 0..pos_len {
+                    let key = String::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize Counter positive map key")?;
+                    let value = u64::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize Counter positive map value")?;
+                    let mut element_id = [0_u8; 32];
+                    cursor
+                        .read_exact(&mut element_id)
+                        .wrap_err("Failed to read Counter positive map element_id")?;
+
+                    positive_total += value;
+                    drop(positive_entries.insert(
+                        key.clone(),
+                        json!({
+                            "value": value,
+                            "element_id": hex::encode(element_id)
+                        }),
+                    ));
+                }
+
+                // Try to deserialize negative map (might not exist for GCounter)
+                let mut negative_entries = serde_json::Map::new();
+                let mut negative_total: u64 = 0;
+                let has_negative = {
+                    let saved_pos = cursor.position();
+                    match u32::deserialize_reader(cursor) {
+                        Ok(neg_len) => {
+                            for _ in 0..neg_len {
+                                let key = String::deserialize_reader(cursor)
+                                    .wrap_err("Failed to deserialize Counter negative map key")?;
+                                let value = u64::deserialize_reader(cursor)
+                                    .wrap_err("Failed to deserialize Counter negative map value")?;
+                                let mut element_id = [0_u8; 32];
+                                cursor
+                                    .read_exact(&mut element_id)
+                                    .wrap_err("Failed to read Counter negative map element_id")?;
+
+                                negative_total += value;
+                                drop(negative_entries.insert(
+                                    key.clone(),
+                                    json!({
+                                        "value": value,
+                                        "element_id": hex::encode(element_id)
+                                    }),
+                                ));
+                            }
+                            true
+                        }
+                        Err(_) => {
+                            // No negative map (GCounter) - restore cursor position
+                            cursor.set_position(saved_pos);
+                            false
+                        }
+                    }
+                };
+
+                // Calculate total value
+                let total_value = if has_negative {
+                    // PN-Counter: positive - negative (can be negative)
+                    positive_total as i64 - negative_total as i64
+                } else {
+                    // GCounter: just positive (always non-negative)
+                    positive_total as i64
+                };
+
+                Ok(json!({
+                    "value": total_value,
+                    "positive": {
+                        "entries": positive_entries,
+                        "total": positive_total
+                    },
+                    "negative": if has_negative {
+                        json!({
+                            "entries": negative_entries,
+                            "total": negative_total
+                        })
+                    } else {
+                        json!(null)
+                    },
+                    "crdt_type": if has_negative { "PNCounter" } else { "GCounter" }
+                }))
+            }
+            CrdtCollectionType::Vector => {
+                // Vector<T> has CRDT metadata but serializes similarly to Vec<T>
+                // Deserialize as a list but note it's a Vector
+                match collection {
+                    CollectionType::List { items } => {
+                        let len = u32::deserialize_reader(cursor)
+                            .wrap_err("Failed to deserialize Vector length")?;
+                        let mut array = Vec::new();
+                        for _ in 0..len {
+                            let value = deserialize_type_ref(cursor, items, manifest)?;
+                            array.push(value);
+                        }
+                        Ok(json!({
+                            "items": array,
+                            "crdt_type": "Vector"
+                        }))
+                    }
+                    _ => {
+                        eyre::bail!("Vector CRDT type must be a List collection");
+                    }
+                }
+            }
+            CrdtCollectionType::UnorderedMap => {
+                // UnorderedMap<K, V> has element IDs and CRDT metadata
+                // Deserialize as a map but note it's an UnorderedMap
+                match collection {
+                    CollectionType::Map { key, value } => {
+                        let len = u32::deserialize_reader(cursor)
+                            .wrap_err("Failed to deserialize UnorderedMap length")?;
+                        let mut map = serde_json::Map::new();
+                        for _ in 0..len {
+                            let key_value = deserialize_type_ref(cursor, key, manifest)?;
+                            let val_value = deserialize_type_ref(cursor, value, manifest)?;
+
+                            // UnorderedMap entries have element_id after key-value pair
+                            let mut element_id = [0_u8; 32];
+                            cursor
+                                .read_exact(&mut element_id)
+                                .wrap_err("Failed to read UnorderedMap element_id")?;
+
+                            let key_str = match key_value {
+                                Value::String(s) => s,
+                                other => other.to_string(),
+                            };
+
+                            drop(map.insert(
+                                key_str,
+                                json!({
+                                    "value": val_value,
+                                    "element_id": hex::encode(element_id)
+                                }),
+                            ));
+                        }
+                        Ok(json!({
+                            "entries": map,
+                            "crdt_type": "UnorderedMap"
+                        }))
+                    }
+                    _ => {
+                        eyre::bail!("UnorderedMap CRDT type must be a Map collection");
+                    }
+                }
+            }
+            CrdtCollectionType::UnorderedSet => {
+                // UnorderedSet<T> serializes similarly to Vec<T> but with CRDT metadata
+                match collection {
+                    CollectionType::List { items } => {
+                        let len = u32::deserialize_reader(cursor)
+                            .wrap_err("Failed to deserialize UnorderedSet length")?;
+                        let mut array = Vec::new();
+                        for _ in 0..len {
+                            let value = deserialize_type_ref(cursor, items, manifest)?;
+                            array.push(value);
+                        }
+                        Ok(json!({
+                            "items": array,
+                            "crdt_type": "UnorderedSet"
+                        }))
+                    }
+                    _ => {
+                        eyre::bail!("UnorderedSet CRDT type must be a List collection");
+                    }
+                }
+            }
+            CrdtCollectionType::ReplicatedGrowableArray => {
+                // RGA serializes as UnorderedMap<CharKey, RgaChar>
+                // CharKey serializes as CharId { timestamp: HybridTimestamp, seq: u32 }
+                // HybridTimestamp serializes as time: u64, id: u128
+                // RgaChar serializes as { content: u32, left: CharId }
+                // UnorderedMap serializes as: length (u32), then for each entry: key, value, element_id ([u8; 32])
+
+                // Deserialize map length
+                let len = u32::deserialize_reader(cursor)
+                    .wrap_err("Failed to deserialize RGA map length")?;
+
+                // Deserialize all characters
+                let mut chars: Vec<(CharIdData, RgaCharData, String)> = Vec::new();
+
+                for _ in 0..len {
+                    // Deserialize CharId (key)
+                    let time = u64::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize RGA CharId timestamp")?;
+                    let id = u128::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize RGA CharId id")?;
+                    let seq = u32::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize RGA CharId seq")?;
+
+                    let char_id = CharIdData { time, id, seq };
+
+                    // Deserialize RgaChar (value)
+                    let content = u32::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize RGA character content")?;
+
+                    let left_time = u64::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize RGA left timestamp")?;
+                    let left_id = u128::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize RGA left id")?;
+                    let left_seq = u32::deserialize_reader(cursor)
+                        .wrap_err("Failed to deserialize RGA left seq")?;
+
+                    let left = CharIdData {
+                        time: left_time,
+                        id: left_id,
+                        seq: left_seq,
+                    };
+
+                    let rga_char = RgaCharData { content, left };
+
+                    // Deserialize element_id
+                    let mut element_id = [0_u8; 32];
+                    cursor
+                        .read_exact(&mut element_id)
+                        .wrap_err("Failed to read RGA element_id")?;
+
+                    chars.push((char_id, rga_char, hex::encode(element_id)));
+                }
+
+                // Reconstruct text by following left-neighbor links
+                let text = reconstruct_rga_text(&chars);
+
+                // Build entries map for detailed view
+                let mut entries = serde_json::Map::new();
+                for (char_id, rga_char, element_id) in &chars {
+                    let char_value = char::from_u32(rga_char.content).unwrap_or('\u{FFFD}');
+                    let char_id_str = format!("{}#{}", char_id.time, char_id.seq);
+                    drop(entries.insert(
+                        char_id_str,
+                        json!({
+                            "char": char_value,
+                            "content": rga_char.content,
+                            "left": format!("{}#{}", rga_char.left.time, rga_char.left.seq),
+                            "element_id": element_id
+                        }),
+                    ));
+                }
+
+                Ok(json!({
+                    "text": text,
+                    "length": text.chars().count(),
+                    "entries": entries,
+                    "crdt_type": "ReplicatedGrowableArray"
+                }))
+            }
+        };
+    }
+
+    // Standard collection deserialization (no CRDT)
     match collection {
         CollectionType::List { items } => {
             let len =
@@ -196,6 +490,90 @@ fn deserialize_collection(
             Ok(json!(obj))
         }
     }
+}
+
+// Helper structs for RGA deserialization
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CharIdData {
+    pub time: u64,
+    pub id: u128,
+    pub seq: u32,
+}
+
+impl PartialEq<&CharIdData> for CharIdData {
+    fn eq(&self, other: &&CharIdData) -> bool {
+        self == *other
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RgaCharData {
+    pub content: u32,
+    pub left: CharIdData,
+}
+
+// Reconstruct RGA text by following left-neighbor links
+pub fn reconstruct_rga_text(chars: &[(CharIdData, RgaCharData, String)]) -> String {
+    if chars.is_empty() {
+        return String::new();
+    }
+
+    // Root CharId has time=0, id=1 (DEFAULT_ID), seq=0 (from HybridTimestamp::default())
+    // This is the sentinel that represents the beginning of the document
+    let root = CharIdData {
+        time: 0,
+        id: 1,
+        seq: 0,
+    };
+
+    // Build map of CharId -> RgaChar
+    let mut char_map: std::collections::HashMap<CharIdData, (RgaCharData, char)> =
+        std::collections::HashMap::new();
+
+    for (char_id, rga_char, _) in chars {
+        let char_value = char::from_u32(rga_char.content).unwrap_or('\u{FFFD}');
+        char_map.insert(char_id.clone(), (rga_char.clone(), char_value));
+    }
+
+    // Build ordered list by following left-neighbor links
+    let mut ordered = Vec::new();
+    let mut current_left = root;
+
+    // Keep iterating until we've placed all characters
+    while ordered.len() < chars.len() {
+        // Find all characters that come after current_left
+        let mut candidates: Vec<_> = char_map
+            .iter()
+            .filter(|(_, (c, _))| c.left == current_left)
+            .filter(|(id, _)| !ordered.iter().any(|(placed_id, _)| *placed_id == **id))
+            .collect();
+
+        if candidates.is_empty() {
+            // No more characters for this left - find next unplaced char
+            // This handles concurrent insertions that created gaps
+            if let Some((next_id, (_, char_value))) = char_map
+                .iter()
+                .find(|(id, _)| !ordered.iter().any(|(placed_id, _)| placed_id == *id))
+            {
+                ordered.push((next_id.clone(), *char_value));
+                current_left = next_id.clone();
+            } else {
+                break;
+            }
+        } else {
+            // Sort by CharId in REVERSE order (latest timestamp first)
+            // This ensures sequential mid-document insertions are placed correctly
+            candidates.sort_by_key(|(id, _)| std::cmp::Reverse((*id).clone()));
+
+            // Take the character with highest CharId (latest timestamp)
+            let (next_id, (_, char_value)) = candidates[0];
+            ordered.push((next_id.clone(), *char_value));
+            current_left = next_id.clone();
+        }
+    }
+
+    // Convert to string
+    ordered.iter().map(|(_, c)| c).collect()
 }
 
 #[cfg(test)]

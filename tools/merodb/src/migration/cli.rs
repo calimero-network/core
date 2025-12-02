@@ -7,7 +7,7 @@ use rocksdb::properties;
 
 use crate::types::Column;
 
-use super::context::{AbiManifestStatus, MigrationContext, MigrationOverrides};
+use super::context::{MigrationContext, MigrationOverrides, SchemaStatus};
 use super::dry_run::{generate_report as generate_dry_run_report, DryRunReport, StepDetail};
 use super::execute::{execute_migration, ExecutionReport, StepExecutionDetail};
 use super::loader::load_plan;
@@ -25,9 +25,11 @@ pub struct MigrateArgs {
     #[arg(long, value_name = "PATH")]
     pub db_path: Option<PathBuf>,
 
-    /// WASM file providing the ABI manifest for the source database
-    #[arg(long, value_name = "WASM_FILE")]
-    pub wasm_file: Option<PathBuf>,
+    /// State schema JSON file (extracted using `calimero-abi state`)
+    ///
+    /// This includes the state root type and its dependencies, sufficient for state deserialization.
+    #[arg(long, value_name = "SCHEMA_FILE")]
+    pub state_schema_file: Option<PathBuf>,
 
     /// Target RocksDB path
     #[arg(long, value_name = "PATH")]
@@ -88,7 +90,7 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
 
     let overrides = MigrationOverrides {
         source_db: args.db_path.clone(),
-        wasm_file: args.wasm_file.clone(),
+        state_schema_file: args.state_schema_file.clone(),
         target_db: args.target_db.clone(),
         backup_dir: args.backup_dir.clone(),
         no_backup: args.no_backup,
@@ -103,18 +105,18 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
         "Source database opened (read-only): {}",
         context.source().path().display()
     );
-    match context.source().abi_status() {
-        AbiManifestStatus::NotConfigured => {
-            println!("  ABI manifest: <not configured>");
+    match context.source().schema_status() {
+        SchemaStatus::NotConfigured => {
+            println!("  State schema: <not configured>");
         }
-        AbiManifestStatus::Pending { wasm_path } => {
+        SchemaStatus::PendingStateSchema { schema_path } => {
             println!(
-                "  ABI manifest configured (lazy load): {}",
-                wasm_path.display()
+                "  State schema configured (lazy load): {}",
+                schema_path.display()
             );
         }
-        AbiManifestStatus::Loaded => {
-            println!("  ABI manifest: loaded (cached)");
+        SchemaStatus::Loaded => {
+            println!("  State schema: loaded (cached)");
         }
     }
 
@@ -127,10 +129,10 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
     }
 
     if env::var_os("MERODB_EAGER_ABI").is_some() {
-        match context.source().abi_manifest() {
-            Ok(Some(_)) => println!("  ABI manifest eagerly loaded via MERODB_EAGER_ABI"),
-            Ok(None) => println!("  MERODB_EAGER_ABI set but no WASM manifest configured"),
-            Err(error) => println!("  Failed to load ABI manifest eagerly: {error:?}"),
+        match context.source().schema() {
+            Ok(Some(_)) => println!("  State schema eagerly loaded via MERODB_EAGER_ABI"),
+            Ok(None) => println!("  MERODB_EAGER_ABI set but no state schema configured"),
+            Err(error) => println!("  Failed to load state schema eagerly: {error:?}"),
         }
     }
 
@@ -212,12 +214,12 @@ fn print_plan_summary(context: &MigrationContext, plan_path: &Path) {
 
     // Show actual source paths being used (from context, not plan)
     println!("  Source DB: {}", context.source().path().display());
-    match context.source().abi_status() {
-        AbiManifestStatus::NotConfigured => {}
-        AbiManifestStatus::Pending { wasm_path } => {
-            println!("  Source WASM: {}", wasm_path.display());
+    match context.source().schema_status() {
+        SchemaStatus::NotConfigured => {}
+        SchemaStatus::PendingStateSchema { schema_path } => {
+            println!("  Source State Schema: {}", schema_path.display());
         }
-        AbiManifestStatus::Loaded => {}
+        SchemaStatus::Loaded => {}
     }
 
     // Show actual target paths being used (from context, not plan)

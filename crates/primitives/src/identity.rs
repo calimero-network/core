@@ -90,6 +90,12 @@ impl AsRef<[u8; 32]> for PublicKey {
     }
 }
 
+impl AsRef<[u8]> for PublicKey {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref() // self.0 is a Hash, which is [u8; 32], which can be AsRef'd to &[u8]
+    }
+}
+
 impl Deref for PublicKey {
     type Target = [u8; 32];
 
@@ -107,6 +113,11 @@ impl PublicKey {
     /// Verify a signature against this public key
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
         VerifyingKey::from_bytes(self.as_ref())?.verify(message, signature)
+    }
+
+    // Return represented as a 32-byte array
+    pub fn digest(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 

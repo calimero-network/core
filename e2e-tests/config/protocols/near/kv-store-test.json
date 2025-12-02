@@ -110,6 +110,64 @@
           "Increased retries for CI: 20 attempts with 3s intervals = up to 60s."
         ]
       }
+    },
+    {
+      "call": {
+        "methodName": "update_if_exists",
+        "argsJson": {
+          "key": "foo",
+          "value": "qux"
+        },
+        "expectedResultJson": true,
+        "target": "inviter",
+        "description": [
+          "Update existing key 'foo'. Should return true and emit Updated event."
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "update_if_exists",
+        "argsJson": {
+          "key": "missing_key",
+          "value": "value"
+        },
+        "expectedResultJson": false,
+        "target": "inviter",
+        "description": [
+          "Attempt to update non-existent key. Should return false and emit NO events."
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_or_insert",
+        "argsJson": {
+          "key": "foo",
+          "value": "ignored_val"
+        },
+        "expectedResultJson": "qux",
+        "target": "inviter",
+        "description": [
+          "Key 'foo' exists. Should return existing 'qux' and emit NO events."
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": {
+          "key": "foo"
+        },
+        "expectedResultJson": "qux",
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 1000,
+        "description": [
+          "Verify updated state 'qux' synced to all nodes.",
+          "Increased retries for CI: 20 attempts with 3s intervals = up to 60s."
+        ]
+      }
     }
   ]
 }

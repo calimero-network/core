@@ -264,6 +264,11 @@ async fn create_context(
         init_params.into(),
         storage,
         node_client.clone(),
+        // When init runs, the context creation is not yet committed to the database.
+        // The creator's identity is only written to the store after init succeeds.
+        // Therefore, even if a `StoreContextHost` is passed, it would look at the DB and find 0 members.
+        // Passing None accurately reflects that the "Host Node" doesn't technically know about this context's state yet.
+        None,
     )
     .await?;
 

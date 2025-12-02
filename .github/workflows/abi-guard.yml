@@ -60,6 +60,15 @@ jobs:
           chmod +x scripts/verify-abi.sh
           ./scripts/verify-abi.sh
           
+      - name: Build state-schema-conformance
+        run: |
+          cargo build -p state-schema-conformance --target wasm32-unknown-unknown
+          
+      - name: Run state schema conformance tests
+        run: |
+          chmod +x apps/state-schema-conformance/verify-state-schema.sh
+          ./apps/state-schema-conformance/verify-state-schema.sh
+          
       - name: Run unit tests
         run: |
           cargo test -p calimero-wasm-abi --test invariants
