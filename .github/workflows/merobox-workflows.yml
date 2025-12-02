@@ -84,6 +84,10 @@ jobs:
                       apps/*/res/*.mpk
                   key: ${{ needs.build.outputs.cache-key }}
 
+            - name: Set Permissions
+              run: |
+                  chmod +x target/debug/merod
+
             - name: Clone merobox
               run: |
                   git clone https://github.com/calimero-network/merobox.git
