@@ -1,0 +1,195 @@
+name: Merobox Proposals - Blockchain Integration Tests
+
+permissions:
+    contents: read
+
+on:
+    pull_request:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - "workflows/proposals/**"
+            - "scripts/icp/**"
+            - "scripts/ethereum/**"
+            - ".github/workflows/merobox-proposals.yml"
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+    CALIMERO_CONTRACTS_VERSION: latest
+
+jobs:
+    build:
+        name: Build Binaries & Download Contracts
+        runs-on: ubuntu-24.04-8cpu
+        outputs:
+            cache-key: ${{ steps.cache-key.outputs.key }}
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-
+
+            - name: Generate cache key
+              id: cache-key
+              run: echo "key=${{ runner.os }}-proposals-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+            - name: Build merod binary
+              run: cargo build --bin merod
+
+            - name: Download Contracts
+              run: |
+                  echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
+                  ./scripts/download-contracts.sh
+
+            - name: Cache build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/debug/merod
+                      contracts
+                  key: ${{ steps.cache-key.outputs.key }}
+
+    test-near:
+        name: Test NEAR Proposals
+        needs: build
+        runs-on: ubuntu-24.04-8cpu
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Restore build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/debug/merod
+                      contracts
+                  key: ${{ needs.build.outputs.cache-key }}
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+
+            - name: Verify merobox installation
+              run: |
+                  merobox --version
+
+            - name: Run NEAR Proposals Workflow
+              run: |
+                  cd workflows/proposals
+                  merobox bootstrap run \
+                      near-proposals.yml \
+                      --no-docker \
+                      --binary-path ../../target/debug/merod \
+                      --e2e-mode
+
+    test-icp:
+        name: Test ICP Proposals
+        needs: build
+        runs-on: ubuntu-24.04-8cpu
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Restore build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/debug/merod
+                      contracts
+                  key: ${{ needs.build.outputs.cache-key }}
+
+            - name: Install DFX for ICP
+              uses: dfinity/setup-dfx@main
+
+            - name: Deploy ICP Devnet
+              run: |
+                  ./scripts/icp/deploy-devnet.sh
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+
+            - name: Verify merobox installation
+              run: |
+                  merobox --version
+
+            - name: Run ICP Proposals Workflow
+              run: |
+                  cd workflows/proposals
+                  merobox bootstrap run \
+                      icp-proposals.yml \
+                      --no-docker \
+                      --binary-path ../../target/debug/merod \
+                      --e2e-mode
+
+    test-ethereum:
+        name: Test Ethereum Proposals
+        needs: build
+        runs-on: ubuntu-24.04-8cpu
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Restore build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/debug/merod
+                      contracts
+                  key: ${{ needs.build.outputs.cache-key }}
+
+            - name: Install Foundry for Ethereum
+              uses: foundry-rs/foundry-toolchain@v1
+
+            - name: Deploy Ethereum Devnet
+              run: |
+                  ./scripts/ethereum/deploy-devnet.sh
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+
+            - name: Verify merobox installation
+              run: |
+                  merobox --version
+
+            - name: Run Ethereum Proposals Workflow
+              run: |
+                  cd workflows/proposals
+                  merobox bootstrap run \
+                      ethereum-proposals.yml \
+                      --no-docker \
+                      --binary-path ../../target/debug/merod \
+                      --e2e-mode
