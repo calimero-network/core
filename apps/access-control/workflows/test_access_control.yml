@@ -3,7 +3,7 @@ name: Access Control Test
 
 # Configuration options
 stop_all_nodes: true
-restart: true
+restart: false 
 wait_timeout: 120
 
 nodes:
@@ -26,7 +26,7 @@ steps:
   - name: Create Context on Node 1
     type: create_context
     node: ac-node-1
-    application_id: '{{app_id}}'
+    application_id: "{{app_id}}"
     outputs:
       context_id: contextId
       admin_key: memberPublicKey
@@ -42,11 +42,11 @@ steps:
   - name: Add Member Node 2
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: add_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
 
   # 5. Wait for async propagation
   - name: Wait for Add
@@ -57,11 +57,11 @@ steps:
   - name: Check Node 2 Membership
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: is_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
     outputs:
       is_member: result
 
@@ -74,8 +74,8 @@ steps:
   - name: List All Members
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: get_all_members
     outputs:
       all_members_result: result.output
@@ -90,11 +90,11 @@ steps:
   - name: Kick Member Node 2
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: kick_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
 
   # 9. Wait for revocation
   - name: Wait for Kick
@@ -105,8 +105,8 @@ steps:
   - name: List All Members
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: get_all_members
     outputs:
       all_members_final_result: result.output
@@ -121,11 +121,11 @@ steps:
   - name: Check Node 2 Membership Again
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: is_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
     outputs:
       is_member_final: result
 

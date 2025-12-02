@@ -11,7 +11,8 @@ use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::NodeClient;
-use calimero_node_primitives::sync::{InitPayload, StreamMessage};
+use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, eyre};
@@ -20,6 +21,7 @@ use futures_util::{FutureExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
+use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::time::{self, timeout_at, Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
@@ -755,7 +757,127 @@ impl SyncManager {
             }
         }
 
+        // Compare our state with peer's state even if we think we're in sync.
+        // The peer might have new heads we don't know about (e.g., if gossipsub messages were lost).
+        let peer_state = self
+            .query_peer_dag_state(context_id, chosen_peer, our_identity, stream)
+            .await?;
+
+        if let Some((peer_root_hash, peer_dag_heads)) = peer_state {
+            if *context.root_hash != *peer_root_hash {
+                info!(
+                    %context_id,
+                    %chosen_peer,
+                    our_root_hash = %context.root_hash,
+                    peer_root_hash = %peer_root_hash,
+                    our_heads_count = context.dag_heads.len(),
+                    peer_heads_count = peer_dag_heads.len(),
+                    "Root hash mismatch with peer, triggering DAG catchup"
+                );
+
+                let our_heads_set: std::collections::HashSet<_> =
+                    context.dag_heads.iter().collect();
+                let missing_heads: Vec<_> = peer_dag_heads
+                    .iter()
+                    .filter(|h| !our_heads_set.contains(h))
+                    .cloned()
+                    .collect();
+
+                if !missing_heads.is_empty() {
+                    info!(
+                        %context_id,
+                        %chosen_peer,
+                        missing_count = missing_heads.len(),
+                        "Peer has DAG heads we don't have, requesting them"
+                    );
+
+                    let result = self
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .await?;
+
+                    // If peer had no data or unexpected response, return error to try next peer
+                    if matches!(result, SyncProtocol::None) {
+                        bail!("Peer has no data or unexpected response for this context, will try next peer");
+                    }
+
+                    return Ok(Some(result));
+                } else {
+                    // Same heads but different root hash - may have deltas that haven't been applied yet
+                    warn!(
+                        %context_id,
+                        %chosen_peer,
+                        "Same DAG heads but different root hash - requesting full sync"
+                    );
+
+                    let result = self
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .await?;
+
+                    // If peer had no data or unexpected response, return error to try next peer
+                    if matches!(result, SyncProtocol::None) {
+                        bail!("Peer has no data or unexpected response for this context, will try next peer");
+                    }
+
+                    return Ok(Some(result));
+                }
+            } else {
+                debug!(
+                    %context_id,
+                    %chosen_peer,
+                    root_hash = %context.root_hash,
+                    "Root hash matches peer, node is truly in sync"
+                );
+            }
+        }
+
         Ok(None)
+    }
+
+    /// Query peer for their DAG state (root_hash and dag_heads) without triggering full sync.
+    ///
+    /// Returns `Ok(Some((root_hash, dag_heads)))` if peer responded successfully,
+    /// `Ok(None)` if peer had no valid response or no state, or `Err` on communication error.
+    async fn query_peer_dag_state(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<(calimero_primitives::hash::Hash, Vec<[u8; DIGEST_SIZE]>)>> {
+        let request_msg = StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::DagHeadsRequest { context_id },
+            next_nonce: rand::thread_rng().gen(),
+        };
+
+        self.send(stream, &request_msg, None).await?;
+
+        let response = self.recv(stream, None).await?;
+
+        match response {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::DagHeadsResponse {
+                        dag_heads,
+                        root_hash,
+                    },
+                ..
+            }) => {
+                debug!(
+                    %context_id,
+                    %chosen_peer,
+                    heads_count = dag_heads.len(),
+                    peer_root_hash = %root_hash,
+                    "Received peer DAG state for comparison"
+                );
+                Ok(Some((root_hash, dag_heads)))
+            }
+            _ => {
+                debug!(%context_id, %chosen_peer, "Failed to get peer DAG state for comparison");
+                Ok(None)
+            }
+        }
     }
 
     async fn initiate_sync_inner(

@@ -88,6 +88,6 @@ steps:
       - 'json_equal({{all_entries}}, {"greeting":"hello-world","foo":"bar","test":"data"})'
 
 stop_all_nodes: false
-restart: true
+restart: false 
 wait_timeout: 120
 

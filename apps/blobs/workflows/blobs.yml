@@ -76,11 +76,11 @@ steps:
     method: upload_file
     args:
       name: screenshot.png
-      blob_id_b58: "{{png_blob_id}}"
+      blob_id_str: "{{png_blob_id}}"
       size: "{{png_blob_size}}"
       mime_type: image/png
     outputs:
-      png_file_id: result.output.id
+      png_file_id: result.output
 
   - name: Assert PNG registered
     type: assert
@@ -104,11 +104,11 @@ steps:
     method: upload_file
     args:
       name: readme.txt
-      blob_id_b58: "{{txt_blob_id}}"
+      blob_id_str: "{{txt_blob_id}}"
       size: "{{txt_blob_size}}"
       mime_type: text/plain
     outputs:
-      txt_file_id: result.output.id
+      txt_file_id: result.output
 
   - name: Assert TXT registered
     type: assert
@@ -129,9 +129,10 @@ steps:
       inviter_files: result.output
 
   - name: Assert inviter sees two files
-    type: json_assert
+    type: assert
     statements:
-      - "equal(len({{inviter_files}}), 2)"
+      - "contains({{inviter_files}}, '{{png_file_id}}')"
+      - "contains({{inviter_files}}, '{{txt_file_id}}')"
 
   - name: List files on invitee
     type: call
@@ -143,9 +144,10 @@ steps:
       invitee_files: result.output
 
   - name: Assert invitee sees two files
-    type: json_assert
+    type: assert
     statements:
-      - "equal(len({{invitee_files}}), 2)"
+      - "contains({{invitee_files}}, '{{png_file_id}}')"
+      - "contains({{invitee_files}}, '{{txt_file_id}}')"
 
   - name: Get PNG file blob id
     type: call
@@ -186,11 +188,11 @@ steps:
       final_files: result.output
 
   - name: Assert only one file remains
-    type: json_assert
+    type: assert
     statements:
-      - "less_or_equal(len({{final_files}}), 1)"
+      - "contains({{final_files}}, '{{txt_file_id}}')"
+      - "not_contains({{final_files}}, '{{png_file_id}}')"
 
 stop_all_nodes: false
-restart: true
+restart: false
 wait_timeout: 120
-
