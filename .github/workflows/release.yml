@@ -206,12 +206,8 @@ jobs:
         with:
           shared-key: release
 
-      - name: Clear cargo registry cache
-        run: |
-          rm -rf ~/.cargo/registry/index/*
-          rm -rf ~/.cargo/registry/cache/*
-          cargo update --workspace
-
+      - name: Update dependencies
+        run: cargo update --workspace
       - name: Publish calimero-workspaces on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
