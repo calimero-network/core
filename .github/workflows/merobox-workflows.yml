@@ -119,9 +119,9 @@ jobs:
                               if [ $attempt -gt 1 ]; then
                                   echo "Retry attempt $attempt for $workflow"
                                   # Clean up any leftover data from previous attempt
-                                  rm -rf "$app_dir/data" || true
+                                  merobox nuke -force || true
                                   # Wait before retry to allow system to settle
-                                  sleep 5
+                                  sleep 2
                               fi
                               
                               if (
