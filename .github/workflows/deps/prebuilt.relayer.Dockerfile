@@ -2,11 +2,7 @@
 
 # Dockerfile for prebuilt binaries
 
-ARG RELAYER_PORT=63529
-
 FROM ubuntu:24.04
-
-ARG RELAYER_PORT=63529
 
 LABEL org.opencontainers.image.description="Calimero Standalone Relayer Service" \
     org.opencontainers.image.licenses="MIT OR Apache-2.0" \
@@ -42,6 +38,7 @@ WORKDIR /data
 ENV CALIMERO_HOME=/data
 
 # Default relayer configuration
+ENV RELAYER_PORT=63529
 ENV RELAYER_LISTEN_URL="0.0.0.0:${RELAYER_PORT}"
 ENV RUST_LOG="info"
 
