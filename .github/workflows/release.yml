@@ -314,7 +314,7 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           push: ${{ needs.prepare.outputs.docker_push }}
           binaries: mero-relayer
-          dockerfile: Dockerfile.relayer
+          dockerfile: .github/workflows/deps/prebuilt.relayer.Dockerfile
           container_name: mero-relayer
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
