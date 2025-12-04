@@ -4,13 +4,21 @@ permissions:
     contents: read
 
 on:
-    pull_request:
-        branches: [master]
-        paths:
-            - "crates/**"
-            - "apps/**"
-            - ".github/workflows/merobox-workflows.yml"
-    workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - ".github/workflows/merobox-workflows.yml"
+
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - ".github/workflows/merobox-workflows.yml"
+
+  workflow_dispatch:
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -119,7 +127,7 @@ jobs:
                               if [ $attempt -gt 1 ]; then
                                   echo "Retry attempt $attempt for $workflow"
                                   # Clean up any leftover data from previous attempt
-                                  merobox nuke -force || true
+                                  merobox nuke --force || true
                                   # Wait before retry to allow system to settle
                                   sleep 2
                               fi
