@@ -515,6 +515,70 @@ fn parse_events_payload(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_crypto::{SharedKey, NONCE_LEN};
+    use calimero_storage::delta::StorageDelta;
+    use rand::thread_rng;
+
+    #[test]
+    fn parse_events_payload_success() {
+        let events = vec![ExecutionEvent {
+            kind: "test".to_string(),
+            data: vec![1, 2, 3],
+            handler: Some("handler_fn".to_string()),
+        }];
+        let serialized = serde_json::to_vec(&events).expect("serialization should succeed");
+
+        // Should deserialize valid event JSON
+        let parsed = parse_events_payload(&Some(serialized), &ContextId::zero())
+            .expect("events should parse");
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].kind, "test");
+        assert_eq!(parsed[0].handler.as_deref(), Some("handler_fn"));
+    }
+
+    #[test]
+    fn parse_events_payload_invalid() {
+        // Invalid JSON should be rejected gracefully
+        let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero());
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn decrypt_delta_actions_roundtrip() -> Result<()> {
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let shared_key = SharedKey::from_sk(&sender_key);
+        let nonce = [7u8; NONCE_LEN];
+
+        let storage_delta = StorageDelta::Actions(Vec::new());
+        let plaintext = borsh::to_vec(&storage_delta)?;
+        let cipher = shared_key
+            .encrypt(plaintext, nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        // Encrypted storage delta should decrypt back to empty actions
+        let decrypted = decrypt_delta_actions(cipher, nonce, sender_key)?;
+        assert!(decrypted.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn decrypt_delta_actions_rejects_bad_cipher() {
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let nonce = [9u8; NONCE_LEN];
+
+        // Garbage ciphertext should fail to decrypt/deserialize
+        let result = decrypt_delta_actions(vec![1, 2, 3, 4], nonce, sender_key);
+        assert!(result.is_err());
+    }
+}
+
 /// Execute event handlers for received events (from already-parsed payload)
 ///
 /// # Handler Execution Model
