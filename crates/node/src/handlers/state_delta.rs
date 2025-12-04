@@ -375,13 +375,32 @@ pub async fn handle_state_delta(
                 "Evaluating event handler execution for applied delta"
             );
             if !is_author {
-                execute_event_handlers_parsed(
+                // Ensure application blob is available before executing handlers
+                // This fixes race condition where gossipsub delta arrives before blob download completes
+                if let Err(e) = ensure_application_available(
+                    &node_clients.node,
                     &node_clients.context,
                     &context_id,
-                    &our_identity,
-                    payload,
+                    sync_timeout,
                 )
-                .await?;
+                .await
+                {
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        error = %e,
+                        "Application not available for handler execution - handlers will be skipped"
+                    );
+                    // Don't fail the whole delta processing, just skip handlers
+                } else {
+                    execute_event_handlers_parsed(
+                        &node_clients.context,
+                        &context_id,
+                        &our_identity,
+                        payload,
+                    )
+                    .await?;
+                }
             } else {
                 info!(
                     %context_id,
@@ -390,7 +409,9 @@ pub async fn handle_state_delta(
                 );
             }
         }
-    } else if events_payload.is_some() {
+    } else if !applied && events_payload.is_some() {
+        // Only warn if delta is truly pending (not applied) and has events
+        // If applied && handlers_already_executed, handlers were run during cascade - no warning needed
         warn!(
             %context_id,
             delta_id = ?delta_id,
@@ -412,30 +433,48 @@ pub async fn handle_state_delta(
             "Executing event handlers for cascaded deltas"
         );
 
-        for (cascaded_id, events_data) in add_result.cascaded_events {
-            match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
-                Ok(cascaded_payload) => {
-                    info!(
-                        %context_id,
-                        delta_id = ?cascaded_id,
-                        events_count = cascaded_payload.len(),
-                        "Executing handlers for cascaded delta"
-                    );
-                    execute_event_handlers_parsed(
-                        &node_clients.context,
-                        &context_id,
-                        &our_identity,
-                        &cascaded_payload,
-                    )
-                    .await?;
-                }
-                Err(e) => {
-                    warn!(
-                        %context_id,
-                        delta_id = ?cascaded_id,
-                        error = %e,
-                        "Failed to deserialize cascaded events, skipping handler execution"
-                    );
+        // Ensure application is available before executing any cascaded handlers
+        let app_available = ensure_application_available(
+            &node_clients.node,
+            &node_clients.context,
+            &context_id,
+            sync_timeout,
+        )
+        .await
+        .is_ok();
+
+        if !app_available {
+            warn!(
+                %context_id,
+                cascaded_count = add_result.cascaded_events.len(),
+                "Application not available - skipping all cascaded handler execution"
+            );
+        } else {
+            for (cascaded_id, events_data) in add_result.cascaded_events {
+                match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
+                    Ok(cascaded_payload) => {
+                        info!(
+                            %context_id,
+                            delta_id = ?cascaded_id,
+                            events_count = cascaded_payload.len(),
+                            "Executing handlers for cascaded delta"
+                        );
+                        execute_event_handlers_parsed(
+                            &node_clients.context,
+                            &context_id,
+                            &our_identity,
+                            &cascaded_payload,
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        warn!(
+                            %context_id,
+                            delta_id = ?cascaded_id,
+                            error = %e,
+                            "Failed to deserialize cascaded events, skipping handler execution"
+                        );
+                    }
                 }
             }
         }
@@ -831,4 +870,87 @@ async fn request_key_share_with_peer(
     })
     .await
     .map_err(|_| eyre::eyre!("Timeout during key share with peer"))?
+}
+
+/// Ensures the application blob is available for a context before handler execution.
+///
+/// This fixes the race condition where gossipsub state deltas arrive before the
+/// WASM application blob has finished downloading. Without this check, handler
+/// execution would fail with "ApplicationNotInstalled" errors.
+///
+/// The function polls for blob availability with exponential backoff, up to the
+/// specified timeout. If the blob becomes available, it returns Ok(()); otherwise
+/// it returns an error.
+async fn ensure_application_available(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    context_client: &calimero_context_primitives::client::ContextClient,
+    context_id: &ContextId,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    use std::time::Duration;
+    use tokio::time::{sleep, Instant};
+
+    let context = context_client
+        .get_context(context_id)?
+        .ok_or_else(|| eyre::eyre!("context not found"))?;
+
+    let application_id = context.application_id;
+
+    // Check if application is already installed and blob available
+    if let Ok(Some(app)) = node_client.get_application(&application_id) {
+        // Application exists, check if bytecode blob is available
+        if node_client.has_blob(&app.blob.bytecode)? {
+            debug!(
+                %context_id,
+                %application_id,
+                "Application blob already available"
+            );
+            return Ok(());
+        }
+    }
+
+    // Blob not yet available - poll with backoff
+    let start = Instant::now();
+    let mut delay = Duration::from_millis(50);
+    let max_delay = Duration::from_millis(500);
+
+    info!(
+        %context_id,
+        %application_id,
+        timeout_ms = timeout.as_millis(),
+        "Waiting for application blob to become available..."
+    );
+
+    while start.elapsed() < timeout {
+        sleep(delay).await;
+
+        // Re-check application and blob
+        if let Ok(Some(app)) = node_client.get_application(&application_id) {
+            if node_client.has_blob(&app.blob.bytecode)? {
+                info!(
+                    %context_id,
+                    %application_id,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Application blob now available"
+                );
+                return Ok(());
+            }
+        }
+
+        // Exponential backoff
+        delay = std::cmp::min(delay * 2, max_delay);
+    }
+
+    // Timeout reached
+    warn!(
+        %context_id,
+        %application_id,
+        elapsed_ms = start.elapsed().as_millis(),
+        "Timeout waiting for application blob"
+    );
+
+    Err(eyre::eyre!(
+        "Application blob not available after {:?}",
+        timeout
+    ))
 }
