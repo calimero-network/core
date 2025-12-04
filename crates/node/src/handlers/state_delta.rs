@@ -206,19 +206,37 @@ pub async fn handle_state_delta(
                 "Executing event handlers for deltas cascaded during initial load"
             );
 
-            for (cascaded_id, events_data) in missing_result.cascaded_events {
-                match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
-                    Ok(cascaded_payload) => {
-                        execute_event_handlers_parsed(
-                            &node_clients.context,
-                            &context_id,
-                            &our_identity,
-                            &cascaded_payload,
-                        )
-                        .await?;
-                    }
-                    Err(e) => {
-                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events from initial load");
+            // Ensure application is available before executing any cascaded handlers
+            let app_available = ensure_application_available(
+                &node_clients.node,
+                &node_clients.context,
+                &context_id,
+                sync_timeout,
+            )
+            .await
+            .is_ok();
+
+            if !app_available {
+                warn!(
+                    %context_id,
+                    cascaded_count = missing_result.cascaded_events.len(),
+                    "Application not available - skipping cascaded handler execution from initial load"
+                );
+            } else {
+                for (cascaded_id, events_data) in missing_result.cascaded_events {
+                    match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
+                        Ok(cascaded_payload) => {
+                            execute_event_handlers_parsed(
+                                &node_clients.context,
+                                &context_id,
+                                &our_identity,
+                                &cascaded_payload,
+                            )
+                            .await?;
+                        }
+                        Err(e) => {
+                            warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events from initial load");
+                        }
                     }
                 }
             }
@@ -246,41 +264,59 @@ pub async fn handle_state_delta(
                 "Executing event handlers for deltas cascaded during missing parent check"
             );
 
-            for (cascaded_id, events_data) in &missing_result.cascaded_events {
-                // Check if this is the current delta that cascaded
-                let is_current_delta = *cascaded_id == delta_id;
-                if is_current_delta {
-                    info!(
-                        %context_id,
-                        delta_id = ?delta_id,
-                        "Current delta cascaded during missing parent check - marking as applied"
-                    );
-                    applied = true;
-                }
+            // Ensure application is available before executing cascaded handlers
+            let app_available = ensure_application_available(
+                &node_clients.node,
+                &node_clients.context,
+                &context_id,
+                sync_timeout,
+            )
+            .await
+            .is_ok();
 
-                match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-                    Ok(cascaded_payload) => {
+            if !app_available {
+                warn!(
+                    %context_id,
+                    cascaded_count = missing_result.cascaded_events.len(),
+                    "Application not available - skipping cascaded handler execution during missing parent check"
+                );
+            } else {
+                for (cascaded_id, events_data) in &missing_result.cascaded_events {
+                    // Check if this is the current delta that cascaded
+                    let is_current_delta = *cascaded_id == delta_id;
+                    if is_current_delta {
                         info!(
                             %context_id,
-                            delta_id = ?cascaded_id,
-                            events_count = cascaded_payload.len(),
-                            "Executing handlers for cascaded delta"
+                            delta_id = ?delta_id,
+                            "Current delta cascaded during missing parent check - marking as applied"
                         );
-                        execute_event_handlers_parsed(
-                            &node_clients.context,
-                            &context_id,
-                            &our_identity,
-                            &cascaded_payload,
-                        )
-                        .await?;
-
-                        // Mark that we executed handlers for the current delta
-                        if is_current_delta {
-                            handlers_already_executed = true;
-                        }
+                        applied = true;
                     }
-                    Err(e) => {
-                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events");
+
+                    match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+                        Ok(cascaded_payload) => {
+                            info!(
+                                %context_id,
+                                delta_id = ?cascaded_id,
+                                events_count = cascaded_payload.len(),
+                                "Executing handlers for cascaded delta"
+                            );
+                            execute_event_handlers_parsed(
+                                &node_clients.context,
+                                &context_id,
+                                &our_identity,
+                                &cascaded_payload,
+                            )
+                            .await?;
+
+                            // Mark that we executed handlers for the current delta
+                            if is_current_delta {
+                                handlers_already_executed = true;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events");
+                        }
                     }
                 }
             }
