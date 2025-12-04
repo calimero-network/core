@@ -4,6 +4,15 @@ permissions:
   contents: read
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "workflows/proposals/**"
+      - "scripts/icp/**"
+      - "scripts/ethereum/**"
+      - "scripts/download-contracts.sh"
+      - ".github/workflows/merobox-proposals.yml"
   pull_request:
     branches: [master]
     paths:
@@ -14,6 +23,7 @@ on:
       - "scripts/download-contracts.sh"
       - ".github/workflows/merobox-proposals.yml"
   workflow_dispatch:
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
