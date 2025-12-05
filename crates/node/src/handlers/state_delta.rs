@@ -10,7 +10,7 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::action::Action;
 use eyre::{bail, OptionExt, Result};
 use libp2p::PeerId;
@@ -61,13 +61,225 @@ pub async fn handle_state_delta(
         "Received state delta"
     );
 
-    // Get author's sender key to decrypt artifact
-    let mut author_identity = node_clients
-        .context
-        .get_identity(&context_id, &author_id)?
+    let sender_key = ensure_author_sender_key(
+        &node_clients.context,
+        &network_client,
+        &context_id,
+        &author_id,
+        source,
+        sync_timeout,
+    )
+    .await?;
+
+    let actions = decrypt_delta_actions(artifact, nonce, sender_key)?;
+
+    let delta = calimero_dag::CausalDelta {
+        id: delta_id,
+        parents: parent_ids,
+        payload: actions,
+        hlc,
+        expected_root_hash: *root_hash,
+    };
+
+    let our_identity = choose_owned_identity(&node_clients.context, &context_id).await?;
+
+    let DeltaStoreSetup {
+        store: delta_store_ref,
+        is_uninitialized,
+    } = init_delta_store(
+        &node_state,
+        &node_clients,
+        context_id,
+        our_identity,
+        context.root_hash,
+        sync_timeout,
+    )
+    .await?;
+
+    let add_result = delta_store_ref
+        .add_delta_with_events(delta, events.clone())
+        .await?;
+    let mut applied = add_result.applied;
+    let mut handlers_already_executed = false;
+
+    if !applied {
+        let missing_result = delta_store_ref.get_missing_parents().await;
+
+        let cascade_outcome = execute_cascaded_events(
+            &missing_result.cascaded_events,
+            &node_clients,
+            &context_id,
+            &our_identity,
+            sync_timeout,
+            "missing parent check",
+            Some(&delta_id),
+        )
+        .await?;
+        applied |= cascade_outcome.applied_current;
+        handlers_already_executed |= cascade_outcome.handlers_executed_for_current;
+
+        if !missing_result.missing_ids.is_empty() {
+            warn!(
+                %context_id,
+                missing_count = missing_result.missing_ids.len(),
+                context_is_uninitialized = is_uninitialized,
+                has_events = events.is_some(),
+                "Delta pending due to missing parents - requesting them from peer"
+            );
+
+            if let Err(e) = request_missing_deltas(
+                network_client,
+                sync_timeout,
+                context_id,
+                missing_result.missing_ids,
+                source,
+                our_identity,
+                delta_store_ref.clone(),
+            )
+            .await
+            {
+                warn!(?e, %context_id, ?source, "Failed to request missing deltas");
+            }
+        } else {
+            warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                has_events = events.is_some(),
+                "Delta pending - parents exist but not yet applied (will cascade when ready)"
+            );
+        }
+
+        let was_cascaded = delta_store_ref.dag_has_delta_applied(&delta_id).await;
+        if was_cascaded {
+            info!(
+                %context_id,
+                delta_id = ?delta_id,
+                "Delta was applied via cascade - will execute handlers"
+            );
+            applied = true;
+
+            if !handlers_already_executed && events.is_some() {
+                info!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "Delta cascaded via alternate path - handlers will be executed in main flow"
+                );
+            }
+        }
+    }
+
+    let events_payload = parse_events_payload(&events, &context_id);
+
+    if applied && !handlers_already_executed {
+        if let Some(ref payload) = events_payload {
+            let is_author = author_id == our_identity;
+            info!(
+                %context_id,
+                %author_id,
+                %our_identity,
+                is_author,
+                "Evaluating event handler execution for applied delta"
+            );
+            if !is_author {
+                if let Err(e) = ensure_application_available(
+                    &node_clients.node,
+                    &node_clients.context,
+                    &context_id,
+                    sync_timeout,
+                )
+                .await
+                {
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        error = %e,
+                        "Application not available for handler execution - handlers will be skipped"
+                    );
+                } else {
+                    execute_event_handlers_parsed(
+                        &node_clients.context,
+                        &context_id,
+                        &our_identity,
+                        payload,
+                    )
+                    .await?;
+                }
+            } else {
+                info!(
+                    %context_id,
+                    %author_id,
+                    "Skipping event handler execution (we are the author node)"
+                );
+            }
+        }
+    } else if !applied && events_payload.is_some() {
+        warn!(
+            %context_id,
+            delta_id = ?delta_id,
+            "Delta with events buffered as pending - handlers will NOT execute when delta is applied later!"
+        );
+    }
+
+    if let Some(payload) = events_payload {
+        emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
+    }
+
+    execute_cascaded_events(
+        &add_result.cascaded_events,
+        &node_clients,
+        &context_id,
+        &our_identity,
+        sync_timeout,
+        "dag cascade",
+        None,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[derive(Default)]
+struct CascadeOutcome {
+    applied_current: bool,
+    handlers_executed_for_current: bool,
+}
+
+struct DeltaStoreSetup {
+    store: DeltaStore,
+    is_uninitialized: bool,
+}
+
+fn decrypt_delta_actions(
+    artifact: Vec<u8>,
+    nonce: Nonce,
+    sender_key: PrivateKey,
+) -> Result<Vec<Action>> {
+    let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key);
+    let decrypted_artifact = shared_key
+        .decrypt(artifact, nonce)
+        .ok_or_eyre("failed to decrypt artifact")?;
+
+    let storage_delta: calimero_storage::delta::StorageDelta =
+        borsh::from_slice(&decrypted_artifact)?;
+
+    match storage_delta {
+        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(actions),
+        _ => bail!("Expected Actions variant in state delta"),
+    }
+}
+
+async fn ensure_author_sender_key(
+    context_client: &ContextClient,
+    network_client: &calimero_network_primitives::client::NetworkClient,
+    context_id: &ContextId,
+    author_id: &PublicKey,
+    source: PeerId,
+    sync_timeout: std::time::Duration,
+) -> Result<PrivateKey> {
+    let mut author_identity = context_client
+        .get_identity(context_id, author_id)?
         .ok_or_eyre("author identity not found")?;
 
-    // If we have the identity but missing sender_key, do direct key share with source peer
     if author_identity.sender_key.is_none() {
         info!(
             %context_id,
@@ -77,10 +289,10 @@ pub async fn handle_state_delta(
         );
 
         match request_key_share_with_peer(
-            &network_client,
-            &node_clients.context,
-            &context_id,
-            &author_id,
+            network_client,
+            context_client,
+            context_id,
+            author_id,
             source,
             sync_timeout,
         )
@@ -93,10 +305,8 @@ pub async fn handle_state_delta(
                     source_peer=%source,
                     "Successfully completed key share with source peer"
                 );
-                // Reload identity to get the updated sender_key
-                author_identity = node_clients
-                    .context
-                    .get_identity(&context_id, &author_id)?
+                author_identity = context_client
+                    .get_identity(context_id, author_id)?
                     .ok_or_eyre("author identity disappeared")?;
             }
             Err(e) => {
@@ -112,38 +322,16 @@ pub async fn handle_state_delta(
         }
     }
 
-    let sender_key = author_identity
+    author_identity
         .sender_key
-        .ok_or_eyre("author has no sender key")?;
+        .ok_or_eyre("author has no sender key")
+}
 
-    // Decrypt artifact
-    let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key.into());
-    let decrypted_artifact = shared_key
-        .decrypt(artifact, nonce)
-        .ok_or_eyre("failed to decrypt artifact")?;
-
-    // Deserialize decrypted artifact
-    let storage_delta: calimero_storage::delta::StorageDelta =
-        borsh::from_slice(&decrypted_artifact)?;
-
-    let actions = match storage_delta {
-        calimero_storage::delta::StorageDelta::Actions(actions) => actions,
-        _ => bail!("Expected Actions variant in state delta"),
-    };
-
-    // Create delta using calimero-dag types (with Vec<Action> payload)
-    let delta = calimero_dag::CausalDelta {
-        id: delta_id,
-        parents: parent_ids,
-        payload: actions, // Note: renamed from 'actions' to 'payload'
-        hlc,
-        expected_root_hash: *root_hash,
-    };
-
-    // Get our identity for applying deltas
-    let identities = node_clients
-        .context
-        .get_context_members(&context_id, Some(true));
+async fn choose_owned_identity(
+    context_client: &ContextClient,
+    context_id: &ContextId,
+) -> Result<PublicKey> {
+    let identities = context_client.get_context_members(context_id, Some(true));
     let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
         .await
         .transpose()?
@@ -151,8 +339,18 @@ pub async fn handle_state_delta(
         bail!("no owned identities found for context: {}", context_id);
     };
 
-    // Get or create DeltaStore for this context
-    let is_uninitialized = *context.root_hash == [0; 32];
+    Ok(our_identity)
+}
+
+async fn init_delta_store(
+    node_state: &crate::NodeState,
+    node_clients: &crate::NodeClients,
+    context_id: ContextId,
+    our_identity: PublicKey,
+    root_hash: Hash,
+    sync_timeout: std::time::Duration,
+) -> Result<DeltaStoreSetup> {
+    let is_uninitialized = root_hash == Hash::default();
 
     let (delta_store_ref, is_new_store) = {
         let mut is_new = false;
@@ -161,7 +359,6 @@ pub async fn handle_state_delta(
             .entry(context_id)
             .or_insert_with(|| {
                 is_new = true;
-                // Initialize with root (zero hash for now)
                 DeltaStore::new(
                     [0u8; 32],
                     node_clients.context.clone(),
@@ -170,12 +367,9 @@ pub async fn handle_state_delta(
                 )
             });
 
-        // Convert to owned DeltaStore for async operations
-        let delta_store_ref = delta_store.clone();
-        (delta_store_ref, is_new)
+        (delta_store.clone(), is_new)
     };
 
-    // Load persisted deltas on first access to restore DAG topology
     if is_new_store {
         if let Err(e) = delta_store_ref.load_persisted_deltas().await {
             warn!(
@@ -185,7 +379,6 @@ pub async fn handle_state_delta(
             );
         }
 
-        // After loading, check for missing parents and handle any cascaded events
         let missing_result = delta_store_ref.get_missing_parents().await;
         if !missing_result.missing_ids.is_empty() {
             warn!(
@@ -193,255 +386,197 @@ pub async fn handle_state_delta(
                 missing_count = missing_result.missing_ids.len(),
                 "Missing parents after loading persisted deltas - will request from network"
             );
-
-            // Note: We don't request here synchronously because we don't have the source peer
-            // These will be requested when the next delta arrives or via periodic sync
         }
 
-        // Execute handlers for any cascaded deltas from initial load
-        if !missing_result.cascaded_events.is_empty() {
-            info!(
-                %context_id,
-                cascaded_count = missing_result.cascaded_events.len(),
-                "Executing event handlers for deltas cascaded during initial load"
-            );
-
-            for (cascaded_id, events_data) in missing_result.cascaded_events {
-                match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
-                    Ok(cascaded_payload) => {
-                        execute_event_handlers_parsed(
-                            &node_clients.context,
-                            &context_id,
-                            &our_identity,
-                            &cascaded_payload,
-                        )
-                        .await?;
-                    }
-                    Err(e) => {
-                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events from initial load");
-                    }
-                }
-            }
-        }
+        execute_cascaded_events(
+            &missing_result.cascaded_events,
+            node_clients,
+            &context_id,
+            &our_identity,
+            sync_timeout,
+            "initial load",
+            None,
+        )
+        .await?;
     }
 
-    // Add delta with event data (for cascade handler execution)
-    let add_result = delta_store_ref
-        .add_delta_with_events(delta, events.clone())
-        .await?;
-    let mut applied = add_result.applied;
+    Ok(DeltaStoreSetup {
+        store: delta_store_ref,
+        is_uninitialized,
+    })
+}
 
-    // Track if we executed handlers for the current delta during cascade
-    let mut handlers_already_executed = false;
+async fn execute_cascaded_events(
+    cascaded_events: &[([u8; 32], Vec<u8>)],
+    node_clients: &crate::NodeClients,
+    context_id: &ContextId,
+    our_identity: &PublicKey,
+    sync_timeout: std::time::Duration,
+    phase: &str,
+    current_delta: Option<&[u8; 32]>,
+) -> Result<CascadeOutcome> {
+    if cascaded_events.is_empty() {
+        return Ok(CascadeOutcome::default());
+    }
 
-    if !applied {
-        // Delta is pending - check for missing parents
-        let missing_result = delta_store_ref.get_missing_parents().await;
+    info!(
+        %context_id,
+        cascaded_count = cascaded_events.len(),
+        phase = phase,
+        "Executing event handlers for cascaded deltas"
+    );
 
-        // Execute handlers for cascaded deltas from DB load (including this delta if it cascaded)
-        if !missing_result.cascaded_events.is_empty() {
+    let mut outcome = CascadeOutcome::default();
+
+    let app_available = ensure_application_available(
+        &node_clients.node,
+        &node_clients.context,
+        context_id,
+        sync_timeout,
+    )
+    .await
+    .is_ok();
+
+    if !app_available {
+        warn!(
+            %context_id,
+            cascaded_count = cascaded_events.len(),
+            phase = phase,
+            "Application not available - skipping cascaded handler execution"
+        );
+        return Ok(outcome);
+    }
+
+    for (cascaded_id, events_data) in cascaded_events {
+        if current_delta == Some(cascaded_id) {
             info!(
                 %context_id,
-                cascaded_count = missing_result.cascaded_events.len(),
-                "Executing event handlers for deltas cascaded during missing parent check"
+                delta_id = ?cascaded_id,
+                phase = phase,
+                "Current delta cascaded - marking as applied"
             );
-
-            for (cascaded_id, events_data) in &missing_result.cascaded_events {
-                // Check if this is the current delta that cascaded
-                let is_current_delta = *cascaded_id == delta_id;
-                if is_current_delta {
-                    info!(
-                        %context_id,
-                        delta_id = ?delta_id,
-                        "Current delta cascaded during missing parent check - marking as applied"
-                    );
-                    applied = true;
-                }
-
-                match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-                    Ok(cascaded_payload) => {
-                        info!(
-                            %context_id,
-                            delta_id = ?cascaded_id,
-                            events_count = cascaded_payload.len(),
-                            "Executing handlers for cascaded delta"
-                        );
-                        execute_event_handlers_parsed(
-                            &node_clients.context,
-                            &context_id,
-                            &our_identity,
-                            &cascaded_payload,
-                        )
-                        .await?;
-
-                        // Mark that we executed handlers for the current delta
-                        if is_current_delta {
-                            handlers_already_executed = true;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events");
-                    }
-                }
-            }
+            outcome.applied_current = true;
         }
 
-        if !missing_result.missing_ids.is_empty() {
-            warn!(
-                %context_id,
-                missing_count = missing_result.missing_ids.len(),
-                context_is_uninitialized = is_uninitialized,
-                has_events = events.is_some(),
-                "Delta pending due to missing parents - requesting them from peer"
-            );
-
-            // Request missing deltas (blocking this handler until complete)
-            if let Err(e) = request_missing_deltas(
-                network_client,
-                sync_timeout,
-                context_id,
-                missing_result.missing_ids,
-                source,
-                our_identity,
-                delta_store_ref.clone(),
-            )
-            .await
-            {
-                warn!(?e, %context_id, ?source, "Failed to request missing deltas");
-            }
-        } else {
-            // No missing parents - the parent deltas exist but may not be applied yet
-            // This can happen when deltas arrive out of order via gossipsub
-            // The delta will cascade and apply when its parents finish applying
-            warn!(
-                %context_id,
-                delta_id = ?delta_id,
-                has_events = events.is_some(),
-                "Delta pending - parents exist but not yet applied (will cascade when ready)"
-            );
-        }
-
-        // Always re-check if delta was applied via cascade (can happen during request_missing_deltas OR gossipsub)
-        let was_cascaded = delta_store_ref.dag_has_delta_applied(&delta_id).await;
-        if was_cascaded {
-            info!(
-                %context_id,
-                delta_id = ?delta_id,
-                "Delta was applied via cascade - will execute handlers"
-            );
-            applied = true;
-
-            // Important: If delta cascaded but we haven't executed handlers yet,
-            // and we have events, we need to execute them now.
-            // This can happen if the cascade occurred via another concurrent handler.
-            if !handlers_already_executed && events.is_some() {
+        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+            Ok(cascaded_payload) => {
                 info!(
                     %context_id,
-                    delta_id = ?delta_id,
-                    "Delta cascaded via alternate path - handlers will be executed in main flow"
+                    delta_id = ?cascaded_id,
+                    events_count = cascaded_payload.len(),
+                    phase = phase,
+                    "Executing handlers for cascaded delta"
                 );
-            }
-        }
-    }
+                execute_event_handlers_parsed(
+                    &node_clients.context,
+                    context_id,
+                    our_identity,
+                    &cascaded_payload,
+                )
+                .await?;
 
-    // Deserialize events ONCE if present (optimization: avoid double parse)
-    let events_payload = if let Some(ref events_data) = events {
-        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-            Ok(payload) => Some(payload),
+                if current_delta == Some(cascaded_id) {
+                    outcome.handlers_executed_for_current = true;
+                }
+            }
             Err(e) => {
                 warn!(
                     %context_id,
+                    delta_id = ?cascaded_id,
                     error = %e,
-                    "Failed to deserialize events, skipping handler execution and WebSocket emission"
+                    phase = phase,
+                    "Failed to deserialize cascaded events"
                 );
-                None
             }
         }
-    } else {
-        None
+    }
+
+    Ok(outcome)
+}
+
+fn parse_events_payload(
+    events: &Option<Vec<u8>>,
+    context_id: &ContextId,
+) -> Option<Vec<ExecutionEvent>> {
+    let Some(events_data) = events else {
+        return None;
     };
 
-    // Execute event handlers only if the delta was applied AND we haven't already executed them
-    // Note: Handlers are only executed on receiving nodes, not on the author node,
-    // to avoid infinite loops and ensure proper distributed execution.
-    if applied && !handlers_already_executed {
-        if let Some(ref payload) = events_payload {
-            let is_author = author_id == our_identity;
-            info!(
+    match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+        Ok(payload) => Some(payload),
+        Err(e) => {
+            warn!(
                 %context_id,
-                %author_id,
-                %our_identity,
-                is_author,
-                "Evaluating event handler execution for applied delta"
+                error = %e,
+                "Failed to deserialize events, skipping handler execution and WebSocket emission"
             );
-            if !is_author {
-                execute_event_handlers_parsed(
-                    &node_clients.context,
-                    &context_id,
-                    &our_identity,
-                    payload,
-                )
-                .await?;
-            } else {
-                info!(
-                    %context_id,
-                    %author_id,
-                    "Skipping event handler execution (we are the author node)"
-                );
-            }
-        }
-    } else if events_payload.is_some() {
-        warn!(
-            %context_id,
-            delta_id = ?delta_id,
-            "Delta with events buffered as pending - handlers will NOT execute when delta is applied later!"
-        );
-    }
-
-    // Emit state mutation to WebSocket clients (frontends)
-    // Use already-parsed events (no re-deserialization!)
-    if let Some(payload) = events_payload {
-        emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
-    }
-
-    // Execute handlers for any cascaded deltas that had stored events
-    if !add_result.cascaded_events.is_empty() {
-        info!(
-            %context_id,
-            cascaded_count = add_result.cascaded_events.len(),
-            "Executing event handlers for cascaded deltas"
-        );
-
-        for (cascaded_id, events_data) in add_result.cascaded_events {
-            match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
-                Ok(cascaded_payload) => {
-                    info!(
-                        %context_id,
-                        delta_id = ?cascaded_id,
-                        events_count = cascaded_payload.len(),
-                        "Executing handlers for cascaded delta"
-                    );
-                    execute_event_handlers_parsed(
-                        &node_clients.context,
-                        &context_id,
-                        &our_identity,
-                        &cascaded_payload,
-                    )
-                    .await?;
-                }
-                Err(e) => {
-                    warn!(
-                        %context_id,
-                        delta_id = ?cascaded_id,
-                        error = %e,
-                        "Failed to deserialize cascaded events, skipping handler execution"
-                    );
-                }
-            }
+            None
         }
     }
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_crypto::{SharedKey, NONCE_LEN};
+    use calimero_storage::delta::StorageDelta;
+    use rand::thread_rng;
+
+    #[test]
+    fn parse_events_payload_success() {
+        let events = vec![ExecutionEvent {
+            kind: "test".to_string(),
+            data: vec![1, 2, 3],
+            handler: Some("handler_fn".to_string()),
+        }];
+        let serialized = serde_json::to_vec(&events).expect("serialization should succeed");
+
+        // Should deserialize valid event JSON
+        let parsed = parse_events_payload(&Some(serialized), &ContextId::zero())
+            .expect("events should parse");
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].kind, "test");
+        assert_eq!(parsed[0].handler.as_deref(), Some("handler_fn"));
+    }
+
+    #[test]
+    fn parse_events_payload_invalid() {
+        // Invalid JSON should be rejected gracefully
+        let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero());
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn decrypt_delta_actions_roundtrip() -> Result<()> {
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let shared_key = SharedKey::from_sk(&sender_key);
+        let nonce = [7u8; NONCE_LEN];
+
+        let storage_delta = StorageDelta::Actions(Vec::new());
+        let plaintext = borsh::to_vec(&storage_delta)?;
+        let cipher = shared_key
+            .encrypt(plaintext, nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        // Encrypted storage delta should decrypt back to empty actions
+        let decrypted = decrypt_delta_actions(cipher, nonce, sender_key)?;
+        assert!(decrypted.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn decrypt_delta_actions_rejects_bad_cipher() {
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let nonce = [9u8; NONCE_LEN];
+
+        // Garbage ciphertext should fail to decrypt/deserialize
+        let result = decrypt_delta_actions(vec![1, 2, 3, 4], nonce, sender_key);
+        assert!(result.is_err());
+    }
 }
 
 /// Execute event handlers for received events (from already-parsed payload)
@@ -831,4 +966,87 @@ async fn request_key_share_with_peer(
     })
     .await
     .map_err(|_| eyre::eyre!("Timeout during key share with peer"))?
+}
+
+/// Ensures the application blob is available for a context before handler execution.
+///
+/// This fixes the race condition where gossipsub state deltas arrive before the
+/// WASM application blob has finished downloading. Without this check, handler
+/// execution would fail with "ApplicationNotInstalled" errors.
+///
+/// The function polls for blob availability with exponential backoff, up to the
+/// specified timeout. If the blob becomes available, it returns Ok(()); otherwise
+/// it returns an error.
+async fn ensure_application_available(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    context_client: &calimero_context_primitives::client::ContextClient,
+    context_id: &ContextId,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    use std::time::Duration;
+    use tokio::time::{sleep, Instant};
+
+    let context = context_client
+        .get_context(context_id)?
+        .ok_or_else(|| eyre::eyre!("context not found"))?;
+
+    let application_id = context.application_id;
+
+    // Check if application is already installed and blob available
+    if let Ok(Some(app)) = node_client.get_application(&application_id) {
+        // Application exists, check if bytecode blob is available
+        if node_client.has_blob(&app.blob.bytecode)? {
+            debug!(
+                %context_id,
+                %application_id,
+                "Application blob already available"
+            );
+            return Ok(());
+        }
+    }
+
+    // Blob not yet available - poll with backoff
+    let start = Instant::now();
+    let mut delay = Duration::from_millis(50);
+    let max_delay = Duration::from_millis(500);
+
+    info!(
+        %context_id,
+        %application_id,
+        timeout_ms = timeout.as_millis(),
+        "Waiting for application blob to become available..."
+    );
+
+    while start.elapsed() < timeout {
+        sleep(delay).await;
+
+        // Re-check application and blob
+        if let Ok(Some(app)) = node_client.get_application(&application_id) {
+            if node_client.has_blob(&app.blob.bytecode)? {
+                info!(
+                    %context_id,
+                    %application_id,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Application blob now available"
+                );
+                return Ok(());
+            }
+        }
+
+        // Exponential backoff
+        delay = std::cmp::min(delay * 2, max_delay);
+    }
+
+    // Timeout reached
+    warn!(
+        %context_id,
+        %application_id,
+        elapsed_ms = start.elapsed().as_millis(),
+        "Timeout waiting for application blob"
+    );
+
+    Err(eyre::eyre!(
+        "Application blob not available after {:?}",
+        timeout
+    ))
 }
