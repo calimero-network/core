@@ -22,45 +22,17 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Step 2: Create a context using the installed application
-  - name: Create Context on Node 1
-    type: create_context
-    node: new-calimero-node-1
+  # Step 2: Create mesh with both nodes
+  - name: Create Mesh
+    type: create_mesh
+    context_node: new-calimero-node-1
     application_id: '{{app_id}}'
-    params: '{}'
+    nodes:
+      - new-calimero-node-2
+    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey
-
-  # Step 3: Generate identity on second node
-  - name: Create Identity on Node 2
-    type: create_identity
-    node: new-calimero-node-2
-    outputs:
-      node2_public_key: publicKey
-
-  - name: Wait for Identity Creation
-    type: wait
-    seconds: 5
-
-  # Step 4: Invite second node to join the context
-  - name: Invite Node 2 from Node 1
-    type: invite_identity
-    node: new-calimero-node-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{node2_public_key}}"
-    granter_id: "{{member_public_key}}"
-    capability: member
-    outputs:
-      invitation: invitation
-
-  # Step 5: Join context from second node
-  - name: Join Context from Node 2
-    type: join_context
-    node: new-calimero-node-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{node2_public_key}}"
-    invitation: "{{invitation}}"
 
   # ============================================
   # Testing Phase: Frozen Storage
@@ -121,7 +93,7 @@ steps:
     type: call
     node: new-calimero-node-2
     context_id: '{{context_id}}'
-    executor_public_key: '{{node2_public_key}}'
+    executor_public_key: '{{public_key_new-calimero-node-2}}'
     method: get_frozen
     args:
       hash_hex: "{{frozen_value_hash_hex}}"
@@ -138,7 +110,7 @@ steps:
     type: call
     node: new-calimero-node-2
     context_id: '{{context_id}}'
-    executor_public_key: '{{node2_public_key}}'
+    executor_public_key: '{{public_key_new-calimero-node-2}}'
     method: add_frozen
     args:
       value: "SomeFrozenString2"

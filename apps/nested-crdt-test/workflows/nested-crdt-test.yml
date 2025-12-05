@@ -1,0 +1,296 @@
+name: Nested CRDT Test
+description: Nested CRDT test - verifies Map<String, Counter>, Map<String, LWW>, Vector, and Map<String, Set>
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: nested-node
+
+steps:
+  - name: Install Nested CRDT Application on Node 1
+    type: install_application
+    node: nested-node-1
+    path: res/nested_crdt_test.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: nested-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - nested-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Node 1 increments counter twice
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_counter
+    args:
+      key: views
+
+  - name: Node 1 increments again
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_counter
+    args:
+      key: views
+
+  - name: Node 2 increments concurrently
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: increment_counter
+    args:
+      key: views
+
+  - name: Wait for concurrent increments to merge
+    type: wait
+    seconds: 5
+
+  - name: Get counter from Node 2 after concurrent
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: get_counter
+    args:
+      key: views
+    outputs:
+      counter_after_concurrent: result
+
+  - name: Assert counter is 3 on Node 2 (2 + 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_after_concurrent}}, {"output": 3})'
+
+  - name: Node 1 sets status to online
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_register
+    args:
+      key: status
+      value: online
+
+  - name: Node 2 sets status to busy (LWW test)
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: set_register
+    args:
+      key: status
+      value: busy
+
+  - name: Wait for LWW consensus
+    type: wait
+    seconds: 5
+
+  - name: Get status from Node 1
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_register
+    args:
+      key: status
+    outputs:
+      status_after: result
+
+  - name: Assert latest timestamp wins
+    type: json_assert
+    statements:
+      - 'json_equal({{status_after}}, {"output": "busy"})'
+
+  - name: Node 1 sets doc-1 title
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_metadata
+    args:
+      outer_key: doc-1
+      inner_key: title
+      value: My Document
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Node 2 sets doc-1 author
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: set_metadata
+    args:
+      outer_key: doc-1
+      inner_key: author
+      value: Alice
+
+  - name: Wait for nested map field-level merge
+    type: wait
+    seconds: 5
+
+  - name: Verify both fields present on Node 1
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_metadata
+    args:
+      outer_key: doc-1
+      inner_key: title
+    outputs:
+      title_check: result
+
+  - name: Verify author on Node 1
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_metadata
+    args:
+      outer_key: doc-1
+      inner_key: author
+    outputs:
+      author_check: result
+
+  - name: Assert nested map field-level merge worked
+    type: json_assert
+    statements:
+      - 'json_equal({{title_check}}, {"output": "My Document"})'
+      - 'json_equal({{author_check}}, {"output": "Alice"})'
+
+  - name: Push Counter(5) to metrics
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: push_metric
+    args:
+      value: 5
+
+  - name: Push Counter(10) to metrics
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: push_metric
+    args:
+      value: 10
+
+  - name: Wait for broadcast
+    type: wait
+    seconds: 3
+
+  - name: Get metrics length from Node 2
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: metrics_len
+    outputs:
+      metrics_len: result
+
+  - name: Get metric at index 0 from Node 2
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: get_metric
+    args:
+      index: 0
+    outputs:
+      metric_0: result
+
+  - name: Assert vector synced correctly
+    type: json_assert
+    statements:
+      - 'json_equal({{metrics_len}}, {"output": 2})'
+      - 'json_equal({{metric_0}}, {"output": 5})'
+
+  - name: Node 1 adds rust tag
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_tag
+    args:
+      key: user-1
+      tag: rust
+
+  - name: Node 1 adds backend tag
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_tag
+    args:
+      key: user-1
+      tag: backend
+
+  - name: Node 2 adds crdt tag (concurrent)
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: add_tag
+    args:
+      key: user-1
+      tag: crdt
+
+  - name: Wait for set union merge
+    type: wait
+    seconds: 5
+
+  - name: Get tag count from Node 2
+    type: call
+    node: nested-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_nested-node-2}}"
+    method: get_tag_count
+    args:
+      key: user-1
+    outputs:
+      tag_count: result
+
+  - name: Check if crdt tag present on Node 1
+    type: call
+    node: nested-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: has_tag
+    args:
+      key: user-1
+      tag: crdt
+    outputs:
+      has_crdt: result.output
+
+  - name: Assert set union merge worked
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_count}}, {"output": 3})'
+
+  - name: Assert crdt tag synced to Node 1
+    type: assert
+    statements:
+      - "{{has_crdt}} == True"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
