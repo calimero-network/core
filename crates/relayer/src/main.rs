@@ -17,7 +17,9 @@ use calimero_context_config::client::config::{
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
 };
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
-use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
+use calimero_context_config::client::transport::{
+    Operation, Transport, TransportArguments, TransportRequest,
+};
 use calimero_context_config::client::Client;
 use clap::Parser;
 use color_eyre::install;
@@ -33,22 +35,76 @@ use tracing_subscriber::{registry, EnvFilter};
 mod config;
 mod constants;
 mod credentials;
+mod metrics;
+mod middleware;
 mod mock;
 
 use config::RelayerConfig;
 use constants::{protocols, DEFAULT_ADDR, DEFAULT_RELAYER_URL};
+use metrics::RelayerMetrics;
 use mock::MockRelayer;
+use prometheus_client::registry::Registry;
+
+/// Normalize protocol name to prevent cardinality explosion
+/// Only known protocols are tracked individually, others are aggregated as "other"
+fn normalize_protocol_name(protocol: &str) -> &str {
+    match protocol {
+        protocols::near::NAME
+        | protocols::starknet::NAME
+        | protocols::icp::NAME
+        | protocols::ethereum::NAME
+        | protocols::mock_relayer::NAME => protocol,
+        _ => "other",
+    }
+}
+
+/// Normalize method name to prevent cardinality explosion
+/// Only known methods from handlers.rs are tracked individually, others are aggregated
+fn normalize_method_name<'a>(operation: &'a Operation<'a>) -> &'a str {
+    match operation {
+        Operation::Read { method } => match method.as_ref() {
+            // Known read methods (from handlers.rs)
+            "application"
+            | "application_revision"
+            | "members"
+            | "members_revision"
+            | "has_member"
+            | "privileges"
+            | "get_proxy_contract"
+            | "fetch_nonce"
+            | "proposals"
+            | "proposal"
+            | "get_number_of_active_proposals"
+            | "get_number_of_proposal_approvals"
+            | "get_proposal_approvers"
+            | "get_context_value"
+            | "get_context_storage_entries" => method.as_ref(),
+            _ => "other_read",
+        },
+        Operation::Write { method } => match method.as_ref() {
+            // Known write methods (from handlers.rs)
+            "mutate" | "proxy_mutate" => method.as_ref(),
+            _ => "other_write",
+        },
+    }
+}
 
 /// Relayer service that handles incoming requests
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct RelayerService {
     config: RelayerConfig,
     mock_relayer: Option<MockRelayer>,
+    metrics: Option<std::sync::Arc<RelayerMetrics>>,
+    registry: Option<std::sync::Arc<Registry>>,
 }
 
 impl RelayerService {
     /// Create a new relayer service with the given configuration
-    fn new(config: RelayerConfig) -> Self {
+    fn new(
+        config: RelayerConfig,
+        metrics: Option<std::sync::Arc<RelayerMetrics>>,
+        registry: Option<std::sync::Arc<Registry>>,
+    ) -> Self {
         // Initialize mock relayer if the mock-relayer protocol is enabled
         let mock_relayer = if config
             .protocols
@@ -65,6 +121,8 @@ impl RelayerService {
         Self {
             config,
             mock_relayer,
+            metrics,
+            registry,
         }
     }
 
@@ -174,11 +232,27 @@ impl RelayerService {
         // Create blockchain client from relayer config
         let transports = self.create_client()?;
 
-        // Clone mock relayer for the async task
+        // Clone mock relayer and metrics for the async task
         let mock_relayer = self.mock_relayer.clone();
+        let metrics = self.metrics.clone();
 
         let handle = async move {
             while let Some((request, res_tx)) = rx.recv().await {
+                // Record queue depth (items waiting to be processed)
+                // rx.recv() has already removed the current item, so rx.len() is correct
+                if let Some(ref metrics) = metrics {
+                    metrics.set_queue_depth(rx.len() as i64);
+                }
+
+                // Clone and normalize protocol name to prevent cardinality explosion
+                let protocol_str = request.protocol.clone();
+                let protocol_name = normalize_protocol_name(&protocol_str);
+                let start = std::time::Instant::now();
+
+                if let Some(ref metrics) = metrics {
+                    metrics.inc_protocol_requests(protocol_name);
+                }
+
                 // Check if this is a mock-relayer request
                 if request.protocol == protocols::mock_relayer::NAME {
                     if let Some(ref mock) = mock_relayer {
@@ -186,17 +260,65 @@ impl RelayerService {
                             "Handling mock-relayer request for operation: {:?}",
                             request.operation
                         );
-                        let res = mock.handle_request(request).await.map(Ok).map_err(|e| {
-                            debug!("Mock relayer error: {:?}", e);
-                            ServerError::UnsupportedProtocol {
-                                found: protocols::mock_relayer::NAME.into(),
-                                expected: vec![protocols::mock_relayer::NAME.into()].into(),
+
+                        // Normalize method name to prevent cardinality explosion
+                        // Only track known methods from whitelist, aggregate unknown ones
+                        let method_name = normalize_method_name(&request.operation);
+
+                        if let Some(ref metrics) = metrics {
+                            metrics.inc_mock_operations(method_name);
+                        }
+
+                        // Handle mock relayer result similar to regular transport
+                        // Ok(Ok(...)) = operation succeeded
+                        // Ok(Err(...)) = operation failed (protocol supported but operation error)
+                        let res = match mock.handle_request(request).await {
+                            Ok(data) => Ok(Ok(data)),
+                            Err(e) => {
+                                debug!("Mock relayer operation error: {:?}", e);
+                                Ok(Err(eyre::eyre!("Mock relayer error: {e:?}")))
                             }
-                        });
+                        };
+
+                        let duration = start.elapsed();
+                        if let Some(ref metrics) = metrics {
+                            let (status, error_type) = match &res {
+                                Ok(Ok(_)) => ("success", None),
+                                Ok(Err(_)) => ("error", Some("mock_relayer_error")),
+                                Err(_) => {
+                                    // This should never happen with current implementation,
+                                    // but handle gracefully instead of panicking
+                                    tracing::error!("Unexpected Err variant from mock relayer");
+                                    ("error", Some("unexpected_error"))
+                                }
+                            };
+
+                            metrics.record_protocol_duration(
+                                protocol_name,
+                                status,
+                                duration.as_secs_f64(),
+                            );
+
+                            if let Some(error_type) = error_type {
+                                metrics.inc_protocol_errors(protocol_name, error_type);
+                            }
+                        }
+
                         let _ignored = res_tx.send(res);
                         continue;
                     } else {
                         // Mock relayer not enabled
+                        let duration = start.elapsed();
+
+                        if let Some(ref metrics) = metrics {
+                            metrics.record_protocol_duration(
+                                protocol_name,
+                                "error",
+                                duration.as_secs_f64(),
+                            );
+                            metrics.inc_protocol_errors(protocol_name, "unsupported_protocol");
+                        }
+
                         let res = Err(ServerError::UnsupportedProtocol {
                             found: protocols::mock_relayer::NAME.into(),
                             expected: vec![].into(),
@@ -206,7 +328,6 @@ impl RelayerService {
                     }
                 }
 
-                // Handle regular blockchain protocols
                 let args = TransportArguments {
                     protocol: request.protocol,
                     request: TransportRequest {
@@ -226,18 +347,54 @@ impl RelayerService {
                         expected: err.expected,
                     });
 
+                // Track duration and status
+                // Note: res is Result<Result<Vec<u8>, eyre::Error>, ServerError>
+                // - Ok(Ok(...)) = success
+                // - Ok(Err(...)) = transport error (network, contract, etc.)
+                // - Err(...) = unsupported protocol
+                if let Some(ref metrics) = metrics {
+                    let duration = start.elapsed();
+                    let (status, error_type) = match &res {
+                        Ok(Ok(_)) => ("success", None),
+                        Ok(Err(_)) => ("error", Some("transport_error")),
+                        Err(ServerError::UnsupportedProtocol { .. }) => {
+                            ("error", Some("unsupported_protocol"))
+                        }
+                    };
+
+                    metrics.record_protocol_duration(protocol_name, status, duration.as_secs_f64());
+
+                    if let Some(error_type) = error_type {
+                        metrics.inc_protocol_errors(protocol_name, error_type);
+                    }
+                }
+
                 let _ignored = res_tx.send(res);
             }
         };
 
-        let app = Router::new()
-            .route("/", post(handler))
-            .route("/health", get(health_check))
-            .with_state(tx);
-
         let listener = TcpListener::bind(self.config.listen).await?;
 
         info!("Listening on 'http://{}'", self.config.listen);
+
+        let metrics_for_middleware = self.metrics.clone();
+
+        let mut app = Router::new()
+            .route("/", post(handler))
+            .route("/health", get(health_check));
+
+        // Conditionally add metrics endpoint
+        if self.registry.is_some() {
+            app = app.route("/metrics", get(metrics_endpoint));
+        }
+
+        let app = app
+            .layer(axum::Extension(self.registry.clone()))
+            .with_state((tx, self.metrics.clone()))
+            .layer(axum::middleware::from_fn(move |req, next| {
+                let metrics = metrics_for_middleware.clone();
+                async move { middleware::track_metrics(metrics, req, next).await }
+            }));
 
         let server = axum::serve(listener, app);
 
@@ -247,7 +404,10 @@ impl RelayerService {
     }
 }
 
-type AppState = mpsc::Sender<RequestPayload>;
+type AppState = (
+    mpsc::Sender<RequestPayload>,
+    Option<std::sync::Arc<RelayerMetrics>>,
+);
 type RequestPayload = (RelayRequest<'static>, HandlerSender);
 type HandlerSender = oneshot::Sender<Result<EyreResult<Vec<u8>>, ServerError>>;
 
@@ -260,8 +420,23 @@ async fn health_check() -> impl IntoResponse {
     }))
 }
 
+/// Metrics endpoint
+async fn metrics_endpoint(
+    axum::Extension(registry): axum::Extension<Option<std::sync::Arc<Registry>>>,
+) -> impl IntoResponse {
+    use prometheus_client::encoding::text::encode;
+
+    if let Some(registry) = registry {
+        let mut buffer = String::new();
+        encode(&mut buffer, &*registry).unwrap();
+        buffer
+    } else {
+        "# Metrics not available\n".to_string()
+    }
+}
+
 async fn handler(
-    State(req_tx): State<AppState>,
+    State((req_tx, _metrics)): State<AppState>,
     Json(request): Json<RelayRequest<'static>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let (res_tx, res_rx) = oneshot::channel();
@@ -384,7 +559,12 @@ async fn main() -> EyreResult<()> {
         }
     }
 
-    let service = RelayerService::new(config);
+    // Initialize metrics registry
+    let mut registry = Registry::default();
+    let metrics = std::sync::Arc::new(RelayerMetrics::new(&mut registry));
+    let registry = std::sync::Arc::new(registry);
+
+    let service = RelayerService::new(config, Some(metrics), Some(registry));
     service.start().await
 }
 
