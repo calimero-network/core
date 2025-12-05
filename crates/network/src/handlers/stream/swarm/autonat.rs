@@ -1,77 +1,47 @@
-use libp2p::autonat::{Event, OutboundProbeEvent};
-use owo_colors::OwoColorize;
-use tracing::{debug, info};
-
 use super::EventHandler;
+use crate::autonat::{Event, TestResult};
 use crate::NetworkManager;
+use owo_colors::OwoColorize;
+use tracing::{debug, info, warn};
 
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "autonat".yellow(), event);
-
         match event {
-            Event::OutboundProbe(outbound_probe_event) => match outbound_probe_event {
-                OutboundProbeEvent::Request { peer, .. } => {
-                    debug!(%peer, "Sent probe request");
+            Event::Client {
+                tested_addr,
+                result,
+                ..
+            } => {
+                match result {
+                    TestResult::Reachable { addr } => {
+                        info!(
+                            "✓ AutoNAT: Address {} confirmed reachable as {}",
+                            tested_addr, addr
+                        );
+                        // Swarm will emit ExternalAddrConfirmed - let that handle it
+                    }
+                    TestResult::Failed { error } => {
+                        warn!("✗ AutoNAT: Address {} test failed: {}", tested_addr, error);
+                        // This address failed, but it might not have been in our
+                        // confirmed set anyway. Let swarm events drive state.
+                    }
                 }
-                OutboundProbeEvent::Response { peer, address, .. } => {
-                    info!(%peer, %address, "Peer determined our external address");
-
-                    // TODO: Revisit AutoNAT protocol integration
-                    // let rendezvous_peers: Vec<PeerId> =
-                    //     self.discovery.state.get_rendezvous_peer_ids().collect();
-                    // let relay_peers: Vec<PeerId> =
-                    //     self.discovery.state.get_relay_peer_ids().collect();
-
-                    // if self.swarm.behaviour().autonat.confidence()
-                    //     >= self.discovery.autonat_config.confidence_threshold
-                    // {
-                    //     return;
-                    // }
-
-                    // if self.discovery.state.is_autonat_status_public() {
-                    //     for peer_id in &rendezvous_peers {
-                    //         if let Err(err) = self.rendezvous_discover(peer_id) {
-                    //             error!(%err, "Failed to perform rendezvous discovery");
-                    //         }
-                    //         if let Err(err) = self.rendezvous_register(peer_id) {
-                    //             error!(%err, "Failed to register with rendezvous");
-                    //         }
-                    //     }
-                    // }
-
-                    // if self.discovery.state.is_autonat_status_private() {
-                    //     if self.discovery.state.autonat_became_private() {
-                    //         for peer_id in &rendezvous_peers {
-                    //             drop(self.rendezvous_unregister(peer_id));
-                    //         }
-                    //     }
-                    //     for peer_id in relay_peers {
-                    //         if let Err(err) = self.create_relay_reservation(&peer_id) {
-                    //             error!(%err, "Failed to handle relay reservation");
-                    //         }
-                    //     }
-
-                    //     for peer_id in &rendezvous_peers {
-                    //         if let Err(err) = self.rendezvous_discover(peer_id) {
-                    //             error!(%err, "Failed to perform rendezvous discovery");
-                    //         }
-                    //         if let Err(err) = self.rendezvous_register(peer_id) {
-                    //             error!(%err, "Failed to register with rendezvous");
-                    //         }
-                    //     }
-                    // }
-                }
-                OutboundProbeEvent::Error { .. } => {
-                    debug!("Outbound probe failed");
-                }
-            },
-            Event::StatusChanged { old, new } => {
-                debug!("NAT status changed from {:?} to {:?}", old, new);
-
-                self.discovery.state.update_autonat_status(new);
             }
-            _ => {}
+            Event::Server {
+                client,
+                data_amount,
+                ..
+            } => {
+                info!("Served AutoNAT test for {} ({} bytes)", client, data_amount);
+            }
+            Event::ModeChanged { old_mode, new_mode } => {
+                info!("AutoNAT mode: {:?} → {:?}", old_mode, new_mode);
+            }
+            Event::PeerHasServerSupport { peer_id } => {
+                info!("Peer {} has AutoNAT server support", peer_id);
+                self.discovery.state.add_autonat_server(&peer_id);
+            }
         }
     }
 }

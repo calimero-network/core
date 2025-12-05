@@ -222,10 +222,17 @@ pub struct InitCommand {
 
     #[clap(
         long,
-        default_value = "2",
-        help = "Minimum number of successful autonat probes required to be confident about NAT status"
+        default_value_t = 10,
+        help = "The interval between AutoNAT probes. Default is 10 seconds"
     )]
-    pub autonat_confidence_threshold: usize,
+    pub autonat_probe_interval: u64,
+
+    #[clap(
+        long,
+        default_value = "5",
+        help = "Maximum number of untested addresses candidates to test with AutoNAT probes"
+    )]
+    pub autonat_max_candidates: usize,
 
     /// Force initialization even if the directory already exists
     #[clap(long)]
@@ -402,7 +409,10 @@ impl InitCommand {
                     self.advertise_address,
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
                     RelayConfig::new(self.relay_registrations_limit),
-                    AutonatConfig::new(self.autonat_confidence_threshold),
+                    AutonatConfig::new(
+                        self.autonat_max_candidates,
+                        Duration::from_secs(self.autonat_probe_interval),
+                    ),
                 ),
                 server_config,
             ),
