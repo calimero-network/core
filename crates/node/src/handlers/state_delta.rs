@@ -68,6 +68,7 @@ pub async fn handle_state_delta(
         &author_id,
         source,
         sync_timeout,
+        context.root_hash,
     )
     .await?;
 
@@ -275,12 +276,29 @@ async fn ensure_author_sender_key(
     author_id: &PublicKey,
     source: PeerId,
     sync_timeout: std::time::Duration,
+    context_root_hash: Hash,
 ) -> Result<PrivateKey> {
     let mut author_identity = context_client
         .get_identity(context_id, author_id)?
         .ok_or_eyre("author identity not found")?;
 
     if author_identity.sender_key.is_none() {
+        // Check if context is uninitialized (bootstrapping)
+        // During bootstrap, skip key share to avoid blocking state sync.
+        // The key share would block for ~350ms and interfere with the parallel
+        // state sync stream from the same peer. State sync will deliver all
+        // deltas needed to initialize the context. Once initialized, subsequent
+        // deltas can trigger key shares without blocking critical bootstrap.
+        if context_root_hash == Hash::default() {
+            debug!(
+                %context_id,
+                %author_id,
+                source_peer=%source,
+                "Context uninitialized - deferring key share until after state sync completes"
+            );
+            bail!("author sender_key not available (context uninitialized, deferring key share)");
+        }
+
         info!(
             %context_id,
             %author_id,
