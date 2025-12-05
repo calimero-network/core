@@ -144,6 +144,7 @@ jobs:
                                   attempt=$((attempt + 1))
                               fi
                           done
+                          merobox nuke -force || true
                           if [ "$success" = false ]; then
                               failed_workflows+=("$workflow")
                           fi
@@ -158,3 +159,17 @@ jobs:
                       exit 1
                   fi
                   echo "All workflows completed successfully!"
+
+            - name: Upload Workflow Data Artifacts
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: merobox-workflow-data-${{ github.sha }}
+                  path: |
+                      apps/*/res/*.wasm
+                      apps/*/res/abi.json
+                      apps/*/res/*.mpk
+                      apps/*/res/state-schema.json
+                      apps/*/data/
+                  retention-days: 7
+                  if-no-files-found: warn
