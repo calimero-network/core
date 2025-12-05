@@ -843,7 +843,15 @@ async fn request_missing_deltas(
 }
 
 /// Initiate bidirectional key share with a specific peer for a specific author identity
-/// This performs the same cryptographic key exchange as initial sync, but on-demand
+/// This performs the same cryptographic key exchange as initial sync, but on-demand.
+///
+/// **IMPORTANT**: This must follow the exact same protocol as `sync/key.rs::bidirectional_key_share`
+/// to be compatible with the responder side (`handle_key_share_request`).
+///
+/// Protocol:
+/// 1. Init (KeyShare) → Init (KeyShare) ack
+/// 2. Challenge/Response authentication (deterministic initiator/responder roles)
+/// 3. KeyShare message exchange (all messages unencrypted - transport layer handles encryption)
 async fn request_key_share_with_peer(
     network_client: &calimero_network_primitives::client::NetworkClient,
     context_client: &ContextClient,
@@ -852,8 +860,9 @@ async fn request_key_share_with_peer(
     peer: PeerId,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    use calimero_crypto::{Nonce, SharedKey};
+    use calimero_crypto::Nonce;
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+    use ed25519_dalek::Signature;
     use rand::Rng;
 
     debug!(
@@ -879,7 +888,7 @@ async fn request_key_share_with_peer(
 
         let our_nonce = rand::thread_rng().gen::<Nonce>();
 
-        // Initiate key share request
+        // Step 1: Initiate key share request
         crate::sync::stream::send(
             &mut stream,
             &StreamMessage::Init {
@@ -892,74 +901,335 @@ async fn request_key_share_with_peer(
         )
         .await?;
 
-        // Receive ack from peer
+        // Step 2: Receive ack from peer (contains their identity)
         let Some(ack) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
             bail!("connection closed while awaiting key share handshake");
         };
 
-        let their_nonce = match ack {
+        let their_identity = match ack {
             StreamMessage::Init {
+                party_id,
                 payload: InitPayload::KeyShare,
-                next_nonce,
                 ..
-            } => next_nonce,
+            } => party_id,
             unexpected => {
                 bail!("unexpected message during key share: {:?}", unexpected)
             }
         };
 
-        // Now perform bidirectional key exchange
-        let mut their_identity = context_client
-            .get_identity(context_id, author_identity)?
-            .ok_or_eyre("expected peer identity to exist")?;
+        // Verify peer responded with the identity we need
+        // If the peer has multiple identities, they might respond with a different one
+        if their_identity != *author_identity {
+            warn!(
+                %context_id,
+                %author_identity,
+                %their_identity,
+                "Peer responded with different identity than expected author - key share may not provide the needed sender_key"
+            );
+            // Continue anyway - we'll get *some* sender_key which might be useful,
+            // and the next delta from author_identity will trigger another key share attempt
+        }
 
-        let (private_key, sender_key) = context_client
+        // Step 3: Deterministic tie-breaker for initiator/responder role
+        // Both peers must agree on roles to prevent deadlock
+        let is_initiator = <PublicKey as AsRef<[u8; 32]>>::as_ref(&our_identity)
+            > <PublicKey as AsRef<[u8; 32]>>::as_ref(&their_identity);
+
+        debug!(
+            %context_id,
+            %our_identity,
+            %their_identity,
+            is_initiator,
+            "Determined role via deterministic comparison"
+        );
+
+        // Get our private key and sender key
+        let (our_private_key, sender_key) = context_client
             .get_identity(context_id, &our_identity)?
             .and_then(|i| Some((i.private_key?, i.sender_key?)))
             .ok_or_eyre("expected own identity to have private & sender keys")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity.public_key);
+        // Get their identity record (to update with sender_key later)
+        let mut their_identity_record = context_client
+            .get_identity(context_id, &their_identity)?
+            .ok_or_eyre("expected peer identity to exist")?;
 
-        // Send our sender_key
-        crate::sync::stream::send(
-            &mut stream,
-            &StreamMessage::Message {
-                sequence_id: 0,
-                payload: MessagePayload::KeyShare { sender_key },
-                next_nonce: our_nonce,
-            },
-            Some((shared_key, our_nonce)),
-        )
-        .await?;
+        let mut sequence_id_out: usize = 0;
+        let mut sequence_id_in: usize = 0;
 
-        // Receive their sender_key
-        let Some(msg) =
-            crate::sync::stream::recv(&mut stream, Some((shared_key, their_nonce)), timeout)
-                .await?
-        else {
-            bail!("connection closed while awaiting sender_key");
-        };
+        // Step 4: Challenge/Response authentication
+        // Protocol must match sync/key.rs exactly:
+        // - Initiator: send challenge → recv response → recv challenge → send response
+        // - Responder: recv challenge → send response → send challenge → recv response
+        if is_initiator {
+            // INITIATOR: Challenge them first
+            let challenge: [u8; 32] = rand::thread_rng().gen();
 
-        let their_sender_key = match msg {
-            StreamMessage::Message {
-                payload: MessagePayload::KeyShare { sender_key },
-                ..
-            } => sender_key,
-            unexpected => {
-                bail!("unexpected message: {:?}", unexpected)
-            }
-        };
+            debug!(%context_id, %their_identity, "Sending authentication challenge (initiator)");
 
-        // Store their sender_key
-        their_identity.sender_key = Some(their_sender_key);
-        context_client.update_identity(context_id, &their_identity)?;
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::Challenge { challenge },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Receive their signature
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge response");
+            };
+
+            let their_signature_bytes = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::ChallengeResponse { signature },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    signature
+                }
+                unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
+            };
+
+            // Verify their signature
+            let their_signature = Signature::from_bytes(&their_signature_bytes);
+            their_identity
+                .verify(&challenge, &their_signature)
+                .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
+
+            debug!(%context_id, %their_identity, "Peer authenticated successfully");
+
+            // Now receive their challenge for us
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge");
+            };
+
+            let their_challenge = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::Challenge { challenge },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    challenge
+                }
+                unexpected => bail!("expected Challenge, got {:?}", unexpected),
+            };
+
+            // Sign their challenge
+            let our_signature = our_private_key.sign(&their_challenge)?;
+
+            debug!(%context_id, %our_identity, "Sending authentication response (initiator)");
+
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::ChallengeResponse {
+                        signature: our_signature.to_bytes(),
+                    },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Step 5: Key exchange - initiator sends first
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+
+            // Receive their sender_key
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting key share");
+            };
+
+            let peer_sender_key = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sender_key
+                }
+                unexpected => bail!("expected KeyShare, got {:?}", unexpected),
+            };
+
+            their_identity_record.sender_key = Some(peer_sender_key);
+        } else {
+            // RESPONDER: Receive challenge first
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge");
+            };
+
+            let their_challenge = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::Challenge { challenge },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    challenge
+                }
+                unexpected => bail!("expected Challenge, got {:?}", unexpected),
+            };
+
+            // Sign their challenge
+            let our_signature = our_private_key.sign(&their_challenge)?;
+
+            debug!(%context_id, %our_identity, "Sending authentication response (responder)");
+
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::ChallengeResponse {
+                        signature: our_signature.to_bytes(),
+                    },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Now send our challenge
+            let challenge: [u8; 32] = rand::thread_rng().gen();
+
+            debug!(%context_id, %their_identity, "Sending authentication challenge (responder)");
+
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::Challenge { challenge },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Receive their signature
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge response");
+            };
+
+            let their_signature_bytes = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::ChallengeResponse { signature },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    signature
+                }
+                unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
+            };
+
+            // Verify their signature
+            let their_signature = Signature::from_bytes(&their_signature_bytes);
+            their_identity
+                .verify(&challenge, &their_signature)
+                .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
+
+            debug!(%context_id, %their_identity, "Peer authenticated successfully");
+
+            // Step 5: Key exchange - responder receives first
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting key share");
+            };
+
+            let peer_sender_key = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sender_key
+                }
+                unexpected => bail!("expected KeyShare, got {:?}", unexpected),
+            };
+
+            their_identity_record.sender_key = Some(peer_sender_key);
+
+            // Then send our sender_key
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+        }
+
+        // Step 6: Store their sender_key
+        context_client.update_identity(context_id, &their_identity_record)?;
 
         info!(
             %context_id,
-            our_identity=%our_identity,
-            their_identity=%author_identity,
+            %our_identity,
+            their_identity=%their_identity_record.public_key,
             %peer,
-            "Bidirectional key share completed"
+            "Bidirectional key share completed with mutual authentication"
         );
 
         Ok(())
