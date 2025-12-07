@@ -132,6 +132,10 @@ pub enum HostError {
     BlobMemoryLimitExceeded,
     #[error("incorrect ed25519 public key")]
     Ed25519IncorrectPublicKey,
+    #[error("alias already exists: {0}")]
+    AliasAlreadyExists(String),
+    #[error("node client is not available")]
+    NodeClientNotAvailable,
 }
 
 #[derive(Copy, Clone, Debug, Serialize)]

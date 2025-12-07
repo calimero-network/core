@@ -189,9 +189,10 @@ pub struct VMLogic<'a> {
     /// Interface to the host system for querying context information (e.g. membership).
     context_host: Option<Box<dyn ContextHost>>,
 
-    // Blob functionality
-    /// An optional client for interacting with the node's blob storage.
+    /// An optional client for interacting with the node's blob storage and aliases.
     node_client: Option<NodeClient>,
+
+    // Blob functionality
     /// A map of active blob handles, having blob's file descriptor as a key.
     blob_handles: HashMap<u64, BlobHandle>,
     /// The next available file descriptor for a new blob handle.
@@ -297,6 +298,15 @@ pub enum ContextMutation {
     AddMember { public_key: [u8; DIGEST_SIZE] },
     /// Request to remove an existing member from the context.
     RemoveMember { public_key: [u8; DIGEST_SIZE] },
+    /// Request to create a new context.
+    CreateContext {
+        protocol: String,
+        application_id: [u8; DIGEST_SIZE],
+        init_args: Vec<u8>,
+        alias: Option<String>,
+    },
+    /// Request to delete a context (locally).
+    DeleteContext { context_id: [u8; DIGEST_SIZE] },
     // TODO: add Grant/Revoke capabilities for ACL here in the future.
 }
 

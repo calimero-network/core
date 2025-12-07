@@ -480,7 +480,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         proxy_client.approve(&executor, &proposal_id).await?;
                     }
 
-                    process_context_mutations(&context_client, context_id, executor, &outcome.context_mutations).await;
+                    process_context_mutations(&context_client, &node_client, context_id, executor, &outcome.context_mutations).await;
 
                     Ok((guard, context.root_hash, outcome))
                 }

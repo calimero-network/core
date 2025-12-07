@@ -2,9 +2,101 @@ use crate::{
     errors::HostError,
     logic::{sys, ContextMutation, VMHostFunctions, VMLogicError, VMLogicResult},
 };
-use calimero_primitives::common::DIGEST_SIZE;
+use calimero_primitives::{
+    alias::Alias, common::DIGEST_SIZE, context::ContextId, identity::PublicKey,
+};
 
 impl VMHostFunctions<'_> {
+    /// Requests the creation of a new context.
+    ///
+    /// Before the context request is sent, the function checks if the provided alias is available.
+    /// If the alias is taken, request to create a new context is not created, and the function
+    /// returns an error.
+    ///
+    /// # Arguments
+    /// * `protocol_ptr` - Pointer to protocol string buffer.
+    /// * `app_id_ptr` - Pointer to 32-byte Application ID buffer.
+    /// * `args_ptr` - Pointer to initialization arguments buffer.
+    /// * `alias_ptr` - Pointer to the buffer containing an optional alias.
+    pub fn context_create(
+        &mut self,
+        protocol_ptr: u64,
+        app_id_ptr: u64,
+        args_ptr: u64,
+        alias_ptr: u64,
+    ) -> VMLogicResult<()> {
+        let protocol_buf =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(protocol_ptr)? };
+        let protocol = self.read_guest_memory_str(&protocol_buf)?.to_owned();
+
+        let app_id_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(app_id_ptr)? };
+        let application_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(&app_id_buf)?;
+
+        let args_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(args_ptr)? };
+        let init_args = self.read_guest_memory_slice(&args_buf).to_vec();
+
+        // Check if alias ptr is non-zero.
+        let alias = if alias_ptr != 0 {
+            let alias_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(alias_ptr)? };
+            if alias_buf.len() > 0 {
+                Some(self.read_guest_memory_str(&alias_buf)?.to_owned())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Check if alias exists
+        if let Some(alias_str) = &alias {
+            let logic = self.borrow_logic();
+            if let Some(node) = &logic.node_client {
+                let context_id = logic.context.context_id;
+                // We scope the alias to the current context to prevent collisions between apps
+                let scoped_alias: Alias<PublicKey> = Alias::new(alias_str);
+
+                if node
+                    .resolve_alias(scoped_alias, Some(context_id.into()))
+                    .is_ok_and(|opt| opt.is_some())
+                {
+                    return Err(VMLogicError::HostError(HostError::AliasAlreadyExists(
+                        alias_str.clone(),
+                    )));
+                }
+            }
+        }
+
+        self.with_logic_mut(|logic| {
+            logic
+                .context_mutations
+                .push(ContextMutation::CreateContext {
+                    protocol,
+                    application_id,
+                    init_args,
+                    alias,
+                });
+        });
+
+        Ok(())
+    }
+
+    /// Requests the deletion of a context.
+    ///
+    /// # Arguments
+    /// * `context_id_ptr` - Pointer to 32-byte Context ID buffer.
+    pub fn context_delete(&mut self, context_id_ptr: u64) -> VMLogicResult<()> {
+        let ctx_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(context_id_ptr)? };
+        let context_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(&ctx_buf)?;
+
+        self.with_logic_mut(|logic| {
+            logic
+                .context_mutations
+                .push(ContextMutation::DeleteContext { context_id });
+        });
+
+        Ok(())
+    }
+
     /// Requests adding a member to the current context.
     ///
     /// This is a write operation (intent). It does not happen immediately but is
@@ -86,13 +178,57 @@ impl VMHostFunctions<'_> {
 
         Ok(())
     }
+
+    /// Resolves a Context ID from an alias.
+    ///
+    /// # Returns
+    /// * `1` if alias is found (writes 32-byte ID to `dest_register_id`).
+    /// * `0` if alias is not found.
+    pub fn context_resolve_alias(
+        &mut self,
+        alias_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let alias_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(alias_ptr)? };
+        let alias_str = self.read_guest_memory_str(&alias_buf)?;
+
+        let logic = self.borrow_logic();
+        let node_client = logic
+            .node_client
+            .as_ref()
+            .ok_or(VMLogicError::HostError(HostError::NodeClientNotAvailable))?;
+
+        let context_id = logic.context.context_id;
+
+        // We are looking for a PublicKey alias scoped to this context
+        let alias: Alias<PublicKey> = Alias::new(alias_str);
+
+        // Resolve against the current context scope
+        match node_client.resolve_alias(alias, Some(context_id.into())) {
+            Ok(Some(target_key)) => {
+                // target_key is PublicKey, which wraps [u8; 32]
+                // This bytes corresponds to the Child Context ID
+                let id_bytes = target_key.digest();
+
+                self.with_logic_mut(|logic| {
+                    logic
+                        .registers
+                        .set(logic.limits, dest_register_id, *id_bytes)
+                })?;
+                Ok(1)
+            }
+            Ok(None) => Ok(0),
+            // Some internal error occured.
+            Err(_) => Err(VMLogicError::HostError(HostError::InvalidMemoryAccess)),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::logic::{
-        tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
+        tests::{prepare_guest_buf_descriptor, setup_vm, write_str, SimpleMockStorage},
         ContextHost, Cow, VMContext, VMLimits, VMLogic,
     };
     use wasmer::{AsStoreMut, Store};
@@ -109,6 +245,127 @@ mod tests {
         }
         fn members(&self) -> Vec<[u8; DIGEST_SIZE]> {
             self.members.clone()
+        }
+    }
+
+    #[test]
+    fn test_context_create_delete() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Setup data
+        let protocol = "near";
+        let app_id = [1u8; DIGEST_SIZE];
+        let args = vec![1, 2, 3];
+        let context_id = [1u8; DIGEST_SIZE];
+        let alias = "my_child_context";
+
+        // Pointers
+        let protocol_ptr = 300u64;
+        let app_id_ptr = 400u64;
+        let args_ptr = 500u64;
+        let alias_ptr = 600u64;
+        let ctx_ptr = 700u64;
+
+        // Descriptors
+        let protocol_buf = 10u64;
+        let app_id_buf = 30u64;
+        let args_buf = 70u64;
+        let alias_buf = 120u64;
+        let ctx_buf = 180u64;
+
+        // Write memory
+        write_str(&host, protocol_ptr, protocol);
+        prepare_guest_buf_descriptor(&host, protocol_buf, protocol_ptr, protocol.len() as u64);
+
+        host.borrow_memory().write(app_id_ptr, &app_id).unwrap();
+        prepare_guest_buf_descriptor(&host, app_id_buf, app_id_ptr, DIGEST_SIZE as u64);
+
+        host.borrow_memory().write(args_ptr, &args).unwrap();
+        prepare_guest_buf_descriptor(&host, args_buf, args_ptr, args.len() as u64);
+
+        write_str(&host, alias_ptr, alias);
+        prepare_guest_buf_descriptor(&host, alias_buf, alias_ptr, alias.len() as u64);
+
+        host.borrow_memory().write(ctx_ptr, &context_id).unwrap();
+        prepare_guest_buf_descriptor(&host, ctx_buf, ctx_ptr, DIGEST_SIZE as u64);
+
+        // Call ContextCreate
+        host.context_create(protocol_buf, app_id_buf, args_buf, alias_buf)
+            .unwrap();
+
+        // Call ContextDelete
+        host.context_delete(ctx_buf).unwrap();
+
+        let mutations = &host.borrow_logic().context_mutations;
+        assert_eq!(mutations.len(), 2);
+
+        match &mutations[0] {
+            ContextMutation::CreateContext {
+                protocol: artifact_protocol,
+                application_id: artifact_application_id,
+                init_args: artifact_init_args,
+                alias: artifact_alias,
+            } => {
+                assert_eq!(artifact_protocol, protocol);
+                assert_eq!(artifact_application_id, &app_id);
+                assert_eq!(artifact_init_args, &args);
+                assert_eq!(*artifact_alias, Some(alias.to_string()));
+            }
+            _ => panic!("Wrong mutation type"),
+        }
+
+        match &mutations[1] {
+            ContextMutation::DeleteContext { context_id: c } => {
+                assert_eq!(c, &context_id);
+            }
+            _ => panic!("Wrong mutation type"),
+        }
+    }
+
+    #[test]
+    fn test_context_create_no_alias() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Setup data
+        let protocol = "near";
+        let app_id = [1u8; DIGEST_SIZE];
+        let args = vec![1, 2, 3];
+
+        // Pointers & Descriptors
+        let protocol_ptr = 100u64;
+        let app_id_ptr = 200u64;
+        let args_ptr = 300u64;
+
+        let protocol_buf = 10u64;
+        let app_id_buf = 30u64;
+        let args_buf = 70u64;
+
+        // Write memory
+        write_str(&host, protocol_ptr, protocol);
+        prepare_guest_buf_descriptor(&host, protocol_buf, protocol_ptr, protocol.len() as u64);
+
+        host.borrow_memory().write(app_id_ptr, &app_id).unwrap();
+        prepare_guest_buf_descriptor(&host, app_id_buf, app_id_ptr, DIGEST_SIZE as u64);
+
+        host.borrow_memory().write(args_ptr, &args).unwrap();
+        prepare_guest_buf_descriptor(&host, args_buf, args_ptr, args.len() as u64);
+
+        // Pass 0 for alias pointer to signify None
+        host.context_create(protocol_buf, app_id_buf, args_buf, 0)
+            .unwrap();
+
+        let mutations = &host.borrow_logic().context_mutations;
+        match &mutations[0] {
+            ContextMutation::CreateContext { alias, .. } => {
+                assert!(alias.is_none());
+            }
+            _ => panic!("Wrong mutation type"),
         }
     }
 
@@ -192,7 +449,7 @@ mod tests {
             Some(Box::new(mock_host)),
         );
         logic.with_memory(memory);
-        let mut host = logic.host_functions(store.as_store_mut());
+        let host = logic.host_functions(store.as_store_mut());
 
         let pk_ptr = 100u64;
         let pk_buf_ptr = 16u64;

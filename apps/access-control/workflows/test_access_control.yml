@@ -5,6 +5,11 @@ name: Access Control Test
 stop_all_nodes: true
 restart: false 
 wait_timeout: 120
+# Uncomment once Merobox support for NEAR Sandbox is merged.
+#near_devnet: true
+# Assume contracts are located in the parent dir of the Calimero `core`.
+# Uncomment once Merobox support for NEAR Sandbox is merged.
+#contracts_dir: ../../../contracts_bin
 
 nodes:
   chain_id: testnet-1
@@ -133,3 +138,70 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{is_member_final}}, {"output": false})'
+
+    # 12. Create Child Context with Alias
+  - name: Create Context Child
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: create_context_child
+    args:
+      protocol: "near"
+      app_id_base58: '{{app_id}}'
+      alias: "my_child_app"
+
+  # 13. Wait for Creation (Host needs time to execute init and save alias)
+  - name: Wait for Creation
+    type: wait
+    seconds: 10
+
+  # 14. Verify Child Exists via Alias Resolution
+  - name: Resolve Child Alias
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: get_child_id
+    args:
+      alias: "my_child_app"
+    outputs:
+      context_child_id_res: result
+      context_child_id: result.output
+
+  - name: Assert Child ID returned
+    type: assert
+    statements:
+      - "is_set({{context_child_id_res.output}})"
+
+  # 15. Destroy Child Context
+  - name: Delete Child Context
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: delete_context_child
+    args:
+      context_id_base58: '{{context_child_id}}'
+
+  - name: Wait for Deletion
+    type: wait
+    seconds: 3
+
+  # 16. Verify Deletion (Should fail)
+  - name: Expected Failure - Verify Child Context Deletion
+    type: call
+    node: ac-node-1
+    context_id: '{{context_child_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: get_all_members
+    expected_failure: true
+    outputs:
+      error_type: error_type
+      error_message: error_message
+
+  - name: "Assert Error Occurred"
+    type: assert
+    statements:
+      - "is_set({{error_type}})"
+      - "equal({{error_type}}, ContextNotFound)"
