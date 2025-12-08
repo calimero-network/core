@@ -129,6 +129,15 @@ pub async fn process_context_mutations(
                 let target_ctx = ContextId::from(*target_ctx_bytes);
                 info!(%context_id, target=%target_ctx, "WASM requested DeleteContext");
 
+                // Only allow self-destruct for now.
+                // In future, we might allow deletion of other context with some extra permissions
+                // verified (e.g. our node is the owner of both contexts).
+                if target_ctx != context_id {
+                    error!(%context_id, target=%target_ctx, "Unauthorized attempt to delete external context");
+                    // Skip context deletion.
+                    continue;
+                }
+
                 match context_client.delete_context(&target_ctx).await {
                     Ok(_) => {
                         info!(%context_id, target=%target_ctx, "Context deleted successfully via WASM host function");
