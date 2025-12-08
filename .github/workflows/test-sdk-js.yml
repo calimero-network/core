@@ -151,13 +151,8 @@ jobs:
                   for dir in examples/*/; do
                       example=$(basename "$dir")
                       echo "Verifying WASM for: $example"
-                      # Check for either service.wasm or other common WASM names
-                      if [ -f "${dir}build/service.wasm" ]; then
-
-                      elif [ -f "${dir}build/${example}.wasm" ]; then
-
-                      elif ls "${dir}build/"*.wasm 1> /dev/null 2>&1; then
-                      else
+                      # Check if any WASM file exists in build directory
+                      if ! ls "${dir}build/"*.wasm 1> /dev/null 2>&1; then
                           echo "Error: No WASM file found in ${dir}build/"
                           exit 1
                       fi
