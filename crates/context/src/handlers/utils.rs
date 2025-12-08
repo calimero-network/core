@@ -100,7 +100,13 @@ pub async fn process_context_mutations(
 
                         // If an alias was provided, register it in the node
                         if let Some(alias_str) = alias {
-                            let alias: Alias<PublicKey> = Alias::new(alias_str);
+                            let alias: Alias<PublicKey> = match Alias::try_from_str(alias_str) {
+                                Ok(alias) => alias,
+                                Err(e) => {
+                                    error!(%context_id, error=?e, "Failed to create alias");
+                                    continue;
+                                }
+                            };
 
                             // Map the alias to the new ContextId.
                             let new_context_id_as_key = PublicKey::from(*new_context_id);

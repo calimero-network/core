@@ -2,9 +2,7 @@ use crate::{
     errors::HostError,
     logic::{sys, ContextMutation, VMHostFunctions, VMLogicError, VMLogicResult},
 };
-use calimero_primitives::{
-    alias::Alias, common::DIGEST_SIZE, context::ContextId, identity::PublicKey,
-};
+use calimero_primitives::{alias::Alias, common::DIGEST_SIZE, identity::PublicKey};
 
 impl VMHostFunctions<'_> {
     /// Requests the creation of a new context.
@@ -53,7 +51,10 @@ impl VMHostFunctions<'_> {
             if let Some(node) = &logic.node_client {
                 let context_id = logic.context.context_id;
                 // We scope the alias to the current context to prevent collisions between apps
-                let scoped_alias: Alias<PublicKey> = Alias::new(alias_str);
+                let scoped_alias: Alias<PublicKey> =
+                    Alias::try_from_str(alias_str).map_err(|_| {
+                        VMLogicError::HostError(HostError::AliasTooLong(alias_str.len()))
+                    })?;
 
                 if node
                     .resolve_alias(scoped_alias, Some(context_id.into()))
@@ -201,7 +202,8 @@ impl VMHostFunctions<'_> {
         let context_id = logic.context.context_id;
 
         // We are looking for a PublicKey alias scoped to this context
-        let alias: Alias<PublicKey> = Alias::new(alias_str);
+        let alias: Alias<PublicKey> = Alias::try_from_str(alias_str)
+            .map_err(|_| VMLogicError::HostError(HostError::AliasTooLong(alias_str.len())))?;
 
         // Resolve against the current context scope
         match node_client.resolve_alias(alias, Some(context_id.into())) {

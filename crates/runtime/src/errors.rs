@@ -134,6 +134,8 @@ pub enum HostError {
     Ed25519IncorrectPublicKey,
     #[error("alias already exists: {0}")]
     AliasAlreadyExists(String),
+    #[error("alias too long: {0}")]
+    AliasTooLong(usize),
     #[error("node client is not available")]
     NodeClientNotAvailable,
 }

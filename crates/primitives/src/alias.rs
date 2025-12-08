@@ -74,6 +74,11 @@ impl<T> Alias<T> {
         s.parse().expect("alias too long")
     }
 
+    /// Creates a new Alias from a string slice.
+    pub fn try_from_str(s: &str) -> Result<Self, InvalidAlias> {
+        s.parse()
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         let bytes = &self.str[..self.len as usize];
