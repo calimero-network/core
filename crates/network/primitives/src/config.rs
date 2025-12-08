@@ -20,8 +20,8 @@ pub const IPFS_BOOT_NODES: &[&str] = &[
 ];
 
 pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
-    "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
-    "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
+    "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh",
+    "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh",
 ];
 
 #[derive(Debug)]
