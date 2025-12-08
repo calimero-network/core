@@ -138,27 +138,30 @@ jobs:
               working-directory: sdk-js
               run: |
                   set -e
-                  cd examples/counter && pnpm build:manual
-                  cd ../kv-store && pnpm build:manual
-                  cd ../team-metrics && pnpm build:manual
-                  cd ../blobs && pnpm build:manual
-                  cd ../curb-js && pnpm build:manual
-                  cd ../nested-collections-demo && pnpm build:manual
-                  cd ../private-data && pnpm build:manual
-                  cd ../xcall && pnpm build:manual
+                  for dir in examples/*/; do
+                      example=$(basename "$dir")
+                      echo "Building example: $example"
+                      cd "$dir" && pnpm build:manual && cd ../..
+                  done
 
             - name: Verify WASM outputs
               working-directory: sdk-js
               run: |
                   set -e
-                  test -f examples/counter/build/service.wasm
-                  test -f examples/kv-store/build/service.wasm
-                  test -f examples/team-metrics/build/service.wasm
-                  test -f examples/blobs/build/service.wasm
-                  test -f examples/curb-js/build/curb.wasm
-                  test -f examples/nested-collections-demo/build/service.wasm
-                  test -f examples/private-data/build/service.wasm
-                  test -f examples/xcall/build/service.wasm
+                  for dir in examples/*/; do
+                      example=$(basename "$dir")
+                      echo "Verifying WASM for: $example"
+                      # Check for either service.wasm or other common WASM names
+                      if [ -f "${dir}build/service.wasm" ]; then
+
+                      elif [ -f "${dir}build/${example}.wasm" ]; then
+
+                      elif ls "${dir}build/"*.wasm 1> /dev/null 2>&1; then
+                      else
+                          echo "Error: No WASM file found in ${dir}build/"
+                          exit 1
+                      fi
+                  done
 
             - name: Run SDK JS Merobox Workflows
               run: |
