@@ -15,7 +15,7 @@ use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage}
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::{bail, eyre};
+use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
 use libp2p::gossipsub::TopicHash;

@@ -128,6 +128,7 @@ async fn create_test_node_client() -> (NodeClient, TempDir, TempDir) {
         LazyRecipient::new(),
         event_sender,
         ctx_sync_tx,
+        String::new(), // Not used in tests
     );
 
     (node_client, data_dir, blob_dir)

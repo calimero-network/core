@@ -20,7 +20,11 @@ use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
-use crate::messages::NodeMessage;
+use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
+
+use crate::messages::{
+    NodeMessage, RegisterPendingSpecializedNodeInvite, RemovePendingSpecializedNodeInvite,
+};
 use crate::sync::BroadcastMessage;
 
 mod alias;
@@ -35,17 +39,19 @@ pub struct NodeClient {
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+    specialized_node_invite_topic: String,
 }
 
 impl NodeClient {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         datastore: Store,
         blobstore: BlobManager,
         network_client: NetworkClient,
         node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
         ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+        specialized_node_invite_topic: String,
     ) -> Self {
         Self {
             datastore,
@@ -54,6 +60,7 @@ impl NodeClient {
             node_manager,
             event_sender,
             ctx_sync_tx,
+            specialized_node_invite_topic,
         }
     }
 
@@ -161,6 +168,71 @@ impl NodeClient {
         let _ignored = self.network_client.publish(topic, payload).await?;
 
         Ok(())
+    }
+
+    /// Broadcast a specialized node invite discovery to the global invite topic.
+    ///
+    /// This broadcasts a discovery message and registers a pending invite so that
+    /// when a specialized node responds with verification, the node can create an invitation.
+    ///
+    /// # Arguments
+    /// * `context_id` - The context to invite specialized nodes to
+    /// * `inviter_id` - The identity performing the invitation
+    /// * `invite_topic` - The global topic name for specialized node invite discovery
+    ///
+    /// # Returns
+    /// The nonce used in the request
+    pub async fn broadcast_specialized_node_invite(
+        &self,
+        context_id: ContextId,
+        inviter_id: PublicKey,
+    ) -> eyre::Result<[u8; 32]> {
+        let nonce: [u8; 32] = rand::thread_rng().gen();
+        // Currently only ReadOnly node type is supported
+        let node_type = SpecializedNodeType::ReadOnly;
+
+        info!(
+            %context_id,
+            %inviter_id,
+            ?node_type,
+            topic = %self.specialized_node_invite_topic,
+            nonce = %hex::encode(nonce),
+            "Broadcasting specialized node invite discovery"
+        );
+
+        // Register the pending invite FIRST to avoid race condition
+        // A fast-responding specialized node could send verification request
+        // before registration completes if we broadcast first
+        self.node_manager
+            .send(NodeMessage::RegisterPendingSpecializedNodeInvite {
+                request: RegisterPendingSpecializedNodeInvite {
+                    nonce,
+                    context_id,
+                    inviter_id,
+                },
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        // Now broadcast the discovery message
+        let payload = BroadcastMessage::SpecializedNodeDiscovery { nonce, node_type };
+        let payload = borsh::to_vec(&payload)?;
+        let topic = IdentTopic::new(self.specialized_node_invite_topic.to_owned());
+        let result = self.network_client.publish(topic.hash(), payload).await;
+
+        // If broadcast failed, clean up the pending invite before returning error
+        if result.is_err() {
+            self.node_manager
+                .send(NodeMessage::RemovePendingSpecializedNodeInvite {
+                    request: RemovePendingSpecializedNodeInvite { nonce },
+                })
+                .await
+                .expect("Mailbox not to be dropped");
+        }
+
+        let _ignored = result?;
+
+        Ok(nonce)
     }
 
     pub fn send_event(&self, event: NodeEvent) -> eyre::Result<()> {

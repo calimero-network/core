@@ -34,6 +34,25 @@ use crate::gc::GarbageCollector;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
+/// Node operation mode
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NodeMode {
+    /// Standard mode - full node functionality with JSON-RPC execution
+    #[default]
+    Standard,
+    /// Read-only mode - disables JSON-RPC execution, used for TEE observer nodes
+    ReadOnly,
+}
+
+/// Configuration for specialized node functionality (e.g., read-only nodes).
+#[derive(Debug, Clone)]
+pub struct SpecializedNodeConfig {
+    /// Topic name for specialized node invite discovery messages.
+    pub invite_topic: String,
+    /// Whether to accept mock TEE attestation (testing only).
+    pub accept_mock_tee: bool,
+}
+
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
@@ -45,6 +64,8 @@ pub struct NodeConfig {
     pub context: ContextConfig,
     pub server: ServerConfig,
     pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 12 hours)
+    pub mode: NodeMode,
+    pub specialized_node: SpecializedNodeConfig,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -84,6 +105,16 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         .subscribe(IdentTopic::new("meta_topic".to_owned()))
         .await?;
 
+    info!(
+        topic = %config.specialized_node.invite_topic,
+        "Subscribing to specialized node invite topic"
+    );
+    let _ignored = network_client
+        .subscribe(IdentTopic::new(
+            config.specialized_node.invite_topic.clone(),
+        ))
+        .await?;
+
     // Increased buffer sizes for better burst handling and concurrency
     // 256 events: supports more concurrent WebSocket clients
     // 64 sync requests: handles burst context joins/syncs
@@ -98,6 +129,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_recipient.clone(),
         event_sender,
         ctx_sync_tx,
+        config.specialized_node.invite_topic.clone(),
     );
 
     let external_client = ExternalClient::from_config(&config.context.client);
@@ -122,7 +154,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_manager
     });
 
-    let node_state = crate::NodeState::new();
+    let node_state = crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
 
     let sync_manager = SyncManager::new(
         config.sync,

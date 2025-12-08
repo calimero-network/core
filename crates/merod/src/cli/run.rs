@@ -2,15 +2,17 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
-use calimero_node::{start, NodeConfig};
+use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
+use tracing::info;
 
 use super::auth_mode::AuthModeArg;
+use super::node_mode::NodeModeArg;
 use crate::cli::RootArgs;
 
 /// Run a node
@@ -19,6 +21,10 @@ pub struct RunCommand {
     /// Override the authentication mode configured in config.toml
     #[arg(long, value_enum)]
     pub auth_mode: Option<AuthModeArg>,
+
+    /// Node operation mode (standard or read-only)
+    #[arg(long, value_enum, default_value_t = NodeModeArg::Standard)]
+    pub mode: NodeModeArg,
 }
 
 impl RunCommand {
@@ -33,6 +39,15 @@ impl RunCommand {
 
         if let Some(mode) = self.auth_mode {
             config.network.server.auth_mode = mode.into();
+        }
+
+        // Convert CLI mode to NodeMode
+        let node_mode: NodeMode = self.mode.into();
+
+        // In read-only mode, disable JSON-RPC to prevent execution requests
+        if node_mode == NodeMode::ReadOnly {
+            info!("Starting node in read-only mode - JSON-RPC execution disabled");
+            config.network.server.jsonrpc = None;
         }
 
         let network = config.network;
@@ -94,6 +109,11 @@ impl RunCommand {
             context: config.context,
             server: server_config,
             gc_interval_secs: None, // Use default (12 hours)
+            mode: node_mode,
+            specialized_node: SpecializedNodeConfig {
+                invite_topic: network.specialized_node.invite_topic,
+                accept_mock_tee: network.specialized_node.accept_mock_tee,
+            },
         })
         .await
     }

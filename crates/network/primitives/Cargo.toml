@@ -10,18 +10,19 @@ publish = true
 
 [dependencies]
 actix.workspace = true
-borsh.workspace = true
+async-trait.workspace = true
+borsh = { workspace = true, features = ["derive"] }
 bytes.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
-libp2p = { workspace = true, features = ["gossipsub", "rendezvous"] }
+libp2p = { workspace = true, features = ["gossipsub", "rendezvous", "request-response"] }
 multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 
-calimero-primitives.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-utils-actix.workspace = true
 
 [dev-dependencies]

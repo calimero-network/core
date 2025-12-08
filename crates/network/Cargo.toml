@@ -29,6 +29,7 @@ libp2p = { workspace = true, features = [
     "quic",
     "rendezvous",
     "relay",
+    "request-response",
     "tokio",
     "tcp",
     "tls",

@@ -13,6 +13,7 @@ actix.workspace = true
 async-stream.workspace = true
 borsh.workspace = true
 camino.workspace = true
+dashmap.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 infer.workspace = true

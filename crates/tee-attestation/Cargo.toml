@@ -1,0 +1,28 @@
+[package]
+name = "calimero-tee-attestation"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "TEE attestation generation and verification for Calimero"
+publish = true
+
+[dependencies]
+eyre.workspace = true
+hex.workspace = true
+tracing.workspace = true
+base64.workspace = true
+
+# Quote verification dependencies (cross-platform)
+dcap-qvl.workspace = true
+tdx-quote.workspace = true
+
+# Server primitives for Quote type
+calimero-server-primitives.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+configfs-tsm.workspace = true
+tdx_workload_attestation = { workspace = true, features = ["tdx-linux"] }
+reqwest.workspace = true
+

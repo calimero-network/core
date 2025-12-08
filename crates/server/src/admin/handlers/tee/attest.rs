@@ -2,19 +2,13 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_server_primitives::admin::{Quote, TeeAttestRequest, TeeAttestResponse};
+use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
+use calimero_tee_attestation::{build_report_data, generate_attestation, AttestationError};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
-
-#[cfg(target_os = "linux")]
-use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
-#[cfg(target_os = "linux")]
-use configfs_tsm::create_tdx_quote;
-#[cfg(target_os = "linux")]
-use tdx_quote::Quote as TdxQuote;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
@@ -44,13 +38,15 @@ pub async fn handler(
         .into_response();
     }
 
+    let nonce_array: [u8; 32] = nonce.try_into().expect("checked length above");
+
     // 2. Get application bytecode hash (if requested)
     let app_hash = if let Some(application_id) = req.application_id {
         match state.node_client.get_application(&application_id) {
             Ok(Some(application)) => {
                 // Use the bytecode BlobId (which is already a hash) directly
                 // BlobId derefs to &[u8; 32]
-                *application.blob.bytecode
+                Some(*application.blob.bytecode)
             }
             Ok(None) => {
                 error!(application_id=%application_id, "Application not found");
@@ -70,66 +66,48 @@ pub async fn handler(
             }
         }
     } else {
-        [0u8; 32]
+        None
     };
 
-    // 3. Build report_data: nonce[32] || app_hash[32]
-    let mut report_data = [0u8; 64];
-    report_data[..32].copy_from_slice(&nonce);
-    report_data[32..].copy_from_slice(&app_hash);
+    // 3. Build report_data using the tee-attestation crate
+    let report_data = build_report_data(&nonce_array, app_hash.as_ref());
 
-    // 4. Generate attestation (platform-specific)
-    match generate_attestation(report_data).await {
-        Ok((quote_b64, quote)) => {
+    // 4. Generate attestation using the tee-attestation crate
+    match generate_attestation(report_data) {
+        Ok(result) => {
+            // Reject mock attestations - they indicate unsupported platform
+            if result.is_mock {
+                error!("Mock attestation generated - platform does not support TDX");
+                return ApiError {
+                    status_code: StatusCode::NOT_IMPLEMENTED,
+                    message:
+                        "TDX attestation generation is only supported on Linux with TDX hardware"
+                            .to_owned(),
+                }
+                .into_response();
+            }
+
             info!("TEE attestation generated successfully");
             ApiResponse {
-                payload: TeeAttestResponse::new(quote_b64, quote),
+                payload: TeeAttestResponse::new(result.quote_b64, result.quote),
             }
             .into_response()
         }
-        Err(err) => err.into_response(),
+        Err(err) => {
+            let (status_code, message) = match &err {
+                AttestationError::NotSupported => (
+                    StatusCode::NOT_IMPLEMENTED,
+                    "TDX attestation generation is only supported on Linux with TDX hardware"
+                        .to_owned(),
+                ),
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            };
+            error!(error=%err, "Failed to generate attestation");
+            ApiError {
+                status_code,
+                message,
+            }
+            .into_response()
+        }
     }
-}
-
-#[cfg(target_os = "linux")]
-async fn generate_attestation(report_data: [u8; 64]) -> Result<(String, Quote), ApiError> {
-    // Generate TDX quote using configfs-tsm
-    let quote_bytes = create_tdx_quote(report_data).map_err(|err| {
-        error!(error=?err, "Failed to generate TDX quote");
-        ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to generate TDX quote: {:?}", err),
-        }
-    })?;
-
-    // Parse the generated quote
-    let tdx_quote = TdxQuote::from_bytes(&quote_bytes).map_err(|err| {
-        error!(error=?err, "Failed to parse generated TDX quote");
-        ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to parse generated TDX quote: {:?}", err),
-        }
-    })?;
-
-    let quote = Quote::try_from(tdx_quote).map_err(|err| {
-        error!(error=%err, "Failed to convert TDX quote to serializable format");
-        ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to convert TDX quote: {}", err),
-        }
-    })?;
-
-    let quote_b64 = base64_engine.encode(&quote_bytes);
-
-    Ok((quote_b64, quote))
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn generate_attestation(_report_data: [u8; 64]) -> Result<(String, Quote), ApiError> {
-    error!("TDX attestation generation is only supported on Linux");
-    Err(ApiError {
-        status_code: StatusCode::NOT_IMPLEMENTED,
-        message: "TDX attestation generation is only supported on Linux with TDX hardware"
-            .to_owned(),
-    })
 }

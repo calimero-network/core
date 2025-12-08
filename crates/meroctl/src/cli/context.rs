@@ -11,6 +11,7 @@ pub mod get;
 pub mod identity;
 pub mod invite;
 pub mod invite_by_open_invitation;
+pub mod invite_specialized_node;
 pub mod join;
 pub mod join_by_open_invitation;
 pub mod list;
@@ -58,6 +59,7 @@ pub enum ContextSubCommands {
     Invite(invite::InviteCommand),
     #[command(alias = "invite-open")]
     InviteByOpenInvitation(invite_by_open_invitation::InviteByOpenInvitationCommand),
+    InviteSpecializedNode(invite_specialized_node::InviteSpecializedNodeCommand),
     Get(get::GetCommand),
     #[command(alias = "del")]
     Delete(delete::DeleteCommand),
@@ -81,6 +83,7 @@ impl ContextCommand {
             ContextSubCommands::InviteByOpenInvitation(open_invite) => {
                 open_invite.run(environment).await
             }
+            ContextSubCommands::InviteSpecializedNode(cmd) => cmd.run(environment).await,
             ContextSubCommands::Join(join) => join.run(environment).await,
             ContextSubCommands::JoinByOpenInvitation(join) => join.run(environment).await,
             ContextSubCommands::List(list) => list.run(environment).await,

@@ -21,12 +21,12 @@ use calimero_server_primitives::admin::{
     GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetLatestVersionResponse,
     GetPeersCountResponse, GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
-    InstallDevApplicationRequest, InviteToContextOpenInvitationRequest,
-    InviteToContextOpenInvitationResponse, InviteToContextRequest, InviteToContextResponse,
-    JoinContextByOpenInvitationRequest, JoinContextRequest, JoinContextResponse,
-    ListAliasesResponse, ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse,
-    LookupAliasResponse, RevokePermissionResponse, SyncContextResponse,
-    UninstallApplicationResponse, UpdateContextApplicationRequest,
+    InstallDevApplicationRequest, InviteSpecializedNodeRequest, InviteSpecializedNodeResponse,
+    InviteToContextOpenInvitationRequest, InviteToContextOpenInvitationResponse,
+    InviteToContextRequest, InviteToContextResponse, JoinContextByOpenInvitationRequest,
+    JoinContextRequest, JoinContextResponse, ListAliasesResponse, ListApplicationsResponse,
+    ListPackagesResponse, ListVersionsResponse, LookupAliasResponse, RevokePermissionResponse,
+    SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
@@ -360,6 +360,21 @@ where
         let response = self
             .connection
             .post("admin-api/contexts/invite_by_open_invitation", request)
+            .await?;
+        Ok(response)
+    }
+
+    /// Invite specialized nodes (e.g., read-only TEE nodes) to join a context.
+    ///
+    /// This broadcasts a specialized node discovery request to the global invite topic.
+    /// Specialized nodes listening will respond with verification and receive invitations.
+    pub async fn invite_specialized_node(
+        &self,
+        request: InviteSpecializedNodeRequest,
+    ) -> Result<InviteSpecializedNodeResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/invite-specialized-node", request)
             .await?;
         Ok(response)
     }

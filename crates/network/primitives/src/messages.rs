@@ -2,11 +2,13 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use libp2p::core::transport::ListenerId;
 pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
+pub use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
 pub use libp2p::PeerId;
 use libp2p::{Multiaddr, StreamProtocol};
 use tokio::sync::oneshot;
 
 use crate::blob_types::BlobAuth;
+use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
 use crate::stream::Stream;
 
 #[derive(Debug, actix::Message)]
@@ -64,6 +66,16 @@ pub enum NetworkMessage {
     RequestBlob {
         request: RequestBlob,
         outcome: oneshot::Sender<<RequestBlob as actix::Message>::Result>,
+    },
+    // Specialized node invite protocol messages
+    SendSpecializedNodeVerificationRequest {
+        request: SendSpecializedNodeVerificationRequest,
+        outcome:
+            oneshot::Sender<<SendSpecializedNodeVerificationRequest as actix::Message>::Result>,
+    },
+    SendSpecializedNodeInvitationResponse {
+        request: SendSpecializedNodeInvitationResponse,
+        outcome: oneshot::Sender<<SendSpecializedNodeInvitationResponse as actix::Message>::Result>,
     },
 }
 
@@ -178,6 +190,30 @@ impl actix::Message for RequestBlob {
     type Result = eyre::Result<Option<Vec<u8>>>;
 }
 
+// Specialized node invite protocol messages
+
+/// Send a specialized node verification request to a peer
+#[derive(Debug)]
+pub struct SendSpecializedNodeVerificationRequest {
+    pub peer_id: PeerId,
+    pub request: VerificationRequest,
+}
+
+impl actix::Message for SendSpecializedNodeVerificationRequest {
+    type Result = eyre::Result<OutboundRequestId>;
+}
+
+/// Send a specialized node invitation response via response channel
+#[derive(Debug)]
+pub struct SendSpecializedNodeInvitationResponse {
+    pub channel: ResponseChannel<SpecializedNodeInvitationResponse>,
+    pub response: SpecializedNodeInvitationResponse,
+}
+
+impl actix::Message for SendSpecializedNodeInvitationResponse {
+    type Result = eyre::Result<()>;
+}
+
 #[derive(Debug)]
 pub enum NetworkEvent {
     ListeningOn {
@@ -223,6 +259,20 @@ pub enum NetworkEvent {
         context_id: ContextId,
         from_peer: PeerId,
         error: String,
+    },
+    // Specialized node invite protocol events
+    /// Verification request received from a specialized node
+    SpecializedNodeVerificationRequest {
+        peer_id: PeerId,
+        request_id: InboundRequestId,
+        request: VerificationRequest,
+        channel: ResponseChannel<SpecializedNodeInvitationResponse>,
+    },
+    /// Invitation response received from inviting node
+    SpecializedNodeInvitationResponse {
+        peer_id: PeerId,
+        request_id: OutboundRequestId,
+        response: SpecializedNodeInvitationResponse,
     },
 }
 

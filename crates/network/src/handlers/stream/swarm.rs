@@ -20,6 +20,7 @@ mod mdns;
 mod ping;
 mod relay;
 mod rendezvous;
+mod specialized_node_invite;
 
 pub trait EventHandler<E> {
     fn handle(&mut self, event: E);
@@ -54,6 +55,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 BehaviourEvent::Relay(event) => EventHandler::handle(self, event),
                 BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event),
                 BehaviourEvent::Stream(()) => {}
+                BehaviourEvent::SpecializedNodeInvite(event) => EventHandler::handle(self, event),
             },
             SwarmEvent::NewListenAddr {
                 listener_id,

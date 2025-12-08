@@ -36,15 +36,8 @@ calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-store = { workspace = true, features = ["serde"] }
+calimero-tee-attestation.workspace = true
 mero-auth = { path = "../auth" }
-
-# Quote verification dependencies (cross-platform)
-dcap-qvl.workspace = true
-tdx-quote.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-configfs-tsm.workspace = true
-tdx_workload_attestation = { workspace = true, features = ["tdx-linux"] }
 
 [dev-dependencies]
 color-eyre.workspace = true

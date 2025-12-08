@@ -61,6 +61,7 @@ members = [
     "./crates/server/primitives",
     "./crates/storage",
     "./crates/storage-macros",
+    "./crates/tee-attestation",
 
     "./crates/store",
     "./crates/store/blobs",
@@ -230,6 +231,7 @@ calimero-storage-macros = { path = "./crates/storage-macros" }
 calimero-store = { path = "./crates/store" }
 calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }
+calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 calimero-version = { path = "./crates/version" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
