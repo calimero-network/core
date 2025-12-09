@@ -95,10 +95,6 @@ jobs:
             contracts
           key: ${{ needs.build.outputs.cache-key }}
 
-      - name: Set Permissions
-        run: |
-          chmod +x target/debug/merod
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
