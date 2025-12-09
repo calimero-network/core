@@ -307,8 +307,14 @@ steps:
       value: value_from_node1
 
   - name: Wait for Sync
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kv-store-init-node-1
+      - kv-store-init-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Node 2 Get Synced Value
     type: call
@@ -337,8 +343,14 @@ steps:
       value: value_from_node2
 
   - name: Wait for Sync to Node 1
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kv-store-init-node-1
+      - kv-store-init-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Node 1 Get Node 2 Value
     type: call

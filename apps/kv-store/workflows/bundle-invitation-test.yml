@@ -51,8 +51,14 @@ steps:
       inviter_public_key: memberPublicKey
 
   - name: Wait for Context Join and Bundle Installation
-    type: wait
-    seconds: 10
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # ============================================
   # Verification Phase: Verify User 2 has bundle installed and can use it
@@ -81,8 +87,14 @@ steps:
       - 'json_equal({{set_result}}, {"output": null})'
 
   - name: Wait for State Sync
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 10: Verify User 2 can read the value
   - name: Call Get Method on Node 2

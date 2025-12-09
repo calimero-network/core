@@ -107,8 +107,14 @@ steps:
 
   # Wait after Node 1 messages
   - name: Wait after Node 1 Messages
-    type: wait
-    seconds: 15
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 11: Node2: get simple user storage for a specific user
   - name: Node 2 - Simple user storage get test for a specific user
@@ -154,8 +160,14 @@ steps:
 
   # Wait after Node 2 messages
   - name: Wait after Node 2 Messages
-    type: wait
-    seconds: 15
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 14: Node1: get simple user storage for Node 2 user
   - name: Node 1 - Simple user storage get test for a specific user (from Node2)

@@ -105,8 +105,14 @@ steps:
       - "is_set({{file_1_id}})"
 
   - name: Wait for Blob Announcement
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - node-blob-1
+      - node-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # ============================================================================
   # BLOB DISCOVERY: Verify Files Visible on Both Nodes
@@ -127,8 +133,14 @@ steps:
       - "is_set({{files_node1}})"
 
   - name: Wait for Network Sync
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - node-blob-1
+      - node-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List Files from Invitee Node
     type: call
@@ -298,8 +310,14 @@ steps:
       file_id: "{{file_0_id}}"
 
   - name: Wait for Deletion to Propagate
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - node-blob-1
+      - node-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List Files After Deletion (Inviter)
     type: call
@@ -316,8 +334,14 @@ steps:
       - "is_set({{files_after_delete_node1}})"
 
   - name: Wait for Network Sync After Delete
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - node-blob-1
+      - node-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List Files After Deletion (Invitee)
     type: call

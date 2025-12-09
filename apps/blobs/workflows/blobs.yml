@@ -86,8 +86,14 @@ steps:
       - "is_set({{txt_file_id}})"
 
   - name: Wait for announcements
-    type: wait
-    seconds: 6
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-1
+      - rust-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List files on inviter
     type: call
@@ -145,8 +151,14 @@ steps:
       file_id: "{{png_file_id}}"
 
   - name: Wait for delete propagation
-    type: wait
-    seconds: 6
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-1
+      - rust-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List files after delete
     type: call

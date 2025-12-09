@@ -50,8 +50,14 @@ steps:
       secret: node1-secret-456
 
   - name: Wait After Node 1 Updates
-    type: wait
-    seconds: 6
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-private-data-1
+      - rust-private-data-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Node 1 Get Own Secrets
     type: call
@@ -82,8 +88,14 @@ steps:
       - "is_set({{node_1_games}})"
 
   - name: Wait Before Node 2 Read
-    type: wait
-    seconds: 4
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-private-data-1
+      - rust-private-data-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Node 2 Get Games
     type: call
@@ -124,8 +136,14 @@ steps:
       secret: node2-secret-789
 
   - name: Wait After Node 2 Update
-    type: wait
-    seconds: 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-private-data-1
+      - rust-private-data-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Node 1 Get Own Secrets Again
     type: call

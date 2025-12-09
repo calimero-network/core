@@ -70,8 +70,14 @@ steps:
       set_result_1: result
 
   - name: Wait for Broadcast and Handler Execution
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
   - name: Verify Insert Handler Called on Node 1
@@ -110,8 +116,14 @@ steps:
       set_result_2: result
 
   - name: Wait for Broadcast and Handler Execution
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
   - name: Verify Update Handler Called on Node 1
@@ -154,8 +166,14 @@ steps:
       - 'json_equal({{remove_result}}, {"output": "updated_value"})'
 
   - name: Wait for Broadcast and Handler Execution
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
   - name: Verify Remove Handler Called on Node 1
@@ -194,8 +212,14 @@ steps:
       set_result_3: result
 
   - name: Wait for Broadcast and Handler Execution
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
   - name: Clear All Key-Value Pairs
@@ -208,8 +232,14 @@ steps:
       clear_result: result
 
   - name: Wait for Broadcast and Handler Execution
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
   - name: Verify Clear Handler Called on Node 1
@@ -246,8 +276,14 @@ steps:
       value: value_from_node2
 
   - name: Wait for Sync to Node 1
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Node 1 Get Node 2 Value
     type: call

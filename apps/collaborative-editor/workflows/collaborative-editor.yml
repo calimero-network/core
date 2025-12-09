@@ -74,8 +74,14 @@ steps:
       - 'json_equal({{insert_hello_result}}, {"output": null})'
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 8: Verify text on both nodes
   - name: Get Text After Hello (Node 1)
@@ -119,8 +125,14 @@ steps:
       append_world_result: result
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 10: Verify both nodes see "Hello World"
   - name: Get Text After World (Node 1)
@@ -165,8 +177,14 @@ steps:
       insert_exclamation_result: result
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 12: Verify both nodes see "Hello World!"
   - name: Get Text After Exclamation (Node 1)
@@ -211,8 +229,14 @@ steps:
       delete_world_result: result
 
   - name: Wait for deletion to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 14: Verify both nodes see "Hello !"
   - name: Get Text After Deletion (Node 1)
@@ -257,8 +281,14 @@ steps:
       insert_crdt_result: result
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 16: Verify both nodes see "Hello CRDT!"
   - name: Get Text After CRDT Insert (Node 1)
@@ -304,8 +334,14 @@ steps:
       replace_result: result
 
   - name: Wait for replacement to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 18: Verify both nodes see "Hello Calimero!"
   - name: Get Text After Replace (Node 1)
@@ -394,8 +430,14 @@ steps:
       set_title_result: result
 
   - name: Wait for title change to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 23: Verify title changed on both nodes
   - name: Get New Title (Node 1)
@@ -452,8 +494,14 @@ steps:
       clear_result: result
 
   - name: Wait for clear to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 26: Verify document is empty on both nodes
   - name: Get Text After Clear (Node 1)
@@ -525,8 +573,14 @@ steps:
       insert_xyz_result: result
 
   - name: Wait for concurrent edits to propagate
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 29: Verify both nodes converge to same text (CRDT property)
   - name: Get Text After Concurrent Edits (Node 1)

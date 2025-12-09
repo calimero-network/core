@@ -62,7 +62,14 @@ steps:
       - "{{win_2}} == 2"
 
   - name: Wait for broadcast
-    type: wait
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - team-custom-node-1
+      - team-custom-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     seconds: 3
 
   - name: Get wins from Node 1
@@ -112,7 +119,14 @@ steps:
       team_id: team-alpha
 
   - name: Wait for concurrent wins to merge
-    type: wait
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - team-custom-node-1
+      - team-custom-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     seconds: 5
 
   - name: Get wins from Node 1 after concurrent
@@ -160,7 +174,14 @@ steps:
       - "{{loss_1}} == 1"
 
   - name: Wait for broadcast
-    type: wait
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - team-custom-node-1
+      - team-custom-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     seconds: 3
 
   - name: Get losses from Node 2
@@ -196,7 +217,14 @@ steps:
       - "{{draw_1}} == 1"
 
   - name: Wait for broadcast
-    type: wait
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - team-custom-node-1
+      - team-custom-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     seconds: 3
 
   - name: Get draws from Node 1
@@ -232,7 +260,14 @@ steps:
       - "{{beta_win_1}} == 1"
 
   - name: Wait for broadcast
-    type: wait
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - team-custom-node-1
+      - team-custom-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
     seconds: 3
 
   - name: Get team-beta wins from Node 1

@@ -50,8 +50,14 @@ steps:
 
   # 5. Wait for async propagation
   - name: Wait for Add
-    type: wait
-    seconds: 20
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - ac-node-1
+      - ac-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # 6. Verify Node 2 is member
   - name: Check Node 2 Membership
@@ -98,8 +104,14 @@ steps:
 
   # 9. Wait for revocation
   - name: Wait for Kick
-    type: wait
-    seconds: 20
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - ac-node-1
+      - ac-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # 10. List and Verify All Members
   - name: List All Members

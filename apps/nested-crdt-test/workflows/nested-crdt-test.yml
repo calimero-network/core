@@ -57,8 +57,14 @@ steps:
       key: views
 
   - name: Wait for concurrent increments to merge
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - nested-node-1
+      - nested-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Get counter from Node 2 after concurrent
     type: call
@@ -97,8 +103,14 @@ steps:
       value: busy
 
   - name: Wait for LWW consensus
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - nested-node-1
+      - nested-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Get status from Node 1
     type: call
@@ -128,8 +140,14 @@ steps:
       value: My Document
 
   - name: Wait for broadcast
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - nested-node-1
+      - nested-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Node 2 sets doc-1 author
     type: call
@@ -143,8 +161,14 @@ steps:
       value: Alice
 
   - name: Wait for nested map field-level merge
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - nested-node-1
+      - nested-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Verify both fields present on Node 1
     type: call
@@ -195,8 +219,14 @@ steps:
       value: 10
 
   - name: Wait for broadcast
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - nested-node-1
+      - nested-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Get metrics length from Node 2
     type: call
@@ -255,8 +285,14 @@ steps:
       tag: crdt
 
   - name: Wait for set union merge
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - nested-node-1
+      - nested-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Get tag count from Node 2
     type: call

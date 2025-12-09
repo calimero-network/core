@@ -19,13 +19,13 @@ steps:
     path: res/private_data.wasm
     dev: true
     outputs:
-      app_id: applicationId          # Export 'applicationId' field as 'app_id'
+      app_id: applicationId # Export 'applicationId' field as 'app_id'
 
   # Step 2: Create mesh with both nodes
   - name: Create Mesh
     type: create_mesh
     context_node: calimero-node-1
-    application_id: '{{app_id}}'
+    application_id: "{{app_id}}"
     nodes:
       - calimero-node-2
     capability: member
@@ -38,8 +38,8 @@ steps:
   - name: Execute Contract Call - Add Secret
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
     method: add_secret
     args:
       game_id: game-1
@@ -54,14 +54,20 @@ steps:
 
   # Step 8: Wait for the operation to complete and propagate
   - name: Wait for Add Secret Operation
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Execute View Call - My Secrets (node 1)
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
     method: my_secrets
     outputs:
       my_secrets_node1_result: result
@@ -75,8 +81,8 @@ steps:
   - name: Execute View Call - Games
     type: call
     node: calimero-node-2
-    context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_calimero-node-2}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: games
     outputs:
       games_result: result
@@ -90,8 +96,8 @@ steps:
   - name: Execute View Call - My Secrets (node-2)
     type: call
     node: calimero-node-2
-    context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_calimero-node-2}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: my_secrets
     outputs:
       my_secrets_result: result
@@ -105,8 +111,8 @@ steps:
   - name: Execute Contract Call - Guess OK
     type: call
     node: calimero-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
     method: add_guess
     args:
       game_id: game-1
@@ -123,8 +129,8 @@ steps:
   - name: Execute Contract Call - Guess Bad
     type: call
     node: calimero-node-2
-    context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_calimero-node-2}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: add_guess
     args:
       game_id: game-1
@@ -138,8 +144,6 @@ steps:
       - 'json_equal({{guess_bad_result}}, {"output": false})'
 
 # Configuration options
-stop_all_nodes: false   # Stop all nodes at the end of workflow
-restart: false          # Don't restart nodes at the beginning of workflow
+stop_all_nodes: false # Stop all nodes at the end of workflow
+restart: false # Don't restart nodes at the beginning of workflow
 wait_timeout: 60
-
-
