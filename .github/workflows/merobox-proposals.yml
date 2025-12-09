@@ -106,7 +106,7 @@ jobs:
 
       - name: Install merobox
         run: |
-          python3.11 -m pip install -e ./merobox
+          pip install -e ./merobox
 
       - name: Verify merobox installation
         run: |
@@ -157,7 +157,7 @@ jobs:
 
       - name: Install merobox
         run: |
-          python3.11 -m pip install -e ./merobox
+          pip install -e ./merobox
 
       - name: Verify merobox installation
         run: |
@@ -206,7 +206,7 @@ jobs:
 
       - name: Install merobox
         run: |
-          python3.11 -m pip install -e ./merobox
+          pip install -e ./merobox
 
       - name: Verify merobox installation
         run: |
