@@ -24,7 +24,6 @@ on:
       - ".github/workflows/merobox-proposals.yml"
   workflow_dispatch:
 
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -119,7 +118,9 @@ jobs:
               near-proposals.yml \
               --no-docker \
               --binary-path ../../target/debug/merod \
-              --e2e-mode
+              --e2e-mode \
+              --near-devnet \
+              --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
 
   test-icp:
     name: Test ICP Proposals
