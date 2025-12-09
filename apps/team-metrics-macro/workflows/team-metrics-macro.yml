@@ -70,7 +70,6 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
-    seconds: 3
 
   - name: Get wins from Node 1
     type: call
@@ -127,7 +126,6 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
-    seconds: 5
 
   - name: Get wins from Node 1 after concurrent
     type: call
@@ -182,7 +180,6 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
-    seconds: 3
 
   - name: Get losses from Node 2
     type: call
@@ -225,7 +222,6 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
-    seconds: 3
 
   - name: Get draws from Node 1
     type: call
@@ -268,7 +264,6 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
-    seconds: 3
 
   - name: Get team-beta wins from Node 1
     type: call
