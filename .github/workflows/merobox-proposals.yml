@@ -99,13 +99,18 @@ jobs:
         run: |
           chmod +x target/debug/merod
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Clone merobox
         run: |
           git clone https://github.com/calimero-network/merobox.git
 
       - name: Install merobox
         run: |
-          pip install -e ./merobox
+          python3.11 -m pip install -e ./merobox
 
       - name: Verify merobox installation
         run: |
@@ -145,13 +150,18 @@ jobs:
         run: |
           ./scripts/icp/deploy-devnet.sh
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Clone merobox
         run: |
           git clone https://github.com/calimero-network/merobox.git
 
       - name: Install merobox
         run: |
-          pip install -e ./merobox
+          python3.11 -m pip install -e ./merobox
 
       - name: Verify merobox installation
         run: |
@@ -189,13 +199,18 @@ jobs:
         run: |
           ./scripts/ethereum/deploy-devnet.sh
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Clone merobox
         run: |
           git clone https://github.com/calimero-network/merobox.git
 
       - name: Install merobox
         run: |
-          pip install -e ./merobox
+          python3.11 -m pip install -e ./merobox
 
       - name: Verify merobox installation
         run: |
