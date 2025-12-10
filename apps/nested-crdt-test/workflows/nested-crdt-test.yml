@@ -92,6 +92,10 @@ steps:
       key: status
       value: online
 
+  - name: Wait for timestamp separation (LWW requires later timestamp)
+    type: wait
+    seconds: 2
+
   - name: Node 2 sets status to busy (LWW test)
     type: call
     node: nested-node-2
