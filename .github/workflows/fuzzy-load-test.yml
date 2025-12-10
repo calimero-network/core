@@ -120,6 +120,7 @@ jobs:
           path: |
             target/debug/merod
             apps/kv-store/res/*.wasm
+            apps/kv-store-with-handlers/res/*.wasm
             contracts/near
           key: ${{ needs.build.outputs.cache-key }}
 
@@ -161,6 +162,7 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           set +e
+          set -o pipefail 
           merobox bootstrap run \
               fuzzy-test.yml \
               --no-docker \
@@ -171,6 +173,7 @@ jobs:
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store/merobox-output.log
 
           exit_code=$?
+          set +o pipefail  
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
@@ -224,6 +227,7 @@ jobs:
         with:
           path: |
             target/debug/merod
+            apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             contracts/near
           key: ${{ needs.build.outputs.cache-key }}
@@ -266,6 +270,7 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           set +e
+          set -o pipefail  
           merobox bootstrap run \
               fuzzy-test.yml \
               --no-docker \
@@ -276,6 +281,7 @@ jobs:
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
 
           exit_code=$?
+          set +o pipefail 
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
