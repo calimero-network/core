@@ -952,8 +952,11 @@ async fn request_key_share_with_peer(
                 %their_identity,
                 "Peer responded with different identity than expected author - key share may not provide the needed sender_key"
             );
-            // Continue anyway - we'll get *some* sender_key which might be useful,
-            // and the next delta from author_identity will trigger another key share attempt
+            bail!(
+                "peer responded with unexpected identity (expected author {}, got {})",
+                author_identity,
+                their_identity
+            );
         }
 
         // Step 3: Deterministic tie-breaker for initiator/responder role
