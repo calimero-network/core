@@ -394,33 +394,47 @@ async fn init_delta_store(
     };
 
     if is_new_store {
-        if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-            warn!(
-                ?e,
-                %context_id,
-                "Failed to load persisted deltas, starting with empty DAG"
-            );
-        }
+        let init_result = async {
+            if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                warn!(
+                    ?e,
+                    %context_id,
+                    "Failed to load persisted deltas, starting with empty DAG"
+                );
+            }
 
-        let missing_result = delta_store_ref.get_missing_parents().await;
-        if !missing_result.missing_ids.is_empty() {
+            let missing_result = delta_store_ref.get_missing_parents().await;
+            if !missing_result.missing_ids.is_empty() {
+                warn!(
+                    %context_id,
+                    missing_count = missing_result.missing_ids.len(),
+                    "Missing parents after loading persisted deltas - will request from network"
+                );
+            }
+
+            execute_cascaded_events(
+                &missing_result.cascaded_events,
+                node_clients,
+                &context_id,
+                &our_identity,
+                sync_timeout,
+                "initial load",
+                None,
+            )
+            .await
+        }
+        .await;
+
+        if let Err(err) = init_result {
             warn!(
                 %context_id,
-                missing_count = missing_result.missing_ids.len(),
-                "Missing parents after loading persisted deltas - will request from network"
+                ?err,
+                "Initial delta store setup failed - removing store to retry on next delta"
             );
+            // Remove the store so the next delta triggers a fresh init with retry
+            node_state.delta_stores.remove(&context_id);
+            return Err(err);
         }
-
-        execute_cascaded_events(
-            &missing_result.cascaded_events,
-            node_clients,
-            &context_id,
-            &our_identity,
-            sync_timeout,
-            "initial load",
-            None,
-        )
-        .await?;
     }
 
     Ok(DeltaStoreSetup {
