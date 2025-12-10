@@ -106,6 +106,9 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 120 # Dynamic timeout calculated in step (test duration + 45min buffer)
+    outputs:
+      test_passed: ${{ steps.set-result.outputs.passed }}
+      exit_code: ${{ steps.kv-test.outputs.exit_code }}
     if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'kv-store' || github.event.inputs.test_app == ''
     steps:
       - name: Checkout code
@@ -174,6 +177,17 @@ jobs:
 
           exit $exit_code
 
+      - name: Set test result
+        id: set-result
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.kv-test.outputs.exit_code }}"
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Collect KV Store node logs
         if: always()
         run: |
@@ -197,6 +211,9 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 120 # Dynamic timeout calculated in step (test duration + 45min buffer)
+    outputs:
+      test_passed: ${{ steps.set-result-handlers.outputs.passed }}
+      exit_code: ${{ steps.handlers-test.outputs.exit_code }}
     if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'kv-store-with-handlers' || github.event.inputs.test_app == ''
     steps:
       - name: Checkout code
@@ -265,6 +282,17 @@ jobs:
 
           exit $exit_code
 
+      - name: Set test result
+        id: set-result-handlers
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.handlers-test.outputs.exit_code }}"
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Collect Handlers node logs
         if: always()
         run: |
@@ -295,19 +323,25 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store Test" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.fuzzy-test-kv-store.result }}" = "success" ]; then
-            echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.fuzzy-test-kv-store.result }}" = "skipped" ]; then
+            echo "⏭️ **SKIPPED**" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.fuzzy-test-kv-store.outputs.test_passed }}" = "true" ]; then
+            echo "✅ **PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**FAILED** (check artifacts for details)" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **FAILED** (exit code: ${{ needs.fuzzy-test-kv-store.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+            echo "Check artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store with Handlers Test" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.fuzzy-test-handlers.result }}" = "success" ]; then
-            echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.fuzzy-test-handlers.result }}" = "skipped" ]; then
+            echo "⏭️ **SKIPPED**" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.fuzzy-test-handlers.outputs.test_passed }}" = "true" ]; then
+            echo "✅ **PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**FAILED** (check artifacts for details)" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **FAILED** (exit code: ${{ needs.fuzzy-test-handlers.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+            echo "Check artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "Download artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
+          echo "💡 Download artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
