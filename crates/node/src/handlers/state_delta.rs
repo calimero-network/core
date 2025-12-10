@@ -10,7 +10,7 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::action::Action;
 use eyre::{bail, OptionExt, Result};
 use libp2p::PeerId;
@@ -61,230 +61,82 @@ pub async fn handle_state_delta(
         "Received state delta"
     );
 
-    // Get author's sender key to decrypt artifact
-    let mut author_identity = node_clients
-        .context
-        .get_identity(&context_id, &author_id)?
-        .ok_or_eyre("author identity not found")?;
+    let sender_key = ensure_author_sender_key(
+        &node_clients.context,
+        &network_client,
+        &context_id,
+        &author_id,
+        source,
+        sync_timeout,
+        context.root_hash,
+    )
+    .await?;
 
-    // If we have the identity but missing sender_key, do direct key share with source peer
-    if author_identity.sender_key.is_none() {
-        info!(
-            %context_id,
-            %author_id,
-            source_peer=%source,
-            "Missing sender_key for author - initiating key share with source peer"
-        );
+    let actions = decrypt_delta_actions(artifact, nonce, sender_key)?;
 
-        match request_key_share_with_peer(
-            &network_client,
-            &node_clients.context,
-            &context_id,
-            &author_id,
-            source,
-            sync_timeout,
-        )
-        .await
-        {
-            Ok(()) => {
-                info!(
-                    %context_id,
-                    %author_id,
-                    source_peer=%source,
-                    "Successfully completed key share with source peer"
-                );
-                // Reload identity to get the updated sender_key
-                author_identity = node_clients
-                    .context
-                    .get_identity(&context_id, &author_id)?
-                    .ok_or_eyre("author identity disappeared")?;
-            }
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    source_peer=%source,
-                    ?e,
-                    "Failed to complete key share with source peer - will retry when delta is rebroadcast"
-                );
-                bail!("author sender_key not available (key share requested, will retry)");
-            }
-        }
-    }
-
-    let sender_key = author_identity
-        .sender_key
-        .ok_or_eyre("author has no sender key")?;
-
-    // Decrypt artifact
-    let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key.into());
-    let decrypted_artifact = shared_key
-        .decrypt(artifact, nonce)
-        .ok_or_eyre("failed to decrypt artifact")?;
-
-    // Deserialize decrypted artifact
-    let storage_delta: calimero_storage::delta::StorageDelta =
-        borsh::from_slice(&decrypted_artifact)?;
-
-    let actions = match storage_delta {
-        calimero_storage::delta::StorageDelta::Actions(actions) => actions,
-        _ => bail!("Expected Actions variant in state delta"),
-    };
-
-    // Create delta using calimero-dag types (with Vec<Action> payload)
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
         parents: parent_ids,
-        payload: actions, // Note: renamed from 'actions' to 'payload'
+        payload: actions,
         hlc,
         expected_root_hash: *root_hash,
     };
 
-    // Get our identity for applying deltas
-    let identities = node_clients
-        .context
-        .get_context_members(&context_id, Some(true));
-    let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-        .await
-        .transpose()?
-    else {
-        bail!("no owned identities found for context: {}", context_id);
-    };
+    let our_identity = choose_owned_identity(&node_clients.context, &context_id).await?;
 
-    // Get or create DeltaStore for this context
-    let is_uninitialized = *context.root_hash == [0; 32];
-
-    let (delta_store_ref, is_new_store) = {
-        let mut is_new = false;
-        let delta_store = node_state
-            .delta_stores
-            .entry(context_id)
-            .or_insert_with(|| {
-                is_new = true;
-                // Initialize with root (zero hash for now)
-                DeltaStore::new(
-                    [0u8; 32],
-                    node_clients.context.clone(),
-                    context_id,
-                    our_identity,
-                )
-            });
-
-        // Convert to owned DeltaStore for async operations
-        let delta_store_ref = delta_store.clone();
-        (delta_store_ref, is_new)
-    };
-
-    // Load persisted deltas on first access to restore DAG topology
-    if is_new_store {
-        if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-            warn!(
-                ?e,
-                %context_id,
-                "Failed to load persisted deltas, starting with empty DAG"
-            );
-        }
-
-        // After loading, check for missing parents and handle any cascaded events
-        let missing_result = delta_store_ref.get_missing_parents().await;
-        if !missing_result.missing_ids.is_empty() {
-            warn!(
-                %context_id,
-                missing_count = missing_result.missing_ids.len(),
-                "Missing parents after loading persisted deltas - will request from network"
-            );
-
-            // Note: We don't request here synchronously because we don't have the source peer
-            // These will be requested when the next delta arrives or via periodic sync
-        }
-
-        // Execute handlers for any cascaded deltas from initial load
-        if !missing_result.cascaded_events.is_empty() {
-            info!(
-                %context_id,
-                cascaded_count = missing_result.cascaded_events.len(),
-                "Executing event handlers for deltas cascaded during initial load"
-            );
-
-            for (cascaded_id, events_data) in missing_result.cascaded_events {
-                match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
-                    Ok(cascaded_payload) => {
-                        execute_event_handlers_parsed(
-                            &node_clients.context,
-                            &context_id,
-                            &our_identity,
-                            &cascaded_payload,
-                        )
-                        .await?;
-                    }
-                    Err(e) => {
-                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events from initial load");
-                    }
-                }
-            }
-        }
+    // Check if application is available BEFORE applying the delta.
+    // If not available, bail early so the delta can be retried later when rebroadcast.
+    // This prevents the scenario where we apply the delta but skip handlers because
+    // the application blob hasn't finished downloading yet.
+    if let Err(e) = ensure_application_available(
+        &node_clients.node,
+        &node_clients.context,
+        &context_id,
+        sync_timeout,
+    )
+    .await
+    {
+        bail!(
+            "Application not available for context {} - delta will be retried on rebroadcast: {}",
+            context_id,
+            e
+        );
     }
 
-    // Add delta with event data (for cascade handler execution)
+    let DeltaStoreSetup {
+        store: delta_store_ref,
+        is_uninitialized,
+    } = init_delta_store(
+        &node_state,
+        &node_clients,
+        context_id,
+        our_identity,
+        context.root_hash,
+        sync_timeout,
+    )
+    .await?;
+
     let add_result = delta_store_ref
         .add_delta_with_events(delta, events.clone())
         .await?;
     let mut applied = add_result.applied;
-
-    // Track if we executed handlers for the current delta during cascade
     let mut handlers_already_executed = false;
 
     if !applied {
-        // Delta is pending - check for missing parents
         let missing_result = delta_store_ref.get_missing_parents().await;
 
-        // Execute handlers for cascaded deltas from DB load (including this delta if it cascaded)
-        if !missing_result.cascaded_events.is_empty() {
-            info!(
-                %context_id,
-                cascaded_count = missing_result.cascaded_events.len(),
-                "Executing event handlers for deltas cascaded during missing parent check"
-            );
-
-            for (cascaded_id, events_data) in &missing_result.cascaded_events {
-                // Check if this is the current delta that cascaded
-                let is_current_delta = *cascaded_id == delta_id;
-                if is_current_delta {
-                    info!(
-                        %context_id,
-                        delta_id = ?delta_id,
-                        "Current delta cascaded during missing parent check - marking as applied"
-                    );
-                    applied = true;
-                }
-
-                match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-                    Ok(cascaded_payload) => {
-                        info!(
-                            %context_id,
-                            delta_id = ?cascaded_id,
-                            events_count = cascaded_payload.len(),
-                            "Executing handlers for cascaded delta"
-                        );
-                        execute_event_handlers_parsed(
-                            &node_clients.context,
-                            &context_id,
-                            &our_identity,
-                            &cascaded_payload,
-                        )
-                        .await?;
-
-                        // Mark that we executed handlers for the current delta
-                        if is_current_delta {
-                            handlers_already_executed = true;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%context_id, delta_id = ?cascaded_id, error = %e, "Failed to deserialize cascaded events");
-                    }
-                }
-            }
-        }
+        let cascade_outcome = execute_cascaded_events(
+            &missing_result.cascaded_events,
+            &node_clients,
+            &context_id,
+            &our_identity,
+            sync_timeout,
+            "missing parent check",
+            Some(&delta_id),
+        )
+        .await?;
+        applied |= cascade_outcome.applied_current;
+        handlers_already_executed |= cascade_outcome.handlers_executed_for_current;
 
         if !missing_result.missing_ids.is_empty() {
             warn!(
@@ -295,7 +147,6 @@ pub async fn handle_state_delta(
                 "Delta pending due to missing parents - requesting them from peer"
             );
 
-            // Request missing deltas (blocking this handler until complete)
             if let Err(e) = request_missing_deltas(
                 network_client,
                 sync_timeout,
@@ -310,9 +161,6 @@ pub async fn handle_state_delta(
                 warn!(?e, %context_id, ?source, "Failed to request missing deltas");
             }
         } else {
-            // No missing parents - the parent deltas exist but may not be applied yet
-            // This can happen when deltas arrive out of order via gossipsub
-            // The delta will cascade and apply when its parents finish applying
             warn!(
                 %context_id,
                 delta_id = ?delta_id,
@@ -321,7 +169,6 @@ pub async fn handle_state_delta(
             );
         }
 
-        // Always re-check if delta was applied via cascade (can happen during request_missing_deltas OR gossipsub)
         let was_cascaded = delta_store_ref.dag_has_delta_applied(&delta_id).await;
         if was_cascaded {
             info!(
@@ -331,9 +178,6 @@ pub async fn handle_state_delta(
             );
             applied = true;
 
-            // Important: If delta cascaded but we haven't executed handlers yet,
-            // and we have events, we need to execute them now.
-            // This can happen if the cascade occurred via another concurrent handler.
             if !handlers_already_executed && events.is_some() {
                 info!(
                     %context_id,
@@ -344,26 +188,8 @@ pub async fn handle_state_delta(
         }
     }
 
-    // Deserialize events ONCE if present (optimization: avoid double parse)
-    let events_payload = if let Some(ref events_data) = events {
-        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-            Ok(payload) => Some(payload),
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    error = %e,
-                    "Failed to deserialize events, skipping handler execution and WebSocket emission"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let events_payload = parse_events_payload(&events, &context_id);
 
-    // Execute event handlers only if the delta was applied AND we haven't already executed them
-    // Note: Handlers are only executed on receiving nodes, not on the author node,
-    // to avoid infinite loops and ensure proper distributed execution.
     if applied && !handlers_already_executed {
         if let Some(ref payload) = events_payload {
             let is_author = author_id == our_identity;
@@ -375,6 +201,8 @@ pub async fn handle_state_delta(
                 "Evaluating event handler execution for applied delta"
             );
             if !is_author {
+                // Application availability was already verified at the start of this function,
+                // so we can safely execute handlers without re-checking.
                 execute_event_handlers_parsed(
                     &node_clients.context,
                     &context_id,
@@ -390,7 +218,7 @@ pub async fn handle_state_delta(
                 );
             }
         }
-    } else if events_payload.is_some() {
+    } else if !applied && events_payload.is_some() {
         warn!(
             %context_id,
             delta_id = ?delta_id,
@@ -398,50 +226,397 @@ pub async fn handle_state_delta(
         );
     }
 
-    // Emit state mutation to WebSocket clients (frontends)
-    // Use already-parsed events (no re-deserialization!)
     if let Some(payload) = events_payload {
         emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
     }
 
-    // Execute handlers for any cascaded deltas that had stored events
-    if !add_result.cascaded_events.is_empty() {
+    execute_cascaded_events(
+        &add_result.cascaded_events,
+        &node_clients,
+        &context_id,
+        &our_identity,
+        sync_timeout,
+        "dag cascade",
+        None,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[derive(Default)]
+struct CascadeOutcome {
+    applied_current: bool,
+    handlers_executed_for_current: bool,
+}
+
+struct DeltaStoreSetup {
+    store: DeltaStore,
+    is_uninitialized: bool,
+}
+
+fn decrypt_delta_actions(
+    artifact: Vec<u8>,
+    nonce: Nonce,
+    sender_key: PrivateKey,
+) -> Result<Vec<Action>> {
+    let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key);
+    let decrypted_artifact = shared_key
+        .decrypt(artifact, nonce)
+        .ok_or_eyre("failed to decrypt artifact")?;
+
+    let storage_delta: calimero_storage::delta::StorageDelta =
+        borsh::from_slice(&decrypted_artifact)?;
+
+    match storage_delta {
+        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(actions),
+        _ => bail!("Expected Actions variant in state delta"),
+    }
+}
+
+async fn ensure_author_sender_key(
+    context_client: &ContextClient,
+    network_client: &calimero_network_primitives::client::NetworkClient,
+    context_id: &ContextId,
+    author_id: &PublicKey,
+    source: PeerId,
+    sync_timeout: std::time::Duration,
+    context_root_hash: Hash,
+) -> Result<PrivateKey> {
+    let mut author_identity = context_client
+        .get_identity(context_id, author_id)?
+        .ok_or_eyre("author identity not found")?;
+
+    if author_identity.sender_key.is_none() {
+        // Check if context is uninitialized (bootstrapping)
+        // During bootstrap, skip key share to avoid blocking state sync.
+        // The key share would block for ~350ms and interfere with the parallel
+        // state sync stream from the same peer. State sync will deliver all
+        // deltas needed to initialize the context. Once initialized, subsequent
+        // deltas can trigger key shares without blocking critical bootstrap.
+        if context_root_hash == Hash::default() {
+            debug!(
+                %context_id,
+                %author_id,
+                source_peer=%source,
+                "Context uninitialized - deferring key share until after state sync completes"
+            );
+            bail!("author sender_key not available (context uninitialized, deferring key share)");
+        }
+
         info!(
             %context_id,
-            cascaded_count = add_result.cascaded_events.len(),
-            "Executing event handlers for cascaded deltas"
+            %author_id,
+            source_peer=%source,
+            "Missing sender_key for author - initiating key share with source peer"
         );
 
-        for (cascaded_id, events_data) in add_result.cascaded_events {
-            match serde_json::from_slice::<Vec<ExecutionEvent>>(&events_data) {
-                Ok(cascaded_payload) => {
-                    info!(
-                        %context_id,
-                        delta_id = ?cascaded_id,
-                        events_count = cascaded_payload.len(),
-                        "Executing handlers for cascaded delta"
-                    );
-                    execute_event_handlers_parsed(
-                        &node_clients.context,
-                        &context_id,
-                        &our_identity,
-                        &cascaded_payload,
-                    )
-                    .await?;
-                }
-                Err(e) => {
-                    warn!(
-                        %context_id,
-                        delta_id = ?cascaded_id,
-                        error = %e,
-                        "Failed to deserialize cascaded events, skipping handler execution"
-                    );
-                }
+        match request_key_share_with_peer(
+            network_client,
+            context_client,
+            context_id,
+            author_id,
+            source,
+            sync_timeout,
+        )
+        .await
+        {
+            Ok(()) => {
+                info!(
+                    %context_id,
+                    %author_id,
+                    source_peer=%source,
+                    "Successfully completed key share with source peer"
+                );
+                author_identity = context_client
+                    .get_identity(context_id, author_id)?
+                    .ok_or_eyre("author identity disappeared")?;
+            }
+            Err(e) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    source_peer=%source,
+                    ?e,
+                    "Failed to complete key share with source peer - will retry when delta is rebroadcast"
+                );
+                bail!("author sender_key not available (key share requested, will retry)");
             }
         }
     }
 
-    Ok(())
+    author_identity
+        .sender_key
+        .ok_or_eyre("author has no sender key")
+}
+
+async fn choose_owned_identity(
+    context_client: &ContextClient,
+    context_id: &ContextId,
+) -> Result<PublicKey> {
+    let identities = context_client.get_context_members(context_id, Some(true));
+    let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+        .await
+        .transpose()?
+    else {
+        bail!("no owned identities found for context: {}", context_id);
+    };
+
+    Ok(our_identity)
+}
+
+async fn init_delta_store(
+    node_state: &crate::NodeState,
+    node_clients: &crate::NodeClients,
+    context_id: ContextId,
+    our_identity: PublicKey,
+    root_hash: Hash,
+    sync_timeout: std::time::Duration,
+) -> Result<DeltaStoreSetup> {
+    let is_uninitialized = root_hash == Hash::default();
+
+    let (delta_store_ref, is_new_store) = {
+        let mut is_new = false;
+        let delta_store = node_state
+            .delta_stores
+            .entry(context_id)
+            .or_insert_with(|| {
+                is_new = true;
+                DeltaStore::new(
+                    [0u8; 32],
+                    node_clients.context.clone(),
+                    context_id,
+                    our_identity,
+                )
+            });
+
+        (delta_store.clone(), is_new)
+    };
+
+    if is_new_store {
+        let init_result = async {
+            if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                warn!(
+                    ?e,
+                    %context_id,
+                    "Failed to load persisted deltas, starting with empty DAG"
+                );
+            }
+
+            let missing_result = delta_store_ref.get_missing_parents().await;
+            if !missing_result.missing_ids.is_empty() {
+                warn!(
+                    %context_id,
+                    missing_count = missing_result.missing_ids.len(),
+                    "Missing parents after loading persisted deltas - will request from network"
+                );
+            }
+
+            execute_cascaded_events(
+                &missing_result.cascaded_events,
+                node_clients,
+                &context_id,
+                &our_identity,
+                sync_timeout,
+                "initial load",
+                None,
+            )
+            .await
+        }
+        .await;
+
+        if let Err(err) = init_result {
+            warn!(
+                %context_id,
+                ?err,
+                "Initial delta store setup failed - removing store to retry on next delta"
+            );
+            // Remove the store so the next delta triggers a fresh init with retry
+            node_state.delta_stores.remove(&context_id);
+            return Err(err);
+        }
+    }
+
+    Ok(DeltaStoreSetup {
+        store: delta_store_ref,
+        is_uninitialized,
+    })
+}
+
+async fn execute_cascaded_events(
+    cascaded_events: &[([u8; 32], Vec<u8>)],
+    node_clients: &crate::NodeClients,
+    context_id: &ContextId,
+    our_identity: &PublicKey,
+    sync_timeout: std::time::Duration,
+    phase: &str,
+    current_delta: Option<&[u8; 32]>,
+) -> Result<CascadeOutcome> {
+    if cascaded_events.is_empty() {
+        return Ok(CascadeOutcome::default());
+    }
+
+    info!(
+        %context_id,
+        cascaded_count = cascaded_events.len(),
+        phase = phase,
+        "Executing event handlers for cascaded deltas"
+    );
+
+    let mut outcome = CascadeOutcome::default();
+
+    // Check if current delta is in cascaded list (orthogonal to handler execution)
+    if let Some(current) = current_delta {
+        if cascaded_events.iter().any(|(id, _)| *id == *current) {
+            info!(
+                %context_id,
+                delta_id = ?current,
+                phase = phase,
+                "Current delta cascaded - marking as applied"
+            );
+            outcome.applied_current = true;
+        }
+    }
+
+    let app_available = ensure_application_available(
+        &node_clients.node,
+        &node_clients.context,
+        context_id,
+        sync_timeout,
+    )
+    .await
+    .is_ok();
+
+    if !app_available {
+        warn!(
+            %context_id,
+            cascaded_count = cascaded_events.len(),
+            phase = phase,
+            "Application not available - skipping cascaded handler execution"
+        );
+        return Ok(outcome);
+    }
+
+    for (cascaded_id, events_data) in cascaded_events {
+        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+            Ok(cascaded_payload) => {
+                info!(
+                    %context_id,
+                    delta_id = ?cascaded_id,
+                    events_count = cascaded_payload.len(),
+                    phase = phase,
+                    "Executing handlers for cascaded delta"
+                );
+                execute_event_handlers_parsed(
+                    &node_clients.context,
+                    context_id,
+                    our_identity,
+                    &cascaded_payload,
+                )
+                .await?;
+
+                if current_delta == Some(cascaded_id) {
+                    outcome.handlers_executed_for_current = true;
+                }
+            }
+            Err(e) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?cascaded_id,
+                    error = %e,
+                    phase = phase,
+                    "Failed to deserialize cascaded events"
+                );
+            }
+        }
+    }
+
+    Ok(outcome)
+}
+
+fn parse_events_payload(
+    events: &Option<Vec<u8>>,
+    context_id: &ContextId,
+) -> Option<Vec<ExecutionEvent>> {
+    let Some(events_data) = events else {
+        return None;
+    };
+
+    match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+        Ok(payload) => Some(payload),
+        Err(e) => {
+            warn!(
+                %context_id,
+                error = %e,
+                "Failed to deserialize events, skipping handler execution and WebSocket emission"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_crypto::{SharedKey, NONCE_LEN};
+    use calimero_storage::delta::StorageDelta;
+    use rand::thread_rng;
+
+    #[test]
+    fn parse_events_payload_success() {
+        let events = vec![ExecutionEvent {
+            kind: "test".to_string(),
+            data: vec![1, 2, 3],
+            handler: Some("handler_fn".to_string()),
+        }];
+        let serialized = serde_json::to_vec(&events).expect("serialization should succeed");
+
+        // Should deserialize valid event JSON
+        let parsed = parse_events_payload(&Some(serialized), &ContextId::zero())
+            .expect("events should parse");
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].kind, "test");
+        assert_eq!(parsed[0].handler.as_deref(), Some("handler_fn"));
+    }
+
+    #[test]
+    fn parse_events_payload_invalid() {
+        // Invalid JSON should be rejected gracefully
+        let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero());
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn decrypt_delta_actions_roundtrip() -> Result<()> {
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let shared_key = SharedKey::from_sk(&sender_key);
+        let nonce = [7u8; NONCE_LEN];
+
+        let storage_delta = StorageDelta::Actions(Vec::new());
+        let plaintext = borsh::to_vec(&storage_delta)?;
+        let cipher = shared_key
+            .encrypt(plaintext, nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        // Encrypted storage delta should decrypt back to empty actions
+        let decrypted = decrypt_delta_actions(cipher, nonce, sender_key)?;
+        assert!(decrypted.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn decrypt_delta_actions_rejects_bad_cipher() {
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let nonce = [9u8; NONCE_LEN];
+
+        // Garbage ciphertext should fail to decrypt/deserialize
+        let result = decrypt_delta_actions(vec![1, 2, 3, 4], nonce, sender_key);
+        assert!(result.is_err());
+    }
 }
 
 /// Execute event handlers for received events (from already-parsed payload)
@@ -708,7 +883,15 @@ async fn request_missing_deltas(
 }
 
 /// Initiate bidirectional key share with a specific peer for a specific author identity
-/// This performs the same cryptographic key exchange as initial sync, but on-demand
+/// This performs the same cryptographic key exchange as initial sync, but on-demand.
+///
+/// **IMPORTANT**: This must follow the exact same protocol as `sync/key.rs::bidirectional_key_share`
+/// to be compatible with the responder side (`handle_key_share_request`).
+///
+/// Protocol:
+/// 1. Init (KeyShare) → Init (KeyShare) ack
+/// 2. Challenge/Response authentication (deterministic initiator/responder roles)
+/// 3. KeyShare message exchange (all messages unencrypted - transport layer handles encryption)
 async fn request_key_share_with_peer(
     network_client: &calimero_network_primitives::client::NetworkClient,
     context_client: &ContextClient,
@@ -717,8 +900,9 @@ async fn request_key_share_with_peer(
     peer: PeerId,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    use calimero_crypto::{Nonce, SharedKey};
+    use calimero_crypto::Nonce;
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+    use ed25519_dalek::Signature;
     use rand::Rng;
 
     debug!(
@@ -744,7 +928,7 @@ async fn request_key_share_with_peer(
 
         let our_nonce = rand::thread_rng().gen::<Nonce>();
 
-        // Initiate key share request
+        // Step 1: Initiate key share request
         crate::sync::stream::send(
             &mut stream,
             &StreamMessage::Init {
@@ -757,78 +941,425 @@ async fn request_key_share_with_peer(
         )
         .await?;
 
-        // Receive ack from peer
+        // Step 2: Receive ack from peer (contains their identity)
         let Some(ack) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
             bail!("connection closed while awaiting key share handshake");
         };
 
-        let their_nonce = match ack {
+        let their_identity = match ack {
             StreamMessage::Init {
+                party_id,
                 payload: InitPayload::KeyShare,
-                next_nonce,
                 ..
-            } => next_nonce,
+            } => party_id,
             unexpected => {
                 bail!("unexpected message during key share: {:?}", unexpected)
             }
         };
 
-        // Now perform bidirectional key exchange
-        let mut their_identity = context_client
-            .get_identity(context_id, author_identity)?
-            .ok_or_eyre("expected peer identity to exist")?;
+        // Verify peer responded with the identity we need
+        // If the peer has multiple identities, they might respond with a different one
+        if their_identity != *author_identity {
+            warn!(
+                %context_id,
+                %author_identity,
+                %their_identity,
+                "Peer responded with different identity than expected author - key share may not provide the needed sender_key"
+            );
+            bail!(
+                "peer responded with unexpected identity (expected author {}, got {})",
+                author_identity,
+                their_identity
+            );
+        }
 
-        let (private_key, sender_key) = context_client
+        // Step 3: Deterministic tie-breaker for initiator/responder role
+        // Both peers must agree on roles to prevent deadlock
+        let is_initiator = <PublicKey as AsRef<[u8; 32]>>::as_ref(&our_identity)
+            > <PublicKey as AsRef<[u8; 32]>>::as_ref(&their_identity);
+
+        debug!(
+            %context_id,
+            %our_identity,
+            %their_identity,
+            is_initiator,
+            "Determined role via deterministic comparison"
+        );
+
+        // Get our private key and sender key
+        let (our_private_key, sender_key) = context_client
             .get_identity(context_id, &our_identity)?
             .and_then(|i| Some((i.private_key?, i.sender_key?)))
             .ok_or_eyre("expected own identity to have private & sender keys")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity.public_key);
+        // Get their identity record (to update with sender_key later)
+        let mut their_identity_record = context_client
+            .get_identity(context_id, &their_identity)?
+            .ok_or_eyre("expected peer identity to exist")?;
 
-        // Send our sender_key
-        crate::sync::stream::send(
-            &mut stream,
-            &StreamMessage::Message {
-                sequence_id: 0,
-                payload: MessagePayload::KeyShare { sender_key },
-                next_nonce: our_nonce,
-            },
-            Some((shared_key, our_nonce)),
-        )
-        .await?;
+        let mut sequence_id_out: usize = 0;
+        let mut sequence_id_in: usize = 0;
 
-        // Receive their sender_key
-        let Some(msg) =
-            crate::sync::stream::recv(&mut stream, Some((shared_key, their_nonce)), timeout)
-                .await?
-        else {
-            bail!("connection closed while awaiting sender_key");
-        };
+        // Step 4: Challenge/Response authentication
+        // Protocol must match sync/key.rs exactly:
+        // - Initiator: send challenge → recv response → recv challenge → send response
+        // - Responder: recv challenge → send response → send challenge → recv response
+        if is_initiator {
+            // INITIATOR: Challenge them first
+            let challenge: [u8; 32] = rand::thread_rng().gen();
 
-        let their_sender_key = match msg {
-            StreamMessage::Message {
-                payload: MessagePayload::KeyShare { sender_key },
-                ..
-            } => sender_key,
-            unexpected => {
-                bail!("unexpected message: {:?}", unexpected)
-            }
-        };
+            debug!(%context_id, %their_identity, "Sending authentication challenge (initiator)");
 
-        // Store their sender_key
-        their_identity.sender_key = Some(their_sender_key);
-        context_client.update_identity(context_id, &their_identity)?;
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::Challenge { challenge },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Receive their signature
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge response");
+            };
+
+            let their_signature_bytes = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::ChallengeResponse { signature },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    signature
+                }
+                unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
+            };
+
+            // Verify their signature
+            let their_signature = Signature::from_bytes(&their_signature_bytes);
+            their_identity
+                .verify(&challenge, &their_signature)
+                .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
+
+            debug!(%context_id, %their_identity, "Peer authenticated successfully");
+
+            // Now receive their challenge for us
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge");
+            };
+
+            let their_challenge = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::Challenge { challenge },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    challenge
+                }
+                unexpected => bail!("expected Challenge, got {:?}", unexpected),
+            };
+
+            // Sign their challenge
+            let our_signature = our_private_key.sign(&their_challenge)?;
+
+            debug!(%context_id, %our_identity, "Sending authentication response (initiator)");
+
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::ChallengeResponse {
+                        signature: our_signature.to_bytes(),
+                    },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Step 5: Key exchange - initiator sends first
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+
+            // Receive their sender_key
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting key share");
+            };
+
+            let peer_sender_key = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sender_key
+                }
+                unexpected => bail!("expected KeyShare, got {:?}", unexpected),
+            };
+
+            their_identity_record.sender_key = Some(peer_sender_key);
+        } else {
+            // RESPONDER: Receive challenge first
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge");
+            };
+
+            let their_challenge = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::Challenge { challenge },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    challenge
+                }
+                unexpected => bail!("expected Challenge, got {:?}", unexpected),
+            };
+
+            // Sign their challenge
+            let our_signature = our_private_key.sign(&their_challenge)?;
+
+            debug!(%context_id, %our_identity, "Sending authentication response (responder)");
+
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::ChallengeResponse {
+                        signature: our_signature.to_bytes(),
+                    },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Now send our challenge
+            let challenge: [u8; 32] = rand::thread_rng().gen();
+
+            debug!(%context_id, %their_identity, "Sending authentication challenge (responder)");
+
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::Challenge { challenge },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+            sequence_id_out += 1;
+
+            // Receive their signature
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting challenge response");
+            };
+
+            let their_signature_bytes = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::ChallengeResponse { signature },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sequence_id_in += 1;
+                    signature
+                }
+                unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
+            };
+
+            // Verify their signature
+            let their_signature = Signature::from_bytes(&their_signature_bytes);
+            their_identity
+                .verify(&challenge, &their_signature)
+                .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
+
+            debug!(%context_id, %their_identity, "Peer authenticated successfully");
+
+            // Step 5: Key exchange - responder receives first
+            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
+                bail!("connection closed while awaiting key share");
+            };
+
+            let peer_sender_key = match msg {
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    ..
+                } => {
+                    if sequence_id != sequence_id_in {
+                        bail!(
+                            "unexpected sequence_id: expected {}, got {}",
+                            sequence_id_in,
+                            sequence_id
+                        );
+                    }
+                    sender_key
+                }
+                unexpected => bail!("expected KeyShare, got {:?}", unexpected),
+            };
+
+            their_identity_record.sender_key = Some(peer_sender_key);
+
+            // Then send our sender_key
+            crate::sync::stream::send(
+                &mut stream,
+                &StreamMessage::Message {
+                    sequence_id: sequence_id_out,
+                    payload: MessagePayload::KeyShare { sender_key },
+                    next_nonce: our_nonce,
+                },
+                None,
+            )
+            .await?;
+        }
+
+        // Step 6: Store their sender_key
+        context_client.update_identity(context_id, &their_identity_record)?;
 
         info!(
             %context_id,
-            our_identity=%our_identity,
-            their_identity=%author_identity,
+            %our_identity,
+            their_identity=%their_identity_record.public_key,
             %peer,
-            "Bidirectional key share completed"
+            "Bidirectional key share completed with mutual authentication"
         );
 
         Ok(())
     })
     .await
     .map_err(|_| eyre::eyre!("Timeout during key share with peer"))?
+}
+
+/// Ensures the application blob is available for a context before handler execution.
+///
+/// This fixes the race condition where gossipsub state deltas arrive before the
+/// WASM application blob has finished downloading. Without this check, handler
+/// execution would fail with "ApplicationNotInstalled" errors.
+///
+/// The function polls for blob availability with exponential backoff, up to the
+/// specified timeout. If the blob becomes available, it returns Ok(()); otherwise
+/// it returns an error.
+async fn ensure_application_available(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    context_client: &calimero_context_primitives::client::ContextClient,
+    context_id: &ContextId,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    use std::time::Duration;
+    use tokio::time::{sleep, Instant};
+
+    let context = context_client
+        .get_context(context_id)?
+        .ok_or_else(|| eyre::eyre!("context not found"))?;
+
+    let application_id = context.application_id;
+
+    // Check if application is already installed and blob available
+    if let Ok(Some(app)) = node_client.get_application(&application_id) {
+        // Application exists, check if bytecode blob is available
+        if node_client.has_blob(&app.blob.bytecode)? {
+            debug!(
+                %context_id,
+                %application_id,
+                "Application blob already available"
+            );
+            return Ok(());
+        }
+    }
+
+    // Blob not yet available - poll with backoff
+    let start = Instant::now();
+    let mut delay = Duration::from_millis(50);
+    let max_delay = Duration::from_millis(500);
+
+    info!(
+        %context_id,
+        %application_id,
+        timeout_ms = timeout.as_millis(),
+        "Waiting for application blob to become available..."
+    );
+
+    while start.elapsed() < timeout {
+        sleep(delay).await;
+
+        // Re-check application and blob
+        if let Ok(Some(app)) = node_client.get_application(&application_id) {
+            if node_client.has_blob(&app.blob.bytecode)? {
+                info!(
+                    %context_id,
+                    %application_id,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Application blob now available"
+                );
+                return Ok(());
+            }
+        }
+
+        // Exponential backoff
+        delay = std::cmp::min(delay * 2, max_delay);
+    }
+
+    // Timeout reached
+    warn!(
+        %context_id,
+        %application_id,
+        elapsed_ms = start.elapsed().as_millis(),
+        "Timeout waiting for application blob"
+    );
+
+    Err(eyre::eyre!(
+        "Application blob not available after {:?}",
+        timeout
+    ))
 }
