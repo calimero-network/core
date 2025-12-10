@@ -101,10 +101,11 @@ steps:
         executor_key: "{{public_key_fuzzy-kv-node-4}}"
 
     operations:
-      # Write operations - 50% of traffic
-      - name: "set_value"
+      # Write-and-verify operations - 50% of traffic
+      - name: "set_and_verify"
         weight: 50
         steps:
+          # Write on random node - auto-captures key and value
           - type: call
             node: "{{random_node}}"
             context_id: "{{kv_context_id}}"
@@ -119,10 +120,29 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{set_result}})"
+          # Wait briefly for sync
+          - type: wait
+            seconds: 1
+          # Read using auto-captured {{fuzzy_key}} - guaranteed to exist
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{kv_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{get_result}})"
+              - "contains({{get_result}}, {{fuzzy_value}})"
 
-      # Read operations - 30% of traffic
-      - name: "get_value"
-        weight: 30
+      # Pure random reads - 25% of traffic
+      # Tests key-not-found scenarios and random access patterns
+      - name: "random_read"
+        weight: 25
         steps:
           - type: call
             node: "{{random_node}}"
@@ -130,9 +150,10 @@ steps:
             executor_public_key: "{{random_executor}}"
             method: get
             args:
-              key: "initial_key_{{random_int(1, 10)}}"
+              key: "key_{{random_int(1, 10000)}}"
             outputs:
               get_result: result
+          # Note: This may fail if key doesn't exist - that's expected and tested
           - type: assert
             non_blocking: true
             statements:
@@ -154,10 +175,9 @@ steps:
             statements:
               - "is_set({{entries_result}})"
 
-      # Cross-node consistency check - 5% of traffic
-      # Note: args.key and args.value are auto-captured as {{fuzzy_key}} and {{fuzzy_value}}
+      # Cross-node consistency check - 10% of traffic
       - name: "cross_node_write_read"
-        weight: 5
+        weight: 10
         steps:
           # Write on one node
           # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}

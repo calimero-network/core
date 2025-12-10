@@ -77,10 +77,11 @@ steps:
         executor_key: "{{public_key_fuzzy-handlers-node-4}}"
 
     operations:
-      # Write operations (triggers insert/update handlers) - 45% of traffic
-      - name: "set_with_handler"
+      # Write-and-verify operations (triggers insert/update handlers) - 45% of traffic
+      - name: "set_and_verify_handler"
         weight: 45
         steps:
+          # Write on random node - auto-captures key and value
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
@@ -95,10 +96,29 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{hset_result}})"
+          # Wait briefly for handler execution and sync
+          - type: wait
+            seconds: 1
+          # Read using auto-captured {{fuzzy_key}} - guaranteed to exist
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              hget_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{hget_result}})"
+              - "contains({{hget_result}}, {{fuzzy_value}})"
 
-      # Read operations - 25% of traffic
-      - name: "get_handler_value"
-        weight: 25
+      # Pure random reads - 20% of traffic
+      # Tests key-not-found scenarios and random access patterns
+      - name: "random_read_handler"
+        weight: 20
         steps:
           - type: call
             node: "{{random_node}}"
@@ -106,9 +126,10 @@ steps:
             executor_public_key: "{{random_executor}}"
             method: get
             args:
-              key: "handler_key_{{random_int(1, 10)}}"
+              key: "hkey_{{random_int(1, 10000)}}"
             outputs:
               hget_result: result
+          # Note: This may fail if key doesn't exist - that's expected and tested
           - type: assert
             non_blocking: true
             statements:
@@ -164,13 +185,12 @@ steps:
             statements:
               - "is_set({{handler_count}})"
 
-      # Cross-node consistency with handlers - 5% of traffic
-      # Note: args.key and args.value are auto-captured as {{fuzzy_key}} and {{fuzzy_value}}
+      # Cross-node consistency with handlers - 10% of traffic
+
       - name: "cross_node_handler_check"
-        weight: 5
+        weight: 10
         steps:
           # Write on one node
-          # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}
           - type: call
             node: fuzzy-handlers-node-2
             context_id: "{{handlers_context_id}}"
@@ -181,7 +201,6 @@ steps:
               value: "hcheck_{{timestamp}}"
           - type: wait
             seconds: 2
-          # Read on another node using auto-captured {{fuzzy_key}}
           - type: call
             node: fuzzy-handlers-node-4
             context_id: "{{handlers_context_id}}"
