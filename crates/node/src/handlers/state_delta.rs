@@ -84,6 +84,25 @@ pub async fn handle_state_delta(
 
     let our_identity = choose_owned_identity(&node_clients.context, &context_id).await?;
 
+    // Check if application is available BEFORE applying the delta.
+    // If not available, bail early so the delta can be retried later when rebroadcast.
+    // This prevents the scenario where we apply the delta but skip handlers because
+    // the application blob hasn't finished downloading yet.
+    if let Err(e) = ensure_application_available(
+        &node_clients.node,
+        &node_clients.context,
+        &context_id,
+        sync_timeout,
+    )
+    .await
+    {
+        bail!(
+            "Application not available for context {} - delta will be retried on rebroadcast: {}",
+            context_id,
+            e
+        );
+    }
+
     let DeltaStoreSetup {
         store: delta_store_ref,
         is_uninitialized,
@@ -182,29 +201,15 @@ pub async fn handle_state_delta(
                 "Evaluating event handler execution for applied delta"
             );
             if !is_author {
-                if let Err(e) = ensure_application_available(
-                    &node_clients.node,
+                // Application availability was already verified at the start of this function,
+                // so we can safely execute handlers without re-checking.
+                execute_event_handlers_parsed(
                     &node_clients.context,
                     &context_id,
-                    sync_timeout,
+                    &our_identity,
+                    payload,
                 )
-                .await
-                {
-                    warn!(
-                        %context_id,
-                        delta_id = ?delta_id,
-                        error = %e,
-                        "Application not available for handler execution - handlers will be skipped"
-                    );
-                } else {
-                    execute_event_handlers_parsed(
-                        &node_clients.context,
-                        &context_id,
-                        &our_identity,
-                        payload,
-                    )
-                    .await?;
-                }
+                .await?;
             } else {
                 info!(
                     %context_id,
