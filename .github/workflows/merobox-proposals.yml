@@ -96,9 +96,10 @@ jobs:
             contracts
           key: ${{ needs.build.outputs.cache-key }}
 
-      - name: Set Permissions
-        run: |
-          chmod +x target/debug/merod
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Clone merobox
         run: |
@@ -119,7 +120,9 @@ jobs:
               near-proposals.yml \
               --no-docker \
               --binary-path ../../target/debug/merod \
-              --e2e-mode
+              --e2e-mode \
+              --near-devnet \
+              --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
 
   test-icp:
     name: Test ICP Proposals
@@ -143,6 +146,11 @@ jobs:
       - name: Deploy ICP Devnet
         run: |
           ./scripts/icp/deploy-devnet.sh
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Clone merobox
         run: |
@@ -187,6 +195,11 @@ jobs:
       - name: Deploy Ethereum Devnet
         run: |
           ./scripts/ethereum/deploy-devnet.sh
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Clone merobox
         run: |
