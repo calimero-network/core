@@ -17,6 +17,7 @@ on:
             - "crates/**"
             - "apps/**"
             - ".github/workflows/merobox-workflows.yml"
+
     workflow_dispatch:
 
 concurrency:

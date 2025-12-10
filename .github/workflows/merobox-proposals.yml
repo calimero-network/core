@@ -24,7 +24,6 @@ on:
       - ".github/workflows/merobox-proposals.yml"
   workflow_dispatch:
 
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

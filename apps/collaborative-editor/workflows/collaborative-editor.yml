@@ -24,50 +24,17 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Step 2: Create a context using the installed application
-  - name: Create Context on Node 1
-    type: create_context
-    node: calimero-node-1
+  # Step 2: Create mesh with both nodes
+  - name: Create Mesh
+    type: create_mesh
+    context_node: calimero-node-1
     application_id: "{{app_id}}"
+    nodes:
+      - calimero-node-2
+    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey
-
-  - name: Assert context created
-    type: assert
-    statements:
-      - "is_set({{context_id}})"
-      - "is_set({{member_public_key}})"
-
-  # Step 3: Generate identity on second node
-  - name: Create Identity on Node 2
-    type: create_identity
-    node: calimero-node-2
-    outputs:
-      public_key: publicKey
-
-  - name: Wait for Identity Creation
-    type: wait
-    seconds: 5
-
-  # Step 4: Invite second node to join the context
-  - name: Invite Node 2 from Node 1
-    type: invite_identity
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{public_key}}"
-    granter_id: "{{member_public_key}}"
-    capability: member
-    outputs:
-      invitation: invitation
-
-  # Step 5: Join context from second node
-  - name: Join Context from Node 2
-    type: join_context
-    node: calimero-node-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{public_key}}"
-    invitation: "{{invitation}}"
 
   # ============================================
   # Testing Phase: Collaborative Editing
@@ -107,8 +74,14 @@ steps:
       - 'json_equal({{insert_hello_result}}, {"output": null})'
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 8: Verify text on both nodes
   - name: Get Text After Hello (Node 1)
@@ -129,7 +102,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_node2_hello: result
@@ -144,7 +117,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: append_text
     args:
       text: " World"
@@ -152,8 +125,14 @@ steps:
       append_world_result: result
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 10: Verify both nodes see "Hello World"
   - name: Get Text After World (Node 1)
@@ -174,7 +153,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_node2_world: result
@@ -198,8 +177,14 @@ steps:
       insert_exclamation_result: result
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 12: Verify both nodes see "Hello World!"
   - name: Get Text After Exclamation (Node 1)
@@ -220,7 +205,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_with_exclamation_node2: result
@@ -235,7 +220,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: delete_text
     args:
       start: 6
@@ -244,8 +229,14 @@ steps:
       delete_world_result: result
 
   - name: Wait for deletion to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 14: Verify both nodes see "Hello !"
   - name: Get Text After Deletion (Node 1)
@@ -266,7 +257,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_after_delete_node2: result
@@ -290,8 +281,14 @@ steps:
       insert_crdt_result: result
 
   - name: Wait for edit to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 16: Verify both nodes see "Hello CRDT!"
   - name: Get Text After CRDT Insert (Node 1)
@@ -312,7 +309,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_with_crdt_node2: result
@@ -327,7 +324,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: replace_text
     args:
       start: 6
@@ -337,8 +334,14 @@ steps:
       replace_result: result
 
   - name: Wait for replacement to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 18: Verify both nodes see "Hello Calimero!"
   - name: Get Text After Replace (Node 1)
@@ -359,7 +362,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_after_replace_node2: result
@@ -419,7 +422,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: set_title
     args:
       new_title: Collaborative Editor Demo
@@ -427,8 +430,14 @@ steps:
       set_title_result: result
 
   - name: Wait for title change to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 23: Verify title changed on both nodes
   - name: Get New Title (Node 1)
@@ -449,7 +458,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_title
     outputs:
       new_title_node2: result
@@ -485,8 +494,14 @@ steps:
       clear_result: result
 
   - name: Wait for clear to propagate
-    type: wait
-    seconds: 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 26: Verify document is empty on both nodes
   - name: Get Text After Clear (Node 1)
@@ -507,7 +522,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_after_clear_node2: result
@@ -549,7 +564,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: insert_text
     args:
       position: 0
@@ -558,8 +573,14 @@ steps:
       insert_xyz_result: result
 
   - name: Wait for concurrent edits to propagate
-    type: wait
-    seconds: 3
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 29: Verify both nodes converge to same text (CRDT property)
   - name: Get Text After Concurrent Edits (Node 1)
@@ -575,7 +596,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get_text
     outputs:
       text_concurrent_node2: result

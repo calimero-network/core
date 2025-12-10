@@ -120,8 +120,14 @@ steps:
     invitation: "{{invitation_a}}"
 
   - name: Wait for Context A join to propagate
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_a_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 10: Node 2 joins Context B with second identity
   - name: Node 2 Join Context B
@@ -132,8 +138,14 @@ steps:
     invitation: "{{invitation_b}}"
 
   - name: Wait for Context B join to propagate
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_b_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # ============================================
   # Testing Phase: Ping-Pong XCall functionality
@@ -200,9 +212,15 @@ steps:
       - 'json_equal({{ping_result_1}}, {"output": null})'
 
   # Step 13: Wait for XCall execution and state delta broadcast
-  - name: Wait for XCall execution and broadcast
-    type: wait
-    seconds: 5
+  - name: Wait for XCall execution and broadcast - Context B
+    type: wait_for_sync
+    context_id: "{{context_b_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 14: Verify Context B counter incremented on Node 1
   - name: Check counter on Context B (Node 1)
@@ -271,9 +289,15 @@ steps:
       - 'json_equal({{ping_result_2}}, {"output": null})'
 
   # Step 18: Wait for XCall execution and broadcast
-  - name: Wait for XCall execution and broadcast
-    type: wait
-    seconds: 5
+  - name: Wait for XCall execution and broadcast - Context A
+    type: wait_for_sync
+    context_id: "{{context_a_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 19: Verify Context A counter incremented on Node 1
   - name: Check counter on Context A (Node 1)
@@ -321,9 +345,15 @@ steps:
     outputs:
       ping_result_3: result
 
-  - name: Wait for XCall execution
-    type: wait
-    seconds: 5
+  - name: Wait for XCall execution - Context B
+    type: wait_for_sync
+    context_id: "{{context_b_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Send third ping from Context A to Context B
     type: call
@@ -336,9 +366,15 @@ steps:
     outputs:
       ping_result_4: result
 
-  - name: Wait for XCall execution
-    type: wait
-    seconds: 5
+  - name: Wait for XCall execution - Context B
+    type: wait_for_sync
+    context_id: "{{context_b_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 22: Verify Context B counter is now 3 on both nodes
   - name: Check final counter on Context B (Node 1)

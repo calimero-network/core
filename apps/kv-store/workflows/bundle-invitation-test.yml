@@ -38,67 +38,27 @@ steps:
   # Context Creation Phase: User 1 creates context with bundle
   # ============================================
   
-  # Step 3: Create context with bundle application on Node 1
-  - name: Create Context with Bundle on Node 1
-    type: create_context
-    node: calimero-node-1
+  # Step 3: Create mesh with bundle application
+  - name: Create Mesh with Bundle
+    type: create_mesh
+    context_node: calimero-node-1
     application_id: "{{bundle_app_id}}"
+    nodes:
+      - calimero-node-2
+    capability: member
     outputs:
       context_id: contextId
       inviter_public_key: memberPublicKey
 
-  - name: Assert Context Created
-    type: assert
-    statements:
-      - "is_set({{context_id}})"
-      - "is_set({{inviter_public_key}})"
-
-  # ============================================
-  # Invitation Phase: User 1 invites User 2
-  # ============================================
-  
-  # Step 4: Create identity for User 2 on Node 2
-  - name: Create Identity for User 2 on Node 2
-    type: create_identity
-    node: calimero-node-2
-    outputs:
-      invitee_public_key: publicKey
-
-  - name: Wait for Identity Creation
-    type: wait
-    seconds: 5
-
-  # Step 5: User 1 invites User 2 to context
-  - name: Invite User 2 to Context
-    type: invite_identity
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{invitee_public_key}}"
-    granter_id: "{{inviter_public_key}}"
-    capability: member
-    outputs:
-      invitation: invitation
-
-  - name: Assert Invitation Created
-    type: assert
-    statements:
-      - "is_set({{invitation}})"
-
-  # ============================================
-  # Join Phase: User 2 joins context (triggers sync_context_config)
-  # ============================================
-  
-  # Step 6: User 2 joins context (this triggers sync_context_config which should install bundle)
-  - name: User 2 Joins Context
-    type: join_context
-    node: calimero-node-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{invitee_public_key}}"
-    invitation: "{{invitation}}"
-
   - name: Wait for Context Join and Bundle Installation
-    type: wait
-    seconds: 10
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # ============================================
   # Verification Phase: Verify User 2 has bundle installed and can use it
@@ -113,7 +73,7 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: set
     args:
       key: "test_key"
@@ -127,15 +87,21 @@ steps:
       - 'json_equal({{set_result}}, {"output": null})'
 
   - name: Wait for State Sync
-    type: wait
-    seconds: 5
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # Step 10: Verify User 2 can read the value
   - name: Call Get Method on Node 2
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_public_key}}"
+    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get
     args:
       key: "test_key"
