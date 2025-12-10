@@ -4,6 +4,13 @@ permissions:
     contents: read
 
 on:
+    push:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - "apps/**"
+            - ".github/workflows/merobox-workflows.yml"
+
     pull_request:
         branches: [master]
         paths:
@@ -19,6 +26,7 @@ concurrency:
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: 1
+    CALIMERO_CONTRACTS_VERSION: "latest"
 
 jobs:
     build:
@@ -84,6 +92,11 @@ jobs:
                       apps/*/res/*.mpk
                   key: ${{ needs.build.outputs.cache-key }}
 
+            - name: Set up Python 3.11
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
             - name: Clone merobox
               run: |
                   git clone https://github.com/calimero-network/merobox.git
@@ -96,6 +109,11 @@ jobs:
               run: |
                   merobox --version
 
+            - name: Download Contracts
+              run: |
+                  echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
+                  ./scripts/download-contracts.sh
+
             - name: Run All Workflows
               run: |
                   set -e
@@ -105,26 +123,65 @@ jobs:
                       if [ -f "$workflow" ]; then
                           app_dir=$(dirname "$(dirname "$workflow")")
                           workflow_file=$(basename "$workflow")
-                          echo "Running workflow: $workflow (from app directory: $app_dir)"
-                          if (
-                              cd "$app_dir"
-                              merobox bootstrap run \
-                                  "workflows/$workflow_file" \
-                                  --no-docker \
-                                  --binary-path ../../target/debug/merod \
-                                  --e2e-mode
-                          ); then
-                              echo "Workflow $workflow completed successfully"
-                          else
-                              echo "Workflow $workflow failed"
+                          echo "Running workflow: $workflow (from app directory: $app_dir)"               
+                          # Retry logic: attempt up to 2 times on failure
+                          max_attempts=2
+                          attempt=1
+                          success=false
+                          
+                          while [ $attempt -le $max_attempts ]; do
+                              if [ $attempt -gt 1 ]; then
+                                  echo "Retry attempt $attempt for $workflow"
+                                  # Clean up any leftover data from previous attempt
+                                  merobox nuke --force || true
+                                  # Wait before retry to allow system to settle
+                                  sleep 2
+                              fi
+                              
+                              if (
+                                  cd "$app_dir"
+                                  merobox bootstrap run \
+                                      "workflows/$workflow_file" \
+                                      --no-docker \
+                                      --binary-path ../../target/debug/merod \
+                                      --e2e-mode \
+                                      --near-devnet \
+                                      --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
+                              ); then
+                                  echo "Workflow $workflow completed successfully"
+                                  success=true
+                                  break
+                              else
+                                  echo "Workflow $workflow failed on attempt $attempt"
+                                  attempt=$((attempt + 1))
+                              fi
+                          done
+                          merobox nuke --force || true
+                          if [ "$success" = false ]; then
                               failed_workflows+=("$workflow")
                           fi
+                          sleep 2
                       fi
                   done
                   if [ ${#failed_workflows[@]} -gt 0 ]; then
-                      echo "The following workflows failed:"
+                      echo "The following workflows failed after retries:"
                       for failed in "${failed_workflows[@]}"; do
                           echo "  - $failed"
                       done
                       exit 1
                   fi
+                  echo "All workflows completed successfully!"
+
+            - name: Upload Workflow Data Artifacts
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: merobox-workflow-data-${{ github.sha }}
+                  path: |
+                      apps/*/res/*.wasm
+                      apps/*/res/abi.json
+                      apps/*/res/*.mpk
+                      apps/*/res/state-schema.json
+                      apps/*/data/
+                  retention-days: 7
+                  if-no-files-found: warn
