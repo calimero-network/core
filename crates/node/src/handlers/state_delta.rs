@@ -451,6 +451,19 @@ async fn execute_cascaded_events(
 
     let mut outcome = CascadeOutcome::default();
 
+    // Check if current delta is in cascaded list (orthogonal to handler execution)
+    if let Some(current) = current_delta {
+        if cascaded_events.iter().any(|(id, _)| *id == *current) {
+            info!(
+                %context_id,
+                delta_id = ?current,
+                phase = phase,
+                "Current delta cascaded - marking as applied"
+            );
+            outcome.applied_current = true;
+        }
+    }
+
     let app_available = ensure_application_available(
         &node_clients.node,
         &node_clients.context,
@@ -471,15 +484,6 @@ async fn execute_cascaded_events(
     }
 
     for (cascaded_id, events_data) in cascaded_events {
-        if current_delta == Some(cascaded_id) {
-            info!(
-                %context_id,
-                delta_id = ?cascaded_id,
-                phase = phase,
-                "Current delta cascaded - marking as applied"
-            );
-            outcome.applied_current = true;
-        }
 
         match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
             Ok(cascaded_payload) => {
