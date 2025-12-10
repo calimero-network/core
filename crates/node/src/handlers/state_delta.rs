@@ -484,7 +484,6 @@ async fn execute_cascaded_events(
     }
 
     for (cascaded_id, events_data) in cascaded_events {
-
         match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
             Ok(cascaded_payload) => {
                 info!(
