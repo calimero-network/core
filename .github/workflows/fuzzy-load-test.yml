@@ -1,0 +1,297 @@
+name: Fuzzy Load Test - Long Running Performance
+
+permissions:
+    contents: read
+
+on:
+    push:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - "apps/**"
+            - "workflows/fuzzy-tests/**"
+            - ".github/workflows/fuzzy-load-test.yml"
+    workflow_dispatch:
+        inputs:
+            duration_override:
+                description: "Override test duration (minutes per app)"
+                required: false
+                default: "45"
+                type: string
+            test_app:
+                description: "Run specific app test (kv-store, kv-store-with-handlers, or all)"
+                required: false
+                default: "all"
+                type: choice
+                options:
+                    - all
+                    - kv-store
+                    - kv-store-with-handlers
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: false # Don't cancel long-running tests
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+    RUST_LOG: info,calimero_=debug
+
+jobs:
+    build:
+        name: Build Binaries & Apps
+        runs-on: ubuntu-24.04-8cpu
+        outputs:
+            cache-key: ${{ steps.cache-key.outputs.key }}
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-
+
+            - name: Generate cache key
+              id: cache-key
+              run: echo "key=${{ runner.os }}-fuzzy-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+            - name: Build merod binary
+              run: cargo build --bin merod
+
+            - name: Download NEAR contracts
+              run: |
+                  ./scripts/download-contracts.sh
+
+            - name: Build kv-store app
+              run: |
+                  cd apps/kv-store
+                  ./build.sh
+
+            - name: Build kv-store-with-handlers app
+              run: |
+                  cd apps/kv-store-with-handlers
+                  ./build.sh
+
+            - name: Verify WASM files exist
+              run: |
+                  ls -la apps/kv-store/res/
+                  ls -la apps/kv-store-with-handlers/res/
+                  test -f apps/kv-store/res/kv_store.wasm
+                  test -f apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+
+            - name: Cache build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/debug/merod
+                      apps/kv-store/res/*.wasm
+                      apps/kv-store-with-handlers/res/*.wasm
+                      contracts/near
+                  key: ${{ steps.cache-key.outputs.key }}
+
+    fuzzy-test-kv-store:
+        name: Run KV Store Fuzzy Test
+        needs: build
+        runs-on: ubuntu-24.04-8cpu
+        timeout-minutes: 90 # 45min test + setup/teardown buffer
+        if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'kv-store' || github.event.inputs.test_app == ''
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Restore build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/debug/merod
+                      apps/kv-store/res/*.wasm
+                      contracts/near
+                  key: ${{ needs.build.outputs.cache-key }}
+
+            - name: Set permissions
+              run: |
+                  chmod +x target/debug/merod
+
+            - name: Set up Python 3.11
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+
+            - name: Create logs directory
+              run: |
+                  mkdir -p fuzzy-test-logs/kv-store
+
+            - name: Run KV Store Fuzzy Test
+              id: kv-test
+              continue-on-error: true
+              run: |
+                  cd workflows/fuzzy-tests/kv-store
+
+                  echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+                  set +e
+                  merobox bootstrap run \
+                      fuzzy-test.yml \
+                      --no-docker \
+                      --binary-path ../../../../target/debug/merod \
+                      --e2e-mode \
+                      --near-devnet \
+                      --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
+                      --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store/merobox-output.log
+
+                  exit_code=$?
+
+                  echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+                  echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+                  exit $exit_code
+
+            - name: Collect KV Store node logs
+              if: always()
+              run: |
+                  find workflows/fuzzy-tests/kv-store -type d -name "logs" 2>/dev/null | while read logdir; do
+                    relpath=$(echo "$logdir" | sed 's|workflows/fuzzy-tests/kv-store/||')
+                    mkdir -p "fuzzy-test-logs/kv-store/$relpath"
+                    cp -r "$logdir"/* "fuzzy-test-logs/kv-store/$relpath/" 2>/dev/null || true
+                  done
+
+            - name: Upload KV Store test artifacts
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: fuzzy-test-kv-store-${{ github.run_number }}-${{ github.run_id }}
+                  path: fuzzy-test-logs/kv-store/
+                  retention-days: 30
+                  compression-level: 6
+
+    fuzzy-test-handlers:
+        name: Run KV Store with Handlers Fuzzy Test
+        needs: build
+        runs-on: ubuntu-24.04-8cpu
+        timeout-minutes: 90 # 45min test + setup/teardown buffer
+        if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'kv-store-with-handlers' || github.event.inputs.test_app == ''
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Restore build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/debug/merod
+                      apps/kv-store-with-handlers/res/*.wasm
+                      contracts/near
+                  key: ${{ needs.build.outputs.cache-key }}
+
+            - name: Set permissions
+              run: |
+                  chmod +x target/debug/merod
+
+            - name: Set up Python 3.11
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+
+            - name: Create logs directory
+              run: |
+                  mkdir -p fuzzy-test-logs/kv-store-with-handlers
+
+            - name: Run Handlers Fuzzy Test
+              id: handlers-test
+              continue-on-error: true
+              run: |
+                  cd workflows/fuzzy-tests/kv-store-with-handlers
+
+                  echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+                  set +e
+                  merobox bootstrap run \
+                      fuzzy-test.yml \
+                      --no-docker \
+                      --binary-path ../../../../target/debug/merod \
+                      --e2e-mode \
+                      --near-devnet \
+                      --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
+                      --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
+
+                  exit_code=$?
+
+                  echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+                  echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+                  exit $exit_code
+
+            - name: Collect Handlers node logs
+              if: always()
+              run: |
+                  find workflows/fuzzy-tests/kv-store-with-handlers -type d -name "logs" 2>/dev/null | while read logdir; do
+                    relpath=$(echo "$logdir" | sed 's|workflows/fuzzy-tests/kv-store-with-handlers/||')
+                    mkdir -p "fuzzy-test-logs/kv-store-with-handlers/$relpath"
+                    cp -r "$logdir"/* "fuzzy-test-logs/kv-store-with-handlers/$relpath/" 2>/dev/null || true
+                  done
+
+            - name: Upload Handlers test artifacts
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: fuzzy-test-handlers-${{ github.run_number }}-${{ github.run_id }}
+                  path: fuzzy-test-logs/kv-store-with-handlers/
+                  retention-days: 30
+                  compression-level: 6
+
+    test-summary:
+        name: Test Summary
+        needs: [fuzzy-test-kv-store, fuzzy-test-handlers]
+        runs-on: ubuntu-latest
+        if: always()
+        steps:
+            - name: Generate summary
+              run: |
+                  echo "## Fuzzy Load Test Results" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+
+                  echo "### KV Store Test" >> $GITHUB_STEP_SUMMARY
+                  if [ "${{ needs.fuzzy-test-kv-store.result }}" = "success" ]; then
+                    echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "**FAILED** (check artifacts for details)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  echo "" >> $GITHUB_STEP_SUMMARY
+
+                  echo "### KV Store with Handlers Test" >> $GITHUB_STEP_SUMMARY
+                  if [ "${{ needs.fuzzy-test-handlers.result }}" = "success" ]; then
+                    echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "**FAILED** (check artifacts for details)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  echo "" >> $GITHUB_STEP_SUMMARY
+
+                  echo "Download artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
