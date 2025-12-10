@@ -1,0 +1,259 @@
+name: "KV Store with Handlers Fuzzy Load Test"
+description: "Long-running fuzzy load test for kv-store-with-handlers application"
+
+# Test configuration
+no_docker: true
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 4
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fuzzy-handlers-node
+
+steps:
+  - name: Install KV Store with Handlers on Node 1
+    type: install_application
+    node: fuzzy-handlers-node-1
+    path: ../../../apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      handlers_app_id: applicationId
+
+  - name: Create Mesh for Handlers App with NEAR Protocol
+    type: create_mesh
+    context_node: fuzzy-handlers-node-1
+    application_id: "{{handlers_app_id}}"
+    protocol: near
+    nodes:
+      - fuzzy-handlers-node-2
+      - fuzzy-handlers-node-3
+      - fuzzy-handlers-node-4
+    capability: member
+    outputs:
+      handlers_context_id: contextId
+      handlers_node1_key: memberPublicKey
+
+  - name: Wait for handlers mesh formation
+    type: wait_for_sync
+    context_id: "{{handlers_context_id}}"
+    nodes:
+      - fuzzy-handlers-node-1
+      - fuzzy-handlers-node-2
+      - fuzzy-handlers-node-3
+      - fuzzy-handlers-node-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Verify handlers mesh synced
+    type: assert
+    statements:
+      - "is_set({{handlers_context_id}})"
+      - "is_set({{handlers_node1_key}})"
+      - "is_set({{public_key_fuzzy-handlers-node-2}})"
+      - "is_set({{public_key_fuzzy-handlers-node-3}})"
+      - "is_set({{public_key_fuzzy-handlers-node-4}})"
+
+  # Main fuzzy test for kv-store-with-handlers
+  # Note: No seed data needed - fuzzy test generates its own data
+  - name: KV Store with Handlers Fuzzy Load Test
+    type: fuzzy_test
+    duration_minutes: 45
+    context_id: "{{handlers_context_id}}"
+    summary_interval_seconds: 60
+    operation_delay_ms: 50
+    success_threshold: 95.0
+
+    nodes:
+      - name: fuzzy-handlers-node-1
+        executor_key: "{{handlers_node1_key}}"
+      - name: fuzzy-handlers-node-2
+        executor_key: "{{public_key_fuzzy-handlers-node-2}}"
+      - name: fuzzy-handlers-node-3
+        executor_key: "{{public_key_fuzzy-handlers-node-3}}"
+      - name: fuzzy-handlers-node-4
+        executor_key: "{{public_key_fuzzy-handlers-node-4}}"
+
+    operations:
+      # Write-and-verify operations (triggers insert/update handlers) - 45% of traffic
+      - name: "set_and_verify_handler"
+        weight: 45
+        steps:
+          # Write on random node - auto-captures key and value
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: set
+            args:
+              key: "hkey_{{random_int(1, 10000)}}"
+              value: "hvalue_{{uuid}}_{{timestamp}}"
+            outputs:
+              hset_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{hset_result}})"
+          # Wait briefly for handler execution and sync
+          - type: wait
+            seconds: 1
+          # Read using auto-captured {{fuzzy_key}} - guaranteed to exist
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              hget_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{hget_result}})"
+              - "contains({{hget_result}}, {{fuzzy_value}})"
+
+      # Pure random reads - 20% of traffic
+      # Tests key-not-found scenarios and random access patterns
+      - name: "random_read_handler"
+        weight: 20
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: get
+            args:
+              key: "hkey_{{random_int(1, 10000)}}"
+            outputs:
+              hget_result: result
+          # Note: This may fail if key doesn't exist - that's expected and tested
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{hget_result}})"
+
+      # List entries - 10% of traffic
+      - name: "list_handler_entries"
+        weight: 10
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: entries
+            outputs:
+              hentries_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{hentries_result}})"
+
+      # Remove operations (triggers remove handler) - 10% of traffic
+      - name: "remove_with_handler"
+        weight: 10
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: remove
+            args:
+              key: "hkey_{{random_int(1, 10000)}}"
+            outputs:
+              hremove_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{hremove_result}})"
+
+      # Check handler execution count - 5% of traffic
+      - name: "check_handler_count"
+        weight: 5
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: get_handler_execution_count
+            outputs:
+              handler_count: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{handler_count}})"
+
+      # Cross-node consistency with handlers - 10% of traffic
+
+      - name: "cross_node_handler_check"
+        weight: 10
+        steps:
+          # Write on one node
+          - type: call
+            node: fuzzy-handlers-node-2
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{public_key_fuzzy-handlers-node-2}}"
+            method: set
+            args:
+              key: "handler_consistency_{{uuid}}"
+              value: "hcheck_{{timestamp}}"
+          - type: wait
+            seconds: 2
+          - type: call
+            node: fuzzy-handlers-node-4
+            context_id: "{{handlers_context_id}}"
+            executor_public_key: "{{public_key_fuzzy-handlers-node-4}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              hconsistency_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - statement: "contains({{hconsistency_result}}, {{fuzzy_value}})"
+                message: "Cross-node value should match the set value"
+
+  - name: Final Handlers Store sync verification
+    type: wait_for_sync
+    context_id: "{{handlers_context_id}}"
+    nodes:
+      - fuzzy-handlers-node-1
+      - fuzzy-handlers-node-2
+      - fuzzy-handlers-node-3
+      - fuzzy-handlers-node-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Final Handlers Store entry count check
+    type: call
+    node: fuzzy-handlers-node-1
+    context_id: "{{handlers_context_id}}"
+    executor_public_key: "{{handlers_node1_key}}"
+    method: len
+    outputs:
+      final_handlers_count: result
+
+  - name: Final handler execution count
+    type: call
+    node: fuzzy-handlers-node-1
+    context_id: "{{handlers_context_id}}"
+    executor_public_key: "{{handlers_node1_key}}"
+    method: get_handler_execution_count
+    outputs:
+      total_handler_executions: result
+
+  - name: Log final statistics
+    type: assert
+    statements:
+      - "is_set({{final_handlers_count}})"
+      - "is_set({{total_handler_executions}})"
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 3600 # 1 hour timeout for long-running test
+

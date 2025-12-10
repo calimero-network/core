@@ -1,0 +1,240 @@
+name: "KV Store Fuzzy Load Test"
+description: "Long-running fuzzy load test for kv-store application"
+
+# Test configuration
+no_docker: true
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 4
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: fuzzy-kv-node
+
+steps:
+  - name: Install KV Store Application on Node 1
+    type: install_application
+    node: fuzzy-kv-node-1
+    path: ../../../apps/kv-store/res/kv_store.wasm
+    dev: true
+    outputs:
+      kv_app_id: applicationId
+
+  - name: Create Mesh for KV Store with NEAR Protocol
+    type: create_mesh
+    context_node: fuzzy-kv-node-1
+    application_id: "{{kv_app_id}}"
+    protocol: near
+    nodes:
+      - fuzzy-kv-node-2
+      - fuzzy-kv-node-3
+      - fuzzy-kv-node-4
+    capability: member
+    outputs:
+      kv_context_id: contextId
+      node1_key: memberPublicKey
+
+  - name: Wait for mesh formation and sync
+    type: wait_for_sync
+    context_id: "{{kv_context_id}}"
+    nodes:
+      - fuzzy-kv-node-1
+      - fuzzy-kv-node-2
+      - fuzzy-kv-node-3
+      - fuzzy-kv-node-4
+    timeout: 60
+    check_interval: 2
+
+  - name: Verify all nodes synced
+    type: assert
+    statements:
+      - "is_set({{kv_context_id}})"
+      - "is_set({{node1_key}})"
+      - "is_set({{public_key_fuzzy-kv-node-2}})"
+      - "is_set({{public_key_fuzzy-kv-node-3}})"
+      - "is_set({{public_key_fuzzy-kv-node-4}})"
+
+  # Pre-populate with some initial data
+  - name: Seed initial data
+    type: repeat
+    count: 10
+    variable: seed_idx
+    steps:
+      - type: call
+        node: fuzzy-kv-node-1
+        context_id: "{{kv_context_id}}"
+        executor_public_key: "{{node1_key}}"
+        method: set
+        args:
+          key: "initial_key_{{seed_idx}}"
+          value: "initial_value_{{seed_idx}}"
+
+  - name: Wait for seed data sync
+    type: wait_for_sync
+    context_id: "{{kv_context_id}}"
+    nodes:
+      - fuzzy-kv-node-1
+      - fuzzy-kv-node-2
+      - fuzzy-kv-node-3
+      - fuzzy-kv-node-4
+    timeout: 30
+    check_interval: 2
+
+  # Main fuzzy test for kv-store
+  - name: KV Store Fuzzy Load Test
+    type: fuzzy_test
+    duration_minutes: 45
+    context_id: "{{kv_context_id}}"
+    summary_interval_seconds: 60
+    operation_delay_ms: 50
+    success_threshold: 95.0
+
+    nodes:
+      - name: fuzzy-kv-node-1
+        executor_key: "{{node1_key}}"
+      - name: fuzzy-kv-node-2
+        executor_key: "{{public_key_fuzzy-kv-node-2}}"
+      - name: fuzzy-kv-node-3
+        executor_key: "{{public_key_fuzzy-kv-node-3}}"
+      - name: fuzzy-kv-node-4
+        executor_key: "{{public_key_fuzzy-kv-node-4}}"
+
+    operations:
+      # Write-and-verify operations - 50% of traffic
+      - name: "set_and_verify"
+        weight: 50
+        steps:
+          # Write on random node - auto-captures key and value
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{kv_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: set
+            args:
+              key: "key_{{random_int(1, 10000)}}"
+              value: "value_{{uuid}}_{{timestamp}}"
+            outputs:
+              set_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{set_result}})"
+          # Wait briefly for sync
+          - type: wait
+            seconds: 1
+          # Read using auto-captured {{fuzzy_key}} - guaranteed to exist
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{kv_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{get_result}})"
+              - "contains({{get_result}}, {{fuzzy_value}})"
+
+      # Pure random reads - 25% of traffic
+      # Tests key-not-found scenarios and random access patterns
+      - name: "random_read"
+        weight: 25
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{kv_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: get
+            args:
+              key: "key_{{random_int(1, 10000)}}"
+            outputs:
+              get_result: result
+          # Note: This may fail if key doesn't exist - that's expected and tested
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{get_result}})"
+
+      # List all entries - 15% of traffic
+      - name: "list_entries"
+        weight: 15
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{kv_context_id}}"
+            executor_public_key: "{{random_executor}}"
+            method: entries
+            outputs:
+              entries_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{entries_result}})"
+
+      # Cross-node consistency check - 10% of traffic
+      - name: "cross_node_write_read"
+        weight: 10
+        steps:
+          # Write on one node
+          # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}
+          - type: call
+            node: fuzzy-kv-node-1
+            context_id: "{{kv_context_id}}"
+            executor_public_key: "{{node1_key}}"
+            method: set
+            args:
+              key: "consistency_{{uuid}}"
+              value: "check_{{timestamp}}"
+          # Wait briefly for sync
+          - type: wait
+            seconds: 2
+          # Read on another node using auto-captured {{fuzzy_key}}
+          - type: call
+            node: fuzzy-kv-node-3
+            context_id: "{{kv_context_id}}"
+            executor_public_key: "{{public_key_fuzzy-kv-node-3}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              consistency_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - statement: "contains({{consistency_result}}, {{fuzzy_value}})"
+                message: "Cross-node value should match the set value"
+
+  - name: Final KV Store sync verification
+    type: wait_for_sync
+    context_id: "{{kv_context_id}}"
+    nodes:
+      - fuzzy-kv-node-1
+      - fuzzy-kv-node-2
+      - fuzzy-kv-node-3
+      - fuzzy-kv-node-4
+    timeout: 60
+    check_interval: 2
+
+  - name: Final KV Store entry count check
+    type: call
+    node: fuzzy-kv-node-1
+    context_id: "{{kv_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: len
+    outputs:
+      final_kv_count: result
+
+  - name: Log final statistics
+    type: assert
+    statements:
+      - "is_set({{final_kv_count}})"
+
+# Configuration options
+stop_all_nodes: true
+restart: false
+wait_timeout: 3600 # 1 hour timeout for long-running test
+
