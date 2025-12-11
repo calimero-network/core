@@ -152,15 +152,16 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 info!("Swarm: External address confirmed: {}", address);
 
                 // Check if this is a relay address and update relay metadata
-                let is_relay_address = if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
-                    self.discovery.state.update_relay_reservation_status(
-                        &relayed_addr.relay_peer,
-                        RelayReservationStatus::Accepted,
-                    );
-                    true
-                } else {
-                    false
-                };
+                let is_relay_address =
+                    if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
+                        self.discovery.state.update_relay_reservation_status(
+                            &relayed_addr.relay_peer,
+                            RelayReservationStatus::Accepted,
+                        );
+                        true
+                    } else {
+                        false
+                    };
 
                 // Update our reachability state only for direct (non-relay) addresses
                 // Relay addresses don't make us "publicly reachable" - we're still behind NAT
@@ -176,15 +177,16 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 info!("Swarm: External address expired: {}", address);
 
                 // Check if this is a relay address and update relay metadata
-                let is_relay_address = if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
-                    self.discovery.state.update_relay_reservation_status(
-                        relayed_addr.relay_peer_id(),
-                        RelayReservationStatus::Expired,
-                    );
-                    true
-                } else {
-                    false
-                };
+                let is_relay_address =
+                    if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
+                        self.discovery.state.update_relay_reservation_status(
+                            relayed_addr.relay_peer_id(),
+                            RelayReservationStatus::Expired,
+                        );
+                        true
+                    } else {
+                        false
+                    };
 
                 // Only update reachability state for direct (non-relay) addresses
                 // CRITICAL: Must handle here due to libp2p bug #6203
