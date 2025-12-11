@@ -230,12 +230,10 @@ impl Behaviour {
         self.server = None;
         self.mode = Mode::ClientOnly;
 
-        // Clear ALL server-related state
+        // Clear server-related state only
+        // Note: Do NOT clear client_expecting_dialback here - the client is still
+        // active and may have in-flight NAT test requests expecting dial-backs
         self.server_dialback_peers.clear();
-
-        // Also clear client expectations since we're doing a mode change
-        // and might close connections
-        self.client_expecting_dialback.clear();
 
         // Close all connections that are using server handlers
         let server_connections: Vec<_> = self
