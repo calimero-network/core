@@ -2687,6 +2687,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "collections-benchmark-rust"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "color-eyre"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

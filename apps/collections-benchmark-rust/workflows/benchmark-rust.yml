@@ -1,0 +1,521 @@
+name: Collections Benchmark - Rust SDK
+description: Benchmark CRDT collection performance for Rust SDK across different sizes and nesting levels
+
+force_pull_image: false
+
+nodes:
+  chain_id: testnet-1
+  count: 1
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: benchmark-node
+
+steps:
+  # SETUP
+
+  - name: Install Benchmark Application
+    type: install_application
+    node: benchmark-node-1
+    path: res/collections_benchmark_rust.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context
+    type: create_context
+    node: benchmark-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # SMALL SIZE BENCHMARKS (100 elements)
+
+  - name: Benchmark Counter Increment (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_counter_increment
+    args:
+      size: 100
+    outputs:
+      counter_increment_small: result
+
+  - name: Benchmark Map Insert (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_map_insert
+    args:
+      size: 100
+    outputs:
+      map_insert_small: result
+
+  - name: Benchmark Map Get (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_map_get
+    args:
+      size: 100
+    outputs:
+      map_get_small: result
+
+  - name: Benchmark Nested Map Insert (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_nested_map_insert
+    args:
+      size: 100
+    outputs:
+      nested_map_insert_small: result
+
+  - name: Benchmark Nested Map Get (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_nested_map_get
+    args:
+      size: 100
+    outputs:
+      nested_map_get_small: result
+
+  - name: Benchmark Deep Nested Map Insert (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_deep_nested_map_insert
+    args:
+      size: 64
+    outputs:
+      deep_nested_map_insert_small: result
+
+  - name: Benchmark Vector Push (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_vector_push
+    args:
+      size: 100
+    outputs:
+      vector_push_small: result
+
+  - name: Benchmark Vector Get (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_vector_get
+    args:
+      size: 100
+    outputs:
+      vector_get_small: result
+
+  - name: Benchmark Set Insert (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_set_insert
+    args:
+      size: 100
+    outputs:
+      set_insert_small: result
+
+  - name: Benchmark Set Contains (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_set_contains
+    args:
+      size: 100
+    outputs:
+      set_contains_small: result
+
+  - name: Benchmark Register Set (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_register_set
+    args:
+      size: 100
+    outputs:
+      register_set_small: result
+
+  - name: Benchmark Register Get (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_register_get
+    args:
+      size: 100
+    outputs:
+      register_get_small: result
+
+  - name: Benchmark PNCounter Increment (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_pncounter_increment
+    args:
+      size: 100
+    outputs:
+      pncounter_increment_small: result
+
+  - name: Benchmark PNCounter Decrement (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_pncounter_decrement
+    args:
+      size: 100
+    outputs:
+      pncounter_decrement_small: result
+
+  - name: Benchmark PNCounter Mixed (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_pncounter_mixed
+    args:
+      size: 100
+    outputs:
+      pncounter_mixed_small: result
+
+  - name: Benchmark RGA Insert (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_insert
+    args:
+      size: 100
+    outputs:
+      rga_insert_small: result
+
+  - name: Benchmark RGA Insert Str (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_insert_str
+    args:
+      size: 100
+    outputs:
+      rga_insert_str_small: result
+
+  - name: Benchmark RGA Get Text (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_get_text
+    args:
+      size: 100
+    outputs:
+      rga_get_text_small: result
+
+  - name: Benchmark RGA Delete (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_delete
+    args:
+      size: 100
+    outputs:
+      rga_delete_small: result
+
+  - name: Benchmark RGA Delete Range (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_delete_range
+    args:
+      size: 100
+    outputs:
+      rga_delete_range_small: result
+
+  # MEDIUM SIZE BENCHMARKS (1000 elements)
+
+  - name: Benchmark Counter Increment (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_counter_increment
+    args:
+      size: 1000
+    outputs:
+      counter_increment_medium: result
+
+  - name: Benchmark Map Insert (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_map_insert
+    args:
+      size: 1000
+    outputs:
+      map_insert_medium: result
+
+  - name: Benchmark Map Get (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_map_get
+    args:
+      size: 1000
+    outputs:
+      map_get_medium: result
+
+  - name: Benchmark Nested Map Insert (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_nested_map_insert
+    args:
+      size: 1000
+    outputs:
+      nested_map_insert_medium: result
+
+  - name: Benchmark Nested Map Get (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_nested_map_get
+    args:
+      size: 1000
+    outputs:
+      nested_map_get_medium: result
+
+  - name: Benchmark Deep Nested Map Insert (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_deep_nested_map_insert
+    args:
+      size: 512
+    outputs:
+      deep_nested_map_insert_medium: result
+
+  - name: Benchmark Vector Push (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_vector_push
+    args:
+      size: 1000
+    outputs:
+      vector_push_medium: result
+
+  - name: Benchmark Vector Get (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_vector_get
+    args:
+      size: 1000
+    outputs:
+      vector_get_medium: result
+
+  - name: Benchmark Set Insert (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_set_insert
+    args:
+      size: 1000
+    outputs:
+      set_insert_medium: result
+
+  - name: Benchmark Set Contains (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_set_contains
+    args:
+      size: 1000
+    outputs:
+      set_contains_medium: result
+
+  - name: Benchmark Register Set (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_register_set
+    args:
+      size: 1000
+    outputs:
+      register_set_medium: result
+
+  - name: Benchmark Register Get (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_register_get
+    args:
+      size: 1000
+    outputs:
+      register_get_medium: result
+
+  - name: Benchmark PNCounter Increment (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_pncounter_increment
+    args:
+      size: 1000
+    outputs:
+      pncounter_increment_medium: result
+
+  - name: Benchmark PNCounter Decrement (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_pncounter_decrement
+    args:
+      size: 1000
+    outputs:
+      pncounter_decrement_medium: result
+
+  - name: Benchmark PNCounter Mixed (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_pncounter_mixed
+    args:
+      size: 1000
+    outputs:
+      pncounter_mixed_medium: result
+
+  - name: Benchmark RGA Insert (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_insert
+    args:
+      size: 500
+    outputs:
+      rga_insert_medium: result
+
+  - name: Benchmark RGA Insert Str (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_insert_str
+    args:
+      size: 500
+    outputs:
+      rga_insert_str_medium: result
+
+  - name: Benchmark RGA Get Text (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_get_text
+    args:
+      size: 500
+    outputs:
+      rga_get_text_medium: result
+
+  - name: Benchmark RGA Delete (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_delete
+    args:
+      size: 500
+    outputs:
+      rga_delete_medium: result
+
+  - name: Benchmark RGA Delete Range (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: benchmark_rga_delete_range
+    args:
+      size: 500
+    outputs:
+      rga_delete_range_medium: result
+
+  # RUN COMPREHENSIVE SUITE
+
+  - name: Run Full Benchmark Suite (Small)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: run_benchmark_suite
+    args:
+      size: 100
+    outputs:
+      full_suite_small: result
+
+  - name: Run Full Benchmark Suite (Medium)
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: run_benchmark_suite
+    args:
+      size: 1000
+    outputs:
+      full_suite_medium: result
+
+  # VERIFY RESULTS
+
+  - name: Get Run Count
+    type: call
+    node: benchmark-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_run_count
+    outputs:
+      run_count: result
+
+  - name: Assert Benchmarks Completed
+    type: assert
+    statements:
+      - "is_set({{run_count}})"
+      - "is_set({{map_insert_small}})"
+      - "is_set({{map_insert_medium}})"
+      - "is_set({{full_suite_small}})"
+      - "is_set({{full_suite_medium}})"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 300

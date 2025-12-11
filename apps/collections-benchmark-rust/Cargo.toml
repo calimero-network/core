@@ -1,0 +1,21 @@
+[package]
+name = "collections-benchmark-rust"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true
