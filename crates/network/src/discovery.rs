@@ -220,6 +220,11 @@ impl NetworkManager {
                 self.discovery.rendezvous_config.namespace.clone(),
                 *rendezvous_peer,
             );
+
+            self.discovery.state.update_rendezvous_registration_status(
+                rendezvous_peer,
+                RendezvousRegistrationStatus::Expired,
+            );
         }
 
         Ok(())
