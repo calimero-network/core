@@ -212,19 +212,32 @@ impl NetworkManager {
             .rendezvous()
             .wrap_err("Peer isn't rendezvous")?;
 
-        if matches!(
-            peer_info.registration_status(),
-            RendezvousRegistrationStatus::Registered
-        ) {
-            self.swarm.behaviour_mut().rendezvous.unregister(
-                self.discovery.rendezvous_config.namespace.clone(),
-                *rendezvous_peer,
-            );
+        match peer_info.registration_status() {
+            RendezvousRegistrationStatus::Registered => {
+                // Actively unregister from the rendezvous server
+                self.swarm.behaviour_mut().rendezvous.unregister(
+                    self.discovery.rendezvous_config.namespace.clone(),
+                    *rendezvous_peer,
+                );
 
-            self.discovery.state.update_rendezvous_registration_status(
-                rendezvous_peer,
-                RendezvousRegistrationStatus::Expired,
-            );
+                self.discovery.state.update_rendezvous_registration_status(
+                    rendezvous_peer,
+                    RendezvousRegistrationStatus::Expired,
+                );
+            }
+            RendezvousRegistrationStatus::Requested => {
+                // Can't cancel in-flight registration, but mark as expired so we don't
+                // consider ourselves registered when the response arrives. The handler
+                // for the registration response should check current status and re-register
+                // with updated addresses if needed.
+                self.discovery.state.update_rendezvous_registration_status(
+                    rendezvous_peer,
+                    RendezvousRegistrationStatus::Expired,
+                );
+            }
+            RendezvousRegistrationStatus::Discovered | RendezvousRegistrationStatus::Expired => {
+                // Nothing to unregister
+            }
         }
 
         Ok(())
