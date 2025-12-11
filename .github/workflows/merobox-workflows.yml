@@ -220,7 +220,7 @@ jobs:
             - name: Prepare Failure Comment
               if: steps.download.outcome == 'success'
               run: |
-                  failed_list=$(cat apps/failed_workflows.txt | sed 's/^/- /' | sed ':a;N;$!ba;s/\n/\\n/g')
+                  failed_list=$(cat failed_workflows.txt | sed 's/^/- /' | sed ':a;N;$!ba;s/\n/\\n/g')
                   message="## Merobox Workflows Failed
 
                   The following workflow(s) failed after retries:
