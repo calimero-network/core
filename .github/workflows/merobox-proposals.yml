@@ -220,3 +220,79 @@ jobs:
               --no-docker \
               --binary-path ../../target/debug/merod \
               --e2e-mode
+
+  comment:
+    name: Report Failed Workflows
+    needs: [test-near, test-icp, test-ethereum]
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: Check workflow results
+        id: check
+        run: |
+          failed_workflows=()
+
+          if [ "${{ needs.test-near.result }}" != "success" ]; then
+            failed_workflows+=("test-near")
+          fi
+
+          if [ "${{ needs.test-icp.result }}" != "success" ]; then
+            failed_workflows+=("test-icp")
+          fi
+
+          if [ "${{ needs.test-ethereum.result }}" != "success" ]; then
+            failed_workflows+=("test-ethereum")
+          fi
+
+          if [ ${#failed_workflows[@]} -gt 0 ]; then
+            echo "has_failures=true" >> $GITHUB_OUTPUT
+            printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
+            echo "The following workflows failed:"
+            for failed in "${failed_workflows[@]}"; do
+              echo "  - $failed"
+            done
+          else
+            echo "has_failures=false" >> $GITHUB_OUTPUT
+            echo "All workflows completed successfully!"
+          fi
+
+      - name: Upload Failed Workflows
+        if: steps.check.outputs.has_failures == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-workflows
+          path: failed_workflows.txt
+          retention-days: 1
+
+      - name: Download Failed Workflows
+        id: download
+        if: steps.check.outputs.has_failures == 'true'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: failed-workflows
+
+      - name: Prepare Failure Comment
+        if: steps.check.outputs.has_failures == 'true'
+        run: |
+          failed_list=$(cat failed_workflows.txt | sed 's/^/- /' | sed ':a;N;$!ba;s/\n/\\n/g')
+          message="## Merobox Proposals Workflows Failed
+
+          The following proposal workflow(s) failed:
+          $failed_list
+
+          Please check the workflow logs for more details."
+
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag merobox-proposals-report \
+            --arg mode recreate \
+            --arg message "$message" \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        if: steps.check.outputs.has_failures == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload
+          path: payload.json

@@ -159,9 +159,8 @@ jobs:
                   done
 
             - name: Run SDK JS Merobox Workflows
+              id: run_workflows
               run: |
-                  set -e
-
                   # Store absolute path to merod binary (from Core checkout root)
                   CORE_ROOT="$(pwd)"
                   MEROD_BINARY="$CORE_ROOT/target/release/merod"
@@ -221,12 +220,65 @@ jobs:
 
                   echo "Summary: $WORKFLOW_COUNT workflow(s) tested"
 
+                  # Save failed workflows to file for comment job
                   if [ ${#FAILED_WORKFLOWS[@]} -gt 0 ]; then
+                      echo "has_failures=true" >> $GITHUB_OUTPUT
+                      printf '%s\n' "${FAILED_WORKFLOWS[@]}" > failed_workflows.txt
                       echo "Failed workflows:"
                       for failed in "${FAILED_WORKFLOWS[@]}"; do
                           echo "  - $failed"
                       done
-                      exit 1
+                  else
+                      echo "has_failures=false" >> $GITHUB_OUTPUT
+                      echo "All workflows completed successfully"
                   fi
 
-                  echo "All workflows completed successfully"
+            - name: Upload Failed Workflows
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: failed-workflows
+                  path: sdk-js/failed_workflows.txt
+                  retention-days: 1
+
+            - name: Fail if workflows failed
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              run: exit 1
+
+    comment:
+        name: Report Failed Workflows
+        needs: test-sdk-js
+        runs-on: ubuntu-latest
+        if: always() && github.event_name == 'pull_request'
+        steps:
+            - name: Download Failed Workflows
+              id: download
+              uses: actions/download-artifact@v4
+              continue-on-error: true
+              with:
+                  name: failed-workflows
+
+            - name: Prepare Failure Comment
+              if: steps.download.outcome == 'success'
+              run: |
+                  failed_list=$(cat sdk-js/failed_workflows.txt | sed 's/^/- /' | sed ':a;N;$!ba;s/\n/\\n/g')
+                  message="## SDK JS Workflows Failed
+
+                  The following SDK JS workflow(s) failed:
+                  $failed_list
+
+                  Please check the workflow logs for more details."
+
+                  jq -n \
+                    --arg pr '${{ github.event.number }}' \
+                    --arg tag test-sdk-js-report \
+                    --arg mode recreate \
+                    --arg message "$message" \
+                    '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+            - name: Upload Comment
+              if: steps.download.outcome == 'success'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: pr-comment-payload
+                  path: payload.json

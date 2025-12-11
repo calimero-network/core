@@ -635,14 +635,15 @@ cargo test -p my-app
 
 # Integration tests (WASM execution)
 cargo test -p my-app --test integration
-
-# E2E tests (full node network)
-cd e2e-tests
-cargo run -- \
-  --merod-binary ../target/release/merod \
-  --meroctl-binary ../target/release/meroctl \
-  --protocols near
 ```
+
+**End-to-End Testing:**
+
+E2E tests are automatically run via GitHub Actions workflows on every pull request:
+
+- **`merobox-workflows.yml`** - Runs merobox workflows for all applications to validate functionality
+- **`merobox-proposals.yml`** - Tests blockchain integration proposals (NEAR, ICP, Ethereum)
+- **`test-sdk-js.yml`** - Ensures JavaScript SDK compatibility with core changes
 
 **Test Pyramid**:
 - **Unit tests**: Application logic, fast (<1s), no network
@@ -753,4 +754,3 @@ let now = env::time_now();  // u64 nanoseconds
 ## License
 
 See [COPYRIGHT](../../COPYRIGHT) and [LICENSE.md](../../LICENSE.md) in the repository root.
-
