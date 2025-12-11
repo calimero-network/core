@@ -243,21 +243,35 @@ impl NetworkBehaviour for Behaviour {
             server.on_swarm_event(event);
         }
 
-        // Clean up tracking on connection close
-        if let FromSwarm::ConnectionClosed(conn_closed) = event {
-            _ = self.connection_info.remove(&conn_closed.connection_id);
+        match event {
+            // Clean up tracking on connection close
+            FromSwarm::ConnectionClosed(conn_closed) => {
+                _ = self.connection_info.remove(&conn_closed.connection_id);
 
-            // Clean up dial-back tracking for this peer
-            // Only if this was the LAST connection to this peer
-            if conn_closed.remaining_established == 0 {
-                _ = self.server_dialback_peers.remove(&conn_closed.peer_id);
-                _ = self.client_expecting_dialback.remove(&conn_closed.peer_id);
+                // Clean up dial-back tracking for this peer
+                // Only if this was the LAST connection to this peer
+                if conn_closed.remaining_established == 0 {
+                    _ = self.server_dialback_peers.remove(&conn_closed.peer_id);
+                    _ = self.client_expecting_dialback.remove(&conn_closed.peer_id);
 
-                tracing::debug!(
-                    peer_id = %conn_closed.peer_id,
-                    "Cleaned up dial-back tracking - no more connections"
-                );
+                    tracing::debug!(
+                        peer_id = %conn_closed.peer_id,
+                        "Cleaned up dial-back tracking - no more connections"
+                    );
+                }
             }
+            // Clean up tracking on dial failure (before connection established)
+            FromSwarm::DialFailure(dial_failure) => {
+                if let Some(peer_id) = dial_failure.peer_id {
+                    if self.server_dialback_peers.remove(&peer_id) {
+                        tracing::debug!(
+                            %peer_id,
+                            "Cleaned up server dial-back tracking after dial failure"
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
