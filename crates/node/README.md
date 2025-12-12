@@ -523,30 +523,41 @@ graph TB
 | `network_simulation.rs` | Multi-node scenarios | Simulated |
 | `dag_persistence.rs` | DAG state save/load | No (unit) |
 
-### Running E2E Tests
+### End-to-End Testing
 
-E2E tests run real nodes with actual network communication:
+End-to-end tests validate real nodes with actual network communication. These tests are automatically run via GitHub Actions workflows:
 
-```bash
-# Build release binaries first
-cargo build --release
+**GitHub Actions Workflows:**
 
-# Run E2E test suite
-./target/release/e2e-tests \
-  --merod-binary ./target/release/merod \
-  --meroctl-binary ./target/release/meroctl \
-  --protocols near
+1. **`merobox-workflows.yml`** - Runs merobox workflows for all applications in `apps/` directory:
 
-# Output: e2e-tests/corpus/report.md
-```
+   - Validates application functionality
+   - Tests multi-node scenarios
+   - Verifies CRDT consistency
+   - Tests event handler execution
+
+2. **`merobox-proposals.yml`** - Tests blockchain integration proposals:
+
+   - NEAR protocol proposals
+   - ICP protocol proposals
+   - Ethereum protocol proposals
+   - Validates cross-chain integration scenarios
+
+3. **`test-sdk-js.yml`** - Ensures JavaScript SDK compatibility:
+   - Builds SDK JS examples
+   - Runs merobox workflows from SDK JS examples
+   - Validates that core changes don't break JS SDK compatibility
 
 **E2E test coverage**:
+
 - ✅ Context creation and joining
 - ✅ Application installation
 - ✅ Multi-node state sync
 - ✅ Event handler execution
 - ✅ G-Counter CRDT consistency
-- ✅ Network resilience (packet loss scenarios)
+- ✅ Network resilience
+- ✅ Cross-chain integration (NEAR, ICP, Ethereum)
+- ✅ JavaScript SDK compatibility
 
 ## Documentation
 

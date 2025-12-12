@@ -116,8 +116,8 @@ jobs:
                   ./scripts/download-contracts.sh
 
             - name: Run All Workflows
+              id: run_workflows
               run: |
-                  set -e
                   cd apps
                   failed_workflows=()
                   for workflow in */workflows/*.yml */workflows/*.yaml; do
@@ -164,14 +164,31 @@ jobs:
                           sleep 2
                       fi
                   done
+
+                  # Save failed workflows to file for comment job
                   if [ ${#failed_workflows[@]} -gt 0 ]; then
+                      echo "has_failures=true" >> $GITHUB_OUTPUT
+                      printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
                       echo "The following workflows failed after retries:"
                       for failed in "${failed_workflows[@]}"; do
                           echo "  - $failed"
                       done
-                      exit 1
+                  else
+                      echo "has_failures=false" >> $GITHUB_OUTPUT
+                      echo "All workflows completed successfully!"
                   fi
-                  echo "All workflows completed successfully!"
+
+            - name: Upload Failed Workflows
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: failed-workflows
+                  path: apps/failed_workflows.txt
+                  retention-days: 1
+
+            - name: Fail if workflows failed
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              run: exit 1
 
             - name: Upload Workflow Data Artifacts
               if: ${{ !cancelled() }}
@@ -186,3 +203,41 @@ jobs:
                       apps/*/data/
                   retention-days: 7
                   if-no-files-found: warn
+
+    comment:
+        name: Report Failed Workflows
+        needs: test
+        runs-on: ubuntu-latest
+        if: always() && github.event_name == 'pull_request'
+        steps:
+            - name: Download Failed Workflows
+              id: download
+              uses: actions/download-artifact@v4
+              continue-on-error: true
+              with:
+                  name: failed-workflows
+
+            - name: Prepare Failure Comment
+              if: steps.download.outcome == 'success'
+              run: |
+                  failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+                  message="## Merobox Workflows Failed
+
+                  The following workflow(s) failed after retries:
+                  $failed_list
+
+                  Please check the workflow logs for more details."
+
+                  jq -n \
+                    --arg pr '${{ github.event.number }}' \
+                    --arg tag merobox-workflows-report \
+                    --arg mode recreate \
+                    --arg message "$message" \
+                    '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+            - name: Upload Comment
+              if: steps.download.outcome == 'success'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: pr-comment-payload
+                  path: payload.json
