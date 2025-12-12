@@ -275,7 +275,7 @@ jobs:
       - name: Prepare Failure Comment
         if: steps.check.outputs.has_failures == 'true'
         run: |
-          failed_list=$(cat failed_workflows.txt | sed 's/^/- /' | sed ':a;N;$!ba;s/\n/\\n/g')
+          failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
           message="## Merobox Proposals Workflows Failed
 
           The following proposal workflow(s) failed:
