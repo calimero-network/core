@@ -56,6 +56,26 @@ impl EventHandler<Event> for NetworkManager {
             Event::Registered {
                 rendezvous_node, ..
             } => {
+                // Only accept the registration if we're still expecting it (status is Requested).
+                // If status was changed to Expired (e.g., we became unreachable while the
+                // registration was in-flight), ignore this late response to avoid registering
+                // with stale addresses.
+                let current_status = self
+                    .discovery
+                    .state
+                    .get_peer_info(&rendezvous_node)
+                    .and_then(|info| info.rendezvous())
+                    .map(|info| info.registration_status());
+
+                if current_status != Some(RendezvousRegistrationStatus::Requested) {
+                    debug!(
+                        %rendezvous_node,
+                        ?current_status,
+                        "Ignoring late registration response - status is no longer Requested"
+                    );
+                    return;
+                }
+
                 self.discovery.state.update_rendezvous_registration_status(
                     &rendezvous_node,
                     RendezvousRegistrationStatus::Registered,
