@@ -149,23 +149,53 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 trace!("New external address candidate: {}", address);
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
-                info!("External address confirmed: {}", address);
-                if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
-                    self.discovery.state.update_relay_reservation_status(
-                        &relayed_addr.relay_peer,
-                        RelayReservationStatus::Accepted,
-                    );
+                info!("Swarm: External address confirmed: {}", address);
+
+                // Check if this is a relay address and update relay metadata
+                let is_relay_address =
+                    if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
+                        self.discovery.state.update_relay_reservation_status(
+                            &relayed_addr.relay_peer,
+                            RelayReservationStatus::Accepted,
+                        );
+                        true
+                    } else {
+                        false
+                    };
+
+                // Update our reachability state only for direct (non-relay) addresses
+                // Relay addresses don't make us "publicly reachable" - we're still behind NAT
+                // and shouldn't enable AutoNAT server (we can't perform dial-backs for NAT tests)
+                if !is_relay_address {
+                    let actions = self.discovery.state.on_address_confirmed(&address);
+                    self.execute_reachability_actions(actions);
                 }
+
                 self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::ExternalAddrExpired { address } => {
-                info!("External address expired: {}", address);
-                if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
-                    self.discovery.state.update_relay_reservation_status(
-                        relayed_addr.relay_peer_id(),
-                        RelayReservationStatus::Expired,
-                    );
+                info!("Swarm: External address expired: {}", address);
+
+                // Check if this is a relay address and update relay metadata
+                let is_relay_address =
+                    if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
+                        self.discovery.state.update_relay_reservation_status(
+                            relayed_addr.relay_peer_id(),
+                            RelayReservationStatus::Expired,
+                        );
+                        true
+                    } else {
+                        false
+                    };
+
+                // Only update reachability state for direct (non-relay) addresses
+                // CRITICAL: Must handle here due to libp2p bug #6203
+                // AutoNAT won't retest expired addresses
+                if !is_relay_address {
+                    let actions = self.discovery.state.on_address_removed(&address);
+                    self.execute_reachability_actions(actions);
                 }
+
                 self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
