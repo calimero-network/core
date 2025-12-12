@@ -76,25 +76,21 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: runtime-benchmark-reports-${{ github.sha }}
-                  path: |
-                      target/criterion/runtime-benchmarks/**/*.html
-                      target/criterion/runtime-benchmarks/**/*.csv
-                      target/criterion/runtime-benchmarks/**/*.json
-                      target/criterion/report/index.html
+                  path: target/criterion
                   retention-days: 30
-                  if-no-files-found: error
+                  if-no-files-found: warn
                   compression-level: 6
 
             - name: Display benchmark summary
               if: ${{ !cancelled() }}
               run: |
                   cd "$GITHUB_WORKSPACE"
-                  BENCHMARK_DIR="target/criterion/runtime-benchmarks"
 
                   echo "Benchmark reports uploaded successfully!"
-                  echo "Download artifacts from the Actions tab to view HTML reports."
+                  echo "Download the 'runtime-benchmark-reports-<sha>' artifact from the Actions tab."
+                  echo "Extract and navigate to target/criterion/ to view HTML reports in your browser."
 
-                  if [ -d "$BENCHMARK_DIR" ]; then
-                      HTML_COUNT=$(find "$BENCHMARK_DIR" -type f -name "*.html" | wc -l)
+                  if [ -d "target/criterion" ]; then
+                      HTML_COUNT=$(find target/criterion -type f -name "*.html" | wc -l)
                       echo "Generated $HTML_COUNT HTML report files"
                   fi
