@@ -1,0 +1,97 @@
+name: Runtime Benchmarks
+
+permissions:
+    contents: read
+
+on:
+    pull_request:
+        branches: [master]
+        paths:
+            - "crates/runtime/**"
+            - "apps/collections-benchmark-rust/**"
+            - ".github/workflows/runtime-benchmarks.yml"
+            - "Cargo.toml"
+            - "Cargo.lock"
+
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+
+jobs:
+    benchmark:
+        name: Run Runtime Benchmarks
+        runs-on: ubuntu-24.04-8cpu
+        timeout-minutes: 60
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-bench-
+
+            - name: Build merod binary
+              run: |
+                  cargo build --release --bin merod
+                  ./target/release/merod --version || true
+
+            - name: Build collections-benchmark-rust WASM
+              run: |
+                  cd apps/collections-benchmark-rust
+                  chmod +x build.sh
+                  ./build.sh
+                  
+            - name: Run Criterion benchmarks
+              run: |
+                  cd crates/runtime
+                  cargo bench --bench collections -- --nocapture
+
+                  echo "Benchmarks completed successfully"
+
+            - name: Upload benchmark reports
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: runtime-benchmark-reports-${{ github.sha }}
+                  path: |
+                      target/criterion/runtime-benchmarks/**/*.html
+                      target/criterion/runtime-benchmarks/**/*.csv
+                      target/criterion/runtime-benchmarks/**/*.json
+                      target/criterion/report/index.html
+                  retention-days: 30
+                  if-no-files-found: error
+                  compression-level: 6
+
+            - name: Display benchmark summary
+              if: ${{ !cancelled() }}
+              run: |
+                  cd "$GITHUB_WORKSPACE"
+                  BENCHMARK_DIR="target/criterion/runtime-benchmarks"
+
+                  echo "Benchmark reports uploaded successfully!"
+                  echo "Download artifacts from the Actions tab to view HTML reports."
+
+                  if [ -d "$BENCHMARK_DIR" ]; then
+                      HTML_COUNT=$(find "$BENCHMARK_DIR" -type f -name "*.html" | wc -l)
+                      echo "Generated $HTML_COUNT HTML report files"
+                  fi
