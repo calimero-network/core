@@ -79,7 +79,7 @@ jobs:
             contracts
           key: ${{ steps.cache-key.outputs.key }}
 
-  test-near:
+  near:
     name: Test NEAR Proposals
     needs: build
     runs-on: ubuntu-24.04-8cpu
@@ -123,7 +123,7 @@ jobs:
               --near-devnet \
               --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
 
-  test-icp:
+  icp:
     name: Test ICP Proposals
     needs: build
     runs-on: ubuntu-24.04-8cpu
@@ -172,7 +172,7 @@ jobs:
               --binary-path ../../target/debug/merod \
               --e2e-mode
 
-  test-ethereum:
+  ethereum:
     name: Test Ethereum Proposals
     needs: build
     runs-on: ubuntu-24.04-8cpu
@@ -223,7 +223,7 @@ jobs:
 
   comment:
     name: Report Failed Workflows
-    needs: [test-near, test-icp, test-ethereum]
+    needs: [near, icp, ethereum]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
@@ -232,16 +232,16 @@ jobs:
         run: |
           failed_workflows=()
 
-          if [ "${{ needs.test-near.result }}" != "success" ]; then
-            failed_workflows+=("test-near")
+          if [ "${{ needs.near.result }}" != "success" ]; then
+            failed_workflows+=("near")
           fi
 
-          if [ "${{ needs.test-icp.result }}" != "success" ]; then
-            failed_workflows+=("test-icp")
+          if [ "${{ needs.icp.result }}" != "success" ]; then
+            failed_workflows+=("icp")
           fi
 
-          if [ "${{ needs.test-ethereum.result }}" != "success" ]; then
-            failed_workflows+=("test-ethereum")
+          if [ "${{ needs.ethereum.result }}" != "success" ]; then
+            failed_workflows+=("ethereum")
           fi
 
           if [ ${#failed_workflows[@]} -gt 0 ]; then
