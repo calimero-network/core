@@ -26,7 +26,6 @@ exclude = [
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
-    "./e2e-tests",
     "./crates/merod",
     "./crates/version",
     "./crates/meroctl",
@@ -86,7 +85,6 @@ members = [
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
 
-    "./e2e-tests",
     "./tools/calimero-abi",
     "./tools/merodb",
     "./crates/storage-wasm",
@@ -236,7 +234,6 @@ calimero-sys = { path = "./crates/sys" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 calimero-version = { path = "./crates/version" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
-e2e-tests = { path = "./e2e-tests" }
 kv-store = { path = "./apps/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }
 

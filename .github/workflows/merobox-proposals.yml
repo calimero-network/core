@@ -79,7 +79,7 @@ jobs:
             contracts
           key: ${{ steps.cache-key.outputs.key }}
 
-  test-near:
+  near:
     name: Test NEAR Proposals
     needs: build
     runs-on: ubuntu-24.04-8cpu
@@ -123,7 +123,7 @@ jobs:
               --near-devnet \
               --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
 
-  test-icp:
+  icp:
     name: Test ICP Proposals
     needs: build
     runs-on: ubuntu-24.04-8cpu
@@ -172,7 +172,7 @@ jobs:
               --binary-path ../../target/debug/merod \
               --e2e-mode
 
-  test-ethereum:
+  ethereum:
     name: Test Ethereum Proposals
     needs: build
     runs-on: ubuntu-24.04-8cpu
@@ -220,3 +220,79 @@ jobs:
               --no-docker \
               --binary-path ../../target/debug/merod \
               --e2e-mode
+
+  comment:
+    name: Report Failed Workflows
+    needs: [near, icp, ethereum]
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: Check workflow results
+        id: check
+        run: |
+          failed_workflows=()
+
+          if [ "${{ needs.near.result }}" != "success" ]; then
+            failed_workflows+=("near")
+          fi
+
+          if [ "${{ needs.icp.result }}" != "success" ]; then
+            failed_workflows+=("icp")
+          fi
+
+          if [ "${{ needs.ethereum.result }}" != "success" ]; then
+            failed_workflows+=("ethereum")
+          fi
+
+          if [ ${#failed_workflows[@]} -gt 0 ]; then
+            echo "has_failures=true" >> $GITHUB_OUTPUT
+            printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
+            echo "The following workflows failed:"
+            for failed in "${failed_workflows[@]}"; do
+              echo "  - $failed"
+            done
+          else
+            echo "has_failures=false" >> $GITHUB_OUTPUT
+            echo "All workflows completed successfully!"
+          fi
+
+      - name: Upload Failed Workflows
+        if: steps.check.outputs.has_failures == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-workflows
+          path: failed_workflows.txt
+          retention-days: 1
+
+      - name: Download Failed Workflows
+        id: download
+        if: steps.check.outputs.has_failures == 'true'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: failed-workflows
+
+      - name: Prepare Failure Comment
+        if: steps.check.outputs.has_failures == 'true'
+        run: |
+          failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+          message="## Merobox Proposals Workflows Failed
+
+          The following proposal workflow(s) failed:
+          $failed_list
+
+          Please check the workflow logs for more details."
+
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag merobox-proposals-report \
+            --arg mode recreate \
+            --arg message "$message" \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        if: steps.check.outputs.has_failures == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload
+          path: payload.json
