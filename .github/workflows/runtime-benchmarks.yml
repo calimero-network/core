@@ -50,6 +50,9 @@ jobs:
                   restore-keys: |
                       ${{ runner.os }}-cargo-bench-
 
+            - name: Install WASM target
+              run: rustup target add wasm32-unknown-unknown
+
             - name: Build merod binary
               run: |
                   cargo build --release --bin merod
@@ -60,7 +63,7 @@ jobs:
                   cd apps/collections-benchmark-rust
                   chmod +x build.sh
                   ./build.sh
-                  
+
             - name: Run Criterion benchmarks
               run: |
                   cd crates/runtime
