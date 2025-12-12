@@ -1,7 +1,8 @@
+#TO DO: To be updated with the new timing feature in Merobox workflow steps
 name: Collections Benchmark - Rust SDK
-description: Benchmark CRDT collection performance for Rust SDK across different sizes and nesting levels
+description: Throughput testing for CRDT collections using single-operation methods
 
-force_pull_image: false
+force_pull_image: true
 
 nodes:
   chain_id: testnet-1
@@ -28,494 +29,400 @@ steps:
       context_id: contextId
       member_public_key: memberPublicKey
 
-  # SMALL SIZE BENCHMARKS (100 elements)
+  # MAP BENCHMARKS
 
-  - name: Benchmark Counter Increment (Small)
+  - name: Get Initial Operation Count (Map)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_counter_increment
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      counter_increment_small: result
+      map_initial_count: result
 
-  - name: Benchmark Map Insert (Small)
+  - name: Map Insert Throughput Test (100 ops)
+    type: repeat
+    count: 100
+    outputs:
+      iteration: iteration
+      duration_seconds: duration_seconds
+      duration_ms: duration_ms
+      throughput_ops_per_sec: throughput_ops_per_sec
+    steps:
+      - name: Map Insert
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: map_insert
+        args:
+          key: "map_key_{{iteration}}"
+        outputs:
+          map_insert_result: result
+
+  - name: Get Final Operation Count (Map)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_map_insert
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      map_insert_small: result
+      map_final_count: result
 
-  - name: Benchmark Map Get (Small)
+  - name: Map Get Throughput Test (50 ops)
+    type: repeat
+    count: 50
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Map Get
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: map_get
+        args:
+          key: "map_key_{{iteration}}"
+
+  # NESTED MAP BENCHMARKS (Level 2)
+
+  - name: Get Initial Operation Count (Nested Map)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_map_get
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      map_get_small: result
+      nested_map_initial_count: result
 
-  - name: Benchmark Nested Map Insert (Small)
+  - name: Nested Map Insert Throughput Test (50 ops)
+    type: repeat
+    count: 50
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Nested Map Insert
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: nested_map_insert
+        args:
+          outer_key: "outer_{{iteration}}"
+          inner_key: "inner_{{iteration}}"
+        outputs:
+          nested_map_insert_result: result
+
+  - name: Get Final Operation Count (Nested Map)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_nested_map_insert
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      nested_map_insert_small: result
+      nested_map_final_count: result
 
-  - name: Benchmark Nested Map Get (Small)
+  - name: Nested Map Get Throughput Test (25 ops)
+    type: repeat
+    count: 25
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Nested Map Get
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: nested_map_get
+        args:
+          outer_key: "outer_{{iteration}}"
+          inner_key: "inner_{{iteration}}"
+
+  # DEEP NESTED MAP BENCHMARKS (Level 3)
+
+  - name: Get Initial Operation Count (Deep Nested Map)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_nested_map_get
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      nested_map_get_small: result
+      deep_nested_map_initial_count: result
 
-  - name: Benchmark Deep Nested Map Insert (Small)
+  - name: Deep Nested Map Insert Throughput Test (30 ops)
+    type: repeat
+    count: 30
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Deep Nested Map Insert
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: deep_nested_map_insert
+        args:
+          key1: "l1_{{iteration}}"
+          key2: "l2_{{iteration}}"
+          key3: "l3_{{iteration}}"
+        outputs:
+          deep_nested_map_insert_result: result
+
+  - name: Get Final Operation Count (Deep Nested Map)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_deep_nested_map_insert
-    args:
-      size: 64
+    method: get_operation_count
     outputs:
-      deep_nested_map_insert_small: result
+      deep_nested_map_final_count: result
 
-  - name: Benchmark Vector Push (Small)
+  - name: Deep Nested Map Get Throughput Test (15 ops)
+    type: repeat
+    count: 15
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Deep Nested Map Get
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: deep_nested_map_get
+        args:
+          key1: "l1_{{iteration}}"
+          key2: "l2_{{iteration}}"
+          key3: "l3_{{iteration}}"
+
+  # VECTOR BENCHMARKS
+
+  - name: Get Initial Operation Count (Vector)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_vector_push
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      vector_push_small: result
+      vector_initial_count: result
 
-  - name: Benchmark Vector Get (Small)
+  - name: Vector Push Throughput Test (100 ops)
+    type: repeat
+    count: 100
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Vector Push
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: vector_push
+        outputs:
+          vector_push_result: result
+
+  - name: Get Final Operation Count (Vector)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_vector_get
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      vector_get_small: result
+      vector_final_count: result
 
-  - name: Benchmark Set Insert (Small)
+  - name: Vector Get Throughput Test (50 ops)
+    type: repeat
+    count: 50
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Vector Get
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: vector_get
+        args:
+          index: "{{iteration}}"
+
+  # SET BENCHMARKS
+
+  - name: Get Initial Operation Count (Set)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_set_insert
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      set_insert_small: result
+      set_initial_count: result
 
-  - name: Benchmark Set Contains (Small)
+  - name: Set Insert Throughput Test (100 ops)
+    type: repeat
+    count: 100
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Set Insert
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: set_insert
+        args:
+          value: "set_value_{{iteration}}"
+        outputs:
+          set_insert_result: result
+
+  - name: Get Final Operation Count (Set)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_set_contains
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      set_contains_small: result
+      set_final_count: result
 
-  - name: Benchmark Register Set (Small)
+  - name: Set Contains Throughput Test (50 ops)
+    type: repeat
+    count: 50
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Set Contains
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: set_contains
+        args:
+          value: "set_value_{{iteration}}"
+
+  # REGISTER BENCHMARKS
+
+  - name: Get Initial Operation Count (Register)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_register_set
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      register_set_small: result
+      register_initial_count: result
 
-  - name: Benchmark Register Get (Small)
+  - name: Register Set Throughput Test (100 ops)
+    type: repeat
+    count: 100
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Register Set
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: register_set
+        args:
+          key: "register_key_{{iteration}}"
+          value: "register_value_{{iteration}}"
+        outputs:
+          register_set_result: result
+
+  - name: Get Final Operation Count (Register)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_register_get
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      register_get_small: result
+      register_final_count: result
 
-  - name: Benchmark PNCounter Increment (Small)
+  - name: Register Get Throughput Test (50 ops)
+    type: repeat
+    count: 50
+    outputs:
+      iteration: iteration
+    steps:
+      - name: Register Get
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: register_get
+        args:
+          key: "register_key_{{iteration}}"
+
+  # RGA BENCHMARKS
+
+  - name: Get Initial Operation Count (RGA)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_pncounter_increment
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      pncounter_increment_small: result
+      rga_initial_count: result
 
-  - name: Benchmark PNCounter Decrement (Small)
+  - name: RGA Insert Throughput Test (50 ops)
+    type: repeat
+    count: 50
+    outputs:
+      iteration: iteration
+    steps:
+      - name: RGA Insert
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: rga_insert
+        args:
+          index: 0
+          text: "a"
+        outputs:
+          rga_insert_result: result
+
+  - name: Get Final Operation Count (RGA)
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: benchmark_pncounter_decrement
-    args:
-      size: 100
+    method: get_operation_count
     outputs:
-      pncounter_decrement_small: result
+      rga_final_count: result
 
-  - name: Benchmark PNCounter Mixed (Small)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_pncounter_mixed
-    args:
-      size: 100
+  - name: RGA Get Text Throughput Test (10 ops)
+    type: repeat
+    count: 10
     outputs:
-      pncounter_mixed_small: result
-
-  - name: Benchmark RGA Insert (Small)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_insert
-    args:
-      size: 100
-    outputs:
-      rga_insert_small: result
-
-  - name: Benchmark RGA Insert Str (Small)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_insert_str
-    args:
-      size: 100
-    outputs:
-      rga_insert_str_small: result
-
-  - name: Benchmark RGA Get Text (Small)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_get_text
-    args:
-      size: 100
-    outputs:
-      rga_get_text_small: result
-
-  - name: Benchmark RGA Delete (Small)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_delete
-    args:
-      size: 100
-    outputs:
-      rga_delete_small: result
-
-  - name: Benchmark RGA Delete Range (Small)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_delete_range
-    args:
-      size: 100
-    outputs:
-      rga_delete_range_small: result
-
-  # MEDIUM SIZE BENCHMARKS (1000 elements)
-
-  - name: Benchmark Counter Increment (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_counter_increment
-    args:
-      size: 1000
-    outputs:
-      counter_increment_medium: result
-
-  - name: Benchmark Map Insert (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_map_insert
-    args:
-      size: 1000
-    outputs:
-      map_insert_medium: result
-
-  - name: Benchmark Map Get (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_map_get
-    args:
-      size: 1000
-    outputs:
-      map_get_medium: result
-
-  - name: Benchmark Nested Map Insert (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_nested_map_insert
-    args:
-      size: 1000
-    outputs:
-      nested_map_insert_medium: result
-
-  - name: Benchmark Nested Map Get (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_nested_map_get
-    args:
-      size: 1000
-    outputs:
-      nested_map_get_medium: result
-
-  - name: Benchmark Deep Nested Map Insert (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_deep_nested_map_insert
-    args:
-      size: 512
-    outputs:
-      deep_nested_map_insert_medium: result
-
-  - name: Benchmark Vector Push (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_vector_push
-    args:
-      size: 1000
-    outputs:
-      vector_push_medium: result
-
-  - name: Benchmark Vector Get (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_vector_get
-    args:
-      size: 1000
-    outputs:
-      vector_get_medium: result
-
-  - name: Benchmark Set Insert (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_set_insert
-    args:
-      size: 1000
-    outputs:
-      set_insert_medium: result
-
-  - name: Benchmark Set Contains (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_set_contains
-    args:
-      size: 1000
-    outputs:
-      set_contains_medium: result
-
-  - name: Benchmark Register Set (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_register_set
-    args:
-      size: 1000
-    outputs:
-      register_set_medium: result
-
-  - name: Benchmark Register Get (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_register_get
-    args:
-      size: 1000
-    outputs:
-      register_get_medium: result
-
-  - name: Benchmark PNCounter Increment (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_pncounter_increment
-    args:
-      size: 1000
-    outputs:
-      pncounter_increment_medium: result
-
-  - name: Benchmark PNCounter Decrement (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_pncounter_decrement
-    args:
-      size: 1000
-    outputs:
-      pncounter_decrement_medium: result
-
-  - name: Benchmark PNCounter Mixed (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_pncounter_mixed
-    args:
-      size: 1000
-    outputs:
-      pncounter_mixed_medium: result
-
-  - name: Benchmark RGA Insert (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_insert
-    args:
-      size: 500
-    outputs:
-      rga_insert_medium: result
-
-  - name: Benchmark RGA Insert Str (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_insert_str
-    args:
-      size: 500
-    outputs:
-      rga_insert_str_medium: result
-
-  - name: Benchmark RGA Get Text (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_get_text
-    args:
-      size: 500
-    outputs:
-      rga_get_text_medium: result
-
-  - name: Benchmark RGA Delete (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_delete
-    args:
-      size: 500
-    outputs:
-      rga_delete_medium: result
-
-  - name: Benchmark RGA Delete Range (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: benchmark_rga_delete_range
-    args:
-      size: 500
-    outputs:
-      rga_delete_range_medium: result
-
-  # RUN COMPREHENSIVE SUITE
-
-  - name: Run Full Benchmark Suite (Small)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: run_benchmark_suite
-    args:
-      size: 100
-    outputs:
-      full_suite_small: result
-
-  - name: Run Full Benchmark Suite (Medium)
-    type: call
-    node: benchmark-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
-    method: run_benchmark_suite
-    args:
-      size: 1000
-    outputs:
-      full_suite_medium: result
+      iteration: iteration
+    steps:
+      - name: RGA Get Text
+        type: call
+        node: benchmark-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: rga_get_text
 
   # VERIFY RESULTS
 
-  - name: Get Run Count
+  - name: Get Final Operation Count
     type: call
     node: benchmark-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{member_public_key}}"
-    method: get_run_count
+    method: get_operation_count
     outputs:
-      run_count: result
+      final_operation_count: result
 
   - name: Assert Benchmarks Completed
     type: assert
     statements:
-      - "is_set({{run_count}})"
-      - "is_set({{map_insert_small}})"
-      - "is_set({{map_insert_medium}})"
-      - "is_set({{full_suite_small}})"
-      - "is_set({{full_suite_medium}})"
+      - "is_set({{final_operation_count}})"
+      - "is_set({{map_final_count}})"
+      - "is_set({{nested_map_final_count}})"
+      - "is_set({{deep_nested_map_final_count}})"
+      - "is_set({{vector_final_count}})"
+      - "is_set({{set_final_count}})"
+      - "is_set({{register_final_count}})"
+      - "is_set({{rga_final_count}})"
 
-stop_all_nodes: false
-restart: false
+stop_all_nodes: true
+restart: true
 wait_timeout: 300
