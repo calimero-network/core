@@ -56,8 +56,10 @@ impl VMHostFunctions<'_> {
                         VMLogicError::HostError(HostError::AliasTooLong(alias_str.len()))
                     })?;
 
+                // We need to use `lookup_alias` instead of `resolve_alias` to avoid
+                // false positives when the alias string is a valid `PublicKey`.
                 if node
-                    .resolve_alias(scoped_alias, Some(context_id.into()))
+                    .lookup_alias(scoped_alias, Some(context_id.into()))
                     .is_ok_and(|opt| opt.is_some())
                 {
                     return Err(VMLogicError::HostError(HostError::AliasAlreadyExists(
