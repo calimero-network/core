@@ -113,20 +113,34 @@ The HTML reports will show:
 
 ### Single-Threaded Benchmarks
 
+**Basic Operations:**
+
 - `runtime_map_insert` - UnorderedMap insert operations
 - `runtime_map_get` - UnorderedMap get operations
+- `runtime_map_remove` - UnorderedMap remove operations
+- `runtime_map_contains` - UnorderedMap contains check
 - `runtime_nested_map_insert` - Nested map operations (2 levels)
 - `runtime_deep_nested_map_insert` - Deep nested map operations (3 levels)
 - `runtime_vector_push` - Vector push operations
 - `runtime_vector_get` - Vector get operations
+- `runtime_vector_pop` - Vector pop operations
 - `runtime_set_insert` - UnorderedSet insert operations
+- `runtime_set_contains` - UnorderedSet contains check
+- `runtime_counter_increment` - Counter increment operations
+- `runtime_counter_get` - Counter get value
 - `runtime_register_set` - LwwRegister set operations
+- `runtime_register_get` - LwwRegister get operations
 - `runtime_rga_insert` - ReplicatedGrowableArray insert operations
+- `runtime_rga_get_text` - ReplicatedGrowableArray get full text
 
 ### Multi-Threaded Benchmarks
 
 - `runtime_map_insert_concurrent` - Concurrent map inserts (2, 4, 8 threads)
 - `runtime_vector_push_concurrent` - Concurrent vector pushes (2, 4, 8 threads)
+- `runtime_set_insert_concurrent` - Concurrent set inserts (2, 4, 8 threads)
+- `runtime_counter_increment_concurrent` - Concurrent counter increments (2, 4, 8 threads)
+- `runtime_register_set_concurrent` - Concurrent register sets (2, 4, 8 threads)
+- `runtime_rga_insert_concurrent` - Concurrent RGA inserts (2, 4, 8 threads)
 - `runtime_nested_map_insert_concurrent` - Concurrent nested map inserts (2, 4, 8 threads)
 - `runtime_deep_nested_map_insert_concurrent` - Concurrent deep nested map inserts (2, 4, 8 threads)
 
@@ -165,6 +179,13 @@ cargo bench -- --baseline baseline
 
 This will show performance changes compared to the saved baseline.
 
+## Size Ranges
+
+All benchmarks test multiple size ranges:
+
+- **Runtime Benchmarks**: `[10, 100, 1_000]` elements
+- Defined as `RUNTIME_BENCHMARK_SIZES` constant for easy modification
+
 ## Notes
 
 - **WASM Compilation**: Each benchmark group compiles the WASM module once (expensive but necessary)
@@ -173,6 +194,8 @@ This will show performance changes compared to the saved baseline.
 - **Context**: Uses default context ID and executor for all benchmarks
 - **Reports**: HTML reports are generated automatically (no additional setup needed)
 - **Baselines**: Save baselines to track performance changes over time
+- **Sample Size**: Increased to 20 samples for better statistical confidence
+- **Missing Operations**: Some operations (e.g., `map_remove`, `vector_pop`) may not exist in the WASM module and will fail if not implemented
 
 ## Troubleshooting
 
@@ -194,9 +217,3 @@ If benchmarks fail to compile:
 2. Check that all required crates are available
 3. Verify the WASM file path is correct
 
-## Future Enhancements
-
-- [ ] Add benchmarks for PNCounter operations
-- [ ] Add benchmarks with RocksDB storage backend
-- [ ] Add benchmarks for merge operations
-- [ ] Add benchmarks for serialization/deserialization

@@ -14,6 +14,17 @@ use std::time::Duration;
 // Size ranges for benchmarks
 const STORAGE_BENCHMARK_SIZES: &[usize] = &[10, 100, 1_000, 10_000, 100_000];
 
+// Value size variations for benchmarks (in bytes)
+const VALUE_SIZE_SMALL: usize = 10; // ~10 bytes
+const VALUE_SIZE_MEDIUM: usize = 100; // 100 bytes
+const VALUE_SIZE_LARGE: usize = 1_000; // 1KB
+const VALUE_SIZE_VERY_LARGE: usize = 10_000; // 10KB
+
+// Helper function to create value of specified size
+fn create_value_of_size(size: usize) -> String {
+    "x".repeat(size)
+}
+
 // Single-Threaded Benchmarks
 
 /// Benchmark UnorderedMap insert operations
@@ -431,6 +442,7 @@ fn benchmark_storage_map_contains(c: &mut Criterion) {
 }
 
 /// Benchmark UnorderedMap merge operations
+/// Note: Uses LwwRegister<String> as values since String doesn't implement Mergeable
 fn benchmark_storage_map_merge(c: &mut Criterion) {
     let mut group = c.benchmark_group("storage_map_merge");
     group.sample_size(10);
@@ -438,19 +450,19 @@ fn benchmark_storage_map_merge(c: &mut Criterion) {
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter(|| {
-                // Create two maps with different data
-                let mut map1 = Root::new(|| UnorderedMap::new());
-                let mut map2 = Root::new(|| UnorderedMap::new());
+                // Create two maps with LwwRegister values (which implement Mergeable)
+                let mut map1 = Root::new(|| UnorderedMap::<String, LwwRegister<String>>::new());
+                let mut map2 = Root::new(|| UnorderedMap::<String, LwwRegister<String>>::new());
 
                 for i in 0..size {
                     let key = format!("key1_{}", i);
-                    let value = format!("value1_{}", i);
+                    let value = LwwRegister::new(format!("value1_{}", i));
                     map1.insert(key, value).unwrap();
                 }
 
                 for i in 0..size {
                     let key = format!("key2_{}", i);
-                    let value = format!("value2_{}", i);
+                    let value = LwwRegister::new(format!("value2_{}", i));
                     map2.insert(key, value).unwrap();
                 }
 
@@ -535,6 +547,7 @@ fn benchmark_storage_map_iter(c: &mut Criterion) {
 }
 
 /// Benchmark Vector merge operations
+/// Note: Vector elements must implement Mergeable, so we use LwwRegister<String>
 fn benchmark_storage_vector_merge(c: &mut Criterion) {
     let mut group = c.benchmark_group("storage_vector_merge");
     group.sample_size(10);
@@ -542,17 +555,17 @@ fn benchmark_storage_vector_merge(c: &mut Criterion) {
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter(|| {
-                // Create two vectors with different data
-                let mut vector1 = Root::new(|| Vector::new());
-                let mut vector2 = Root::new(|| Vector::new());
+                // Create two vectors with LwwRegister values (which implement Mergeable)
+                let mut vector1 = Root::new(|| Vector::<LwwRegister<String>>::new());
+                let mut vector2 = Root::new(|| Vector::<LwwRegister<String>>::new());
 
                 for i in 0..size {
-                    let value = format!("value1_{}", i);
+                    let value = LwwRegister::new(format!("value1_{}", i));
                     vector1.push(value).unwrap();
                 }
 
                 for i in 0..size {
-                    let value = format!("value2_{}", i);
+                    let value = LwwRegister::new(format!("value2_{}", i));
                     vector2.push(value).unwrap();
                 }
 
@@ -1012,6 +1025,314 @@ fn benchmark_storage_rga_deserialize(c: &mut Criterion) {
     group.finish();
 }
 
+// Value Size Variation Benchmarks
+
+/// Benchmark UnorderedMap insert with different value sizes
+fn benchmark_storage_map_insert_value_sizes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_map_insert_value_sizes");
+    group.sample_size(10);
+
+    let value_sizes = [
+        ("small", VALUE_SIZE_SMALL),
+        ("medium", VALUE_SIZE_MEDIUM),
+        ("large", VALUE_SIZE_LARGE),
+        ("very_large", VALUE_SIZE_VERY_LARGE),
+    ];
+
+    for (size_name, value_size) in value_sizes.iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size_name),
+            value_size,
+            |b, &value_size| {
+                let mut map = Root::new(|| UnorderedMap::new());
+                let value_template = create_value_of_size(value_size);
+
+                b.iter(|| {
+                    for i in 0..100 {
+                        let key = format!("key_{}", i);
+                        let value = format!("{}_{}", value_template, i);
+                        black_box(map.insert(key, value).unwrap());
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Benchmark Vector push with different value sizes
+fn benchmark_storage_vector_push_value_sizes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_vector_push_value_sizes");
+    group.sample_size(10);
+
+    let value_sizes = [
+        ("small", VALUE_SIZE_SMALL),
+        ("medium", VALUE_SIZE_MEDIUM),
+        ("large", VALUE_SIZE_LARGE),
+        ("very_large", VALUE_SIZE_VERY_LARGE),
+    ];
+
+    for (size_name, value_size) in value_sizes.iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size_name),
+            value_size,
+            |b, &value_size| {
+                let mut vector = Root::new(|| Vector::new());
+                let value_template = create_value_of_size(value_size);
+
+                b.iter(|| {
+                    for i in 0..100 {
+                        let value = format!("{}_{}", value_template, i);
+                        black_box(vector.push(value).unwrap());
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Benchmark UnorderedSet insert with different value sizes
+fn benchmark_storage_set_insert_value_sizes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_set_insert_value_sizes");
+    group.sample_size(10);
+
+    let value_sizes = [
+        ("small", VALUE_SIZE_SMALL),
+        ("medium", VALUE_SIZE_MEDIUM),
+        ("large", VALUE_SIZE_LARGE),
+        ("very_large", VALUE_SIZE_VERY_LARGE),
+    ];
+
+    for (size_name, value_size) in value_sizes.iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size_name),
+            value_size,
+            |b, &value_size| {
+                let mut set = Root::new(|| UnorderedSet::new());
+                let value_template = create_value_of_size(value_size);
+
+                b.iter(|| {
+                    for i in 0..100 {
+                        let value = format!("{}_{}", value_template, i);
+                        black_box(set.insert(value).unwrap());
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+// Edge Case Benchmarks
+
+/// Benchmark UnorderedMap operations on empty collection
+fn benchmark_storage_map_empty_operations(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_map_empty_operations");
+    group.sample_size(10);
+
+    group.bench_function("first_insert", |b| {
+        let mut map = Root::new(|| UnorderedMap::<String, String>::new());
+        b.iter(|| {
+            black_box(map.insert("key".to_string(), "value".to_string()).unwrap());
+        });
+    });
+
+    group.bench_function("get_from_empty", |b| {
+        let map = Root::new(|| UnorderedMap::<String, String>::new());
+        b.iter(|| {
+            black_box(map.get("key").unwrap());
+        });
+    });
+
+    group.bench_function("contains_on_empty", |b| {
+        let map = Root::new(|| UnorderedMap::<String, String>::new());
+        b.iter(|| {
+            black_box(map.contains("key").unwrap());
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark Vector operations on empty collection
+fn benchmark_storage_vector_empty_operations(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_vector_empty_operations");
+    group.sample_size(10);
+
+    group.bench_function("first_push", |b| {
+        let mut vector = Root::new(|| Vector::new());
+        b.iter(|| {
+            black_box(vector.push("value".to_string()).unwrap());
+        });
+    });
+
+    group.bench_function("get_from_empty", |b| {
+        let vector = Root::new(|| Vector::<String>::new());
+        b.iter(|| {
+            black_box(vector.get(0).unwrap());
+        });
+    });
+
+    group.bench_function("pop_from_empty", |b| {
+        let mut vector = Root::new(|| Vector::<String>::new());
+        b.iter(|| {
+            black_box(vector.pop().unwrap());
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark UnorderedMap operations with single element
+fn benchmark_storage_map_single_element(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_map_single_element");
+    group.sample_size(10);
+
+    group.bench_function("insert", |b| {
+        let mut map = Root::new(|| UnorderedMap::<String, String>::new());
+        map.insert("key1".to_string(), "value1".to_string())
+            .unwrap();
+        b.iter(|| {
+            black_box(
+                map.insert("key2".to_string(), "value2".to_string())
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("get", |b| {
+        let mut map = Root::new(|| UnorderedMap::<String, String>::new());
+        map.insert("key".to_string(), "value".to_string()).unwrap();
+        b.iter(|| {
+            black_box(map.get("key").unwrap());
+        });
+    });
+
+    group.bench_function("remove", |b| {
+        let mut map = Root::new(|| UnorderedMap::<String, String>::new());
+        map.insert("key".to_string(), "value".to_string()).unwrap();
+        b.iter(|| {
+            map.insert("key".to_string(), "value".to_string()).unwrap();
+            black_box(map.remove("key").unwrap());
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark Vector operations with single element
+fn benchmark_storage_vector_single_element(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_vector_single_element");
+    group.sample_size(10);
+
+    group.bench_function("push", |b| {
+        let mut vector = Root::new(|| Vector::<String>::new());
+        vector.push("value1".to_string()).unwrap();
+        b.iter(|| {
+            black_box(vector.push("value2".to_string()).unwrap());
+        });
+    });
+
+    group.bench_function("get", |b| {
+        let mut vector = Root::new(|| Vector::<String>::new());
+        vector.push("value".to_string()).unwrap();
+        b.iter(|| {
+            black_box(vector.get(0).unwrap());
+        });
+    });
+
+    group.bench_function("pop", |b| {
+        let mut vector = Root::new(|| Vector::<String>::new());
+        vector.push("value".to_string()).unwrap();
+        b.iter(|| {
+            vector.push("value".to_string()).unwrap();
+            black_box(vector.pop().unwrap());
+        });
+    });
+
+    group.finish();
+}
+
+// Memory/Space Benchmarks
+
+/// Benchmark UnorderedMap memory usage per element
+fn benchmark_storage_map_memory_per_element(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_map_memory_per_element");
+    group.sample_size(10);
+
+    for size in [10, 100, 1_000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let mut map = Root::new(|| UnorderedMap::new());
+            for i in 0..size {
+                let key = format!("key_{}", i);
+                let value = format!("value_{}", i);
+                map.insert(key, value).unwrap();
+            }
+
+            // Serialize to measure size
+            let serialized = borsh::to_vec(&*map).unwrap();
+            let serialized_size = serialized.len();
+
+            b.iter(|| {
+                // Measure serialized size
+                let serialized = borsh::to_vec(&*map).unwrap();
+                black_box(serialized.len());
+            });
+
+            // Report bytes per element
+            let bytes_per_element = if size > 0 {
+                serialized_size as f64 / size as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "Map with {} elements: {} bytes total, {:.2} bytes/element",
+                size, serialized_size, bytes_per_element
+            );
+        });
+    }
+    group.finish();
+}
+
+/// Benchmark Vector memory usage per element
+fn benchmark_storage_vector_memory_per_element(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_vector_memory_per_element");
+    group.sample_size(10);
+
+    for size in [10, 100, 1_000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let mut vector = Root::new(|| Vector::new());
+            for i in 0..size {
+                let value = format!("value_{}", i);
+                vector.push(value).unwrap();
+            }
+
+            // Serialize to measure size
+            let serialized = borsh::to_vec(&*vector).unwrap();
+            let serialized_size = serialized.len();
+
+            b.iter(|| {
+                // Measure serialized size
+                let serialized = borsh::to_vec(&*vector).unwrap();
+                black_box(serialized.len());
+            });
+
+            // Report bytes per element
+            let bytes_per_element = if size > 0 {
+                serialized_size as f64 / size as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "Vector with {} elements: {} bytes total, {:.2} bytes/element",
+                size, serialized_size, bytes_per_element
+            );
+        });
+    }
+    group.finish();
+}
+
 // Multi-Threaded Benchmarks
 
 /// Benchmark concurrent map inserts from multiple threads
@@ -1297,6 +1618,33 @@ criterion_group! {
 }
 
 criterion_group! {
+    name = value_sizes;
+    config = configure_criterion();
+    targets =
+        benchmark_storage_map_insert_value_sizes,
+        benchmark_storage_vector_push_value_sizes,
+        benchmark_storage_set_insert_value_sizes
+}
+
+criterion_group! {
+    name = edge_cases;
+    config = configure_criterion();
+    targets =
+        benchmark_storage_map_empty_operations,
+        benchmark_storage_vector_empty_operations,
+        benchmark_storage_map_single_element,
+        benchmark_storage_vector_single_element
+}
+
+criterion_group! {
+    name = memory;
+    config = configure_criterion();
+    targets =
+        benchmark_storage_map_memory_per_element,
+        benchmark_storage_vector_memory_per_element
+}
+
+criterion_group! {
     name = multi_threaded;
     config = configure_criterion();
     targets =
@@ -1308,4 +1656,10 @@ criterion_group! {
         benchmark_storage_rga_insert_concurrent
 }
 
-criterion_main!(single_threaded, multi_threaded);
+criterion_main!(
+    single_threaded,
+    multi_threaded,
+    value_sizes,
+    edge_cases,
+    memory
+);
