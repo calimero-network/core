@@ -29,11 +29,16 @@ rand.workspace = true
 
 [dev-dependencies]
 claims.workspace = true
+criterion = { version = "0.5.1", features = ["html_reports"] }
 hex.workspace = true
 serial_test.workspace = true
 velcro.workspace = true
 
 calimero-sdk.workspace = true
+
+[[bench]]
+name = "collections"
+harness = false
 
 [features]
 default = []
