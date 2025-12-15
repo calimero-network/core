@@ -8,10 +8,6 @@ use calimero_storage::collections::{
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::path::Path;
 use std::time::Duration;
-
-mod common;
-
-
 // Single-Threaded Benchmarks
 
 /// Benchmark UnorderedMap insert operations
@@ -513,9 +509,7 @@ fn benchmark_storage_set_insert_concurrent(c: &mut Criterion) {
     group.finish();
 }
 
-
 // Criterion Configuration
-
 
 /// Create a configured Criterion instance with enhanced visualization
 fn configure_criterion() -> Criterion {
@@ -531,7 +525,6 @@ fn configure_criterion() -> Criterion {
         .warm_up_time(Duration::from_secs(3)) // Warm-up time
         .sample_size(10) // Minimum samples (can be overridden per group)
 }
-
 
 // Criterion Groups
 
