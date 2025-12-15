@@ -1,4 +1,3 @@
-#TO DO: To be updated with the new timing feature in Merobox workflow steps
 name: Collections Benchmark - Rust SDK
 description: Throughput testing for CRDT collections using single-operation methods
 
@@ -45,9 +44,9 @@ steps:
     count: 100
     outputs:
       iteration: iteration
-      duration_seconds: duration_seconds
-      duration_ms: duration_ms
-      throughput_ops_per_sec: throughput_ops_per_sec
+      map_insert_duration: duration_seconds
+      map_insert_throughput: throughput_ops_per_sec
+      map_insert_avg_latency: avg_time_per_op_ms
     steps:
       - name: Map Insert
         type: call
@@ -74,6 +73,9 @@ steps:
     count: 50
     outputs:
       iteration: iteration
+      map_get_duration: duration_seconds
+      map_get_throughput: throughput_ops_per_sec
+      map_get_avg_latency: avg_time_per_op_ms
     steps:
       - name: Map Get
         type: call
@@ -100,6 +102,9 @@ steps:
     count: 50
     outputs:
       iteration: iteration
+      nested_map_insert_duration: duration_seconds
+      nested_map_insert_throughput: throughput_ops_per_sec
+      nested_map_insert_avg_latency: avg_time_per_op_ms
     steps:
       - name: Nested Map Insert
         type: call
@@ -127,6 +132,9 @@ steps:
     count: 25
     outputs:
       iteration: iteration
+      nested_map_get_duration: duration_seconds
+      nested_map_get_throughput: throughput_ops_per_sec
+      nested_map_get_avg_latency: avg_time_per_op_ms
     steps:
       - name: Nested Map Get
         type: call
@@ -154,6 +162,9 @@ steps:
     count: 30
     outputs:
       iteration: iteration
+      deep_nested_map_insert_duration: duration_seconds
+      deep_nested_map_insert_throughput: throughput_ops_per_sec
+      deep_nested_map_insert_avg_latency: avg_time_per_op_ms
     steps:
       - name: Deep Nested Map Insert
         type: call
@@ -182,6 +193,9 @@ steps:
     count: 15
     outputs:
       iteration: iteration
+      deep_nested_map_get_duration: duration_seconds
+      deep_nested_map_get_throughput: throughput_ops_per_sec
+      deep_nested_map_get_avg_latency: avg_time_per_op_ms
     steps:
       - name: Deep Nested Map Get
         type: call
@@ -210,6 +224,9 @@ steps:
     count: 100
     outputs:
       iteration: iteration
+      vector_push_duration: duration_seconds
+      vector_push_throughput: throughput_ops_per_sec
+      vector_push_avg_latency: avg_time_per_op_ms
     steps:
       - name: Vector Push
         type: call
@@ -234,6 +251,9 @@ steps:
     count: 50
     outputs:
       iteration: iteration
+      vector_get_duration: duration_seconds
+      vector_get_throughput: throughput_ops_per_sec
+      vector_get_avg_latency: avg_time_per_op_ms
     steps:
       - name: Vector Get
         type: call
@@ -260,6 +280,9 @@ steps:
     count: 100
     outputs:
       iteration: iteration
+      set_insert_duration: duration_seconds
+      set_insert_throughput: throughput_ops_per_sec
+      set_insert_avg_latency: avg_time_per_op_ms
     steps:
       - name: Set Insert
         type: call
@@ -286,6 +309,9 @@ steps:
     count: 50
     outputs:
       iteration: iteration
+      set_contains_duration: duration_seconds
+      set_contains_throughput: throughput_ops_per_sec
+      set_contains_avg_latency: avg_time_per_op_ms
     steps:
       - name: Set Contains
         type: call
@@ -312,6 +338,9 @@ steps:
     count: 100
     outputs:
       iteration: iteration
+      register_set_duration: duration_seconds
+      register_set_throughput: throughput_ops_per_sec
+      register_set_avg_latency: avg_time_per_op_ms
     steps:
       - name: Register Set
         type: call
@@ -339,6 +368,9 @@ steps:
     count: 50
     outputs:
       iteration: iteration
+      register_get_duration: duration_seconds
+      register_get_throughput: throughput_ops_per_sec
+      register_get_avg_latency: avg_time_per_op_ms
     steps:
       - name: Register Get
         type: call
@@ -365,6 +397,9 @@ steps:
     count: 50
     outputs:
       iteration: iteration
+      rga_insert_duration: duration_seconds
+      rga_insert_throughput: throughput_ops_per_sec
+      rga_insert_avg_latency: avg_time_per_op_ms
     steps:
       - name: RGA Insert
         type: call
@@ -392,6 +427,9 @@ steps:
     count: 10
     outputs:
       iteration: iteration
+      rga_get_text_duration: duration_seconds
+      rga_get_text_throughput: throughput_ops_per_sec
+      rga_get_text_avg_latency: avg_time_per_op_ms
     steps:
       - name: RGA Get Text
         type: call
@@ -399,6 +437,17 @@ steps:
         context_id: "{{context_id}}"
         executor_public_key: "{{member_public_key}}"
         method: rga_get_text
+
+  # GENERATE BENCHMARK REPORT
+
+  - name: Generate Benchmark Timing Report
+    type: script
+    target: local
+    description: Generate formatted benchmark timing report
+    script: ./scripts/generate-benchmark-report.sh
+    args:
+      - "--output-file"
+      - "./collections-benchmark-report.txt"
 
   # VERIFY RESULTS
 
@@ -422,6 +471,10 @@ steps:
       - "is_set({{set_final_count}})"
       - "is_set({{register_final_count}})"
       - "is_set({{rga_final_count}})"
+      - "is_set({{map_insert_throughput}})"
+      - "is_set({{map_get_throughput}})"
+      - "is_set({{vector_push_throughput}})"
+      - "is_set({{set_insert_throughput}})"
 
 stop_all_nodes: true
 restart: true
