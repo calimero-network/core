@@ -69,7 +69,26 @@ jobs:
                   cd crates/runtime
                   cargo bench --bench collections -- --nocapture
 
+                  # Return to workspace root
+                  cd "$GITHUB_WORKSPACE"
+
                   echo "Benchmarks completed successfully"
+                  echo "Current directory: $(pwd)"
+
+            - name: Verify Criterion output location
+              if: ${{ !cancelled() }}
+              run: |
+                  cd "$GITHUB_WORKSPACE"
+
+                  if [ -d "target/criterion" ]; then
+                      echo "✓ Found: target/criterion"
+                      HTML_COUNT=$(find target/criterion -type f -name "*.html" 2>/dev/null | wc -l)
+                      echo "  HTML files: $HTML_COUNT"
+                  else
+                      echo "✗ Not found: target/criterion"
+                      echo "Searching for criterion directories..."
+                      find . -type d -name "criterion" 2>/dev/null | head -5
+                  fi
 
             - name: Upload benchmark reports
               if: ${{ !cancelled() }}
@@ -88,9 +107,12 @@ jobs:
 
                   echo "Benchmark reports uploaded successfully!"
                   echo "Download the 'runtime-benchmark-reports-<sha>' artifact from the Actions tab."
-                  echo "Extract and navigate to target/criterion/ to view HTML reports in your browser."
+                  echo "Extract and navigate to target/criterion/runtime-benchmarks/ to view HTML reports."
 
-                  if [ -d "target/criterion" ]; then
-                      HTML_COUNT=$(find target/criterion -type f -name "*.html" | wc -l)
-                      echo "Generated $HTML_COUNT HTML report files"
+                  if [ -d "target/criterion/runtime-benchmarks" ]; then
+                      HTML_COUNT=$(find target/criterion/runtime-benchmarks -type f -name "*.html" 2>/dev/null | wc -l)
+                      echo "Generated $HTML_COUNT HTML report files in target/criterion/runtime-benchmarks/"
+                  elif [ -d "target/criterion" ]; then
+                      HTML_COUNT=$(find target/criterion -type f -name "*.html" 2>/dev/null | wc -l)
+                      echo "Generated $HTML_COUNT HTML report files in target/criterion/"
                   fi
