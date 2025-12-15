@@ -1,0 +1,310 @@
+name: Benchmarks
+
+permissions:
+    contents: read
+
+on:
+    pull_request:
+        branches: [master]
+        paths:
+            - "crates/runtime/**"
+            - "crates/storage/**"
+            - "apps/collections-benchmark-rust/**"
+            - ".github/workflows/benchmarks.yml"
+            - "Cargo.toml"
+            - "Cargo.lock"
+
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+
+jobs:
+    runtime-benchmarks:
+        name: Run Runtime Benchmarks
+        runs-on: ubuntu-24.04-8cpu
+        timeout-minutes: 60
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-bench-
+
+            - name: Install WASM target
+              run: rustup target add wasm32-unknown-unknown
+
+            - name: Build merod binary
+              run: |
+                  cargo build --release --bin merod
+                  ./target/release/merod --version || true
+
+            - name: Build collections-benchmark-rust WASM
+              run: |
+                  cd apps/collections-benchmark-rust
+                  chmod +x build.sh
+                  ./build.sh
+
+            - name: Run Criterion benchmarks
+              run: |
+                  cd crates/runtime
+                  cargo bench --bench collections -- --nocapture
+
+                  # Return to workspace root
+                  cd "$GITHUB_WORKSPACE"
+
+                  echo "Runtime benchmarks completed successfully"
+                  echo "Current directory: $(pwd)"
+
+            - name: Upload benchmark reports
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: runtime-benchmark-reports-${{ github.sha }}
+                  path: crates/runtime/target/criterion
+                  retention-days: 30
+                  if-no-files-found: warn
+                  compression-level: 6
+
+            - name: Display benchmark summary
+              if: ${{ !cancelled() }}
+              run: |
+                  cd "$GITHUB_WORKSPACE"
+
+                  echo "Runtime benchmark reports uploaded successfully!"
+                  echo "Download the 'runtime-benchmark-reports-<sha>' artifact from the Actions tab."
+                  echo "Extract and navigate to crates/runtime/target/criterion/runtime-benchmarks/ to view HTML reports."
+
+                  if [ -d "crates/runtime/target/criterion/runtime-benchmarks" ]; then
+                      HTML_COUNT=$(find crates/runtime/target/criterion/runtime-benchmarks -type f -name "*.html" 2>/dev/null | wc -l)
+                      echo "Generated $HTML_COUNT HTML report files in crates/runtime/target/criterion/runtime-benchmarks/"
+                  elif [ -d "crates/runtime/target/criterion" ]; then
+                      HTML_COUNT=$(find crates/runtime/target/criterion -type f -name "*.html" 2>/dev/null | wc -l)
+                      echo "Generated $HTML_COUNT HTML report files in crates/runtime/target/criterion/"
+                  fi
+
+    storage-benchmarks:
+        name: Run Storage Benchmarks
+        runs-on: ubuntu-24.04-8cpu
+        timeout-minutes: 60
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-bench-
+
+            - name: Run Criterion benchmarks
+              run: |
+                  cd crates/storage
+                  cargo bench --bench collections -- --nocapture
+
+                  # Return to workspace root
+                  cd "$GITHUB_WORKSPACE"
+
+                  echo "Storage benchmarks completed successfully"
+                  echo "Current directory: $(pwd)"
+
+            - name: Upload benchmark reports
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: storage-benchmark-reports-${{ github.sha }}
+                  path: crates/storage/target/criterion
+                  retention-days: 30
+                  if-no-files-found: warn
+                  compression-level: 6
+
+            - name: Display benchmark summary
+              if: ${{ !cancelled() }}
+              run: |
+                  cd "$GITHUB_WORKSPACE"
+
+                  echo "Storage benchmark reports uploaded successfully!"
+                  echo "Download the 'storage-benchmark-reports-<sha>' artifact from the Actions tab."
+                  echo "Extract and navigate to crates/storage/target/criterion/storage-benchmarks/ to view HTML reports."
+
+                  if [ -d "crates/storage/target/criterion/storage-benchmarks" ]; then
+                      HTML_COUNT=$(find crates/storage/target/criterion/storage-benchmarks -type f -name "*.html" 2>/dev/null | wc -l)
+                      echo "Generated $HTML_COUNT HTML report files in crates/storage/target/criterion/storage-benchmarks/"
+                  elif [ -d "crates/storage/target/criterion" ]; then
+                      HTML_COUNT=$(find crates/storage/target/criterion -type f -name "*.html" 2>/dev/null | wc -l)
+                      echo "Generated $HTML_COUNT HTML report files in crates/storage/target/criterion/"
+                  fi
+
+    workflow-benchmarks:
+        name: Run Workflow Benchmarks (E2E)
+        runs-on: ubuntu-24.04-8cpu
+        timeout-minutes: 60
+
+        env:
+            CALIMERO_CONTRACTS_VERSION: "latest"
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-bench-
+
+            - name: Install WASM target
+              run: rustup target add wasm32-unknown-unknown
+
+            - name: Build merod binary
+              run: |
+                  cargo build --bin merod
+                  ./target/debug/merod --version || true
+
+            - name: Build collections-benchmark-rust WASM
+              run: |
+                  cd apps/collections-benchmark-rust
+                  chmod +x build.sh
+                  ./build.sh
+
+            - name: Set up Python 3.11
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+
+            - name: Verify merobox installation
+              run: |
+                  merobox --version
+
+            - name: Download Contracts
+              run: |
+                  echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
+                  ./scripts/download-contracts.sh
+
+            - name: Run Workflow Benchmarks
+              run: |
+                  cd apps/collections-benchmark-rust
+                  merobox bootstrap run \
+                      "workflows/benchmark-rust.yml" \
+                      --no-docker \
+                      --binary-path ../../target/debug/merod \
+                      --e2e-mode \
+                      --near-devnet \
+                      --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
+
+            - name: Upload benchmark report
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: workflow-benchmark-report-${{ github.sha }}
+                  path: apps/collections-benchmark-rust/collections-benchmark-report.txt
+                  retention-days: 30
+                  if-no-files-found: warn
+                  compression-level: 6
+
+            - name: Display workflow benchmark summary
+              if: ${{ !cancelled() }}
+              run: |
+                  cd "$GITHUB_WORKSPACE"
+
+                  echo "Workflow benchmark report uploaded successfully!"
+                  echo "Download the 'workflow-benchmark-report-<sha>' artifact from the Actions tab."
+                  echo "The report contains E2E performance metrics for all CRDT collection operations."
+
+                  if [ -f "apps/collections-benchmark-rust/collections-benchmark-report.txt" ]; then
+                      echo "Report file found: apps/collections-benchmark-rust/collections-benchmark-report.txt"
+                      echo "Report size: $(wc -l < apps/collections-benchmark-rust/collections-benchmark-report.txt) lines"
+                  fi
+
+            - name: Cleanup
+              if: always()
+              run: |
+                  merobox nuke --force || true
+
+    summary:
+        name: Benchmark Summary
+        runs-on: ubuntu-latest
+        needs: [runtime-benchmarks, storage-benchmarks, workflow-benchmarks]
+        if: always()
+
+        steps:
+            - name: Display combined summary
+              run: |
+                  echo "## Benchmark Results Summary" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### Runtime Benchmarks" >> $GITHUB_STEP_SUMMARY
+                  if [ "${{ needs.runtime-benchmarks.result }}" == "success" ]; then
+                      echo "Runtime benchmarks completed successfully" >> $GITHUB_STEP_SUMMARY
+                      echo "- Artifact: \`runtime-benchmark-reports-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+                  else
+                      echo "Runtime benchmarks failed" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### Storage Benchmarks" >> $GITHUB_STEP_SUMMARY
+                  if [ "${{ needs.storage-benchmarks.result }}" == "success" ]; then
+                      echo "Storage benchmarks completed successfully" >> $GITHUB_STEP_SUMMARY
+                      echo "- Artifact: \`storage-benchmark-reports-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+                  else
+                      echo "Storage benchmarks failed" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### Workflow Benchmarks (E2E)" >> $GITHUB_STEP_SUMMARY
+                  if [ "${{ needs.workflow-benchmarks.result }}" == "success" ]; then
+                      echo "Workflow benchmarks completed successfully" >> $GITHUB_STEP_SUMMARY
+                      echo "- Artifact: \`workflow-benchmark-report-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+                  else
+                      echo "Workflow benchmarks failed" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "Download artifacts from the Actions tab to view detailed reports." >> $GITHUB_STEP_SUMMARY
