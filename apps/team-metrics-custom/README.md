@@ -52,11 +52,23 @@ See `apps/team-metrics-macro` for the simple derive approach (recommended for mo
 
 ## Build & Test
 
+End-to-end tests are automatically run via the `merobox-workflows.yml` GitHub Actions workflow, which executes workflows defined in `team-metrics-custom/workflows/*.yml`.
+
+To build locally:
+
 ```bash
 ./build.sh
-cd ../../e2e-tests
-cargo run -- --protocol near --test team-metrics-test
+```
+
+To run workflow tests locally using merobox:
+
+```bash
+./build.sh
+merobox bootstrap run workflows/team-metrics-test.yml \
+  --no-docker \
+  --binary-path ../../target/debug/merod \
+  --e2e-mode \
+  --near-devnet
 ```
 
 **Note:** Both apps have the same functionality - only the implementation differs!
-

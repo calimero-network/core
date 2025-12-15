@@ -1,0 +1,362 @@
+name: KV Store with Handlers Test
+description: Test KV Store with handlers functionality, including insert, update, remove, and clear handlers
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: kvh-node
+
+steps:
+  - name: Install KV Store with Handlers App on Node 1
+    type: install_application
+    node: kvh-node-1
+    path: res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: kvh-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - kvh-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Get Initial Handler Count on Node 1
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_handler_execution_count
+    outputs:
+      initial_handlers_node1: result
+
+  - name: Assert Initial Handler Count is 0 on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_handlers_node1}}, {"output": 0})'
+
+  - name: Get Initial Handler Count on Node 2
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: get_handler_execution_count
+    outputs:
+      initial_handlers_node2: result
+
+  - name: Assert Initial Handler Count is 0 on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_handlers_node2}}, {"output": 0})'
+
+  - name: Set Initial Key-Value Pair
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: test_key
+      value: test_value
+    outputs:
+      set_result_1: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    description: Wait for network sync and handler execution on receiving nodes
+
+  - name: Verify Insert Handler Called on Node 1
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_insert_node1: result
+
+  - name: Verify Insert Handler Called on Node 2
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_insert_node2: result
+
+  - name: Assert Insert Handler Count on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_after_insert_node2}}, {"output": 1})'
+
+  - name: Update Key with New Value
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: test_key
+      value: updated_value
+    outputs:
+      set_result_2: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    description: Wait for network sync and handler execution on receiving nodes
+
+  - name: Verify Update Handler Called on Node 1
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_update_node1: result
+
+  - name: Verify Update Handler Called on Node 2
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_update_node2: result
+
+  - name: Assert Update Handler Count on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_after_update_node2}}, {"output": 2})'
+
+  - name: Remove Key
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: remove
+    args:
+      key: test_key
+    outputs:
+      remove_result: result
+
+  - name: Assert Remove Returned Previous Value
+    type: json_assert
+    statements:
+      - 'json_equal({{remove_result}}, {"output": "updated_value"})'
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    description: Wait for network sync and handler execution on receiving nodes
+
+  - name: Verify Remove Handler Called on Node 1
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_remove_node1: result
+
+  - name: Verify Remove Handler Called on Node 2
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_remove_node2: result
+
+  - name: Assert Remove Handler Count on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_after_remove_node2}}, {"output": 3})'
+
+  - name: Set Another Key-Value Pair
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: another_key
+      value: another_value
+    outputs:
+      set_result_3: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    description: Wait for network sync and handler execution on receiving nodes
+
+  - name: Clear All Key-Value Pairs
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: clear
+    outputs:
+      clear_result: result
+
+  - name: Wait for Broadcast and Handler Execution
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    description: Wait for network sync and handler execution on receiving nodes
+
+  - name: Verify Clear Handler Called on Node 1
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_clear_node1: result
+
+  - name: Verify Clear Handler Called on Node 2
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: get_handler_execution_count
+    outputs:
+      handlers_after_clear_node2: result
+
+  - name: Assert Clear Handler Count on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{handlers_after_clear_node2}}, {"output": 5})'
+
+  - name: Node 2 Set Value
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: set
+    args:
+      key: node2_key
+      value: value_from_node2
+
+  - name: Wait for Sync to Node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kvh-node-1
+      - kvh-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node 1 Get Node 2 Value
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: node2_key
+    outputs:
+      node1_gets_node2_value: result.output
+
+  - name: Assert Node 1 Sees Node 2 Value
+    type: assert
+    statements:
+      - "{{node1_gets_node2_value}} == 'value_from_node2'"
+
+  - name: Verify Final State on Node 1
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_handler_execution_count
+    outputs:
+      final_handlers_node1: result
+
+  - name: Assert Final Handler Count on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{final_handlers_node1}}, {"output": 6})'
+
+  - name: Verify Final State on Node 2
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: get_handler_execution_count
+    outputs:
+      final_handlers_node2: result
+
+  - name: Assert Final Handler Count on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{final_handlers_node2}}, {"output": 6})'
+
+  - name: Verify Final Entries on Node 1
+    type: call
+    node: kvh-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: entries
+    outputs:
+      final_entries_node1: result.output
+
+  - name: Assert Final Entries on Node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{final_entries_node1}}, {"node2_key": "value_from_node2"})'
+
+  - name: Verify Final Entries on Node 2
+    type: call
+    node: kvh-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kvh-node-2}}"
+    method: entries
+    outputs:
+      final_entries_node2: result.output
+
+  - name: Assert Final Entries on Node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{final_entries_node2}}, {"node2_key": "value_from_node2"})'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

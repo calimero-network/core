@@ -247,6 +247,21 @@ The workflow tests:
 - Text replacement
 - Concurrent edits from multiple nodes
 - CRDT convergence properties
+
+To run tests locally, use merobox directly:
+
+```bash
+# Build the app first
+./build.sh
+
+# Run the workflow test
+merobox bootstrap run workflows/collaborative-editor.yml \
+  --no-docker \
+  --binary-path ../../target/debug/merod \
+  --e2e-mode \
+  --near-devnet
+```
+
 - Title management
 - Document statistics
 - Error handling (invalid positions, ranges, etc.)
@@ -303,4 +318,3 @@ EditorState
 - [Counter CRDT](../../crates/storage/src/collections/counter.rs)
 - [Calimero Storage](../../crates/storage/README.md)
 - [Calimero SDK](../../crates/sdk/README.md)
-

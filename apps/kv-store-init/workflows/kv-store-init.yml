@@ -1,0 +1,387 @@
+description: KV Store Init Application Workflow
+name: KV Store Init Test
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: kv-store-init-node
+
+steps:
+  - name: Install KV Store Init Application
+    type: install_application
+    node: kv-store-init-node-1
+    path: res/kv_store_init.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: kv-store-init-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - kv-store-init-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Test that initial values from init() are present
+  - name: Get Initial Key 1
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: init_key_1
+    outputs:
+      init_value_1: result.output
+
+  - name: Assert Initial Key 1 Value
+    type: assert
+    statements:
+      - "{{init_value_1}} == 'Initial value 1'"
+
+  - name: Get Initial Key 2
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: init_key_2
+    outputs:
+      init_value_2: result.output
+
+  - name: Assert Initial Key 2 Value
+    type: assert
+    statements:
+      - "{{init_value_2}} == 'Initial value 2'"
+
+  - name: Get Welcome Key
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: welcome
+    outputs:
+      welcome_value: result.output
+
+  - name: Assert Welcome Value
+    type: assert
+    statements:
+      - "{{welcome_value}} == 'Welcome to KvStoreInit!'"
+
+  # Test len() to verify initial count
+  - name: Get Initial Length
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    outputs:
+      initial_len: result.output
+
+  - name: Assert Initial Length is 3
+    type: assert
+    statements:
+      - "{{initial_len}} == 3"
+
+  # Test entries() to get all initial entries
+  - name: Get All Initial Entries
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: entries
+    outputs:
+      initial_entries: result.output
+
+  - name: Assert Initial Entries Contain Default Keys
+    type: json_assert
+    statements:
+      - 'json_subset({{initial_entries}}, {"init_key_1": "Initial value 1", "init_key_2": "Initial value 2", "welcome": "Welcome to KvStoreInit!"})'
+
+  # Test setting new values
+  - name: Set New Value
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: greeting
+      value: hello-world
+
+  - name: Get New Value
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: greeting
+    outputs:
+      greeting_value: result.output
+
+  - name: Assert New Value Matches
+    type: assert
+    statements:
+      - "{{greeting_value}} == 'hello-world'"
+
+  # Test updating an existing value
+  - name: Update Initial Key 1
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: init_key_1
+      value: Updated value 1
+
+  - name: Get Updated Value
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: init_key_1
+    outputs:
+      updated_value: result.output
+
+  - name: Assert Updated Value
+    type: assert
+    statements:
+      - "{{updated_value}} == 'Updated value 1'"
+
+  # Test len() after adding new value
+  - name: Get Length After Update
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    outputs:
+      updated_len: result.output
+
+  - name: Assert Length is 4 (3 initial + 1 new)
+    type: assert
+    statements:
+      - "{{updated_len}} == 4"
+
+  # Test get_result() with existing key
+  - name: Get Result for Existing Key
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_result
+    args:
+      key: welcome
+    outputs:
+      welcome_result: result.output
+
+  - name: Assert Get Result Works
+    type: assert
+    statements:
+      - "{{welcome_result}} == 'Welcome to KvStoreInit!'"
+
+  # Test get() with non-existent key (should return null/None)
+  - name: Get Non-Existent Key
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: non_existent
+    outputs:
+      non_existent_result: result.output
+
+  - name: Assert Non-Existent Key Returns Null
+    type: assert
+    statements:
+      - "{{non_existent_result}} == None"
+
+  # Test remove()
+  - name: Remove Initial Key 2
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: remove
+    args:
+      key: init_key_2
+    outputs:
+      removed_value: result.output
+
+  - name: Assert Removed Value
+    type: assert
+    statements:
+      - "{{removed_value}} == 'Initial value 2'"
+
+  - name: Verify Key 2 is Removed
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: init_key_2
+    outputs:
+      removed_check: result.output
+
+  - name: Assert Removed Key Returns Null
+    type: assert
+    statements:
+      - "{{removed_check}} == None"
+
+  # Test len() after removal
+  - name: Get Length After Removal
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    outputs:
+      after_removal_len: result.output
+
+  - name: Assert Length is 3 After Removal
+    type: assert
+    statements:
+      - "{{after_removal_len}} == 3"
+
+  # Test clear()
+  - name: Clear All Entries
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: clear
+
+  - name: Get Length After Clear
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    outputs:
+      after_clear_len: result.output
+
+  - name: Assert Length is 0 After Clear
+    type: assert
+    statements:
+      - "{{after_clear_len}} == 0"
+
+  - name: Get Entries After Clear
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: entries
+    outputs:
+      after_clear_entries: result.output
+
+  - name: Assert Entries Are Empty After Clear
+    type: json_assert
+    statements:
+      - "json_equal({{after_clear_entries}}, {})"
+
+  # Test Node 2 sync after clear
+  - name: Set New Value on Node 1 After Clear
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set
+    args:
+      key: sync_test
+      value: value_from_node1
+
+  - name: Wait for Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kv-store-init-node-1
+      - kv-store-init-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node 2 Get Synced Value
+    type: call
+    node: kv-store-init-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kv-store-init-node-2}}"
+    method: get
+    args:
+      key: sync_test
+    outputs:
+      node2_synced_value: result.output
+
+  - name: Assert Node 2 Synced Value
+    type: assert
+    statements:
+      - "{{node2_synced_value}} == 'value_from_node1'"
+
+  - name: Node 2 Set Value
+    type: call
+    node: kv-store-init-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kv-store-init-node-2}}"
+    method: set
+    args:
+      key: node2_key
+      value: value_from_node2
+
+  - name: Wait for Sync to Node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kv-store-init-node-1
+      - kv-store-init-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node 1 Get Node 2 Value
+    type: call
+    node: kv-store-init-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: node2_key
+    outputs:
+      node1_gets_node2_value: result.output
+
+  - name: Assert Node 1 Sees Node 2 Value
+    type: assert
+    statements:
+      - "{{node1_gets_node2_value}} == 'value_from_node2'"
+
+  - name: Node 2 Get All Entries
+    type: call
+    node: kv-store-init-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_kv-store-init-node-2}}"
+    method: entries
+    outputs:
+      node2_entries: result.output
+
+  - name: Assert Node 2 Has Both Keys
+    type: json_assert
+    statements:
+      - 'json_subset({{node2_entries}}, {"sync_test": "value_from_node1", "node2_key": "value_from_node2"})'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

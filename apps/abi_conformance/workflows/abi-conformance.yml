@@ -1,0 +1,430 @@
+description: ABI Conformance Application Workflow
+name: ABI Conformance Test
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: abi-conformance-node
+
+steps:
+  - name: Install ABI Conformance Application
+    type: install_application
+    node: abi-conformance-node-1
+    path: res/abi_conformance.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: abi-conformance-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - abi-conformance-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Test Unit return
+  - name: Test Noop (Unit)
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: noop
+
+  # Test Scalar types
+  - name: Test Echo Bool
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_bool
+    args:
+      b: true
+    outputs:
+      bool_result: result.output
+
+  - name: Assert Bool Result
+    type: assert
+    statements:
+      - "{{bool_result}} == True"
+
+  - name: Test Echo I32
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_i32
+    args:
+      x: 42
+    outputs:
+      i32_result: result.output
+
+  - name: Assert I32 Result
+    type: assert
+    statements:
+      - "{{i32_result}} == 42"
+
+  - name: Test Echo I64
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_i64
+    args:
+      x: -9223372036854775808
+    outputs:
+      i64_result: result.output
+
+  - name: Assert I64 Result
+    type: assert
+    statements:
+      - "{{i64_result}} == -9223372036854775808"
+
+  - name: Test Echo U32
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_u32
+    args:
+      x: 4294967295
+    outputs:
+      u32_result: result.output
+
+  - name: Assert U32 Result
+    type: assert
+    statements:
+      - "{{u32_result}} == 4294967295"
+
+  - name: Test Echo U64
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_u64
+    args:
+      x: 18446744073709551615
+    outputs:
+      u64_result: result.output
+
+  - name: Assert U64 Result
+    type: assert
+    statements:
+      - "{{u64_result}} == 18446744073709551615"
+
+  - name: Test Echo F32
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_f32
+    args:
+      x: 3.14159
+    outputs:
+      f32_result: result.output
+
+  - name: Assert F32 Result
+    type: assert
+    statements:
+      - "{{f32_result}} == 3.14159"
+
+  - name: Test Echo F64
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_f64
+    args:
+      x: 3.141592653589793
+    outputs:
+      f64_result: result.output
+
+  - name: Assert F64 Result
+    type: assert
+    statements:
+      - "{{f64_result}} == 3.141592653589793"
+
+  - name: Test Echo String
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_string
+    args:
+      s: "Hello, ABI Conformance!"
+    outputs:
+      string_result: result.output
+
+  - name: Assert String Result
+    type: assert
+    statements:
+      - "{{string_result}} == 'Hello, ABI Conformance!'"
+
+  - name: Test Echo Bytes
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: echo_bytes
+    args:
+      b: [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100]
+    outputs:
+      bytes_result: result.output
+
+  - name: Assert Bytes Result
+    type: json_assert
+    statements:
+      - "json_equal({{bytes_result}}, [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100])"
+
+  # Test Optionals
+  - name: Test Opt U32 (Some)
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: opt_u32
+    args:
+      x: 100
+    outputs:
+      opt_u32_result: result.output
+
+  - name: Assert Opt U32 Result
+    type: assert
+    statements:
+      - "{{opt_u32_result}} == 100"
+
+  - name: Test Opt String (Some)
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: opt_string
+    args:
+      x: "optional string"
+    outputs:
+      opt_string_result: result.output
+
+  - name: Assert Opt String Result
+    type: assert
+    statements:
+      - "{{opt_string_result}} == 'optional string'"
+
+  # Test Lists
+  - name: Test List U32
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: list_u32
+    args:
+      xs: [1, 2, 3, 4, 5]
+    outputs:
+      list_u32_result: result.output
+
+  - name: Assert List U32 Result
+    type: json_assert
+    statements:
+      - "json_equal({{list_u32_result}}, [1, 2, 3, 4, 5])"
+
+  - name: Test List Strings
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: list_strings
+    args:
+      xs: ["hello", "world", "test"]
+    outputs:
+      list_strings_result: result.output
+
+  - name: Assert List Strings Result
+    type: json_assert
+    statements:
+      - 'json_equal({{list_strings_result}}, ["hello", "world", "test"])'
+
+  # Test Maps
+  - name: Test Map U32
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: map_u32
+    args:
+      m:
+        key1: 10
+        key2: 20
+        key3: 30
+    outputs:
+      map_u32_result: result.output
+
+  - name: Assert Map U32 Result
+    type: json_assert
+    statements:
+      - 'json_subset({{map_u32_result}}, {"key1": 10, "key2": 20, "key3": 30})'
+
+  # Test Records
+  - name: Test Make Person
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: make_person
+    args:
+      p:
+        id:
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+          ]
+        name: "Test User"
+        age: 25
+    outputs:
+      person_result: result.output
+
+  - name: Assert Person Result
+    type: json_assert
+    statements:
+      - 'json_subset({{person_result}}, {"name": "Test User", "age": 25})'
+
+  # Test Variants
+  - name: Test Act (Ping)
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: act
+    args:
+      a:
+        Ping: null
+    outputs:
+      act_ping_result: result.output
+
+  - name: Assert Act Ping Result
+    type: assert
+    statements:
+      - "{{act_ping_result}} == 1"
+
+  - name: Test Act (SetName)
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: act
+    args:
+      a:
+        SetName: "NewName"
+    outputs:
+      act_setname_result: result.output
+
+  - name: Assert Act SetName Result
+    type: assert
+    statements:
+      - "{{act_setname_result}} == 2"
+
+  - name: Test Act (Update)
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: act
+    args:
+      a:
+        Update:
+          age: 30
+    outputs:
+      act_update_result: result.output
+
+  - name: Assert Act Update Result
+    type: assert
+    statements:
+      - "{{act_update_result}} == 30"
+
+  # Test Errors (success case)
+  - name: Test May Fail (Success)
+    type: call
+    node: abi-conformance-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: may_fail
+    args:
+      flag: true
+    outputs:
+      may_fail_success: result.output
+
+  - name: Assert May Fail Success
+    type: assert
+    statements:
+      - "{{may_fail_success}} == 42"
+
+  # Test Node 2 can execute methods
+  - name: Node 2 Get String Value
+    type: call
+    node: abi-conformance-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_abi-conformance-node-2}}"
+    method: echo_string
+    args:
+      s: "Synced from Node 2"
+    outputs:
+      node2_string_result: result.output
+
+  - name: Assert Node 2 String Echo Works
+    type: assert
+    statements:
+      - "{{node2_string_result}} == 'Synced from Node 2'"
+
+  - name: Node 2 Test List U32
+    type: call
+    node: abi-conformance-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_abi-conformance-node-2}}"
+    method: list_u32
+    args:
+      xs: [10, 20, 30]
+    outputs:
+      node2_list_result: result.output
+
+  - name: Assert Node 2 List Works
+    type: json_assert
+    statements:
+      - "json_equal({{node2_list_result}}, [10, 20, 30])"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

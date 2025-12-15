@@ -11,7 +11,7 @@ use tracing::{debug, error, info};
 
 use super::NetworkManager;
 use crate::discovery::state::{
-    DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
+    DiscoveryState, ReachabilityActions, RelayReservationStatus, RendezvousRegistrationStatus,
 };
 
 pub mod state;
@@ -203,27 +203,45 @@ impl NetworkManager {
 
     // We unregister from a rendezvous peer if we were previously registered.
     // This function expectes that the rendezvous peer is already connected.
-    // pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
-    //     let peer_info = self
-    //         .discovery
-    //         .state
-    //         .get_peer_info(rendezvous_peer)
-    //         .wrap_err("Failed to get peer info")?
-    //         .rendezvous()
-    //         .wrap_err("Peer isn't rendezvous")?;
+    pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
+        let peer_info = self
+            .discovery
+            .state
+            .get_peer_info(rendezvous_peer)
+            .wrap_err("Failed to get peer info")?
+            .rendezvous()
+            .wrap_err("Peer isn't rendezvous")?;
 
-    //     if matches!(
-    //         peer_info.registration_status(),
-    //         RendezvousRegistrationStatus::Registered
-    //     ) {
-    //         self.swarm.behaviour_mut().rendezvous.unregister(
-    //             self.discovery.rendezvous_config.namespace.clone(),
-    //             *rendezvous_peer,
-    //         );
-    //     }
+        match peer_info.registration_status() {
+            RendezvousRegistrationStatus::Registered => {
+                // Actively unregister from the rendezvous server
+                self.swarm.behaviour_mut().rendezvous.unregister(
+                    self.discovery.rendezvous_config.namespace.clone(),
+                    *rendezvous_peer,
+                );
 
-    //     Ok(())
-    // }
+                self.discovery.state.update_rendezvous_registration_status(
+                    rendezvous_peer,
+                    RendezvousRegistrationStatus::Expired,
+                );
+            }
+            RendezvousRegistrationStatus::Requested => {
+                // Can't cancel in-flight registration, but mark as expired so we don't
+                // consider ourselves registered when the response arrives. The handler
+                // for the registration response should check current status and re-register
+                // with updated addresses if needed.
+                self.discovery.state.update_rendezvous_registration_status(
+                    rendezvous_peer,
+                    RendezvousRegistrationStatus::Expired,
+                );
+            }
+            RendezvousRegistrationStatus::Discovered | RendezvousRegistrationStatus::Expired => {
+                // Nothing to unregister
+            }
+        }
+
+        Ok(())
+    }
 
     // Finds a new rendezvous peer for registration.
     // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
@@ -300,28 +318,51 @@ impl NetworkManager {
         Ok(())
     }
 
-    // TODO: Revisit AutoNAT protocol integration
-    // // Add a peer to the list of servers that may be used for determining our NAT status.
-    // // These peers are used for dial-request even if they are currently not connected,
-    // // in which case a connection will be established before sending the dial-request.
-    // pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
-    //     let peer_info = self
-    //         .discovery
-    //         .state
-    //         .get_peer_info(autonat_peer)
-    //         .wrap_err("Failed to get peer info")?;
+    /// Execute actions determined by DiscoveryState
+    pub(crate) fn execute_reachability_actions(&mut self, actions: ReachabilityActions) {
+        if !actions.has_actions() {
+            return;
+        }
 
-    //     debug!(
-    //         %autonat_peer,
-    //         ?peer_info,
-    //         "Adding peer to the list of autonat servers"
-    //     );
+        // AutoNAT server control
+        if actions.enable_autonat_server {
+            if let Err(err) = self.swarm.behaviour_mut().autonat.enable_server() {
+                error!(%err, "Failed to enable AutoNAT server");
+            }
+        }
 
-    //     self.swarm
-    //         .behaviour_mut()
-    //         .autonat
-    //         .add_server(*autonat_peer, None);
+        if actions.disable_autonat_server {
+            if let Err(err) = self.swarm.behaviour_mut().autonat.disable_server() {
+                error!(%err, "Failed to disable AutoNAT server");
+            }
+        }
 
-    //     Ok(())
-    // }
+        // Unregister from rendezvous (do this first when going private)
+        for peer_id in actions.rendezvous_unregister {
+            if let Err(err) = self.rendezvous_unregister(&peer_id) {
+                error!(%err, %peer_id, "Failed to unregister from rendezvous");
+            }
+        }
+
+        // Create relay reservations
+        for peer_id in actions.relay_reservations {
+            if let Err(err) = self.create_relay_reservation(&peer_id) {
+                error!(%err, %peer_id, "Failed to create relay reservation");
+            }
+        }
+
+        // Discover peers
+        for peer_id in &actions.rendezvous_discover {
+            if let Err(err) = self.rendezvous_discover(peer_id) {
+                error!(%err, %peer_id, "Failed to discover via rendezvous");
+            }
+        }
+
+        // Register with rendezvous (do this last, after relay setup)
+        for peer_id in actions.rendezvous_register {
+            if let Err(err) = self.rendezvous_register(&peer_id) {
+                error!(%err, %peer_id, "Failed to register with rendezvous");
+            }
+        }
+    }
 }

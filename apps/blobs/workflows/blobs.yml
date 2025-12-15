@@ -18,46 +18,16 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create context from inviter
-    type: create_context
-    node: rust-blob-1
+  - name: Create Mesh
+    type: create_mesh
+    context_node: rust-blob-1
     application_id: "{{app_id}}"
+    nodes:
+      - rust-blob-2
+    capability: member
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey
-
-  - name: Assert context created
-    type: assert
-    statements:
-      - "is_set({{context_id}})"
-      - "is_set({{inviter_key}})"
-
-  - name: Create invitee identity
-    type: create_identity
-    node: rust-blob-2
-    outputs:
-      invitee_key: publicKey
-
-  - name: Invite second node
-    type: invite_identity
-    node: rust-blob-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{invitee_key}}"
-    granter_id: "{{inviter_key}}"
-    capability: member
-    outputs:
-      invitation: invitation
-
-  - name: Join context from invitee
-    type: join_context
-    node: rust-blob-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{invitee_key}}"
-    invitation: "{{invitation}}"
-
-  - name: Wait for context sync
-    type: wait
-    seconds: 3
 
   - name: Upload sample PNG blob
     type: upload_blob
@@ -116,8 +86,14 @@ steps:
       - "is_set({{txt_file_id}})"
 
   - name: Wait for announcements
-    type: wait
-    seconds: 6
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-1
+      - rust-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List files on inviter
     type: call
@@ -138,7 +114,7 @@ steps:
     type: call
     node: rust-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
+    executor_public_key: "{{public_key_rust-blob-2}}"
     method: list_files
     outputs:
       invitee_files: result.output
@@ -175,14 +151,20 @@ steps:
       file_id: "{{png_file_id}}"
 
   - name: Wait for delete propagation
-    type: wait
-    seconds: 6
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-1
+      - rust-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List files after delete
     type: call
     node: rust-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
+    executor_public_key: "{{public_key_rust-blob-2}}"
     method: list_files
     outputs:
       final_files: result.output
