@@ -775,7 +775,7 @@ fn benchmark_runtime_rga_get_text(c: &mut Criterion) {
     // Insert 100 characters
     for i in 0..100 {
         let text = format!("{}", i % 10);
-        let input = json_input_multi(&[("index", "0"), ("text", &text)]);
+        let input = serde_json::to_vec(&serde_json::json!({"index": 0u32, "text": text})).unwrap();
         module
             .run(
                 context_id,
@@ -798,7 +798,8 @@ fn benchmark_runtime_rga_get_text(c: &mut Criterion) {
             // Insert text for reading
             for i in 0..100 {
                 let text = format!("{}", i % 10);
-                let input = json_input_multi(&[("index", "0"), ("text", &text)]);
+                let input =
+                    serde_json::to_vec(&serde_json::json!({"index": 0u32, "text": text})).unwrap();
                 module
                     .run(
                         context_id,
@@ -890,7 +891,9 @@ fn benchmark_runtime_rga_insert(c: &mut Criterion) {
             b.iter(|| {
                 for i in 0..size {
                     let text = format!("text_{}", i);
-                    let input = json_input_multi(&[("index", "0"), ("text", &text)]);
+                    let input =
+                        serde_json::to_vec(&serde_json::json!({"index": 0u32, "text": text}))
+                            .unwrap();
                     black_box(
                         module
                             .run(
@@ -1420,7 +1423,10 @@ fn benchmark_runtime_rga_insert_concurrent(c: &mut Criterion) {
                             // Each thread inserts 100 characters
                             for i in 0..100 {
                                 let text = format!("t{}_i{}", t, i);
-                                let input = json_input_multi(&[("index", "0"), ("text", &text)]);
+                                let input = serde_json::to_vec(
+                                    &serde_json::json!({"index": 0u32, "text": text}),
+                                )
+                                .unwrap();
                                 black_box(
                                     module
                                         .run(
