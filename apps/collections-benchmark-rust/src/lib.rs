@@ -24,6 +24,8 @@ pub type PNCounter = calimero_storage::collections::Counter<true>;
 pub struct CollectionsBenchmark {
     /// Counter for tracking operations
     pub operation_count: Counter,
+    /// Counter for benchmarking counter operations
+    pub test_counter: Counter,
     // Collections for benchmarking
     pub test_map: UnorderedMap<String, Counter>,
     pub test_nested_map: UnorderedMap<String, UnorderedMap<String, Counter>>,
@@ -40,6 +42,7 @@ impl CollectionsBenchmark {
     pub fn init() -> CollectionsBenchmark {
         CollectionsBenchmark {
             operation_count: Counter::new(),
+            test_counter: Counter::new(),
             test_map: UnorderedMap::new(),
             test_nested_map: UnorderedMap::new(),
             test_deep_nested_map: UnorderedMap::new(),
@@ -75,6 +78,32 @@ impl CollectionsBenchmark {
             .map_err(|e| format!("Get failed: {:?}", e))?;
         // Note: We can't increment operation_count here because this is a read-only method
         // The client will track get operations separately
+        Ok(0)
+    }
+
+    /// Remove a key-value pair from the test map
+    /// Returns the operation count after removal
+    pub fn map_remove(&mut self, key: String) -> Result<u64, String> {
+        self.test_map
+            .remove(&key)
+            .map_err(|e| format!("Remove failed: {:?}", e))?;
+
+        self.operation_count
+            .increment()
+            .map_err(|e| format!("Increment failed: {:?}", e))?;
+
+        self.operation_count
+            .value()
+            .map_err(|e| format!("Get operation count failed: {:?}", e))
+    }
+
+    /// Check if the test map contains a key
+    /// Returns the operation count (always 0 for read-only operations)
+    pub fn map_contains(&self, key: String) -> Result<u64, String> {
+        let _ = self
+            .test_map
+            .contains(&key)
+            .map_err(|e| format!("Contains failed: {:?}", e))?;
         Ok(0)
     }
     /// Get the current operation count
@@ -234,6 +263,22 @@ impl CollectionsBenchmark {
         Ok(0)
     }
 
+    /// Pop a value from the vector
+    /// Returns the operation count after pop
+    pub fn vector_pop(&mut self) -> Result<u64, String> {
+        self.test_vector
+            .pop()
+            .map_err(|e| format!("Pop failed: {:?}", e))?;
+
+        self.operation_count
+            .increment()
+            .map_err(|e| format!("Increment failed: {:?}", e))?;
+
+        self.operation_count
+            .value()
+            .map_err(|e| format!("Get operation count failed: {:?}", e))
+    }
+
     // SET METHODS
 
     /// Insert into set
@@ -316,6 +361,34 @@ impl CollectionsBenchmark {
             .get_text()
             .map_err(|e| format!("Get text failed: {:?}", e))?;
 
+        Ok(0)
+    }
+
+    // COUNTER METHODS
+
+    /// Increment the test counter
+    /// Returns the operation count after increment
+    pub fn counter_increment(&mut self) -> Result<u64, String> {
+        self.test_counter
+            .increment()
+            .map_err(|e| format!("Increment failed: {:?}", e))?;
+
+        self.operation_count
+            .increment()
+            .map_err(|e| format!("Increment operation count failed: {:?}", e))?;
+
+        self.operation_count
+            .value()
+            .map_err(|e| format!("Get operation count failed: {:?}", e))
+    }
+
+    /// Get the current value of the test counter
+    /// Returns the operation count (always 0 for read-only operations)
+    pub fn counter_get(&self) -> Result<u64, String> {
+        let _ = self
+            .test_counter
+            .value()
+            .map_err(|e| format!("Get counter value failed: {:?}", e))?;
         Ok(0)
     }
 }
