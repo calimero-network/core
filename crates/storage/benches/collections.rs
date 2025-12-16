@@ -12,7 +12,9 @@ use std::time::Duration;
 
 // Size ranges for benchmarks
 // Reduced from [10, 100, 1_000, 10_000, 100_000] to avoid CI timeouts
-const STORAGE_BENCHMARK_SIZES: &[usize] = &[10, 100, 1_000];
+// Further reduced from [10, 100, 1_000] to [10, 100] as 1_000 size benchmarks
+// take 15-40 minutes each (e.g., deep_nested_map_insert/1000 = ~40 min, vector_pop/1000 = ~15 min)
+const STORAGE_BENCHMARK_SIZES: &[usize] = &[10, 100];
 
 // Value size variations for benchmarks (in bytes)
 const VALUE_SIZE_SMALL: usize = 10; // ~10 bytes

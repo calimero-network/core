@@ -106,7 +106,7 @@ jobs:
     storage-benchmarks:
         name: Run Storage Benchmarks
         runs-on: ubuntu-24.04-8cpu
-        timeout-minutes: 360
+        timeout-minutes: 120
 
         steps:
             - name: Checkout code
