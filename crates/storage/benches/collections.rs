@@ -34,9 +34,8 @@ fn benchmark_storage_map_insert(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut map = Root::new(|| UnorderedMap::new());
-
             b.iter(|| {
+                let mut map = Root::new(|| UnorderedMap::new());
                 for i in 0..size {
                     let key = format!("key_{}", i);
                     let value = format!("value_{}", i);
@@ -110,9 +109,9 @@ fn benchmark_storage_nested_map_insert(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut map = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
-
             b.iter(|| {
+                let mut map =
+                    Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
                 for i in 0..size {
                     let outer_key = format!("outer_{}", i);
                     let inner_key = format!("inner_{}", i);
@@ -139,11 +138,11 @@ fn benchmark_storage_deep_nested_map_insert(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut map = Root::new(|| {
-                UnorderedMap::<String, UnorderedMap<String, UnorderedMap<String, String>>>::new()
-            });
-
             b.iter(|| {
+                let mut map = Root::new(|| {
+                    UnorderedMap::<String, UnorderedMap<String, UnorderedMap<String, String>>>::new(
+                    )
+                });
                 for i in 0..size {
                     let key1 = format!("key1_{}", i);
                     let key2 = format!("key2_{}", i);
@@ -179,9 +178,8 @@ fn benchmark_storage_vector_push(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut vector = Root::new(|| Vector::new());
-
             b.iter(|| {
+                let mut vector = Root::new(|| Vector::new());
                 for i in 0..size {
                     let value = format!("value_{}", i);
                     black_box(vector.push(value).unwrap());
@@ -250,9 +248,8 @@ fn benchmark_storage_set_insert(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut set = Root::new(|| UnorderedSet::new());
-
             b.iter(|| {
+                let mut set = Root::new(|| UnorderedSet::new());
                 for i in 0..size {
                     let value = format!("value_{}", i);
                     black_box(set.insert(value).unwrap());
@@ -295,9 +292,8 @@ fn benchmark_storage_counter_increment(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut counter = Root::new(|| GCounter::new());
-
             b.iter(|| {
+                let mut counter = Root::new(|| GCounter::new());
                 for _i in 0..size {
                     black_box(counter.increment().unwrap());
                 }
@@ -337,9 +333,8 @@ fn benchmark_storage_register_set(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut register = Root::new(|| LwwRegister::new(String::new()));
-
             b.iter(|| {
+                let mut register = Root::new(|| LwwRegister::new(String::new()));
                 for i in 0..size {
                     let value = format!("value_{}", i);
                     black_box(register.set(value));
@@ -378,9 +373,8 @@ fn benchmark_storage_rga_insert(c: &mut Criterion) {
 
     for size in STORAGE_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut rga = Root::new(|| ReplicatedGrowableArray::new());
-
             b.iter(|| {
+                let mut rga = Root::new(|| ReplicatedGrowableArray::new());
                 for i in 0..size {
                     let text = format!("text_{}", i);
                     black_box(rga.insert_str(0, &text).unwrap());

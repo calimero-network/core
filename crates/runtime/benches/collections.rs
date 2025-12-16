@@ -29,10 +29,9 @@ fn benchmark_runtime_map_insert(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for i in 0..size {
                     let key = format!("key_{}", i);
                     let input = json_input("key", &key);
@@ -144,10 +143,9 @@ fn benchmark_runtime_nested_map_insert(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for i in 0..size {
                     let outer_key = format!("outer_{}", i);
                     let inner_key = format!("inner_{}", i);
@@ -184,10 +182,9 @@ fn benchmark_runtime_vector_push(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for _i in 0..size {
                     black_box(
                         module
@@ -292,10 +289,9 @@ fn benchmark_runtime_set_insert(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for i in 0..size {
                     let value = format!("value_{}", i);
                     let input = json_input("value", &value);
@@ -593,10 +589,9 @@ fn benchmark_runtime_counter_increment(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for _i in 0..size {
                     black_box(
                         module
@@ -846,10 +841,9 @@ fn benchmark_runtime_register_set(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for i in 0..size {
                     let key = format!("key_{}", i);
                     let value = format!("value_{}", i);
@@ -885,10 +879,9 @@ fn benchmark_runtime_rga_insert(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for i in 0..size {
                     let text = format!("text_{}", i);
                     let input =
@@ -925,10 +918,9 @@ fn benchmark_runtime_deep_nested_map_insert(c: &mut Criterion) {
 
     for size in RUNTIME_BENCHMARK_SIZES.iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let mut storage = InMemoryStorage::default();
-            init_app(&module, &mut storage);
-
             b.iter(|| {
+                let mut storage = InMemoryStorage::default();
+                init_app(&module, &mut storage);
                 for i in 0..size {
                     let key1 = format!("key1_{}", i);
                     let key2 = format!("key2_{}", i);
