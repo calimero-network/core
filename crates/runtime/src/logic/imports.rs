@@ -104,10 +104,13 @@ impl VMLogic<'_> {
             fn approve_proposal(approval_ptr: u64);
 
             // Context Management functions
+            fn context_create(protocol_ptr: u64, app_id_ptr: u64, args_ptr: u64, alias_ptr: u64);
+            fn context_delete(context_id_ptr: u64);
             fn context_add_member(public_key_ptr: u64);
             fn context_remove_member(public_key_ptr: u64);
             fn context_is_member(public_key_ptr: u64) -> u32;
             fn context_members(register_id: u64);
+            fn context_resolve_alias(alias_ptr: u64, register_id: u64) -> u32;
 
             fn blob_create() -> u64;
             fn blob_write(fd: u64, data_ptr: u64) -> u64;

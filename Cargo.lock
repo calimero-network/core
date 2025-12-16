@@ -18,6 +18,7 @@ name = "access-control"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "bs58 0.5.1",
  "calimero-sdk",
  "calimero-storage",
  "calimero-wasm-abi",
