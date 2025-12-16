@@ -1052,10 +1052,10 @@ fn benchmark_storage_map_insert_value_sizes(c: &mut Criterion) {
             BenchmarkId::from_parameter(size_name),
             value_size,
             |b, &value_size| {
-                let mut map = Root::new(|| UnorderedMap::new());
                 let value_template = create_value_of_size(value_size);
 
                 b.iter(|| {
+                    let mut map = Root::new(|| UnorderedMap::new());
                     for i in 0..100 {
                         let key = format!("key_{}", i);
                         let value = format!("{}_{}", value_template, i);
@@ -1085,10 +1085,10 @@ fn benchmark_storage_vector_push_value_sizes(c: &mut Criterion) {
             BenchmarkId::from_parameter(size_name),
             value_size,
             |b, &value_size| {
-                let mut vector = Root::new(|| Vector::new());
                 let value_template = create_value_of_size(value_size);
 
                 b.iter(|| {
+                    let mut vector = Root::new(|| Vector::new());
                     for i in 0..100 {
                         let value = format!("{}_{}", value_template, i);
                         black_box(vector.push(value).unwrap());
@@ -1117,10 +1117,10 @@ fn benchmark_storage_set_insert_value_sizes(c: &mut Criterion) {
             BenchmarkId::from_parameter(size_name),
             value_size,
             |b, &value_size| {
-                let mut set = Root::new(|| UnorderedSet::new());
                 let value_template = create_value_of_size(value_size);
 
                 b.iter(|| {
+                    let mut set = Root::new(|| UnorderedSet::new());
                     for i in 0..100 {
                         let value = format!("{}_{}", value_template, i);
                         black_box(set.insert(value).unwrap());
