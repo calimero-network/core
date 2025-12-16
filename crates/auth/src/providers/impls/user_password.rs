@@ -269,8 +269,16 @@ impl AuthProvider for UserPasswordProvider {
     }
 
     fn is_configured(&self) -> bool {
-        // Username/password provider is always configured (no external dependencies)
+        // Username/password provider is always technically configured (no external dependencies)
         true
+    }
+
+    async fn is_configured_with_users(&self) -> eyre::Result<bool> {
+        // For username/password, "configured" means having users
+        // Check if any root keys exist
+        use crate::storage::models::KeyType;
+        let keys = self.key_manager.list_keys(KeyType::Root).await?;
+        Ok(!keys.is_empty())
     }
 
     fn get_config_options(&self) -> serde_json::Value {
