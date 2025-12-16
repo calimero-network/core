@@ -932,14 +932,21 @@ fn benchmark_storage_rga_delete(c: &mut Criterion) {
             }
 
             b.iter(|| {
-                // Re-insert after each iteration
+                // Track length before inserting
+                let initial_len = rga.len().unwrap();
+
+                // Insert strings (each string adds multiple characters)
+                let mut total_chars_inserted = 0;
                 for i in 0..size {
                     let text = format!("text_{}", i);
+                    let text_len = text.len();
                     rga.insert_str(0, &text).unwrap();
+                    total_chars_inserted += text_len;
                 }
 
-                // Delete from end
-                for i in (0..size).rev() {
+                // Delete all characters we just inserted (from end to maintain indices)
+                let final_len = rga.len().unwrap();
+                for i in (initial_len..final_len).rev() {
                     black_box(rga.delete(i).unwrap());
                 }
             });
@@ -963,15 +970,22 @@ fn benchmark_storage_rga_delete_range(c: &mut Criterion) {
             }
 
             b.iter(|| {
-                // Re-insert after each iteration
+                // Track length before inserting
+                let initial_len = rga.len().unwrap();
+
+                // Insert strings (each string adds multiple characters)
                 for i in 0..size {
                     let text = format!("text_{}", i);
                     rga.insert_str(0, &text).unwrap();
                 }
 
-                // Delete range
-                if size > 0 {
-                    black_box(rga.delete_range(0, size / 2).unwrap());
+                // Delete all characters we just inserted using delete_range
+                // Since we insert at position 0, new content is at positions 0 to (final_len - initial_len - 1)
+                let final_len = rga.len().unwrap();
+                if final_len > initial_len {
+                    let chars_inserted = final_len - initial_len;
+                    // Delete the range containing all newly inserted characters
+                    black_box(rga.delete_range(0, chars_inserted).unwrap());
                 }
             });
         });
