@@ -59,38 +59,6 @@ cargo bench --bench collections -- map_insert
 cargo bench --bench collections -- concurrent
 ```
 
-### CSV Export
-
-Criterion automatically generates CSV files for data export:
-
-```bash
-# CSV files are located at:
-target/criterion/runtime-benchmarks/*/new/raw.csv
-target/criterion/runtime-benchmarks/*/baseline/raw.csv  # If baseline exists
-```
-
-**CSV Format:**
-
-- One row per sample
-- Columns: iteration, measured_time_ns, etc.
-- Can be imported into Excel, Python pandas, R, etc.
-
-### JSON Export (for CI/CD)
-
-To export results as JSON for CI/CD pipelines:
-
-```bash
-# Run with JSON output
-cargo bench --bench collections -- --output-format json > results.json
-```
-
-Or use Criterion's built-in export:
-
-```bash
-# Export specific benchmark
-cargo bench --bench collections -- map_insert -- --export-format json
-```
-
 ### Comparing Baselines
 
 Save a baseline for comparison:
@@ -144,24 +112,7 @@ The HTML reports will show:
 - `runtime_nested_map_insert_concurrent` - Concurrent nested map inserts (2, 4, 8 threads)
 - `runtime_deep_nested_map_insert_concurrent` - Concurrent deep nested map inserts (2, 4, 8 threads)
 
-## Understanding Results
 
-Criterion.rs provides:
-
-- **Time per operation**: ns/µs/ms
-- **Throughput**: ops/sec
-- **Statistical analysis**: mean, median, p90, p99
-- **Outlier detection**: Automatic detection and reporting
-
-### Example Output
-
-```
-runtime_map_insert/10     time:   [1.234 ms 1.256 ms 1.280 ms]
-                        thrpt:  [7.8125 Kelem/s 7.9618 Kelem/s 8.1030 Kelem/s]
-Found 2 outliers among 100 measurements (2.00%)
-  1 (1.00%) high mild
-  1 (1.00%) high severe
-```
 
 ## Comparing Results
 
@@ -184,7 +135,7 @@ This will show performance changes compared to the saved baseline.
 All benchmarks test multiple size ranges:
 
 - **Runtime Benchmarks**: `[10, 100, 1_000]` elements
-- Defined as `RUNTIME_BENCHMARK_SIZES` constant for easy modification
+
 
 ## Notes
 
@@ -194,26 +145,5 @@ All benchmarks test multiple size ranges:
 - **Context**: Uses default context ID and executor for all benchmarks
 - **Reports**: HTML reports are generated automatically (no additional setup needed)
 - **Baselines**: Save baselines to track performance changes over time
-- **Sample Size**: Increased to 20 samples for better statistical confidence
-- **Missing Operations**: Some operations (e.g., `map_remove`, `vector_pop`) may not exist in the WASM module and will fail if not implemented
 
-## Troubleshooting
-
-### WASM File Not Found
-
-If you see:
-
-```
-WASM file not found at ../../apps/collections-benchmark-rust/res/collections_benchmark_rust.wasm
-```
-
-Build the WASM module first (see Prerequisites).
-
-### Compilation Errors
-
-If benchmarks fail to compile:
-
-1. Ensure Criterion.rs is in `dev-dependencies`
-2. Check that all required crates are available
-3. Verify the WASM file path is correct
 

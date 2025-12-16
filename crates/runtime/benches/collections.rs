@@ -13,7 +13,8 @@ mod common;
 use common::*;
 
 // Size ranges for benchmarks
-const RUNTIME_BENCHMARK_SIZES: &[usize] = &[10, 100, 1_000];
+// Reduced from [10, 100, 1_000] to avoid CI timeouts
+const RUNTIME_BENCHMARK_SIZES: &[usize] = &[10, 100];
 
 // Single-Threaded Benchmarks
 

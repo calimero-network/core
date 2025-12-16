@@ -2,7 +2,6 @@
 //!
 //! These benchmarks measure pure CRDT collection performance without WASM or runtime overhead.
 
-use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::{
     crdt_meta::Mergeable, GCounter, LwwRegister, ReplicatedGrowableArray, Root, UnorderedMap,
     UnorderedSet, Vector,
@@ -12,7 +11,8 @@ use std::path::Path;
 use std::time::Duration;
 
 // Size ranges for benchmarks
-const STORAGE_BENCHMARK_SIZES: &[usize] = &[10, 100, 1_000, 10_000, 100_000];
+// Reduced from [10, 100, 1_000, 10_000, 100_000] to avoid CI timeouts
+const STORAGE_BENCHMARK_SIZES: &[usize] = &[10, 100, 1_000];
 
 // Value size variations for benchmarks (in bytes)
 const VALUE_SIZE_SMALL: usize = 10; // ~10 bytes
