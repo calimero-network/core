@@ -64,6 +64,21 @@ pub enum InvalidAlias {
 }
 
 impl<T> Alias<T> {
+    /// Creates a new Alias from a string slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the string exceeds `MAX_ALIAS_LEN`.
+    #[must_use]
+    pub fn new(s: &str) -> Self {
+        s.parse().expect("alias too long")
+    }
+
+    /// Creates a new Alias from a string slice.
+    pub fn try_from_str(s: &str) -> Result<Self, InvalidAlias> {
+        s.parse()
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         let bytes = &self.str[..self.len as usize];

@@ -13,8 +13,9 @@ crate-type = ["cdylib"]
 [dependencies]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
-borsh = "1.0"
-hex = "0.4"
+borsh.workspace = true
+bs58.workspace = true
+hex.workspace = true
 
 [build-dependencies]
 calimero-wasm-abi.workspace = true
