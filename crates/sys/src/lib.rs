@@ -47,10 +47,19 @@ wasm_imports! {
         fn approve_proposal(value: Ref<Buffer<'_>>);
         // --
         // Context Management functions
-        fn context_add_member(public_key: Ref<Buffer<'_>>);
-        fn context_remove_member(public_key: Ref<Buffer<'_>>);
-        fn context_is_member(public_key: Ref<Buffer<'_>>) -> Bool;
+        fn context_create(
+            protocol_ptr: Ref<Buffer<'_>>,
+            app_id_ptr: Ref<Buffer<'_>>,
+            args_ptr: Ref<Buffer<'_>>,
+            alias: Ref<Buffer<'_>>
+        );
+        fn context_delete(context_id_ptr: Ref<Buffer<'_>>);
+        fn context_add_member(public_key_ptr: Ref<Buffer<'_>>);
+        fn context_remove_member(public_key_ptr: Ref<Buffer<'_>>);
+        fn context_is_member(public_key_ptr: Ref<Buffer<'_>>) -> Bool;
         fn context_members(register_id: RegisterId);
+        // Check if alias resolves to a context ID
+        fn context_resolve_alias(alias: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // --
         // Streaming blob functions
         fn blob_create() -> PtrSizedInt;
