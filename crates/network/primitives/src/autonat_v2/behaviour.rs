@@ -10,7 +10,7 @@ use libp2p::swarm::{
 };
 use libp2p::{Multiaddr, PeerId};
 
-use crate::autonat::{Behaviour, ConnectionInfo, ConnectionRole, Event, TestResult};
+use super::{Behaviour, ConnectionInfo, ConnectionRole, Event, TestResult};
 
 impl NetworkBehaviour for Behaviour {
     type ConnectionHandler = Either<

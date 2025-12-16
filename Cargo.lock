@@ -2097,15 +2097,18 @@ dependencies = [
  "bytes",
  "calimero-primitives",
  "calimero-utils-actix",
+ "either",
  "eyre",
  "futures-util",
  "libp2p",
  "multiaddr",
+ "rand 0.8.5",
  "serde",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

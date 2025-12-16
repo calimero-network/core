@@ -13,14 +13,17 @@ actix.workspace = true
 async-trait.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 bytes.workspace = true
+either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
-libp2p = { workspace = true, features = ["gossipsub", "rendezvous", "request-response"] }
+libp2p = { workspace = true, features = ["autonat", "gossipsub", "rendezvous", "request-response"] }
 multiaddr.workspace = true
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
+tracing.workspace = true
 
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-utils-actix.workspace = true
