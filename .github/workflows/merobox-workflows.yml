@@ -183,6 +183,16 @@ jobs:
               if: steps.run_workflows.outputs.has_failures == 'true'
               run: exit 1
 
+            - name: Collect Docker Logs
+              if: always()
+              run: |
+                  mkdir -p docker-logs
+                  for container in $(docker ps -a --filter "name=calimero" --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
+                      fi
+                  done
+
             - name: Upload Workflow Data Artifacts
               if: ${{ !cancelled() }}
               uses: actions/upload-artifact@v4
@@ -194,6 +204,15 @@ jobs:
                       apps/*/res/*.mpk
                       apps/*/res/state-schema.json
                       apps/*/data/
+                  retention-days: 7
+                  if-no-files-found: warn
+
+            - name: Upload Docker Logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: merobox-workflows-docker-logs-${{ github.sha }}
+                  path: docker-logs/
                   retention-days: 7
                   if-no-files-found: warn
 
