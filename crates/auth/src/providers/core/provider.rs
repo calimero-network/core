@@ -27,7 +27,22 @@ pub trait AuthProvider: Send + Sync {
     fn supports_method(&self, method: &str) -> bool;
 
     /// Check if the provider is properly configured and ready to use
+    ///
+    /// This checks if the provider is technically configured (e.g., RPC URL set,
+    /// external dependencies available). This does NOT check if users exist.
     fn is_configured(&self) -> bool;
+
+    /// Check if the provider is configured with users/keys
+    ///
+    /// This method determines what "configured" means for the providers API endpoint.
+    /// Each provider can implement its own logic:
+    /// - Username/password: configured = has users (always technically configured)
+    /// - NEAR wallet: configured = is_configured() && has users
+    /// - Other providers: their own logic
+    ///
+    /// Default implementation returns `is_configured()` - providers should override
+    /// this to implement provider-specific logic.
+    async fn is_configured_with_users(&self) -> eyre::Result<bool>;
 
     /// Get provider-specific configuration options
     fn get_config_options(&self) -> serde_json::Value;
