@@ -277,15 +277,10 @@ impl AuthProvider for UserPasswordProvider {
         // For username/password, "configured" means having users
         // Check if any root keys exist for this provider (auth_method = "user_password" or "username_password")
         use crate::storage::models::KeyType;
-        let keys = self.key_manager.list_keys(KeyType::Root).await?;
-        // Check if any keys have the user_password auth method
-        let has_user_password_keys = keys.iter().any(|(_, key)| {
-            key.auth_method
-                .as_ref()
-                .map(|m| m == "user_password" || m == "username_password")
-                .unwrap_or(false)
-        });
-        Ok(has_user_password_keys)
+        self.key_manager
+            .has_any_key(KeyType::Root, Some(&["user_password", "username_password"]))
+            .await
+            .map_err(|e| eyre::eyre!("Failed to check for user/password keys: {}", e))
     }
 
     fn get_config_options(&self) -> serde_json::Value {

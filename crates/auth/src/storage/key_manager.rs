@@ -189,6 +189,73 @@ impl KeyManager {
         }
     }
 
+    /// Check if any keys exist of a specific type, optionally filtered by auth_method
+    ///
+    /// This method is more efficient than `list_keys()` as it returns early
+    /// once a matching key is found, avoiding loading all keys into memory.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_type` - The type of keys to check (Root or Client)
+    /// * `auth_methods` - Optional slice of auth methods to filter by.
+    ///   If `None`, checks for any key regardless of auth_method.
+    ///   If `Some(&[])`, checks for keys with no auth_method.
+    ///   If `Some(&["method1", "method2"])`, checks for keys matching any of these methods.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<bool, StorageError>` - `true` if any matching key exists, `false` otherwise
+    pub async fn has_any_key(
+        &self,
+        key_type: KeyType,
+        auth_methods: Option<&[&str]>,
+    ) -> Result<bool, StorageError> {
+        let prefix = match key_type {
+            KeyType::Root => prefixes::ROOT_KEY,
+            KeyType::Client => prefixes::CLIENT_KEY,
+        };
+
+        let keys = self.storage.list_keys(prefix).await?;
+
+        // If no keys exist at all, return false early
+        if keys.is_empty() {
+            return Ok(false);
+        }
+
+        // If no auth_method filter, any key counts as a match
+        if auth_methods.is_none() {
+            return Ok(true);
+        }
+
+        let auth_methods = auth_methods.unwrap();
+
+        // Iterate through keys, deserializing one at a time until we find a match
+        for key_path in keys {
+            if let Some(data) = self.storage.get(&key_path).await? {
+                let key_data: Key = deserialize(&data)?;
+
+                // Check if this key matches the auth_method filter
+                let matches = if auth_methods.is_empty() {
+                    // Empty slice means we want keys with no auth_method
+                    key_data.auth_method.is_none()
+                } else {
+                    // Check if key's auth_method matches any of the provided methods
+                    key_data
+                        .auth_method
+                        .as_ref()
+                        .map(|m| auth_methods.contains(&m.as_str()))
+                        .unwrap_or(false)
+                };
+
+                if matches {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     /// List all keys of a specific type
     pub async fn list_keys(&self, key_type: KeyType) -> Result<Vec<(String, Key)>, StorageError> {
         let prefix = match key_type {

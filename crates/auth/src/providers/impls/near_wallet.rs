@@ -546,17 +546,12 @@ impl AuthProvider for NearWalletProvider {
             return Ok(false);
         }
 
-        // Check if any root keys exist for this provider (auth_method = "near_wallet")
+        // Check if any root keys exist for this provider (auth_method = "near_wallet" or "near")
         use crate::storage::models::KeyType;
-        let keys = self.key_manager.list_keys(KeyType::Root).await?;
-        // Check if any keys have the near_wallet auth method
-        let has_near_keys = keys.iter().any(|(_, key)| {
-            key.auth_method
-                .as_ref()
-                .map(|m| m == "near_wallet" || m == "near")
-                .unwrap_or(false)
-        });
-        Ok(has_near_keys)
+        self.key_manager
+            .has_any_key(KeyType::Root, Some(&["near_wallet", "near"]))
+            .await
+            .map_err(|e| eyre::eyre!("Failed to check for NEAR wallet keys: {}", e))
     }
 
     fn get_config_options(&self) -> serde_json::Value {
