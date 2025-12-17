@@ -183,11 +183,17 @@ jobs:
               if: always()
               run: |
                   mkdir -p docker-logs
-                  for container in $(docker ps -a --filter "name=calimero" --format "{{.Names}}" 2>/dev/null || true); do
+                  echo "Collecting Docker logs for SDK JS test nodes..."
+                  # Collect logs from all containers with calimero.node=true label
+                  # merobox sets this label on all node containers, so this covers all nodes regardless of name
+                  for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
                       if [ -n "$container" ]; then
+                          echo "Collecting logs from container: $container"
                           docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
                       fi
                   done
+                  echo "Collected logs:"
+                  ls -la docker-logs/ || echo "No logs collected"
 
             - name: Upload Workflow Data Artifacts
               if: ${{ !cancelled() }}
