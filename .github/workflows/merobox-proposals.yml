@@ -34,8 +34,23 @@ env:
   CALIMERO_CONTRACTS_VERSION: latest
 
 jobs:
-  build:
-    name: Build Binaries & Download Contracts
+  determine-image-tag:
+    name: Determine Docker Image Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.image-tag.outputs.tag }}
+    steps:
+      - name: Determine Docker image tag
+        id: image-tag
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+              echo "tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+          else
+              echo "tag=edge" >> $GITHUB_OUTPUT
+          fi
+
+  download-contracts:
+    name: Download Contracts
     runs-on: ubuntu-24.04-8cpu
     outputs:
       cache-key: ${{ steps.cache-key.outputs.key }}
@@ -43,57 +58,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Generate cache key
         id: cache-key
-        run: echo "key=${{ runner.os }}-proposals-${{ github.sha }}" >> $GITHUB_OUTPUT
-
-      - name: Build merod binary
-        run: cargo build --bin merod
+        run: echo "key=${{ runner.os }}-proposals-contracts-${{ github.sha }}" >> $GITHUB_OUTPUT
 
       - name: Download Contracts
-        run: |
-          echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
-          ./scripts/download-contracts.sh
+        run: ./scripts/download-contracts.sh
 
-      - name: Cache build artifacts
+      - name: Cache contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
           key: ${{ steps.cache-key.outputs.key }}
 
   near:
     name: Test NEAR Proposals
-    needs: build
+    needs: [determine-image-tag, download-contracts]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
+      - name: Restore contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
-          key: ${{ needs.build.outputs.cache-key }}
+          key: ${{ needs.download-contracts.outputs.cache-key }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -117,27 +109,25 @@ jobs:
           cd workflows/proposals
           merobox bootstrap run \
               near-proposals.yml \
-              --no-docker \
-              --binary-path ../../target/debug/merod \
+              --image ghcr.io/calimero-network/merod:${{ needs.determine-image-tag.outputs.tag }} \
               --e2e-mode \
               --near-devnet \
               --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
 
   icp:
     name: Test ICP Proposals
-    needs: build
+    needs: [determine-image-tag, download-contracts]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
+      - name: Restore contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
-          key: ${{ needs.build.outputs.cache-key }}
+          key: ${{ needs.download-contracts.outputs.cache-key }}
 
       - name: Install DFX for ICP
         uses: dfinity/setup-dfx@main
@@ -168,25 +158,23 @@ jobs:
           cd workflows/proposals
           merobox bootstrap run \
               icp-proposals.yml \
-              --no-docker \
-              --binary-path ../../target/debug/merod \
+              --image ghcr.io/calimero-network/merod:${{ needs.determine-image-tag.outputs.tag }} \
               --e2e-mode
 
   ethereum:
     name: Test Ethereum Proposals
-    needs: build
+    needs: [determine-image-tag, download-contracts]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
+      - name: Restore contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
-          key: ${{ needs.build.outputs.cache-key }}
+          key: ${{ needs.download-contracts.outputs.cache-key }}
 
       - name: Install Foundry for Ethereum
         uses: foundry-rs/foundry-toolchain@v1
@@ -217,43 +205,37 @@ jobs:
           cd workflows/proposals
           merobox bootstrap run \
               ethereum-proposals.yml \
-              --no-docker \
-              --binary-path ../../target/debug/merod \
+              --image ghcr.io/calimero-network/merod:${{ needs.determine-image-tag.outputs.tag }} \
               --e2e-mode
 
   comment:
     name: Report Failed Workflows
     needs: [near, icp, ethereum]
     runs-on: ubuntu-latest
-    if: always() && github.event_name == 'pull_request'
+    if: always() && github.event_name == 'pull_request' && needs.near.result != 'skipped' && needs.icp.result != 'skipped' && needs.ethereum.result != 'skipped'
     steps:
       - name: Check workflow results
         id: check
         run: |
           failed_workflows=()
 
-          if [ "${{ needs.near.result }}" != "success" ]; then
+          if [ "${{ needs.near.result }}" == "failure" ]; then
             failed_workflows+=("near")
           fi
 
-          if [ "${{ needs.icp.result }}" != "success" ]; then
+          if [ "${{ needs.icp.result }}" == "failure" ]; then
             failed_workflows+=("icp")
           fi
 
-          if [ "${{ needs.ethereum.result }}" != "success" ]; then
+          if [ "${{ needs.ethereum.result }}" == "failure" ]; then
             failed_workflows+=("ethereum")
           fi
 
           if [ ${#failed_workflows[@]} -gt 0 ]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
             printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
-            echo "The following workflows failed:"
-            for failed in "${failed_workflows[@]}"; do
-              echo "  - $failed"
-            done
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
-            echo "All workflows completed successfully!"
           fi
 
       - name: Upload Failed Workflows

@@ -30,8 +30,8 @@ env:
     CALIMERO_CONTRACTS_VERSION: "latest"
 
 jobs:
-    build:
-        name: Build Binaries & Apps
+    build-apps:
+        name: Build Apps
         runs-on: ubuntu-24.04-8cpu
         outputs:
             cache-key: ${{ steps.cache-key.outputs.key }}
@@ -59,9 +59,6 @@ jobs:
               id: cache-key
               run: echo "key=${{ runner.os }}-build-${{ github.sha }}" >> $GITHUB_OUTPUT
 
-            - name: Build merod binary
-              run: cargo build --bin merod
-
             - name: Build all apps
               run: ./scripts/build-all-apps.sh
 
@@ -69,7 +66,6 @@ jobs:
               uses: actions/cache@v4
               with:
                   path: |
-                      target/debug/merod
                       target/app-release
                       apps/*/res/*.wasm
                       apps/*/res/*.mpk
@@ -77,7 +73,7 @@ jobs:
 
     test:
         name: Run All Merobox Workflows
-        needs: build
+        needs: build-apps
         runs-on: ubuntu-24.04-8cpu
         steps:
             - name: Checkout code
@@ -87,11 +83,19 @@ jobs:
               uses: actions/cache@v4
               with:
                   path: |
-                      target/debug/merod
                       target/app-release
                       apps/*/res/*.wasm
                       apps/*/res/*.mpk
-                  key: ${{ needs.build.outputs.cache-key }}
+                  key: ${{ needs.build-apps.outputs.cache-key }}
+
+            - name: Determine Docker image tag
+              id: image-tag
+              run: |
+                  if [ "${{ github.event_name }}" == "pull_request" ]; then
+                      echo "tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+                  else
+                      echo "tag=edge" >> $GITHUB_OUTPUT
+                  fi
 
             - name: Set up Python 3.11
               uses: actions/setup-python@v5
@@ -111,9 +115,7 @@ jobs:
                   merobox --version
 
             - name: Download Contracts
-              run: |
-                  echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
-                  ./scripts/download-contracts.sh
+              run: ./scripts/download-contracts.sh
 
             - name: Run All Workflows
               id: run_workflows
@@ -124,18 +126,13 @@ jobs:
                       if [ -f "$workflow" ]; then
                           app_dir=$(dirname "$(dirname "$workflow")")
                           workflow_file=$(basename "$workflow")
-                          echo "Running workflow: $workflow (from app directory: $app_dir)"               
-                          # Retry logic: attempt up to 2 times on failure
                           max_attempts=2
                           attempt=1
                           success=false
                           
                           while [ $attempt -le $max_attempts ]; do
                               if [ $attempt -gt 1 ]; then
-                                  echo "Retry attempt $attempt for $workflow"
-                                  # Clean up any leftover data from previous attempt
                                   merobox nuke --force || true
-                                  # Wait before retry to allow system to settle
                                   sleep 2
                               fi
                               
@@ -143,17 +140,14 @@ jobs:
                                   cd "$app_dir"
                                   merobox bootstrap run \
                                       "workflows/$workflow_file" \
-                                      --no-docker \
-                                      --binary-path ../../target/debug/merod \
+                                      --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
                                       --e2e-mode \
                                       --near-devnet \
                                       --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
                               ); then
-                                  echo "Workflow $workflow completed successfully"
                                   success=true
                                   break
                               else
-                                  echo "Workflow $workflow failed on attempt $attempt"
                                   attempt=$((attempt + 1))
                               fi
                           done
@@ -165,17 +159,11 @@ jobs:
                       fi
                   done
 
-                  # Save failed workflows to file for comment job
                   if [ ${#failed_workflows[@]} -gt 0 ]; then
                       echo "has_failures=true" >> $GITHUB_OUTPUT
                       printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
-                      echo "The following workflows failed after retries:"
-                      for failed in "${failed_workflows[@]}"; do
-                          echo "  - $failed"
-                      done
                   else
                       echo "has_failures=false" >> $GITHUB_OUTPUT
-                      echo "All workflows completed successfully!"
                   fi
 
             - name: Upload Failed Workflows
