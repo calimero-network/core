@@ -2,7 +2,6 @@ name: Blob API Example Workflow
 description: Test the Blob API
 # Test configuration
 result_dir: results/download-blobs
-no_docker: true
 force_pull_image: true
 
 # Node configuration
