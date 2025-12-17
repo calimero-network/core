@@ -14,76 +14,76 @@ HEAD_BRANCH="$5"
 GH_TOKEN="$6"
 
 if [ "$EVENT_NAME" == "pull_request" ]; then
-    # Check if PR image exists, waiting for release workflow if needed
-    # PR images are always under calimero-network (only built for non-fork PRs)
-    PR_TAG="pr-${PR_NUMBER}"
-    IMAGE_URL="https://ghcr.io/v2/calimero-network/merod/manifests/${PR_TAG}"
-    MAX_WAIT=600
-    WAIT_INTERVAL=10
-    ELAPSED=0
-    IMAGE_EXISTS="false"
-    WORKFLOW_COMPLETED="false"
+    echo "Checking if Rust crates changed in PR..."
     
-    echo "Checking for PR image: ${IMAGE_URL}"
+    CHANGED_FILES=$(gh api repos/${REPO}/pulls/${PR_NUMBER}/files --jq '.[].filename' 2>/dev/null || echo "")
+    CRATES_CHANGED=$(echo "$CHANGED_FILES" | \
+        grep -E '^(Cargo\.toml|Cargo\.lock|crates/|\.github/workflows/release\.yml)' || true)
     
-    while [ $ELAPSED -lt $MAX_WAIT ]; do
-        # Check if image exists using GHCR API
-        # GHCR uses Bearer authentication with GitHub tokens
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            "${IMAGE_URL}" 2>/dev/null || echo "404")
+    if [ -n "$CRATES_CHANGED" ]; then
+        echo "Rust crates changed - release workflow will build/rebuild pr-${PR_NUMBER} image"
+        echo "Waiting for release workflow to complete..."
         
-        if [ "$HTTP_CODE" = "200" ]; then
-            IMAGE_EXISTS="true"
-            echo "Found PR image after ${ELAPSED} seconds"
-            break
-        fi
+        MAX_WAIT=1200
+        WAIT_INTERVAL=10
+        ELAPSED=0
         
-        # Check release workflow status
-        RUNS=$(gh api repos/${REPO}/actions/workflows/release.yml/runs?head_branch=${HEAD_BRANCH} --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
-        STATUS=$(echo "$RUNS" | jq -r '.status // "unknown"')
-        CONCLUSION=$(echo "$RUNS" | jq -r '.conclusion // "unknown"')
-        
-        if [ "$STATUS" = "completed" ]; then
-            WORKFLOW_COMPLETED="true"
-            echo "Release workflow completed with conclusion: ${CONCLUSION}"
-            # Don't break immediately - do one more image check first
-            sleep 2
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-                "${IMAGE_URL}" 2>/dev/null || echo "404")
-            if [ "$HTTP_CODE" = "200" ]; then
-                IMAGE_EXISTS="true"
-                echo "Found PR image after workflow completed"
+        while [ $ELAPSED -lt $MAX_WAIT ]; do
+            RUNS=$(gh api repos/${REPO}/actions/workflows/release.yml/runs?head_branch=${HEAD_BRANCH} --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
+            STATUS=$(echo "$RUNS" | jq -r '.status // "unknown"')
+            CONCLUSION=$(echo "$RUNS" | jq -r '.conclusion // "unknown"')
+            
+            if [ "$STATUS" = "completed" ]; then
+                if [ "$CONCLUSION" = "success" ]; then
+                    echo "Release workflow completed successfully after ${ELAPSED} seconds"
+                    TAG="pr-${PR_NUMBER}"
+                else
+                    echo "Release workflow completed with conclusion: ${CONCLUSION}"
+                    echo "Using edge tag as fallback"
+                    TAG="edge"
+                fi
+                break
             fi
-            break
+            
+            if [ "$STATUS" = "queued" ] || [ "$STATUS" = "in_progress" ]; then
+                echo "Release workflow ${STATUS}... waiting (${ELAPSED}s/${MAX_WAIT}s)"
+            elif [ "$STATUS" = "unknown" ]; then
+                echo "Release workflow not found yet... waiting (${ELAPSED}s/${MAX_WAIT}s)"
+            else
+                echo "Release workflow status: ${STATUS}... waiting (${ELAPSED}s/${MAX_WAIT}s)"
+            fi
+            
+            sleep $WAIT_INTERVAL
+            ELAPSED=$((ELAPSED + WAIT_INTERVAL))
+        done
+        
+        if [ $ELAPSED -ge $MAX_WAIT ]; then
+            echo "Timeout waiting for release workflow (waited ${MAX_WAIT}s)"
+            echo "Using pr-${PR_NUMBER} tag (workflow may complete later)"
+            TAG="pr-${PR_NUMBER}"
+        fi
+    else
+        echo "No Rust crates changed in this commit"
+        echo "Checking if pr-${PR_NUMBER} image exists (from previous commits)..."
+        
+        PR_TAG="pr-${PR_NUMBER}"
+        IMAGE_EXISTS="false"
+        
+        if command -v docker >/dev/null 2>&1; then
+            echo "${GH_TOKEN}" | docker login ghcr.io -u "${REPO_OWNER}" --password-stdin >/dev/null 2>&1
+            if docker manifest inspect "ghcr.io/calimero-network/merod:${PR_TAG}" >/dev/null 2>&1; then
+                IMAGE_EXISTS="true"
+                echo "Image pr-${PR_NUMBER} exists - using it"
+                TAG="pr-${PR_NUMBER}"
+            else
+                echo "Image pr-${PR_NUMBER} not found"
+            fi
         fi
         
-        sleep $WAIT_INTERVAL
-        ELAPSED=$((ELAPSED + WAIT_INTERVAL))
-    done
-    
-    # Final check if we didn't find it during the wait loop
-    if [ "$IMAGE_EXISTS" = "false" ]; then
-        echo "Final check for PR image..."
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            "${IMAGE_URL}" 2>/dev/null || echo "404")
-        if [ "$HTTP_CODE" = "200" ]; then
-            IMAGE_EXISTS="true"
-            echo "Found PR image in final check"
-        else
-            echo "PR image not found (HTTP ${HTTP_CODE})"
+        if [ "$IMAGE_EXISTS" != "true" ]; then
+            echo "Using edge tag"
+            TAG="edge"
         fi
-    fi
-    
-    if [ "$IMAGE_EXISTS" = "true" ]; then
-        TAG="pr-$PR_NUMBER"
-    else
-        TAG="edge"
     fi
 else
     TAG="edge"
