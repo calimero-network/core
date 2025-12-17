@@ -1,9 +1,6 @@
 name: "Proposals - ICP"
 description: "Test proposal functionality on ICP protocol"
 
-# Test configuration
-no_docker: true
-
 nodes:
   chain_id: calimero-testnet
   count: 2

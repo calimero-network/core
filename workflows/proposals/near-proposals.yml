@@ -1,9 +1,6 @@
 name: "Proposals - NEAR"
 description: "Test proposal functionality on NEAR protocol"
 
-# Test configuration
-no_docker: true
-
 nodes:
   chain_id: calimero-testnet
   count: 2

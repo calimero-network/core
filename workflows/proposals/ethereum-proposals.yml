@@ -1,9 +1,6 @@
 name: "Proposals - Ethereum"
 description: "Test proposal functionality on Ethereum protocol"
 
-# Test configuration
-no_docker: true
-
 nodes:
   chain_id: calimero-testnet
   count: 2

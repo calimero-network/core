@@ -194,6 +194,7 @@ jobs:
                               fi
                           done
                           merobox nuke --force || true
+                          merobox stop --all || true
                           if [ "$success" = false ]; then
                               failed_workflows+=("$workflow")
                           fi
