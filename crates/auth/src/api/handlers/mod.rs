@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rust_embed::RustEmbed;
 use serde_json::json;
+use tracing;
 
 use crate::api::handlers::auth::success_response;
 use crate::server::AppState;
@@ -103,21 +104,31 @@ pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoRespons
 ///
 /// * `impl IntoResponse` - The response
 pub async fn providers_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
-    let providers = state
-        .0
-        .auth_service
-        .providers()
-        .iter()
-        .map(|provider| {
-            json!({
-                "name": provider.name(),
-                "type": provider.provider_type(),
-                "description": provider.description(),
-                "configured": provider.is_configured(),
-                "config": provider.get_config_options(),
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut providers = Vec::new();
+
+    // Check each provider's configuration status
+    // Each provider implements its own logic for what "configured" means
+    for provider in state.0.auth_service.providers() {
+        let is_configured = match provider.is_configured_with_users().await {
+            Ok(configured) => configured,
+            Err(e) => {
+                tracing::error!(
+                    provider = provider.name(),
+                    error = %e,
+                    "Failed to check if provider is configured with users, falling back to is_configured()"
+                );
+                provider.is_configured()
+            }
+        };
+
+        providers.push(json!({
+            "name": provider.name(),
+            "type": provider.provider_type(),
+            "description": provider.description(),
+            "configured": is_configured,
+            "config": provider.get_config_options(),
+        }));
+    }
 
     let response = json!({
         "providers": providers,
