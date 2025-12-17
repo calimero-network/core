@@ -22,18 +22,42 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
     WAIT_INTERVAL=10
     ELAPSED=0
     IMAGE_EXISTS="false"
+    WORKFLOW_COMPLETED="false"
+    
+    echo "Checking for PR image: ${IMAGE_URL}"
     
     while [ $ELAPSED -lt $MAX_WAIT ]; do
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${GH_TOKEN}" "${IMAGE_URL}" 2>/dev/null || echo "404")
+        # Check if image exists using GHCR API
+        # GHCR uses Bearer authentication with GitHub tokens
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "${IMAGE_URL}" 2>/dev/null || echo "404")
+        
         if [ "$HTTP_CODE" = "200" ]; then
             IMAGE_EXISTS="true"
+            echo "Found PR image after ${ELAPSED} seconds"
             break
         fi
         
+        # Check release workflow status
         RUNS=$(gh api repos/${REPO}/actions/workflows/release.yml/runs?head_branch=${HEAD_BRANCH} --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
         STATUS=$(echo "$RUNS" | jq -r '.status // "unknown"')
+        CONCLUSION=$(echo "$RUNS" | jq -r '.conclusion // "unknown"')
         
         if [ "$STATUS" = "completed" ]; then
+            WORKFLOW_COMPLETED="true"
+            echo "Release workflow completed with conclusion: ${CONCLUSION}"
+            # Don't break immediately - do one more image check first
+            sleep 2
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                "${IMAGE_URL}" 2>/dev/null || echo "404")
+            if [ "$HTTP_CODE" = "200" ]; then
+                IMAGE_EXISTS="true"
+                echo "Found PR image after workflow completed"
+            fi
             break
         fi
         
@@ -43,9 +67,16 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
     
     # Final check if we didn't find it during the wait loop
     if [ "$IMAGE_EXISTS" = "false" ]; then
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${GH_TOKEN}" "${IMAGE_URL}" 2>/dev/null || echo "404")
+        echo "Final check for PR image..."
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "${IMAGE_URL}" 2>/dev/null || echo "404")
         if [ "$HTTP_CODE" = "200" ]; then
             IMAGE_EXISTS="true"
+            echo "Found PR image in final check"
+        else
+            echo "PR image not found (HTTP ${HTTP_CODE})"
         fi
     fi
     
