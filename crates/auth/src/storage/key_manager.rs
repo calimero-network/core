@@ -222,29 +222,34 @@ impl KeyManager {
             return Ok(false);
         }
 
-        // If no auth_method filter, any key counts as a match
-        if auth_methods.is_none() {
-            return Ok(true);
-        }
-
-        let auth_methods = auth_methods.unwrap();
+        let auth_methods = auth_methods;
 
         // Iterate through keys, deserializing one at a time until we find a match
         for key_path in keys {
             if let Some(data) = self.storage.get(&key_path).await? {
                 let key_data: Key = deserialize(&data)?;
 
-                // Check if this key matches the auth_method filter
-                let matches = if auth_methods.is_empty() {
-                    // Empty slice means we want keys with no auth_method
-                    key_data.auth_method.is_none()
+                // Skip revoked/invalid keys (consistent with get_key() behavior)
+                if !key_data.is_valid() {
+                    continue;
+                }
+
+                // If no auth_method filter, any valid key counts as a match
+                let matches = if let Some(auth_methods) = auth_methods {
+                    if auth_methods.is_empty() {
+                        // Empty slice means we want keys with no auth_method
+                        key_data.auth_method.is_none()
+                    } else {
+                        // Check if key's auth_method matches any of the provided methods
+                        key_data
+                            .auth_method
+                            .as_ref()
+                            .map(|m| auth_methods.contains(&m.as_str()))
+                            .unwrap_or(false)
+                    }
                 } else {
-                    // Check if key's auth_method matches any of the provided methods
-                    key_data
-                        .auth_method
-                        .as_ref()
-                        .map(|m| auth_methods.contains(&m.as_str()))
-                        .unwrap_or(false)
+                    // No filter means any valid key matches
+                    true
                 };
 
                 if matches {
