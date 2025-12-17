@@ -14,8 +14,22 @@ pub fn default_node_dir() -> Utf8PathBuf {
     Utf8PathBuf::default()
 }
 
+fn get_docker_host_url(port: u16) -> String {
+    // Check if we're in Docker
+    if !std::path::Path::new("/.dockerenv").exists() {
+        return format!("http://localhost:{}", port);
+    }
+
+    // Use host.docker.internal (works on Mac/Windows Docker Desktop)
+    // On Linux, fall back to default Docker bridge gateway
+    if cfg!(target_os = "linux") {
+        format!("http://172.17.0.1:{}", port)
+    } else {
+        format!("http://host.docker.internal:{}", port)
+    }
+}
+
 pub fn default_relayer_url() -> Url {
-    DEFAULT_RELAYER_URL
-        .parse()
-        .expect("invalid default relayer URL")
+    let url = get_docker_host_url(63529);
+    url.parse().expect("invalid default relayer URL")
 }
