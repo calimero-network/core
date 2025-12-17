@@ -539,7 +539,7 @@ where
     pub async fn sync_context(&self, context_id: &ContextId) -> Result<SyncContextResponse> {
         let response = self
             .connection
-            .post_no_body(&format!("admin-api/contexts/{context_id}/sync"))
+            .post_no_body(&format!("admin-api/contexts/sync/{context_id}"))
             .await?;
         Ok(response)
     }

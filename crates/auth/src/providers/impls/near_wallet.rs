@@ -536,7 +536,22 @@ impl AuthProvider for NearWalletProvider {
     }
 
     fn is_configured(&self) -> bool {
+        // NEAR wallet is configured if RPC URL is set
         !self.config.rpc_url.is_empty()
+    }
+
+    async fn is_configured_with_users(&self) -> eyre::Result<bool> {
+        // For NEAR wallet, "configured" means both technically configured AND has users
+        if !self.is_configured() {
+            return Ok(false);
+        }
+
+        // Check if any root keys exist for this provider (auth_method = "near_wallet" or "near")
+        use crate::storage::models::KeyType;
+        self.key_manager
+            .has_any_key(KeyType::Root, Some(&["near_wallet", "near"]))
+            .await
+            .map_err(|e| eyre::eyre!("Failed to check for NEAR wallet keys: {}", e))
     }
 
     fn get_config_options(&self) -> serde_json::Value {

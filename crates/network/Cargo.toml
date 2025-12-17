@@ -11,6 +11,7 @@ publish = true
 [dependencies]
 actix.workspace = true
 borsh = { workspace = true, features = ["derive"] }
+either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
@@ -38,6 +39,7 @@ libp2p-stream.workspace = true
 multiaddr.workspace = true
 owo-colors.workspace = true
 prometheus-client.workspace = true
+rand.workspace = true
 reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -49,3 +51,6 @@ calimero-network-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-utils-actix.workspace = true
 
+[dev-dependencies]
+libp2p-swarm-test.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

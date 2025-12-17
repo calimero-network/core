@@ -20,15 +20,14 @@ pub const IPFS_BOOT_NODES: &[&str] = &[
 ];
 
 pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
-    "/ip4/18.156.18.6/udp/4001/quic-v1/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
-    "/ip4/18.156.18.6/tcp/4001/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
+    "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh",
+    "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh",
 ];
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub identity: Keypair,
-
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
@@ -185,14 +184,16 @@ impl Default for RelayConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct AutonatConfig {
-    pub confidence_threshold: usize,
+    pub max_candidates: usize,
+    pub probe_interval: Duration,
 }
 
 impl AutonatConfig {
     #[must_use]
-    pub const fn new(confidence_threshold: usize) -> Self {
+    pub const fn new(max_candidates: usize, probe_interval: Duration) -> Self {
         Self {
-            confidence_threshold,
+            max_candidates,
+            probe_interval,
         }
     }
 }
@@ -200,7 +201,8 @@ impl AutonatConfig {
 impl Default for AutonatConfig {
     fn default() -> Self {
         Self {
-            confidence_threshold: 2,
+            max_candidates: 5,
+            probe_interval: Duration::from_secs(10),
         }
     }
 }

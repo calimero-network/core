@@ -1,0 +1,284 @@
+name: Test SDK JS Compatibility
+
+permissions:
+    contents: read
+
+on:
+    pull_request:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - ".github/workflows/test-sdk-js.yml"
+    push:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - ".github/workflows/test-sdk-js.yml"
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+    NODE_VERSION: "18.x"
+    PNPM_VERSION: "9"
+    PYTHON_VERSION: "3.11"
+
+jobs:
+    build-merod:
+        name: Build merod Binary
+        runs-on: ubuntu-24.04-8cpu
+        outputs:
+            cache-key: ${{ steps.cache-key.outputs.key }}
+        steps:
+            - name: Checkout Core code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-
+
+            - name: Generate cache key
+              id: cache-key
+              run: echo "key=${{ runner.os }}-merod-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+            - name: Build merod binary
+              run: cargo build --release --bin merod
+
+            - name: Cache build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/release/merod
+                  key: ${{ steps.cache-key.outputs.key }}
+
+    test-sdk-js:
+        name: Test SDK JS with Core Binary
+        needs: build-merod
+        runs-on: ubuntu-24.04-8cpu
+        steps:
+            - name: Checkout Core code
+              uses: actions/checkout@v4
+
+            - name: Restore merod binary
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/release/merod
+                  key: ${{ needs.build-merod.outputs.cache-key }}
+
+            - name: Set Permissions
+              run: |
+                  chmod +x target/release/merod
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v2
+              with:
+                  version: ${{ env.PNPM_VERSION }}
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+
+            - name: Setup Python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+
+            - name: Verify merobox installation
+              run: |
+                  merobox --version
+
+            - name: Clone SDK JS repository
+              run: |
+                  git clone https://github.com/calimero-network/calimero-sdk-js.git sdk-js
+                  cd sdk-js
+                  git checkout master || git checkout main
+
+            - name: Install SDK JS dependencies
+              working-directory: sdk-js
+              run: |
+                  pnpm install --frozen-lockfile
+
+            - name: Build SDK JS packages
+              working-directory: sdk-js
+              run: |
+                  pnpm build
+
+            - name: Install CLI build dependencies
+              working-directory: sdk-js/packages/cli
+              run: |
+                  pnpm install-deps
+
+            - name: Build SDK JS examples
+              working-directory: sdk-js
+              run: |
+                  set -e
+                  for dir in examples/*/; do
+                      example=$(basename "$dir")
+                      echo "Building example: $example"
+                      cd "$dir" && pnpm build:manual && cd ../..
+                  done
+
+            - name: Verify WASM outputs
+              working-directory: sdk-js
+              run: |
+                  set -e
+                  for dir in examples/*/; do
+                      example=$(basename "$dir")
+                      echo "Verifying WASM for: $example"
+                      # Check if any WASM file exists in build directory
+                      if ! ls "${dir}build/"*.wasm 1> /dev/null 2>&1; then
+                          echo "Error: No WASM file found in ${dir}build/"
+                          exit 1
+                      fi
+                  done
+
+            - name: Run SDK JS Merobox Workflows
+              id: run_workflows
+              run: |
+                  # Store absolute path to merod binary (from Core checkout root)
+                  CORE_ROOT="$(pwd)"
+                  MEROD_BINARY="$CORE_ROOT/target/release/merod"
+
+                  echo "Core root: $CORE_ROOT"
+                  echo "Using merod binary: $MEROD_BINARY"
+
+                  # Verify binary exists
+                  if [ ! -f "$MEROD_BINARY" ]; then
+                      echo "Error: merod binary not found at $MEROD_BINARY"
+                      exit 1
+                  fi
+
+                  cd sdk-js
+
+                  echo "Performing initial cleanup..."
+                  merobox stop --all || true
+                  merobox nuke -f || true
+
+                  # Find all workflow files in examples directories
+                  WORKFLOW_FILES=()
+                  while IFS= read -r -d '' file; do
+                      WORKFLOW_FILES+=("$file")
+                  done < <(find examples -type f -name "*.yml" -path "*/workflows/*" -print0 2>/dev/null)
+                  while IFS= read -r -d '' file; do
+                      WORKFLOW_FILES+=("$file")
+                  done < <(find examples -type f -name "default.yml" ! -path "*/workflows/*" -print0 2>/dev/null)
+
+                  if [ ${#WORKFLOW_FILES[@]} -eq 0 ]; then
+                      echo "Error: No workflow files found in examples directories"
+                      exit 1
+                  fi
+
+                  WORKFLOW_COUNT=0
+                  FAILED_WORKFLOWS=()
+
+                  for workflow in "${WORKFLOW_FILES[@]}"; do
+                      WORKFLOW_COUNT=$((WORKFLOW_COUNT + 1))
+                      echo "Running workflow $WORKFLOW_COUNT: $workflow"
+                      echo "Using merod binary: $MEROD_BINARY"
+                      
+                      if merobox bootstrap run "$workflow" \
+                          --no-docker \
+                          --binary-path "$MEROD_BINARY" \
+                          --e2e-mode \
+                          --verbose; then
+                          echo "Workflow completed successfully: $workflow"
+                      else
+                          echo "Workflow failed: $workflow"
+                          FAILED_WORKFLOWS+=("$workflow")
+                      fi
+                      
+                      echo "Cleaning up after workflow..."
+                      merobox stop --all || true
+                      merobox nuke -f || true
+                  done
+
+                  echo "Summary: $WORKFLOW_COUNT workflow(s) tested"
+
+                  # Save failed workflows to file for comment job
+                  if [ ${#FAILED_WORKFLOWS[@]} -gt 0 ]; then
+                      echo "has_failures=true" >> $GITHUB_OUTPUT
+                      printf '%s\n' "${FAILED_WORKFLOWS[@]}" > failed_workflows.txt
+                      echo "Failed workflows:"
+                      for failed in "${FAILED_WORKFLOWS[@]}"; do
+                          echo "  - $failed"
+                      done
+                  else
+                      echo "has_failures=false" >> $GITHUB_OUTPUT
+                      echo "All workflows completed successfully"
+                  fi
+
+            - name: Upload Failed Workflows
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: failed-workflows
+                  path: sdk-js/failed_workflows.txt
+                  retention-days: 1
+
+            - name: Fail if workflows failed
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              run: exit 1
+
+    comment:
+        name: Report Failed Workflows
+        needs: test-sdk-js
+        runs-on: ubuntu-latest
+        if: always() && github.event_name == 'pull_request'
+        steps:
+            - name: Download Failed Workflows
+              id: download
+              uses: actions/download-artifact@v4
+              continue-on-error: true
+              with:
+                  name: failed-workflows
+
+            - name: Prepare Failure Comment
+              if: steps.download.outcome == 'success'
+              run: |
+                  failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+                  message="## SDK JS Workflows Failed
+
+                  The following SDK JS workflow(s) failed:
+                  $failed_list
+
+                  Please check the workflow logs for more details."
+
+                  jq -n \
+                    --arg pr '${{ github.event.number }}' \
+                    --arg tag test-sdk-js-report \
+                    --arg mode recreate \
+                    --arg message "$message" \
+                    '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+            - name: Upload Comment
+              if: steps.download.outcome == 'success'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: pr-comment-payload
+                  path: payload.json

@@ -47,9 +47,10 @@ use url::Url;
 use super::auth_mode::AuthModeArg;
 use crate::{cli, defaults};
 
-const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
+// Sync configuration - aggressive defaults for fast CRDT convergence
+const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
 
 /// Helper struct to define protocol configuration
 #[derive(Debug)]
@@ -221,10 +222,17 @@ pub struct InitCommand {
 
     #[clap(
         long,
-        default_value = "2",
-        help = "Minimum number of successful autonat probes required to be confident about NAT status"
+        default_value_t = 10,
+        help = "The interval between AutoNAT probes. Default is 10 seconds"
     )]
-    pub autonat_confidence_threshold: usize,
+    pub autonat_probe_interval: u64,
+
+    #[clap(
+        long,
+        default_value = "5",
+        help = "Maximum number of untested addresses candidates to test with AutoNAT probes"
+    )]
+    pub autonat_max_candidates: usize,
 
     /// Force initialization even if the directory already exists
     #[clap(long)]
@@ -401,7 +409,10 @@ impl InitCommand {
                     self.advertise_address,
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
                     RelayConfig::new(self.relay_registrations_limit),
-                    AutonatConfig::new(self.autonat_confidence_threshold),
+                    AutonatConfig::new(
+                        self.autonat_max_candidates,
+                        Duration::from_secs(self.autonat_probe_interval),
+                    ),
                 ),
                 server_config,
             ),

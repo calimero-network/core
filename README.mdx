@@ -181,6 +181,15 @@ For detailed guides, see:
 - **[SDK Documentation](crates/sdk/README.md)** - API reference and examples
 - **[Testing Guide](crates/dag/readme/testing-guide.md)** - Testing strategies
 
+### Testing
+
+End-to-end tests are automatically run via GitHub Actions workflows:
+
+- **`merobox-workflows.yml`** - Runs merobox workflows for all applications in `apps/` to validate functionality
+- **`merobox-proposals.yml`** - Tests blockchain integration proposals for NEAR, ICP, and Ethereum protocols
+- **`test-sdk-js.yml`** - Ensures JavaScript SDK compatibility with core changes
+
+
 ## Use Cases
 
 Calimero enables a wide range of decentralized applications:

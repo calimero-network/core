@@ -86,9 +86,25 @@ steps:
     invitee_id: "{{identity_b}}"
     invitation: "{{invitation_b}}"
 
-  - name: Wait for memberships to propagate
-    type: wait
-    seconds: 5
+  - name: Wait for memberships to propagate - Context A
+    type: wait_for_sync
+    context_id: "{{context_a_id}}"
+    nodes:
+      - rust-xcall-1
+      - rust-xcall-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Wait for memberships to propagate - Context B
+    type: wait_for_sync
+    context_id: "{{context_b_id}}"
+    nodes:
+      - rust-xcall-1
+      - rust-xcall-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Check initial counter on context A
     type: call
@@ -137,9 +153,15 @@ steps:
     args:
       target_context: "{{context_b_id}}"
 
-  - name: Wait for xcall execution
-    type: wait
-    seconds: 5
+  - name: Wait for xcall execution - Context B sync
+    type: wait_for_sync
+    context_id: "{{context_b_id}}"
+    nodes:
+      - rust-xcall-1
+      - rust-xcall-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Verify Context B counter incremented
     type: call
@@ -164,9 +186,15 @@ steps:
     args:
       target_context: "{{context_a_id}}"
 
-  - name: Wait for second xcall execution
-    type: wait
-    seconds: 5
+  - name: Wait for second xcall execution - Context A sync
+    type: wait_for_sync
+    context_id: "{{context_a_id}}"
+    nodes:
+      - rust-xcall-1
+      - rust-xcall-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Verify Context A counter incremented
     type: call
@@ -183,6 +211,6 @@ steps:
       - "equal({{context_a_after_ping}}, 1)"
 
 stop_all_nodes: false
-restart: true
+restart: false 
 wait_timeout: 120
 

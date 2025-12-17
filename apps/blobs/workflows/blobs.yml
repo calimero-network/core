@@ -18,46 +18,16 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create context from inviter
-    type: create_context
-    node: rust-blob-1
+  - name: Create Mesh
+    type: create_mesh
+    context_node: rust-blob-1
     application_id: "{{app_id}}"
+    nodes:
+      - rust-blob-2
+    capability: member
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey
-
-  - name: Assert context created
-    type: assert
-    statements:
-      - "is_set({{context_id}})"
-      - "is_set({{inviter_key}})"
-
-  - name: Create invitee identity
-    type: create_identity
-    node: rust-blob-2
-    outputs:
-      invitee_key: publicKey
-
-  - name: Invite second node
-    type: invite_identity
-    node: rust-blob-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{invitee_key}}"
-    granter_id: "{{inviter_key}}"
-    capability: member
-    outputs:
-      invitation: invitation
-
-  - name: Join context from invitee
-    type: join_context
-    node: rust-blob-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{invitee_key}}"
-    invitation: "{{invitation}}"
-
-  - name: Wait for context sync
-    type: wait
-    seconds: 3
 
   - name: Upload sample PNG blob
     type: upload_blob
@@ -76,11 +46,11 @@ steps:
     method: upload_file
     args:
       name: screenshot.png
-      blob_id_b58: "{{png_blob_id}}"
+      blob_id_str: "{{png_blob_id}}"
       size: "{{png_blob_size}}"
       mime_type: image/png
     outputs:
-      png_file_id: result.output.id
+      png_file_id: result.output
 
   - name: Assert PNG registered
     type: assert
@@ -104,11 +74,11 @@ steps:
     method: upload_file
     args:
       name: readme.txt
-      blob_id_b58: "{{txt_blob_id}}"
+      blob_id_str: "{{txt_blob_id}}"
       size: "{{txt_blob_size}}"
       mime_type: text/plain
     outputs:
-      txt_file_id: result.output.id
+      txt_file_id: result.output
 
   - name: Assert TXT registered
     type: assert
@@ -116,8 +86,14 @@ steps:
       - "is_set({{txt_file_id}})"
 
   - name: Wait for announcements
-    type: wait
-    seconds: 6
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-1
+      - rust-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List files on inviter
     type: call
@@ -129,23 +105,25 @@ steps:
       inviter_files: result.output
 
   - name: Assert inviter sees two files
-    type: json_assert
+    type: assert
     statements:
-      - "equal(len({{inviter_files}}), 2)"
+      - "contains({{inviter_files}}, '{{png_file_id}}')"
+      - "contains({{inviter_files}}, '{{txt_file_id}}')"
 
   - name: List files on invitee
     type: call
     node: rust-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
+    executor_public_key: "{{public_key_rust-blob-2}}"
     method: list_files
     outputs:
       invitee_files: result.output
 
   - name: Assert invitee sees two files
-    type: json_assert
+    type: assert
     statements:
-      - "equal(len({{invitee_files}}), 2)"
+      - "contains({{invitee_files}}, '{{png_file_id}}')"
+      - "contains({{invitee_files}}, '{{txt_file_id}}')"
 
   - name: Get PNG file blob id
     type: call
@@ -173,24 +151,30 @@ steps:
       file_id: "{{png_file_id}}"
 
   - name: Wait for delete propagation
-    type: wait
-    seconds: 6
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-1
+      - rust-blob-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: List files after delete
     type: call
     node: rust-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{invitee_key}}"
+    executor_public_key: "{{public_key_rust-blob-2}}"
     method: list_files
     outputs:
       final_files: result.output
 
   - name: Assert only one file remains
-    type: json_assert
+    type: assert
     statements:
-      - "less_or_equal(len({{final_files}}), 1)"
+      - "contains({{final_files}}, '{{txt_file_id}}')"
+      - "not_contains({{final_files}}, '{{png_file_id}}')"
 
 stop_all_nodes: false
-restart: true
+restart: false
 wait_timeout: 120
-

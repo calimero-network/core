@@ -3,8 +3,13 @@ name: Access Control Test
 
 # Configuration options
 stop_all_nodes: true
-restart: true
+restart: false 
 wait_timeout: 120
+# Uncomment once Merobox support for NEAR Sandbox is merged.
+#near_devnet: true
+# Assume contracts are located in the parent dir of the Calimero `core`.
+# Uncomment once Merobox support for NEAR Sandbox is merged.
+#contracts_dir: ../../../contracts_bin
 
 nodes:
   chain_id: testnet-1
@@ -26,7 +31,7 @@ steps:
   - name: Create Context on Node 1
     type: create_context
     node: ac-node-1
-    application_id: '{{app_id}}'
+    application_id: "{{app_id}}"
     outputs:
       context_id: contextId
       admin_key: memberPublicKey
@@ -42,11 +47,11 @@ steps:
   - name: Add Member Node 2
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: add_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
 
   # 5. Wait for async propagation
   - name: Wait for Add
@@ -57,11 +62,11 @@ steps:
   - name: Check Node 2 Membership
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: is_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
     outputs:
       is_member: result
 
@@ -74,8 +79,8 @@ steps:
   - name: List All Members
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: get_all_members
     outputs:
       all_members_result: result.output
@@ -90,11 +95,11 @@ steps:
   - name: Kick Member Node 2
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: kick_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
 
   # 9. Wait for revocation
   - name: Wait for Kick
@@ -105,8 +110,8 @@ steps:
   - name: List All Members
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: get_all_members
     outputs:
       all_members_final_result: result.output
@@ -121,11 +126,11 @@ steps:
   - name: Check Node 2 Membership Again
     type: call
     node: ac-node-1
-    context_id: '{{context_id}}'
-    executor_public_key: '{{admin_key}}'
+    context_id: "{{context_id}}"
+    executor_public_key: "{{admin_key}}"
     method: is_member
     args:
-      public_key: '{{node2_key}}'
+      public_key: "{{node2_key}}"
     outputs:
       is_member_final: result
 
@@ -133,3 +138,72 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{is_member_final}}, {"output": false})'
+
+    # 12. Create Child Context with Alias
+  - name: Create Context Child
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: create_context_child
+    args:
+      protocol: "near"
+      app_id_base58: '{{app_id}}'
+      alias: "my_child_app"
+
+  # 13. Wait for Creation (Host needs time to execute init and save alias)
+  - name: Wait for Creation
+    type: wait
+    seconds: 10
+
+  # 14. Verify Child Exists via Alias Resolution
+  - name: Resolve Child Alias
+    type: call
+    node: ac-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{admin_key}}'
+    method: get_child_id
+    args:
+      alias: "my_child_app"
+    outputs:
+      context_child_id_res: result
+      context_child_id: result.output
+
+  - name: Assert Child ID returned
+    type: assert
+    statements:
+      - "is_set({{context_child_id_res.output}})"
+
+  # Temporarily disable as if the context is deleted, the response for the function never returns
+  # Uncomment, once this functionality in the node is fixed.
+  ## 15. Self Destroy Context
+  #- name: Self-Delete Context
+  #  type: call
+  #  node: ac-node-1
+  #  context_id: '{{context_id}}'
+  #  executor_public_key: '{{admin_key}}'
+  #  method: delete_context_child
+  #  args:
+  #    context_id_base58: ''
+
+  #- name: Wait for Deletion
+  #  type: wait
+  #  seconds: 3
+
+  ## 16. Verify Self-Deletion (Should fail)
+  #- name: Expected Failure - Verify Self Context Deletion
+  #  type: call
+  #  node: ac-node-1
+  #  context_id: '{{context_id}}'
+  #  executor_public_key: '{{admin_key}}'
+  #  method: get_all_members
+  #  expected_failure: true
+  #  outputs:
+  #    error_type: error_type
+  #    error_message: error_message
+
+  #- name: "Assert Error Occurred"
+  #  type: assert
+  #  statements:
+  #    - "is_set({{error_type}})"
+  #    - "equal({{error_type}}, ContextNotFound)"
