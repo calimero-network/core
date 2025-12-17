@@ -19,14 +19,17 @@ fn get_docker_host_url(port: u16) -> String {
     if !std::path::Path::new("/.dockerenv").exists() {
         return format!("http://localhost:{}", port);
     }
-
-    // Use host.docker.internal (works on Mac/Windows Docker Desktop)
-    // On Linux, fall back to default Docker bridge gateway
-    if cfg!(target_os = "linux") {
-        format!("http://172.17.0.1:{}", port)
-    } else {
+    if can_resolve_host("host.docker.internal") {
         format!("http://host.docker.internal:{}", port)
+    } else {
+        format!("http://172.17.0.1:{}", port)
     }
+}
+
+/// Check if a hostname can be resolved at runtime
+fn can_resolve_host(host: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    format!("{}:80", host).to_socket_addrs().is_ok()
 }
 
 pub fn default_relayer_url() -> Url {

@@ -61,13 +61,19 @@ fn get_docker_host_for_port(port: u16) -> String {
         return format!("http://127.0.0.1:{}", port);
     }
 
-    // Try host.docker.internal first (works on Mac/Windows Docker Desktop)
-    // On Linux, fall back to default Docker bridge gateway
-    if cfg!(target_os = "linux") {
-        format!("http://172.17.0.1:{}", port)
-    } else {
+    // Try to resolve host.docker.internal at runtime (works on Mac/Windows Docker Desktop)
+    // If it doesn't resolve, fall back to default Docker bridge gateway (Linux native Docker)
+    if can_resolve_host("host.docker.internal") {
         format!("http://host.docker.internal:{}", port)
+    } else {
+        format!("http://172.17.0.1:{}", port)
     }
+}
+
+/// Check if a hostname can be resolved at runtime
+fn can_resolve_host(host: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    format!("{}:80", host).to_socket_addrs().is_ok()
 }
 
 /// Helper struct to define protocol configuration
