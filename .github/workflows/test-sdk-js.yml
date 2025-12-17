@@ -36,11 +36,53 @@ jobs:
             - name: Checkout Core code
               uses: actions/checkout@v4
 
+            - name: Wait for release workflow and check PR image
+              if: github.event_name == 'pull_request'
+              id: check-pr-image
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  PR_TAG="pr-${{ github.event.number }}"
+                  IMAGE_URL="https://ghcr.io/v2/${{ github.repository_owner }}/merod/manifests/${PR_TAG}"
+                  MAX_WAIT=600
+                  WAIT_INTERVAL=10
+                  ELAPSED=0
+
+                  while [ $ELAPSED -lt $MAX_WAIT ]; do
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GH_TOKEN" "$IMAGE_URL" 2>/dev/null || echo "404")
+                      if [ "$HTTP_CODE" = "200" ]; then
+                          echo "exists=true" >> $GITHUB_OUTPUT
+                          exit 0
+                      fi
+                      
+                      RUNS=$(gh api repos/${{ github.repository }}/actions/workflows/release.yml/runs?head_branch=${{ github.head_ref }} --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
+                      STATUS=$(echo "$RUNS" | jq -r '.status // "unknown"')
+                      CONCLUSION=$(echo "$RUNS" | jq -r '.conclusion // "unknown"')
+                      
+                      if [ "$STATUS" = "completed" ]; then
+                          break
+                      fi
+                      
+                      sleep $WAIT_INTERVAL
+                      ELAPSED=$((ELAPSED + WAIT_INTERVAL))
+                  done
+
+                  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GH_TOKEN" "$IMAGE_URL" 2>/dev/null || echo "404")
+                  if [ "$HTTP_CODE" = "200" ]; then
+                      echo "exists=true" >> $GITHUB_OUTPUT
+                  else
+                      echo "exists=false" >> $GITHUB_OUTPUT
+                  fi
+
             - name: Determine Docker image tag
               id: image-tag
               run: |
                   if [ "${{ github.event_name }}" == "pull_request" ]; then
-                      echo "tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+                      if [ "${{ steps.check-pr-image.outputs.exists }}" == "true" ]; then
+                          echo "tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+                      else
+                          echo "tag=edge" >> $GITHUB_OUTPUT
+                      fi
                   else
                       echo "tag=edge" >> $GITHUB_OUTPUT
                   fi
