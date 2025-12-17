@@ -45,36 +45,12 @@ use tracing::{info, warn};
 use url::Url;
 
 use super::auth_mode::AuthModeArg;
-use crate::{cli, defaults};
+use crate::{cli, defaults, docker};
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
-
-/// Get the Docker host URL for a given port
-/// Uses host.docker.internal (works on Mac/Windows Docker Desktop)
-/// Falls back to 172.17.0.1 on Linux (default Docker bridge gateway)
-fn get_docker_host_for_port(port: u16) -> String {
-    // Check if we're in Docker
-    if !std::path::Path::new("/.dockerenv").exists() {
-        return format!("http://127.0.0.1:{}", port);
-    }
-
-    // Try to resolve host.docker.internal at runtime (works on Mac/Windows Docker Desktop)
-    // If it doesn't resolve, fall back to default Docker bridge gateway (Linux native Docker)
-    if can_resolve_host("host.docker.internal") {
-        format!("http://host.docker.internal:{}", port)
-    } else {
-        format!("http://172.17.0.1:{}", port)
-    }
-}
-
-/// Check if a hostname can be resolved at runtime
-fn can_resolve_host(host: &str) -> bool {
-    use std::net::ToSocketAddrs;
-    format!("{}:80", host).to_socket_addrs().is_ok()
-}
 
 /// Helper struct to define protocol configuration
 #[derive(Debug)]
@@ -127,9 +103,9 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
     },
     ProtocolConfig {
         name: "ethereum",
-        default_network: "local",
-        default_contract: "0x5FbDB2315678afecb367f032d93F642f64180aa3", // Anvil default ContextConfig address
-        signer_type: ClientSelectedSigner::Local,
+        default_network: "sepolia",
+        default_contract: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB", // Sepolia ContextConfig address
+        signer_type: ClientSelectedSigner::Relayer,
         networks: &[
             ("local", "http://127.0.0.1:8545"), // Will be overridden if in Docker
             ("sepolia", "https://sepolia.drpc.org"),
@@ -367,8 +343,8 @@ impl InitCommand {
                 let final_rpc_url =
                     if *network_name == "local" && std::path::Path::new("/.dockerenv").exists() {
                         match config.name {
-                            "icp" => get_docker_host_for_port(4943),
-                            "ethereum" => get_docker_host_for_port(8545),
+                            "icp" => docker::get_docker_host_for_port(4943),
+                            "ethereum" => docker::get_docker_host_for_port(8545),
                             _ => rpc_url.to_string(),
                         }
                     } else {

@@ -9,6 +9,7 @@ use tracing_subscriber::{registry, EnvFilter};
 
 mod cli;
 mod defaults;
+mod docker;
 mod version;
 
 use cli::RootCommand;
