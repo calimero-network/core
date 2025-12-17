@@ -221,22 +221,23 @@ jobs:
     name: Report Failed Workflows
     needs: [near, icp, ethereum]
     runs-on: ubuntu-latest
-    if: always() && github.event_name == 'pull_request' && needs.near.result != 'skipped' && needs.icp.result != 'skipped' && needs.ethereum.result != 'skipped'
+    if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check workflow results
         id: check
         run: |
           failed_workflows=()
 
-          if [ "${{ needs.near.result }}" == "failure" ]; then
+          # Report failures, cancellations, and skipped jobs
+          if [ "${{ needs.near.result }}" != "success" ]; then
             failed_workflows+=("near")
           fi
 
-          if [ "${{ needs.icp.result }}" == "failure" ]; then
+          if [ "${{ needs.icp.result }}" != "success" ]; then
             failed_workflows+=("icp")
           fi
 
-          if [ "${{ needs.ethereum.result }}" == "failure" ]; then
+          if [ "${{ needs.ethereum.result }}" != "success" ]; then
             failed_workflows+=("ethereum")
           fi
 
