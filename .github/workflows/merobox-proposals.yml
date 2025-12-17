@@ -43,38 +43,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Wait for release workflow and check PR image
-        if: github.event_name == 'pull_request'
-        id: check-pr-image
+      - name: Determine Docker image tag
+        id: image-tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RESULT=$(./scripts/check-pr-image.sh \
+          ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
               "${{ github.event.number }}" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref }}" \
-              "$GH_TOKEN")
-          echo "exists=${RESULT}" >> $GITHUB_OUTPUT
-
-      - name: Determine Docker image tag
-        id: image-tag
-        run: |
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            if [ "${{ steps.check-pr-image.outputs.exists }}" == "true" ]; then
-              TAG="pr-${{ github.event.number }}"
-              echo "tag=${TAG}" >> $GITHUB_OUTPUT
-              echo "Using Docker image: ghcr.io/${{ github.repository_owner }}/merod:${TAG}"
-            else
-              TAG="edge"
-              echo "tag=${TAG}" >> $GITHUB_OUTPUT
-              echo "Using Docker image: ghcr.io/${{ github.repository_owner }}/merod:${TAG}"
-            fi
-          else
-            TAG="edge"
-            echo "tag=${TAG}" >> $GITHUB_OUTPUT
-            echo "Using Docker image: ghcr.io/${{ github.repository_owner }}/merod:${TAG}"
-          fi
+              "$GH_TOKEN"
 
   download-contracts:
     name: Download Contracts
