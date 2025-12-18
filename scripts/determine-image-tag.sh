@@ -28,8 +28,30 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
         WAIT_INTERVAL=10
         ELAPSED=0
         
+        # Get PR head SHA for more accurate workflow run filtering
+        PR_HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || echo "")
+        
         while [ $ELAPSED -lt $MAX_WAIT ]; do
-            RUNS=$(gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_branch=${HEAD_BRANCH}" --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
+            # Filter workflow runs by PR number first (most accurate)
+            # Get all runs and filter by PR number in pull_requests array
+            RUNS='{"status":"unknown"}'
+            
+            if [ -n "$PR_HEAD_SHA" ]; then
+                # Get runs for this commit SHA and filter by PR number
+                ALL_RUNS=$(gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${PR_HEAD_SHA}" --jq '.workflow_runs' 2>/dev/null || echo "[]")
+                RUNS=$(echo "$ALL_RUNS" | jq --arg pr_num "$PR_NUMBER" '[.[] | select(.pull_requests[]?.number == ($pr_num | tonumber))] | .[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
+            fi
+            
+            # Fallback: If no PR-filtered run found, try head SHA
+            if [ "$(echo "$RUNS" | jq -r '.status // "unknown"')" = "unknown" ] && [ -n "$PR_HEAD_SHA" ]; then
+                RUNS=$(gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${PR_HEAD_SHA}" --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
+            fi
+            
+            # Final fallback: branch name
+            if [ "$(echo "$RUNS" | jq -r '.status // "unknown"')" = "unknown" ]; then
+                RUNS=$(gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_branch=${HEAD_BRANCH}" --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
+            fi
+            
             STATUS=$(echo "$RUNS" | jq -r '.status // "unknown"')
             CONCLUSION=$(echo "$RUNS" | jq -r '.conclusion // "unknown"')
             
@@ -76,8 +98,25 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
         
         if [ $ELAPSED -ge $MAX_WAIT ]; then
             echo "Timeout waiting for release workflow (waited ${MAX_WAIT}s)"
-            echo "Using pr-${PR_NUMBER} tag (workflow may complete later)"
-            TAG="pr-${PR_NUMBER}"
+            echo "Checking if pr-${PR_NUMBER} image exists before using it..."
+            PR_TAG="pr-${PR_NUMBER}"
+            IMAGE_EXISTS="false"
+            
+            if command -v docker >/dev/null 2>&1; then
+                echo "${GH_TOKEN}" | docker login ghcr.io -u "${REPO_OWNER}" --password-stdin >/dev/null 2>&1
+                if docker manifest inspect "ghcr.io/calimero-network/merod:${PR_TAG}" >/dev/null 2>&1; then
+                    IMAGE_EXISTS="true"
+                    echo "Image pr-${PR_NUMBER} exists - using it (workflow may complete later)"
+                    TAG="pr-${PR_NUMBER}"
+                else
+                    echo "Image pr-${PR_NUMBER} not found"
+                fi
+            fi
+            
+            if [ "$IMAGE_EXISTS" != "true" ]; then
+                echo "Using edge tag as fallback"
+                TAG="edge"
+            fi
         fi
     else
         echo "No Rust crates changed in this commit"
