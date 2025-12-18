@@ -87,6 +87,35 @@ impl VMLogic<'_> {
                 register_id: u64,
             ) -> i32;
 
+            fn js_user_storage_new(register_id: u64) -> i32;
+            fn js_user_storage_insert(
+                storage_id_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_user_storage_get(storage_id_ptr: u64, register_id: u64) -> i32;
+            fn js_user_storage_get_for_user(
+                storage_id_ptr: u64,
+                user_key_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_user_storage_remove(storage_id_ptr: u64, register_id: u64) -> i32;
+            fn js_user_storage_contains(storage_id_ptr: u64) -> i32;
+            fn js_user_storage_contains_user(storage_id_ptr: u64, user_key_ptr: u64) -> i32;
+
+            fn js_frozen_storage_new(register_id: u64) -> i32;
+            fn js_frozen_storage_add(
+                storage_id_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_frozen_storage_get(
+                storage_id_ptr: u64,
+                hash_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_frozen_storage_contains(storage_id_ptr: u64, hash_ptr: u64) -> i32;
+
             fn fetch(
                 url_ptr: u64,
                 method_ptr: u64,
