@@ -158,12 +158,14 @@ jobs:
                               fi
                           done
                           
-                          # Collect logs 
-                          echo "Collecting Docker logs for workflow: $workflow"
+                          # Collect logs with workflow identifier to prevent filename collisions
+                          # Create sanitized workflow identifier (replace / with -, remove .yml extension)
+                          workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.ya?ml$||')
+                          echo "Collecting Docker logs for workflow: $workflow (id: $workflow_id)"
                           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
                               if [ -n "$container" ]; then
                                   echo "Collecting logs from container: $container"
-                                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${container}.log" 2>&1 || true
+                                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
                               fi
                           done
                           
