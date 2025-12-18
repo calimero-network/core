@@ -24,7 +24,7 @@ impl BlobId {
     }
 
     // Returns BlobId represented as a 32-byte array.
-    pub fn digest(&self) -> &[u8; 32] {
+    pub fn digest(&self) -> &[u8; DIGEST_SIZE] {
         &self.0
     }
 }
