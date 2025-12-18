@@ -78,7 +78,7 @@ cat <<EOL >dfx.json
   },
   "networks": {
     "local": {
-      "bind": "127.0.0.1:4943",
+      "bind": "0.0.0.0:4943",
       "type": "persistent"
     }
   },
@@ -121,7 +121,7 @@ RECIPIENT_PRINCIPAL=$(dfx identity get-principal)
 dfx identity use default
 
 # Start dfx with clean state
-dfx start --clean --background --host 127.0.0.1:"${ICP_PORT:-4943}"
+dfx start --clean --background --host 0.0.0.0:"${ICP_PORT:-4943}"
 
 # Create initial identity if needed
 dfx identity new --storage-mode=plaintext minting || true
