@@ -124,6 +124,7 @@ jobs:
               run: |
                   MEROD_IMAGE="ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}"
 
+                  mkdir -p docker-logs
                   cd sdk-js
 
                   merobox stop --all || true
@@ -156,6 +157,15 @@ jobs:
                           FAILED_WORKFLOWS+=("$workflow")
                       fi
                       
+                      # Collect logs
+                      echo "Collecting Docker logs for workflow: $workflow"
+                      for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+                          if [ -n "$container" ]; then
+                              echo "Collecting logs from container: $container"
+                              docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${container}.log" 2>&1 || true
+                          fi
+                      done
+                      
                       merobox stop --all || true
                       merobox nuke -f || true
                   done
@@ -178,22 +188,6 @@ jobs:
             - name: Fail if workflows failed
               if: steps.run_workflows.outputs.has_failures == 'true'
               run: exit 1
-
-            - name: Collect Docker Logs
-              if: always()
-              run: |
-                  mkdir -p docker-logs
-                  echo "Collecting Docker logs for SDK JS test nodes..."
-                  # Collect logs from all containers with calimero.node=true label
-                  # merobox sets this label on all node containers, so this covers all nodes regardless of name
-                  for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          echo "Collecting logs from container: $container"
-                          docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
-                      fi
-                  done
-                  echo "Collected logs:"
-                  ls -la docker-logs/ || echo "No logs collected"
 
             - name: Upload Workflow Data Artifacts
               if: ${{ !cancelled() }}

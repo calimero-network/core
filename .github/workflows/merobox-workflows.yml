@@ -124,6 +124,7 @@ jobs:
             - name: Run All Workflows
               id: run_workflows
               run: |
+                  mkdir -p docker-logs
                   cd apps
                   failed_workflows=()
                   for workflow in */workflows/*.yml */workflows/*.yaml; do
@@ -155,6 +156,16 @@ jobs:
                                   attempt=$((attempt + 1))
                               fi
                           done
+                          
+                          # Collect logs 
+                          echo "Collecting Docker logs for workflow: $workflow"
+                          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+                              if [ -n "$container" ]; then
+                                  echo "Collecting logs from container: $container"
+                                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${container}.log" 2>&1 || true
+                              fi
+                          done
+                          
                           merobox nuke --force || true
                           merobox stop --all || true
                           if [ "$success" = false ]; then
@@ -182,22 +193,6 @@ jobs:
             - name: Fail if workflows failed
               if: steps.run_workflows.outputs.has_failures == 'true'
               run: exit 1
-
-            - name: Collect Docker Logs
-              if: always()
-              run: |
-                  mkdir -p docker-logs
-                  echo "Collecting Docker logs for workflow nodes..."
-                  # Collect logs from all containers with calimero.node=true label
-                  # merobox sets this label on all node containers, so this covers all nodes regardless of name
-                  for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          echo "Collecting logs from container: $container"
-                          docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
-                      fi
-                  done
-                  echo "Collected logs:"
-                  ls -la docker-logs/ || echo "No logs collected"
 
             - name: Upload Workflow Data Artifacts
               if: ${{ !cancelled() }}
