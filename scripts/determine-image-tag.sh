@@ -16,7 +16,7 @@ GH_TOKEN="$6"
 if [ "$EVENT_NAME" == "pull_request" ]; then
     echo "Checking if Rust crates changed in PR..."
     
-    CHANGED_FILES=$(gh api repos/${REPO}/pulls/${PR_NUMBER}/files --jq '.[].filename' 2>/dev/null || echo "")
+    CHANGED_FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --jq '.[].filename' 2>/dev/null || echo "")
     CRATES_CHANGED=$(echo "$CHANGED_FILES" | \
         grep -E '^(Cargo\.toml|Cargo\.lock|crates/|\.github/workflows/release\.yml)' || true)
     
@@ -29,7 +29,7 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
         ELAPSED=0
         
         while [ $ELAPSED -lt $MAX_WAIT ]; do
-            RUNS=$(gh api repos/${REPO}/actions/workflows/release.yml/runs?head_branch=${HEAD_BRANCH} --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
+            RUNS=$(gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_branch=${HEAD_BRANCH}" --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null || echo '{"status":"unknown"}')
             STATUS=$(echo "$RUNS" | jq -r '.status // "unknown"')
             CONCLUSION=$(echo "$RUNS" | jq -r '.conclusion // "unknown"')
             
