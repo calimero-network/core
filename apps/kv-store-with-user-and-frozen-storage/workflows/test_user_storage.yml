@@ -2,7 +2,7 @@ description: KV-Store user storage workflow test
 name: KV-store user storage workflow
 
 # Configuration options
-stop_all_nodes: true
+stop_all_nodes: false
 restart: false  
 wait_timeout: 120
 

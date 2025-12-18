@@ -2,7 +2,7 @@ description: Test Access Control App
 name: Access Control Test
 
 # Configuration options
-stop_all_nodes: true
+stop_all_nodes: false
 restart: false 
 wait_timeout: 120
 # Uncomment once Merobox support for NEAR Sandbox is merged.

@@ -121,6 +121,6 @@ steps:
       - "is_set({{messages_node1}})"
 
 # Configuration options
-stop_all_nodes: true
+stop_all_nodes: false
 restart: false
 wait_timeout: 45
