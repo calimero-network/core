@@ -137,6 +137,7 @@ jobs:
                           
                           while [ $attempt -le $max_attempts ]; do
                               if [ $attempt -gt 1 ]; then
+                                  merobox stop --all || true
                                   merobox nuke --force || true
                                   sleep 2
                               fi
@@ -166,8 +167,8 @@ jobs:
                               fi
                           done
                           
-                          merobox nuke --force || true
                           merobox stop --all || true
+                          merobox nuke --force || true
                           if [ "$success" = false ]; then
                               failed_workflows+=("$workflow")
                           fi
