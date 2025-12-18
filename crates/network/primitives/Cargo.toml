@@ -10,6 +10,7 @@ publish = true
 
 [dependencies]
 actix.workspace = true
+borsh.workspace = true
 bytes.workspace = true
 eyre.workspace = true
 futures-util.workspace = true

@@ -1,3 +1,6 @@
+use crate::common::DIGEST_SIZE;
+use crate::identity::PublicKey;
+
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::str::FromStr;
@@ -18,6 +21,11 @@ impl BlobId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+
+    // Returns BlobId represented as a 32-byte array.
+    pub fn digest(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 

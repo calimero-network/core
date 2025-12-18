@@ -1,16 +1,14 @@
 use core::time::Duration;
 
 use actix::{Context, Handler, Message, ResponseFuture};
-use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_network_primitives::messages::{NetworkEvent, RequestBlob};
-use calimero_network_primitives::stream::{
-    Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL,
+use borsh::BorshDeserialize;
+use calimero_network_primitives::{
+    blob_types::{BlobChunk, BlobRequest, BlobResponse},
+    messages::{NetworkEvent, RequestBlob},
+    stream::{Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL},
 };
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use tracing::debug;
 
@@ -20,23 +18,6 @@ use crate::NetworkManager;
 const BLOB_TRANSFER_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute per operation
 const CHUNK_RECEIVE_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BlobRequest {
-    pub blob_id: BlobId,
-    pub context_id: ContextId,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BlobResponse {
-    pub found: bool,
-    pub size: Option<u64>, // Total size if found
-}
-
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-pub struct BlobChunk {
-    pub data: Vec<u8>,
-}
-
 impl Handler<RequestBlob> for NetworkManager {
     type Result = ResponseFuture<<RequestBlob as Message>::Result>;
 
@@ -45,6 +26,7 @@ impl Handler<RequestBlob> for NetworkManager {
             blob_id = %request.blob_id,
             context_id = %request.context_id,
             peer_id = %request.peer_id,
+            auth = ?request.auth,
             "Requesting blob from peer using binary chunk protocol"
         );
 
@@ -79,6 +61,7 @@ impl Handler<RequestBlob> for NetworkManager {
                 let blob_request = BlobRequest {
                     blob_id: request.blob_id,
                     context_id: request.context_id,
+                    auth: request.auth,
                 };
 
                 let request_data = match serde_json::to_vec(&blob_request) {

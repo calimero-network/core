@@ -3,47 +3,35 @@
 //! **SRP**: This module handles the blob protocol for P2P blob transfer
 //! Implements chunked blob streaming with flow control and timeouts
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_network_primitives::stream::{Message as StreamMessage, Stream};
+use calimero_context_primitives::client::ContextClient;
+use calimero_network_primitives::{
+    blob_types::{BlobAuthPayload, BlobChunk, BlobRequest, BlobResponse},
+    stream::{Message as StreamMessage, Stream},
+};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
 use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
-use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 // Timeout and flow control settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
 const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 const FLOW_CONTROL_DELAY: Duration = Duration::from_millis(10); // Small delay between chunks
 
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct BlobRequest {
-    pub blob_id: BlobId,
-    pub context_id: ContextId,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BlobResponse {
-    found: bool,
-    size: Option<u64>, // Total size if found
-}
-
-// Use binary format for efficient chunk transfer
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-struct BlobChunk {
-    data: Vec<u8>,
-}
+// Replay protection window (30 seconds past, 10 seconds future)
+const MAX_REQUEST_AGE_SECS: u64 = 30;
+const MAX_REQUEST_FUTURE_AGE_SECS: u64 = 10;
 
 /// Handles streams that arrived on the blob protocol
 ///
 /// Reads the first message as a BlobRequest, then delegates to the chunked handler.
 pub async fn handle_blob_protocol_stream(
     node_client: NodeClient,
+    context_client: ContextClient,
     peer_id: PeerId,
     mut stream: Box<Stream>,
 ) -> eyre::Result<()> {
@@ -65,6 +53,23 @@ pub async fn handle_blob_protocol_stream(
     // Parse as blob request
     let blob_request = serde_json::from_slice::<BlobRequest>(&first_message.data)
         .map_err(|e| eyre::eyre!("Failed to parse blob request: {}", e))?;
+
+    if !is_blob_access_authorized(&context_client, &blob_request).await? {
+        let response = BlobResponse {
+            found: false,
+            size: None,
+        };
+        let response_data = serde_json::to_vec(&response)?;
+
+        timeout(
+            CHUNK_SEND_TIMEOUT,
+            stream.send(StreamMessage::new(response_data)),
+        )
+        .await
+        .map_err(|_| eyre::eyre!("Timeout sending auth rejection"))??;
+
+        return Ok(());
+    }
 
     // Delegate to the chunked handler
     handle_blob_request_stream(node_client, peer_id, blob_request, stream).await
@@ -241,4 +246,94 @@ async fn handle_blob_request_stream(
             Err(eyre::eyre!("Blob serving timed out"))
         }
     }
+}
+
+/// Helper function to check if the blob access is authorized.
+///
+////// Helper function to authorize blob access.
+///
+/// Implements the security policy:
+/// 1. Public blobs (App Bundles) are accessible to everyone (bootstrapping).
+/// 2. Private blobs require a valid signature from a Context Member.
+///
+/// # Returns
+/// * `Ok(true)` - if access is granted.
+/// * `Ok(false)` - if access is denied.
+/// * `Err` - only on internal system failures (e.g. DB errors).
+async fn is_blob_access_authorized(
+    context_client: &ContextClient,
+    request: &BlobRequest,
+) -> eyre::Result<bool> {
+    // Fetch Context Config
+    // If we don't have the context config, we can't verify anything. Deny access.
+    let context_config = match context_client.context_config(&request.context_id) {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => {
+            warn!(context_id=%request.context_id, "Context config not found locally. Denying blob access.");
+            return Ok(false);
+        }
+        Err(e) => return Err(e),
+    };
+
+    // Check if the Blob is Public (The Application Bundle)
+    // New nodes need this to join, so they cannot sign yet.
+    // We identify if the requested blob is the app bundle using the authoritative config.
+    let external_client = context_client.external_client(&request.context_id, &context_config)?;
+    let app_config = external_client.config().application().await;
+
+    if let Ok(app) = app_config {
+        let requested_blob = BlobId::from(request.blob_id);
+        // Allow if it matches the bytecode or compiled artifact
+        if requested_blob == app.blob.bytecode || requested_blob == app.blob.compiled {
+            debug!(blob_id=%request.blob_id, "Access granted: Blob is public Application Bundle");
+            return Ok(true);
+        }
+    } else {
+        warn!("Failed to fetch application config to verify public blob.");
+    }
+
+    let auth = match &request.auth {
+        Some(auth_struct) => auth_struct,
+        None => return Ok(false),
+    };
+
+    // Replay Protection
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    if auth.timestamp < now.saturating_sub(MAX_REQUEST_AGE_SECS)
+        || auth.timestamp > now.saturating_add(MAX_REQUEST_FUTURE_AGE_SECS)
+    {
+        return Ok(false);
+    }
+
+    // Reconstruct the Envelope Payload for Verification
+    let payload = BlobAuthPayload {
+        blob_id: *request.blob_id,
+        context_id: *request.context_id,
+        timestamp: auth.timestamp,
+    };
+
+    let message = borsh::to_vec(&payload)?;
+
+    // Verify Signature
+    if auth
+        .public_key
+        .verify_raw_signature(&message, &auth.signature)
+        .is_err()
+    {
+        error!(blob_id=%request.blob_id, "The blob request had an auth header, but the signature is incorrect.");
+        return Ok(false);
+    }
+
+    // Verify Context Membership
+    let is_member = context_client.has_member(&request.context_id, &auth.public_key)?;
+    if !is_member {
+        error!(
+            blob_id=%request.blob_id,
+            %request.context_id,
+            %auth.public_key,
+            "The blob request had an auth header, but the identity is not a member of the context."
+        );
+    }
+
+    Ok(is_member)
 }
