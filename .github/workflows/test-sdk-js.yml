@@ -159,7 +159,7 @@ jobs:
                       
                       # Collect logs with workflow identifier to prevent filename collisions
                       # Create sanitized workflow identifier (replace / with -, remove .yml extension)
-                      workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.ya?ml$||')
+                      workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
                       echo "Collecting Docker logs for workflow: $workflow (id: $workflow_id)"
                       for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
                           if [ -n "$container" ]; then
