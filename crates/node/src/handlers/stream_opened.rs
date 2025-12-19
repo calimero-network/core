@@ -26,9 +26,12 @@ pub fn handle_stream_opened(
     if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
         info!(%peer_id, "Routing to blob protocol handler");
         let node_client = node_manager.clients.node.clone();
+        let context_client = node_manager.clients.context.clone();
         let _ignored = ctx.spawn(
             async move {
-                if let Err(err) = handle_blob_protocol_stream(node_client, peer_id, stream).await {
+                if let Err(err) =
+                    handle_blob_protocol_stream(node_client, context_client, peer_id, stream).await
+                {
                     debug!(%peer_id, error = %err, "Failed to handle blob protocol stream");
                 }
             }

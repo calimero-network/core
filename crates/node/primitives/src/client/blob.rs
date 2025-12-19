@@ -1,14 +1,20 @@
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, Size};
-use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
-use calimero_primitives::context::ContextId;
-use calimero_primitives::hash::Hash;
+use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
+use calimero_primitives::{
+    blobs::{BlobId, BlobInfo, BlobMetadata},
+    common::DIGEST_SIZE,
+    context::ContextId,
+    hash::Hash,
+    identity::{PrivateKey, PublicKey},
+};
 use calimero_store::key;
 use calimero_store::layer::LayerExt;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, trace};
 
 use super::NodeClient;
@@ -157,9 +163,12 @@ impl NodeClient {
                         "Attempting to download blob from peer"
                     );
 
+                    // Generate Authorization for the blob.
+                    let auth = self.create_blob_auth_for_context(context_id, blob_id)?;
+
                     match self
                         .network_client
-                        .request_blob(*blob_id, *context_id, *peer_id)
+                        .request_blob(*blob_id, *context_id, *peer_id, auth)
                         .await
                     {
                         Ok(Some(data)) => {
@@ -549,6 +558,91 @@ impl NodeClient {
         }
 
         None
+    }
+
+    /// Helper to find an identity in the datastore for which the node possesses the private key.
+    pub fn find_owned_identity(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<(PublicKey, PrivateKey)>> {
+        let handle = self.datastore.clone().handle();
+        let start_key = key::ContextIdentity::new(*context_id, [0u8; DIGEST_SIZE].into());
+        let mut iter = handle.iter::<key::ContextIdentity>()?;
+        let first = iter.seek(start_key).transpose();
+
+        for key in first.into_iter().chain(iter.keys()) {
+            let key = key?;
+            if key.context_id() != *context_id {
+                break;
+            }
+
+            if let Some(val) = handle.get(&key)? {
+                if let Some(pk_bytes) = val.private_key {
+                    return Ok(Some((key.public_key(), PrivateKey::from(pk_bytes))));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Generates the `BlobAuth` authentication structure by creating a payload envelope and signing it.
+    ///
+    /// # Arguments
+    /// * `blob_id` - The ID of the blob being requested.
+    /// * `context_id` - The context context the blob belongs to.
+    /// * `public_key` - The public key of the requester that is a member of the context.
+    /// * `private_key` - The private key used to sign the request.
+    pub fn create_blob_auth(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+        public_key: PublicKey,
+        private_key: &PrivateKey,
+    ) -> eyre::Result<BlobAuth> {
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+
+        // Construct the Envelope Payload
+        let payload = BlobAuthPayload {
+            blob_id: *blob_id.digest(),
+            context_id: *context_id.digest(),
+            timestamp,
+        };
+
+        // Serialize the envelope using Borsh
+        let message = borsh::to_vec(&payload)?;
+
+        // Sign the serialized envelope
+        let signature = private_key
+            .sign(&message)
+            .map_err(|e| eyre::eyre!("Signing failed: {}", e))?;
+
+        Ok(BlobAuth {
+            public_key,
+            signature: signature.to_bytes(),
+            timestamp,
+        })
+    }
+
+    /// A helper function that finds identity from store and creates blob authentication struct.
+    ///
+    /// Attempts to find a local identity for the context. If found, generates a signature.
+    /// If not found, returns `None` (which implies a public access request).
+    /// # Returns
+    /// * `Ok(Some(blob_auth))` - if the local identity was found and blob authentication struct
+    ///   was successfully created.
+    /// * `Ok(None)` - if the node doesn't own any identity for the given context.
+    /// * `Err` - if some internal error occured (e.g. DB error, serialization, etc).
+    pub fn create_blob_auth_for_context(
+        &self,
+        context_id: &ContextId,
+        blob_id: &BlobId,
+    ) -> eyre::Result<Option<BlobAuth>> {
+        if let Some((public_key, private_key)) = self.find_owned_identity(context_id)? {
+            let auth = self.create_blob_auth(blob_id, context_id, public_key, &private_key)?;
+            Ok(Some(auth))
+        } else {
+            Ok(None)
+        }
     }
 }
 
