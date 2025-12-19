@@ -87,7 +87,6 @@ members = [
 
     "./tools/calimero-abi",
     "./tools/merodb",
-    "./crates/storage-wasm",
 ]
 
 [workspace.dependencies]

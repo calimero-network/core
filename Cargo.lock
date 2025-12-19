@@ -9882,16 +9882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "storage-wasm"
-version = "0.0.0"
-dependencies = [
- "borsh",
- "calimero-sdk",
- "calimero-storage",
- "once_cell",
-]
-
-[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
