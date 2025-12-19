@@ -8,7 +8,10 @@ use calimero_storage::{
     env::{time_now, with_runtime_env, RuntimeEnv},
     index::Index,
     interface::{Interface, StorageError},
-    js::{JsCounter, JsFrozenStorage, JsLwwRegister, JsUnorderedMap, JsUnorderedSet, JsUserStorage, JsVector},
+    js::{
+        JsCounter, JsFrozenStorage, JsLwwRegister, JsUnorderedMap, JsUnorderedSet, JsUserStorage,
+        JsVector,
+    },
     store::MainStorage,
 };
 use std::{
@@ -263,9 +266,7 @@ impl VMHostFunctions<'_> {
         storage_id_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<i32> {
-        self.invoke_with_storage_env(|host| {
-            host.user_storage_get(storage_id_ptr, dest_register_id)
-        })
+        self.invoke_with_storage_env(|host| host.user_storage_get(storage_id_ptr, dest_register_id))
     }
 
     /// Retrieves a value from UserStorage for a specific user.
@@ -342,9 +343,7 @@ impl VMHostFunctions<'_> {
         storage_id_ptr: u64,
         hash_ptr: u64,
     ) -> VMLogicResult<i32> {
-        self.invoke_with_storage_env(|host| {
-            host.frozen_storage_contains(storage_id_ptr, hash_ptr)
-        })
+        self.invoke_with_storage_env(|host| host.frozen_storage_contains(storage_id_ptr, hash_ptr))
     }
 
     fn crdt_map_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
@@ -1155,10 +1154,8 @@ impl VMHostFunctions<'_> {
         let user_key: [u8; 32] = match <[u8; 32]>::try_from(user_key_bytes.as_slice()) {
             Ok(array) => array,
             Err(_) => {
-                return self.write_error_message(
-                    dest_register_id,
-                    "user key must be exactly 32 bytes",
-                )
+                return self
+                    .write_error_message(dest_register_id, "user key must be exactly 32 bytes")
             }
         };
 
@@ -1241,9 +1238,7 @@ impl VMHostFunctions<'_> {
         let user_key_bytes = self.read_buffer(user_key_ptr)?;
         let user_key: [u8; 32] = match <[u8; 32]>::try_from(user_key_bytes.as_slice()) {
             Ok(array) => array,
-            Err(_) => {
-                return self.write_error_message(0, "user key must be exactly 32 bytes")
-            }
+            Err(_) => return self.write_error_message(0, "user key must be exactly 32 bytes"),
         };
 
         let storage = match load_js_user_storage_instance(storage_id) {
@@ -1322,10 +1317,7 @@ impl VMHostFunctions<'_> {
         let hash: [u8; 32] = match <[u8; 32]>::try_from(hash_bytes.as_slice()) {
             Ok(array) => array,
             Err(_) => {
-                return self.write_error_message(
-                    dest_register_id,
-                    "hash must be exactly 32 bytes",
-                )
+                return self.write_error_message(dest_register_id, "hash must be exactly 32 bytes")
             }
         };
 
