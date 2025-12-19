@@ -8,7 +8,10 @@ use calimero_storage::{
     env::{time_now, with_runtime_env, RuntimeEnv},
     index::Index,
     interface::{Interface, StorageError},
-    js::{JsCounter, JsLwwRegister, JsUnorderedMap, JsUnorderedSet, JsVector},
+    js::{
+        JsCounter, JsFrozenStorage, JsLwwRegister, JsUnorderedMap, JsUnorderedSet, JsUserStorage,
+        JsVector,
+    },
     store::MainStorage,
 };
 use std::{
@@ -238,6 +241,109 @@ impl VMHostFunctions<'_> {
                 dest_register_id,
             )
         })
+    }
+
+    /// Creates a new UserStorage and returns its identifier.
+    pub fn js_user_storage_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.user_storage_new(dest_register_id))
+    }
+
+    /// Inserts or replaces a value in UserStorage for the current executor.
+    pub fn js_user_storage_insert(
+        &mut self,
+        storage_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.user_storage_insert(storage_id_ptr, value_ptr, dest_register_id)
+        })
+    }
+
+    /// Retrieves a value from UserStorage for the current executor.
+    pub fn js_user_storage_get(
+        &mut self,
+        storage_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.user_storage_get(storage_id_ptr, dest_register_id))
+    }
+
+    /// Retrieves a value from UserStorage for a specific user.
+    pub fn js_user_storage_get_for_user(
+        &mut self,
+        storage_id_ptr: u64,
+        user_key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.user_storage_get_for_user(storage_id_ptr, user_key_ptr, dest_register_id)
+        })
+    }
+
+    /// Removes a value from UserStorage for the current executor.
+    pub fn js_user_storage_remove(
+        &mut self,
+        storage_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.user_storage_remove(storage_id_ptr, dest_register_id)
+        })
+    }
+
+    /// Checks whether data exists for the current executor in UserStorage.
+    pub fn js_user_storage_contains(&mut self, storage_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.user_storage_contains(storage_id_ptr))
+    }
+
+    /// Checks whether data exists for a specific user in UserStorage.
+    pub fn js_user_storage_contains_user(
+        &mut self,
+        storage_id_ptr: u64,
+        user_key_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.user_storage_contains_user(storage_id_ptr, user_key_ptr)
+        })
+    }
+
+    /// Creates a new FrozenStorage and returns its identifier.
+    pub fn js_frozen_storage_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.frozen_storage_new(dest_register_id))
+    }
+
+    /// Inserts a value into FrozenStorage and returns its hash.
+    pub fn js_frozen_storage_add(
+        &mut self,
+        storage_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.frozen_storage_add(storage_id_ptr, value_ptr, dest_register_id)
+        })
+    }
+
+    /// Retrieves a value from FrozenStorage by hash.
+    pub fn js_frozen_storage_get(
+        &mut self,
+        storage_id_ptr: u64,
+        hash_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.frozen_storage_get(storage_id_ptr, hash_ptr, dest_register_id)
+        })
+    }
+
+    /// Checks whether a hash exists in FrozenStorage.
+    pub fn js_frozen_storage_contains(
+        &mut self,
+        storage_id_ptr: u64,
+        hash_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.frozen_storage_contains(storage_id_ptr, hash_ptr))
     }
 
     fn crdt_map_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
@@ -950,6 +1056,316 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    fn user_storage_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUserStorage, String> {
+            let mut storage = JsUserStorage::new();
+            save_js_user_storage_instance(&mut storage)?;
+            Ok(storage)
+        }));
+
+        match outcome {
+            Ok(Ok(storage)) => {
+                self.write_register_bytes(dest_register_id, storage.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => {
+                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
+            }
+        }
+    }
+
+    fn user_storage_insert(
+        &mut self,
+        storage_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut storage = match load_js_user_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match storage.insert(&value) {
+            Ok(previous) => {
+                if let Err(message) = save_js_user_storage_instance(&mut storage) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+
+                if let Some(prev) = previous {
+                    self.write_register_bytes(dest_register_id, &prev)?;
+                    Ok(1)
+                } else {
+                    self.clear_register(dest_register_id)?;
+                    Ok(0)
+                }
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn user_storage_get(
+        &mut self,
+        storage_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let storage = match load_js_user_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match storage.get() {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn user_storage_get_for_user(
+        &mut self,
+        storage_id_ptr: u64,
+        user_key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let user_key_bytes = self.read_buffer(user_key_ptr)?;
+        let user_key: [u8; 32] = match <[u8; 32]>::try_from(user_key_bytes.as_slice()) {
+            Ok(array) => array,
+            Err(_) => {
+                return self
+                    .write_error_message(dest_register_id, "user key must be exactly 32 bytes")
+            }
+        };
+
+        let storage = match load_js_user_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match storage.get_for_user(&user_key) {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn user_storage_remove(
+        &mut self,
+        storage_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let mut storage = match load_js_user_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match storage.remove() {
+            Ok(Some(previous)) => {
+                if let Err(message) = save_js_user_storage_instance(&mut storage) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+                self.write_register_bytes(dest_register_id, &previous)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn user_storage_contains(&mut self, storage_id_ptr: u64) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let storage = match load_js_user_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match storage.contains_current_user() {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn user_storage_contains_user(
+        &mut self,
+        storage_id_ptr: u64,
+        user_key_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let user_key_bytes = self.read_buffer(user_key_ptr)?;
+        let user_key: [u8; 32] = match <[u8; 32]>::try_from(user_key_bytes.as_slice()) {
+            Ok(array) => array,
+            Err(_) => return self.write_error_message(0, "user key must be exactly 32 bytes"),
+        };
+
+        let storage = match load_js_user_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match storage.contains_user(&user_key) {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn frozen_storage_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsFrozenStorage, String> {
+                let mut storage = JsFrozenStorage::new();
+                save_js_frozen_storage_instance(&mut storage)?;
+                Ok(storage)
+            }));
+
+        match outcome {
+            Ok(Ok(storage)) => {
+                self.write_register_bytes(dest_register_id, storage.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => {
+                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
+            }
+        }
+    }
+
+    fn frozen_storage_add(
+        &mut self,
+        storage_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut storage = match load_js_frozen_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match storage.insert(&value) {
+            Ok(hash) => {
+                if let Err(message) = save_js_frozen_storage_instance(&mut storage) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+                self.write_register_bytes(dest_register_id, &hash)?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn frozen_storage_get(
+        &mut self,
+        storage_id_ptr: u64,
+        hash_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let hash_bytes = self.read_buffer(hash_ptr)?;
+        let hash: [u8; 32] = match <[u8; 32]>::try_from(hash_bytes.as_slice()) {
+            Ok(array) => array,
+            Err(_) => {
+                return self.write_error_message(dest_register_id, "hash must be exactly 32 bytes")
+            }
+        };
+
+        let storage = match load_js_frozen_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match storage.get(&hash) {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn frozen_storage_contains(
+        &mut self,
+        storage_id_ptr: u64,
+        hash_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        let storage_id = match self.read_map_id(storage_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let hash_bytes = self.read_buffer(hash_ptr)?;
+        let hash: [u8; 32] = match <[u8; 32]>::try_from(hash_bytes.as_slice()) {
+            Ok(array) => array,
+            Err(_) => return self.write_error_message(0, "hash must be exactly 32 bytes"),
+        };
+
+        let storage = match load_js_frozen_storage_instance(storage_id) {
+            Ok(storage) => storage,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match storage.contains(&hash) {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
     fn read_map_id(&mut self, map_id_ptr: u64) -> VMLogicResult<Result<Id, String>> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(map_id_ptr)? };
         let data = self.read_guest_memory_slice(&buffer);
@@ -1277,6 +1693,104 @@ fn ensure_root_index_internal() -> Result<(), StorageError> {
             Index::<MainStorage>::add_root(ChildInfo::new(Id::root(), [0; 32], metadata))
         }
         Err(err) => Err(err),
+    }
+}
+
+fn load_js_user_storage_instance(id: Id) -> Result<JsUserStorage, String> {
+    match JsUserStorage::load(id) {
+        Ok(Some(storage)) => {
+            debug!(
+                target: "runtime::user_storage",
+                storage_id = %id.to_string(),
+                "loaded JsUserStorage from storage"
+            );
+            Ok(storage)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::user_storage",
+                storage_id = %missing_id,
+                "JsUserStorage not found in storage"
+            );
+            let mut storage = JsUserStorage::new_with_id(id);
+            match save_js_user_storage_instance(&mut storage) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::user_storage",
+                        storage_id = %missing_id,
+                        "recreated missing JsUserStorage"
+                    );
+                    Ok(storage)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_user_storage_instance(storage: &mut JsUserStorage) -> Result<(), String> {
+    match storage.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), storage) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn load_js_frozen_storage_instance(id: Id) -> Result<JsFrozenStorage, String> {
+    match JsFrozenStorage::load(id) {
+        Ok(Some(storage)) => {
+            debug!(
+                target: "runtime::frozen_storage",
+                storage_id = %id.to_string(),
+                "loaded JsFrozenStorage from storage"
+            );
+            Ok(storage)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::frozen_storage",
+                storage_id = %missing_id,
+                "JsFrozenStorage not found in storage"
+            );
+            let mut storage = JsFrozenStorage::new_with_id(id);
+            match save_js_frozen_storage_instance(&mut storage) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::frozen_storage",
+                        storage_id = %missing_id,
+                        "recreated missing JsFrozenStorage"
+                    );
+                    Ok(storage)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_frozen_storage_instance(storage: &mut JsFrozenStorage) -> Result<(), String> {
+    match storage.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), storage) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
     }
 }
 
