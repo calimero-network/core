@@ -8,12 +8,13 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate as calimero_storage;
 use crate::collections::{
-    error::StoreError, Counter as StorageCounter, LwwRegister as StorageLwwRegister, UnorderedMap,
-    UnorderedSet, Vector,
+    error::StoreError, Counter as StorageCounter, FrozenStorage, LwwRegister as StorageLwwRegister,
+    UnorderedMap, UnorderedSet, UserStorage, Vector,
 };
 use crate::entities::{Element, Metadata};
 use crate::store::MainStorage;
 use crate::{address::Id, Interface, StorageError};
+use calimero_primitives::identity::PublicKey;
 
 /// Macro support for deriving storage traits on the wrapper types.
 use calimero_storage_macros::AtomicUnit;
@@ -561,6 +562,263 @@ impl JsCounter {
 }
 
 impl Default for JsCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A byte-oriented user storage wrapper that integrates with Calimero storage.
+///
+/// The storage maps PublicKeys (32 bytes) to raw byte arrays (`Vec<u8>`).
+/// This enables JavaScript runtimes to use UserStorage with proper StorageType::User
+/// metadata for security checks.
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsUserStorage {
+    user_storage: UserStorage<Vec<u8>>,
+
+    #[storage]
+    storage: Element,
+}
+
+impl JsUserStorage {
+    /// Creates a new JS user storage backed by the main storage backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            user_storage: UserStorage::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    /// Rehydrates a user storage using a known identifier.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            user_storage: UserStorage::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    /// Returns the unique identifier of this collection.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    /// Returns metadata associated with the collection.
+    #[must_use]
+    pub fn metadata(&self) -> Metadata {
+        self.storage.metadata().clone()
+    }
+
+    /// Grants immutable access to the underlying element.
+    #[must_use]
+    pub fn element(&self) -> &Element {
+        &self.storage
+    }
+
+    /// Grants mutable access to the underlying element.
+    #[must_use]
+    pub fn element_mut(&mut self) -> &mut Element {
+        &mut self.storage
+    }
+
+    /// Inserts a value for the current executor (user).
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`StoreError`] surfaced by the underlying storage insertion.
+    pub fn insert(&mut self, value: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.user_storage.insert(value.to_vec())
+    }
+
+    /// Retrieves the value for the current executor, if present.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] when the underlying storage read fails.
+    pub fn get(&self) -> Result<Option<Vec<u8>>, StoreError> {
+        self.user_storage.get()
+    }
+
+    /// Retrieves the value for a specific user's PublicKey, if present.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] when the underlying storage read fails.
+    pub fn get_for_user(&self, user_key: &[u8; 32]) -> Result<Option<Vec<u8>>, StoreError> {
+        let public_key: PublicKey = (*user_key).into();
+        self.user_storage.get_for_user(&public_key)
+    }
+
+    /// Checks whether data exists for the current executor.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the existence check fails.
+    pub fn contains_current_user(&self) -> Result<bool, StoreError> {
+        self.user_storage.contains_current_user()
+    }
+
+    /// Checks whether data exists for a specific user.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the existence check fails.
+    pub fn contains_user(&self, user_key: &[u8; 32]) -> Result<bool, StoreError> {
+        let public_key: PublicKey = (*user_key).into();
+        self.user_storage.contains_user(&public_key)
+    }
+
+    /// Removes the value for the current executor, returning the previous value if it existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`StoreError`] emitted by the storage layer.
+    pub fn remove(&mut self) -> Result<Option<Vec<u8>>, StoreError> {
+        self.user_storage.remove()
+    }
+
+    /// Returns all user/value pairs currently stored.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading from storage fails.
+    pub fn entries(&self) -> Result<Vec<([u8; 32], Vec<u8>)>, StoreError> {
+        let iter = self.user_storage.inner.entries()?;
+        Ok(iter
+            .map(|(public_key, value)| (*public_key, value))
+            .collect())
+    }
+
+    /// Persists the user storage using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] produced by the storage interface.
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    /// Loads a user storage by identifier using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the user storage cannot be fetched from storage.
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsUserStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A byte-oriented frozen storage wrapper that integrates with Calimero storage.
+///
+/// The storage maps hashes (32 bytes) to raw byte arrays (`Vec<u8>`).
+/// This enables JavaScript runtimes to use FrozenStorage with proper StorageType::Frozen
+/// metadata for immutability checks.
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsFrozenStorage {
+    frozen_storage: FrozenStorage<Vec<u8>>,
+
+    #[storage]
+    storage: Element,
+}
+
+impl JsFrozenStorage {
+    /// Creates a new JS frozen storage backed by the main storage backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            frozen_storage: FrozenStorage::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    /// Rehydrates a frozen storage using a known identifier.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            frozen_storage: FrozenStorage::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    /// Returns the unique identifier of this collection.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    /// Returns metadata associated with the collection.
+    #[must_use]
+    pub fn metadata(&self) -> Metadata {
+        self.storage.metadata().clone()
+    }
+
+    /// Grants immutable access to the underlying element.
+    #[must_use]
+    pub fn element(&self) -> &Element {
+        &self.storage
+    }
+
+    /// Grants mutable access to the underlying element.
+    #[must_use]
+    pub fn element_mut(&mut self) -> &mut Element {
+        &mut self.storage
+    }
+
+    /// Inserts a value into frozen storage and returns its hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`StoreError`] surfaced by the underlying storage insertion.
+    pub fn insert(&mut self, value: &[u8]) -> Result<[u8; 32], StoreError> {
+        self.frozen_storage.insert(value.to_vec())
+    }
+
+    /// Retrieves the value for `hash`, if present.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] when the underlying storage read fails.
+    pub fn get(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.frozen_storage.get(hash)
+    }
+
+    /// Checks whether `hash` exists within the frozen storage.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the existence check fails.
+    pub fn contains(&self, hash: &[u8; 32]) -> Result<bool, StoreError> {
+        self.frozen_storage.contains(hash)
+    }
+
+    /// Persists the frozen storage using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] produced by the storage interface.
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    /// Loads a frozen storage by identifier using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the frozen storage cannot be fetched from storage.
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsFrozenStorage {
     fn default() -> Self {
         Self::new()
     }
