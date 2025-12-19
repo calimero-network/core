@@ -34,8 +34,30 @@ env:
   CALIMERO_CONTRACTS_VERSION: latest
 
 jobs:
-  build:
-    name: Build Binaries & Download Contracts
+  determine-image-tag:
+    name: Determine Docker Image Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.image-tag.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine Docker image tag
+        id: image-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.number }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref }}" \
+              "$GH_TOKEN"
+
+  download-contracts:
+    name: Download Contracts
     runs-on: ubuntu-24.04-8cpu
     outputs:
       cache-key: ${{ steps.cache-key.outputs.key }}
@@ -43,57 +65,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Generate cache key
         id: cache-key
-        run: echo "key=${{ runner.os }}-proposals-${{ github.sha }}" >> $GITHUB_OUTPUT
-
-      - name: Build merod binary
-        run: cargo build --bin merod
+        run: echo "key=${{ runner.os }}-proposals-contracts-${{ github.sha }}" >> $GITHUB_OUTPUT
 
       - name: Download Contracts
-        run: |
-          echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
-          ./scripts/download-contracts.sh
+        run: ./scripts/download-contracts.sh
 
-      - name: Cache build artifacts
+      - name: Cache contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
           key: ${{ steps.cache-key.outputs.key }}
 
   near:
     name: Test NEAR Proposals
-    needs: build
+    needs: [determine-image-tag, download-contracts]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
+      - name: Restore contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
-          key: ${{ needs.build.outputs.cache-key }}
+          key: ${{ needs.download-contracts.outputs.cache-key }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -117,27 +116,64 @@ jobs:
           cd workflows/proposals
           merobox bootstrap run \
               near-proposals.yml \
-              --no-docker \
-              --binary-path ../../target/debug/merod \
+              --image ghcr.io/calimero-network/merod:${{ needs.determine-image-tag.outputs.tag }} \
               --e2e-mode \
               --near-devnet \
               --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
 
+      - name: Collect Docker Logs
+        if: always()
+        run: |
+          mkdir -p docker-logs
+          echo "Collecting Docker logs for NEAR nodes..."
+          # Collect logs from all containers with calimero.node=true label
+          # merobox sets this label on all node containers, so this covers all nodes regardless of name
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+            if [ -n "$container" ]; then
+              echo "Collecting logs from container: $container"
+              docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
+            fi
+          done
+          echo "Collected logs:"
+          ls -la docker-logs/ || echo "No logs collected"
+
+      - name: Upload Workflow Data Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: near-proposals-data-${{ github.sha }}
+          path: |
+            workflows/proposals/**/*.wasm
+            workflows/proposals/**/*.mpk
+            workflows/proposals/**/abi.json
+            workflows/proposals/**/state-schema.json
+            workflows/proposals/**/data/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: near-proposals-docker-logs-${{ github.sha }}
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
   icp:
     name: Test ICP Proposals
-    needs: build
+    needs: [determine-image-tag, download-contracts]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
+      - name: Restore contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
-          key: ${{ needs.build.outputs.cache-key }}
+          key: ${{ needs.download-contracts.outputs.cache-key }}
 
       - name: Install DFX for ICP
         uses: dfinity/setup-dfx@main
@@ -170,25 +206,62 @@ jobs:
           cd workflows/proposals
           merobox bootstrap run \
               icp-proposals.yml \
-              --no-docker \
-              --binary-path ../../target/debug/merod \
+              --image ghcr.io/calimero-network/merod:${{ needs.determine-image-tag.outputs.tag }} \
               --e2e-mode
+
+      - name: Collect Docker Logs
+        if: always()
+        run: |
+          mkdir -p docker-logs
+          echo "Collecting Docker logs for ICP nodes..."
+          # Collect logs from all containers with calimero.node=true label
+          # merobox sets this label on all node containers, so this covers all nodes regardless of name
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+            if [ -n "$container" ]; then
+              echo "Collecting logs from container: $container"
+              docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
+            fi
+          done
+          echo "Collected logs:"
+          ls -la docker-logs/ || echo "No logs collected"
+
+      - name: Upload Workflow Data Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: icp-proposals-data-${{ github.sha }}
+          path: |
+            workflows/proposals/**/*.wasm
+            workflows/proposals/**/*.mpk
+            workflows/proposals/**/abi.json
+            workflows/proposals/**/state-schema.json
+            workflows/proposals/**/data/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icp-proposals-docker-logs-${{ github.sha }}
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
 
   ethereum:
     name: Test Ethereum Proposals
-    needs: build
+    needs: [determine-image-tag, download-contracts]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
+      - name: Restore contracts
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             contracts
-          key: ${{ needs.build.outputs.cache-key }}
+          key: ${{ needs.download-contracts.outputs.cache-key }}
 
       - name: Install Foundry for Ethereum
         uses: foundry-rs/foundry-toolchain@v1
@@ -219,9 +292,47 @@ jobs:
           cd workflows/proposals
           merobox bootstrap run \
               ethereum-proposals.yml \
-              --no-docker \
-              --binary-path ../../target/debug/merod \
+              --image ghcr.io/calimero-network/merod:${{ needs.determine-image-tag.outputs.tag }} \
               --e2e-mode
+
+      - name: Collect Docker Logs
+        if: always()
+        run: |
+          mkdir -p docker-logs
+          echo "Collecting Docker logs for Ethereum nodes..."
+          # Collect logs from all containers with calimero.node=true label
+          # merobox sets this label on all node containers, so this covers all nodes regardless of name
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+            if [ -n "$container" ]; then
+              echo "Collecting logs from container: $container"
+              docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
+            fi
+          done
+          echo "Collected logs:"
+          ls -la docker-logs/ || echo "No logs collected"
+
+      - name: Upload Workflow Data Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ethereum-proposals-data-${{ github.sha }}
+          path: |
+            workflows/proposals/**/*.wasm
+            workflows/proposals/**/*.mpk
+            workflows/proposals/**/abi.json
+            workflows/proposals/**/state-schema.json
+            workflows/proposals/**/data/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ethereum-proposals-docker-logs-${{ github.sha }}
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
 
   comment:
     name: Report Failed Workflows
@@ -234,6 +345,7 @@ jobs:
         run: |
           failed_workflows=()
 
+          # Report failures, cancellations, and skipped jobs
           if [ "${{ needs.near.result }}" != "success" ]; then
             failed_workflows+=("near")
           fi
@@ -249,13 +361,8 @@ jobs:
           if [ ${#failed_workflows[@]} -gt 0 ]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
             printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
-            echo "The following workflows failed:"
-            for failed in "${failed_workflows[@]}"; do
-              echo "  - $failed"
-            done
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
-            echo "All workflows completed successfully!"
           fi
 
       - name: Upload Failed Workflows

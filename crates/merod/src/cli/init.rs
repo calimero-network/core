@@ -45,7 +45,7 @@ use tracing::{info, warn};
 use url::Url;
 
 use super::auth_mode::AuthModeArg;
-use crate::{cli, defaults};
+use crate::{cli, defaults, docker};
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -97,16 +97,19 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
         signer_type: ClientSelectedSigner::Local,
         networks: &[
             ("ic", "https://ic0.app"),
-            ("local", "http://127.0.0.1:4943"),
+            ("local", "http://127.0.0.1:4943"), // Will be overridden if in Docker
         ],
         protocol: ConfigProtocol::Icp,
     },
     ProtocolConfig {
         name: "ethereum",
         default_network: "sepolia",
-        default_contract: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB",
+        default_contract: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB", // Sepolia ContextConfig address
         signer_type: ClientSelectedSigner::Relayer,
-        networks: &[("sepolia", "https://sepolia.drpc.org")],
+        networks: &[
+            ("local", "http://127.0.0.1:8545"), // Will be overridden if in Docker
+            ("sepolia", "https://sepolia.drpc.org"),
+        ],
         protocol: ConfigProtocol::Ethereum,
     },
     ProtocolConfig {
@@ -336,9 +339,21 @@ impl InitCommand {
             };
 
             for (network_name, rpc_url) in config.networks {
+                // Use host.docker.internal (or Linux fallback) for local networks when running in Docker
+                let final_rpc_url =
+                    if *network_name == "local" && std::path::Path::new("/.dockerenv").exists() {
+                        match config.name {
+                            "icp" => docker::get_docker_host_for_port(4943),
+                            "ethereum" => docker::get_docker_host_for_port(8545),
+                            _ => rpc_url.to_string(),
+                        }
+                    } else {
+                        rpc_url.to_string()
+                    };
+
                 let _ignored = local_config.signers.insert(
                     network_name.to_string(),
-                    generate_local_signer(rpc_url.parse()?, config.protocol)?,
+                    generate_local_signer(final_rpc_url.parse()?, config.protocol)?,
                 );
             }
 
@@ -493,15 +508,32 @@ fn generate_local_signer(
         }
 
         ConfigProtocol::Ethereum => {
-            let secp = PrivateKeySigner::random();
-            let address = secp.address();
-            let secret_key = secp.to_bytes();
-            let secret_key_hex = encode(secret_key);
+            // For local networks, use Anvil default account (has funds)
+            // For other networks, generate a random account
+            let (account_id, secret_key_hex) = if rpc_url.host_str() == Some("127.0.0.1")
+                || rpc_url.host_str() == Some("localhost")
+                || rpc_url.host_str() == Some("host.docker.internal")
+                || rpc_url.host_str() == Some("172.17.0.1")
+            {
+                // Use Anvil default account for local devnet
+                (
+                    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
+                    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+                        .to_string(),
+                )
+            } else {
+                // Generate random account for other networks
+                let secp = PrivateKeySigner::random();
+                let address = secp.address();
+                let secret_key = secp.to_bytes();
+                let secret_key_hex = encode(secret_key);
+                (address.to_string(), secret_key_hex)
+            };
 
             Ok(ClientLocalSigner {
                 rpc_url,
                 credentials: Credentials::Ethereum(ethereum_protocol::Credentials {
-                    account_id: address.to_string(),
+                    account_id,
                     secret_key: secret_key_hex,
                 }),
             })

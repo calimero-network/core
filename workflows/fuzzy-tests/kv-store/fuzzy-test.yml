@@ -234,7 +234,7 @@ steps:
       - "is_set({{final_kv_count}})"
 
 # Configuration options
-stop_all_nodes: true
+stop_all_nodes: false
 restart: false
 wait_timeout: 3600 # 1 hour timeout for long-running test
 

@@ -1,9 +1,6 @@
 name: "Proposals - NEAR"
 description: "Test proposal functionality on NEAR protocol"
 
-# Test configuration
-no_docker: true
-
 nodes:
   chain_id: calimero-testnet
   count: 2
@@ -125,6 +122,6 @@ steps:
       - "is_set({{messages_node1}})"
 
 # Configuration options
-stop_all_nodes: true
+stop_all_nodes: false
 restart: false
 wait_timeout: 45
