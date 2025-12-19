@@ -59,6 +59,11 @@ impl ContextId {
     pub fn zero() -> Self {
         Self::from([0_u8; DIGEST_SIZE])
     }
+
+    // Returns ContextID represented as a 32-byte array.
+    pub fn digest(&self) -> &[u8; DIGEST_SIZE] {
+        &self.0
+    }
 }
 
 impl fmt::Display for ContextId {

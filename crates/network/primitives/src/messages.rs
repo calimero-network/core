@@ -6,6 +6,7 @@ pub use libp2p::PeerId;
 use libp2p::{Multiaddr, StreamProtocol};
 use tokio::sync::oneshot;
 
+use crate::blob_types::BlobAuth;
 use crate::stream::Stream;
 
 #[derive(Debug, actix::Message)]
@@ -170,6 +171,7 @@ pub struct RequestBlob {
     pub blob_id: BlobId,
     pub context_id: ContextId,
     pub peer_id: PeerId,
+    pub auth: Option<BlobAuth>,
 }
 
 impl actix::Message for RequestBlob {

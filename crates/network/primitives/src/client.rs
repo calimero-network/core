@@ -1,10 +1,10 @@
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::{blobs::BlobId, context::ContextId};
 use calimero_utils_actix::LazyRecipient;
 use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
 use libp2p::Multiaddr;
 use tokio::sync::oneshot;
 
+use crate::blob_types::BlobAuth;
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, NetworkMessage, OpenStream,
     PeerCount, Publish, QueryBlob, RequestBlob, Subscribe, Unsubscribe,
@@ -216,6 +216,7 @@ impl NetworkClient {
         blob_id: BlobId,
         context_id: ContextId,
         peer_id: libp2p::PeerId,
+        auth: Option<BlobAuth>,
     ) -> eyre::Result<Option<Vec<u8>>> {
         let (tx, rx) = oneshot::channel();
 
@@ -225,6 +226,7 @@ impl NetworkClient {
                     blob_id,
                     context_id,
                     peer_id,
+                    auth,
                 },
                 outcome: tx,
             })

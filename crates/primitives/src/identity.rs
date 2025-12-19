@@ -110,9 +110,19 @@ impl PublicKey {
         self.0.as_str()
     }
 
-    /// Verify a signature against this public key
+    /// Verify a signature against this public key.
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
         VerifyingKey::from_bytes(self.as_ref())?.verify(message, signature)
+    }
+
+    /// Verify a signature passed as a raw bytes against this public key.
+    pub fn verify_raw_signature(
+        &self,
+        message: &[u8],
+        signature_bytes: &[u8; 64],
+    ) -> Result<(), SignatureError> {
+        let signature = Signature::from_bytes(&signature_bytes);
+        self.verify(message, &signature)
     }
 
     // Return represented as a 32-byte array
