@@ -44,10 +44,6 @@ impl SyncManager {
 
         // Fetch all missing ancestors, then add them in topological order (oldest first)
         let mut to_fetch = missing_ids.clone();
-        let mut fetched_deltas: Vec<(
-            calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>>,
-            [u8; 32],
-        )> = Vec::new();
         let mut fetch_count = 0;
 
         // Track visited IDs to prevent cycles/loops from malicious peers
