@@ -99,7 +99,8 @@ impl SyncManager {
                             // Cycle & Duplicate Detection
                             // We attempt to insert into `visited`.
                             // If insert returns true, it's a NEW ID we haven't processed or queued yet.
-                            // Then, verify and add to the queue only if we don't have it on disk.
+                            // Then, verify and add to the queue only if we don't have it in Delta
+                            // Store (should be stored on disk in future).
                             if visited_ids.insert(*parent_id)
                                 && !delta_store.has_delta(parent_id).await
                             {
@@ -116,8 +117,10 @@ impl SyncManager {
                             expected_root_hash: parent_delta.expected_root_hash,
                         };
 
-                        // Write to disk. If parents are missing, DeltaStore marks it 'Pending'.
+                        // Write deltas to DeltaStore. If parents are missing, DeltaStore marks it 'Pending'.
                         // There's no need for topological order insert.
+                        // NOTE: currently delta store doesn't write the deltas on disk, that
+                        // should be optionally enabled in the future for robustness.
                         if let Err(e) = delta_store.add_delta(dag_delta).await {
                             warn!(?e, %context_id, delta_id = ?missing_id, "Failed to persist fetched delta to DAG");
                             continue;
