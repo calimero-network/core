@@ -223,6 +223,7 @@ mod tests {
             node_manager,
             event_sender,
             ctx_sync_tx,
+            String::new(), // Not used in tests
         );
 
         // 5. Create a minimal, valid ClientConfig.

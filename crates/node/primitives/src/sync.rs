@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::Nonce;
+use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -45,6 +46,30 @@ pub enum BroadcastMessage<'a> {
         root_hash: Hash,
         /// Current DAG head(s)
         dag_heads: Vec<[u8; 32]>,
+    },
+
+    /// Specialized node discovery request
+    ///
+    /// Broadcast by a node to discover and invite specialized nodes (e.g., read-only TEE nodes).
+    /// Specialized nodes receiving this will respond via request-response protocol
+    /// to the message source (available from gossipsub message).
+    ///
+    /// Note: context_id is NOT included - it's tracked internally by the requesting
+    /// node using the nonce as the lookup key.
+    SpecializedNodeDiscovery {
+        /// Random nonce to bind verification to this request
+        nonce: [u8; 32],
+        /// Type of specialized node being invited
+        node_type: SpecializedNodeType,
+    },
+
+    /// Confirmation that a specialized node has joined a context
+    ///
+    /// Broadcast by specialized nodes on the context topic after successfully joining.
+    /// The inviting node receives this and removes the pending invite entry.
+    SpecializedNodeJoinConfirmation {
+        /// The nonce from the original discovery request
+        nonce: [u8; 32],
     },
 }
 

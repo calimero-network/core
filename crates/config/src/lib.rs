@@ -48,6 +48,33 @@ pub struct SyncConfig {
     pub frequency: Duration,
 }
 
+/// Configuration for specialized node functionality (e.g., read-only nodes).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct SpecializedNodeConfig {
+    /// Topic name for specialized node invite discovery messages.
+    #[serde(default = "default_specialized_node_invite_topic")]
+    pub invite_topic: String,
+
+    /// Whether to accept mock TEE attestation.
+    /// WARNING: Should only be true for testing. Never enable in production!
+    #[serde(default)]
+    pub accept_mock_tee: bool,
+}
+
+fn default_specialized_node_invite_topic() -> String {
+    "mero_specialized_node_invites".to_owned()
+}
+
+impl Default for SpecializedNodeConfig {
+    fn default() -> Self {
+        Self {
+            invite_topic: default_specialized_node_invite_topic(),
+            accept_mock_tee: false,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct NetworkConfig {
@@ -60,11 +87,15 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub discovery: DiscoveryConfig,
+
+    /// Configuration for specialized nodes (read-only, etc.).
+    #[serde(default)]
+    pub specialized_node: SpecializedNodeConfig,
 }
 
 impl NetworkConfig {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         swarm: SwarmConfig,
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
@@ -75,6 +106,25 @@ impl NetworkConfig {
             server,
             bootstrap,
             discovery,
+            specialized_node: SpecializedNodeConfig::default(),
+        }
+    }
+
+    /// Create a new `NetworkConfig` with custom specialized node settings.
+    #[must_use]
+    pub fn with_specialized_node(
+        swarm: SwarmConfig,
+        bootstrap: BootstrapConfig,
+        discovery: DiscoveryConfig,
+        server: ServerConfig,
+        specialized_node: SpecializedNodeConfig,
+    ) -> Self {
+        Self {
+            swarm,
+            server,
+            bootstrap,
+            discovery,
+            specialized_node,
         }
     }
 }

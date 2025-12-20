@@ -1,7 +1,11 @@
 use core::time::Duration;
 
 use calimero_network_primitives::config::NetworkConfig;
+use calimero_network_primitives::specialized_node_invite::{
+    SpecializedNodeInviteCodec, CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL,
+};
 use eyre::WrapErr;
+use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
@@ -32,6 +36,7 @@ pub struct Behaviour {
     pub relay: relay::client::Behaviour,
     pub rendezvous: rendezvous::client::Behaviour,
     pub stream: libp2p_stream::Behaviour,
+    pub specialized_node_invite: request_response::Behaviour<SpecializedNodeInviteCodec>,
 }
 
 impl Behaviour {
@@ -111,6 +116,13 @@ impl Behaviour {
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
                     relay: relay_behaviour,
                     stream: libp2p_stream::Behaviour::new(),
+                    specialized_node_invite: request_response::Behaviour::new(
+                        [(
+                            CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL,
+                            ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default(),
+                    ),
                 };
 
                 Ok(behaviour)

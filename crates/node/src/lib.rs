@@ -17,6 +17,9 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::specialized_node_invite_state::{
+    new_pending_specialized_node_invites, PendingSpecializedNodeInvites,
+};
 use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
@@ -34,10 +37,11 @@ mod delta_store;
 pub mod gc;
 pub mod handlers;
 mod run;
+mod specialized_node_invite_state;
 pub mod sync;
 mod utils;
 
-pub use run::{start, NodeConfig};
+pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 pub use sync::SyncManager;
 
 /// Cached blob with access tracking for eviction
@@ -79,13 +83,22 @@ pub(crate) struct NodeManagers {
 pub(crate) struct NodeState {
     pub(crate) blob_cache: Arc<DashMap<BlobId, CachedBlob>>,
     pub(crate) delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
+    /// Pending specialized node invites (standard node side) - tracks context_id/inviter for incoming verifications
+    pub(crate) pending_specialized_node_invites: PendingSpecializedNodeInvites,
+    /// Whether to accept mock TEE attestation (from config, for testing only)
+    pub(crate) accept_mock_tee: bool,
+    /// Node operation mode (Standard or ReadOnly)
+    pub(crate) node_mode: NodeMode,
 }
 
 impl NodeState {
-    fn new() -> Self {
+    fn new(accept_mock_tee: bool, node_mode: NodeMode) -> Self {
         Self {
             blob_cache: Arc::new(DashMap::new()),
             delta_stores: Arc::new(DashMap::new()),
+            pending_specialized_node_invites: new_pending_specialized_node_invites(),
+            accept_mock_tee,
+            node_mode,
         }
     }
 

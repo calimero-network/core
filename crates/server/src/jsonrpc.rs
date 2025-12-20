@@ -36,6 +36,15 @@ pub(crate) fn service(
     config: &ServerConfig,
     ctx_client: ContextClient,
 ) -> Option<(String, Router)> {
+    // Check if JSON-RPC is configured and enabled
+    let _jsonrpc_config = match &config.jsonrpc {
+        Some(cfg) if cfg.enabled => cfg,
+        _ => {
+            info!("JSON RPC server is disabled");
+            return None;
+        }
+    };
+
     let base_path = "/jsonrpc";
 
     // Get the node prefix from env var

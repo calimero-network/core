@@ -2092,6 +2092,7 @@ name = "calimero-network-primitives"
 version = "0.0.0"
 dependencies = [
  "actix",
+ "async-trait",
  "borsh",
  "bytes",
  "calimero-primitives",
@@ -2128,6 +2129,7 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-store-rocksdb",
+ "calimero-tee-attestation",
  "calimero-utils-actix",
  "camino",
  "dashmap 6.1.0",
@@ -2164,6 +2166,7 @@ dependencies = [
  "calimero-store-rocksdb",
  "calimero-utils-actix",
  "camino",
+ "dashmap 6.1.0",
  "eyre",
  "flate2",
  "futures-util",
@@ -2293,9 +2296,8 @@ dependencies = [
  "calimero-primitives",
  "calimero-server-primitives",
  "calimero-store",
+ "calimero-tee-attestation",
  "color-eyre",
- "configfs-tsm",
- "dcap-qvl",
  "eyre",
  "futures-util",
  "hex",
@@ -2309,8 +2311,6 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "tdx-quote",
- "tdx_workload_attestation",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2402,6 +2402,22 @@ name = "calimero-sys"
 version = "0.0.0"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "calimero-tee-attestation"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "calimero-server-primitives",
+ "configfs-tsm",
+ "dcap-qvl",
+ "eyre",
+ "hex",
+ "reqwest 0.12.24",
+ "tdx-quote",
+ "tdx_workload_attestation",
+ "tracing",
 ]
 
 [[package]]
@@ -5670,6 +5686,7 @@ dependencies = [
  "libp2p-quic",
  "libp2p-relay",
  "libp2p-rendezvous",
+ "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
  "libp2p-tls",

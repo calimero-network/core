@@ -55,6 +55,7 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
         node_manager,
         event_sender,
         ctx_sync_tx,
+        String::new(), // Not used in tests
     );
 
     // 5. Setup ExternalClient
