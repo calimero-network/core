@@ -10,7 +10,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::delta::CausalDelta;
 use eyre::{bail, OptionExt, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
@@ -19,6 +19,8 @@ use super::tracking::Sequencer;
 /// This prevents OOM where a peer sends a delta with an deep chain with many deltas.
 /// TODO: adjust this number after the benchmarks.
 const MAX_DELTA_FETCH_LIMIT: usize = 3000;
+const DELTA_WARN_LIMIT: usize = 1000;
+const GENESIS_DELTA_ID: [u8; 32] = [0u8; 32];
 
 impl SyncManager {
     /// Request missing deltas from a peer and add them to the DAG
@@ -56,23 +58,23 @@ impl SyncManager {
         // Phase 1: Fetch ALL missing deltas recursively
         // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
         while !to_fetch.is_empty() {
-            // Enforce hard limit on fetched deltas count
-            if fetch_count >= MAX_DELTA_FETCH_LIMIT {
-                warn!(
-                    %context_id,
-                    fetch_count,
-                    limit = MAX_DELTA_FETCH_LIMIT,
-                    "Exceeded maximum delta fetch limit. The sync gap is too large."
-                );
-
-                // Stop syncing. Progress so far is saved in DeltaStore (Pending).
-                break;
-            }
-
             // Drain the current batch so we don't hold it in memory while fetching new ones
             let current_batch = std::mem::take(&mut to_fetch);
 
             for missing_id in current_batch {
+                // Enforce hard limit on fetched deltas count
+                if fetch_count >= MAX_DELTA_FETCH_LIMIT {
+                    warn!(
+                        %context_id,
+                        fetch_count,
+                        limit = MAX_DELTA_FETCH_LIMIT,
+                        "Exceeded maximum delta fetch limit. The sync gap is too large."
+                    );
+
+                    // Stop syncing. Progress so far is saved in DeltaStore (Pending).
+                    return Ok(());
+                }
+
                 fetch_count += 1;
 
                 match self
@@ -92,7 +94,7 @@ impl SyncManager {
                         // We also check local storage to avoid re-fetching known deltas.
                         for parent_id in &parent_delta.parents {
                             // Skip genesis
-                            if *parent_id == [0; 32] {
+                            if *parent_id == GENESIS_DELTA_ID {
                                 continue;
                             }
 
@@ -130,8 +132,13 @@ impl SyncManager {
                         warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
                     }
                     Err(e) => {
-                        warn!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
-                        break; // Stop requesting if stream fails
+                        error!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
+
+                        // Stop requesting if stream fails
+                        // TODO: in future, this might also mean that the `stream` has some
+                        // critical error and, perhaps, we need to set a limit of failures for the
+                        // specific peer (stream).
+                        break;
                     }
                 }
             }
@@ -145,7 +152,7 @@ impl SyncManager {
             );
 
             // Log warning for very large syncs (informational, not a hard limit)
-            if fetch_count > 1000 {
+            if fetch_count > DELTA_WARN_LIMIT {
                 warn!(
                     %context_id,
                     total_fetched = fetch_count,
