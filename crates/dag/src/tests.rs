@@ -534,15 +534,15 @@ async fn test_dag_get_deltas_since() {
     dag.add_delta(d3.clone(), &applier).await.unwrap();
 
     // Get all deltas since root
-    let deltas = dag.get_deltas_since([0; 32], None, MAX_DELTA_QUERY_LIMIT);
+    let (deltas, _) = dag.get_deltas_since([0; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 3);
 
     // Get deltas since d1
-    let deltas = dag.get_deltas_since([1; 32], None, MAX_DELTA_QUERY_LIMIT);
+    let (deltas, _) = dag.get_deltas_since([1; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 2);
 
     // Get deltas since d3 (none)
-    let deltas = dag.get_deltas_since([3; 32], None, MAX_DELTA_QUERY_LIMIT);
+    let (deltas, _) = dag.get_deltas_since([3; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 0);
 }
 
@@ -567,7 +567,7 @@ async fn test_dag_get_deltas_since_branched() {
     dag.add_delta(d3, &applier).await.unwrap();
 
     // Get all since root
-    let deltas = dag.get_deltas_since([0; 32], None, MAX_DELTA_QUERY_LIMIT);
+    let (deltas, _) = dag.get_deltas_since([0; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 3);
 
     let ids: Vec<_> = deltas.iter().map(|d| d.id).collect();
@@ -706,7 +706,7 @@ async fn test_get_deltas_since_pagination() {
     // Request recent history with limit 3
     // Note: get_deltas_since performs BFS from heads (reverse chronological-ish)
     // So we expect to see the latest deltas first (10, 9, 8...) or parents of heads.
-    let deltas = dag.get_deltas_since([0; 32], None, 3);
+    let (deltas, _) = dag.get_deltas_since([0; 32], None, 3);
 
     assert_eq!(deltas.len(), 3);
 
@@ -733,7 +733,7 @@ async fn test_get_deltas_since_manual_pagination() {
 
     // Page 1: Start from head (None), Limit 3
     // Expect: 10, 9, 8
-    let page1 = dag.get_deltas_since([0; 32], None, 3);
+    let (page1, _) = dag.get_deltas_since([0; 32], None, 3);
     assert_eq!(page1.len(), 3);
     assert_eq!(page1[0].id, [10; 32]);
     assert_eq!(page1.last().unwrap().id, [8; 32]);
@@ -747,14 +747,14 @@ async fn test_get_deltas_since_manual_pagination() {
 
     // Page 2: Start from [7], Limit 3
     // Expect: 7, 6, 5
-    let page2 = dag.get_deltas_since([0; 32], Some(next_start), 3);
+    let (page2, _) = dag.get_deltas_since([0; 32], Some(vec![next_start]), 3);
     assert_eq!(page2.len(), 3);
     assert_eq!(page2[0].id, [7; 32]);
     assert_eq!(page2.last().unwrap().id, [5; 32]);
 
     // Page 3: Finish the rest
     let next_start = page2.last().unwrap().parents[0];
-    let page3 = dag.get_deltas_since([0; 32], Some(next_start), 10);
+    let (page3, _) = dag.get_deltas_since([0; 32], Some(vec![next_start]), 10);
     assert_eq!(page3.len(), 4); // 4, 3, 2, 1
     assert_eq!(page3[0].id, [4; 32]);
     assert_eq!(page3.last().unwrap().id, [1; 32]);
@@ -783,13 +783,18 @@ async fn test_pagination_hard_limits() {
     }
 
     // Request MORE than the hard cap
-    let deltas = dag.get_deltas_since([0; 32], None, over_delta_query_limit);
+    let (deltas, cursor) = dag.get_deltas_since([0; 32], None, over_delta_query_limit);
 
     // Assert it was capped at 1000
     assert_eq!(
         deltas.len(),
         delta_query_limit,
         "Should be capped at delta_query_limit (10)"
+    );
+    // Assert cursor is not empty
+    assert!(
+        !cursor.is_empty(),
+        "Cursor shoudn't be empty when pagination is not finished"
     );
 
     // Test `get_missing_parents` hard cap
@@ -824,6 +829,67 @@ async fn test_pagination_hard_limits() {
         delta_query_limit,
         "Should be capped at delta_query_limit (10)"
     );
+}
+
+#[tokio::test]
+async fn test_pagination_preserves_branches() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Setup:
+    //       Root (0)
+    //      /   \
+    //  BranchA  BranchB
+    //     |        |
+    //     A1       B1
+    //      \      /
+    //       Merge (M)
+
+    // Branch A
+    let delta_a1 = CausalDelta::new_test([10; 32], vec![[0; 32]], TestPayload { value: 10 });
+    // Branch B
+    let delta_b1 = CausalDelta::new_test([20; 32], vec![[0; 32]], TestPayload { value: 20 });
+    // Merge
+    let delta_merge = CausalDelta::new_test(
+        [30; 32],
+        vec![[10; 32], [20; 32]],
+        TestPayload { value: 30 },
+    );
+
+    dag.add_delta(delta_a1, &applier).await.unwrap();
+    dag.add_delta(delta_b1, &applier).await.unwrap();
+    dag.add_delta(delta_merge, &applier).await.unwrap();
+
+    // The DAG head is [30].
+
+    // Request Page 1 with Limit 1.
+    // Flow: Start at [30]. Pop [30]. Result=[30]. Push parents [10, 20]. Limit reached.
+    // Cursor should contain [10, 20] (or whatever order the queue had).
+    let query_limit = 1;
+    let (page1, cursor1) = dag.get_deltas_since([0; 32], None, query_limit);
+
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page1[0].id, [30; 32]);
+
+    // Verify cursor contains BOTH branches
+    assert_eq!(cursor1.len(), 2);
+    assert!(cursor1.contains(&[10; 32]));
+    assert!(cursor1.contains(&[20; 32]));
+
+    // Request Page 2 using cursor1, using max limits
+    // Flow: Start at [10, 20]. Pop 10. Result=[10]. Pop 20. Result=[10, 20].
+    // Both hit ancestor [0]. Cursor should be empty.
+    let query_limit = MAX_DELTA_QUERY_LIMIT;
+    let (page2, cursor2) = dag.get_deltas_since([0; 32], Some(cursor1), query_limit);
+    assert_eq!(page2.len(), 2);
+
+    // Ensure we got both branches
+    let ids: Vec<u8> = page2.iter().map(|d| d.id[0]).collect();
+    assert!(ids.contains(&10));
+    assert!(ids.contains(&20));
+
+    // Ensure cursor is empty
+    assert!(cursor2.is_empty());
 }
 
 // ============================================================

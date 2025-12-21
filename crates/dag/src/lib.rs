@@ -454,14 +454,16 @@ impl<T: Clone> DagStore<T> {
     ///
     /// # Arguments
     /// * `ancestor` - the ID of the delta to stop at.
-    /// * `start_id` - Optional ID to start traversal from. If `None`, starts from all DAG heads.
-    ///   For subsequent calls, that likely will be the last delta ID received in the previous
-    ///   call.
+    /// * `start_ids` - Optional list of IDs to start traversal from. If `None`, starts from current DAG heads.
     /// * `limit` - maximum number of deltas to return. Capped at `dag.delta_query_limit`.
     ///
     /// # Returns
     ///
-    /// * Vec of causal deltas that have the following `ancestor`.
+    /// A tuple containing:
+    /// 1. The list of deltas found (`Vec<CausalDelta>`).
+    /// 2. A "cursor" (`Vec<[u8; 32]>`) containing the next IDs to fetch. Client can pass this to `start_id` in
+    ///   the next call to resume the process. If the cursor is empty, the traversal is complete.
+    ///
     ///   NOTE: if the client requested more than a `limit` - the node will return only that
     ///   amount, without raising an error. Only a warning log will be produced.
     ///   In future, we might change it, if needed, but for now looks like a clean behaviour, the
@@ -469,18 +471,18 @@ impl<T: Clone> DagStore<T> {
     pub fn get_deltas_since(
         &self,
         ancestor: [u8; 32],
-        start_id: Option<[u8; 32]>,
+        start_ids: Option<Vec<[u8; 32]>>,
         query_limit: usize,
-    ) -> Vec<CausalDelta<T>> {
+    ) -> (Vec<CausalDelta<T>>, Vec<[u8; 32]>) {
         // Enforce hard cap on the delta query limit
         let delta_query_limit = std::cmp::min(query_limit, self.delta_query_limit);
 
         let mut result = Vec::new();
         let mut visited = HashSet::new();
 
-        // Initialize queue: use provided 'from' ID or default to all current heads
-        let mut queue = if let Some(start_id) = start_id {
-            VecDeque::from([start_id])
+        // Initialize queue: use provided 'start_ids' cursor or default to all current heads
+        let mut queue = if let Some(start_ids) = start_ids {
+            VecDeque::from(start_ids)
         } else {
             VecDeque::from_iter(self.heads.iter().copied())
         };
@@ -493,6 +495,10 @@ impl<T: Clone> DagStore<T> {
                     ?ancestor,
                     "The requested amount of deltas for ancestor reached limit, only limited amount of deltas returned"
                 );
+
+                // Push the unprocessed ID back to the front.
+                // The current state of the queue represents the cursor for the next page.
+                queue.push_front(id);
                 break;
             }
 
@@ -506,12 +512,26 @@ impl<T: Clone> DagStore<T> {
                 result.push(delta.clone());
 
                 for parent in &delta.parents {
-                    queue.push_back(*parent);
+                    // Only queue parents if we haven't visited them and they aren't the stop-ancestor.
+                    // This is required to eliminate diamond dependencies in a DAG, when different branches can
+                    // merge back into a common ancestor.
+                    if !visited.contains(parent) && *parent != ancestor {
+                        queue.push_back(*parent);
+                    }
                 }
             }
         }
 
-        result
+        // The remaining items in the queue represent the cursor for the next page.
+        // We deduplicate them to keep the cursor clean and efficient.
+        let cursor: Vec<[u8; 32]> = queue
+            .into_iter()
+            // Deduplicate items using HashSet
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        (result, cursor)
     }
 
     /// Check if we have a specific delta

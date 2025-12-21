@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier};
+use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier, MAX_DELTA_QUERY_LIMIT};
 use calimero_primitives::hash::Hash;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
@@ -91,7 +91,10 @@ impl SimulatedNode {
     }
 
     async fn get_missing_parents(&self) -> Vec<[u8; 32]> {
-        self.dag.read().await.get_missing_parents()
+        self.dag
+            .read()
+            .await
+            .get_missing_parents(MAX_DELTA_QUERY_LIMIT)
     }
 
     async fn get_heads(&self) -> Vec<[u8; 32]> {
