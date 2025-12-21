@@ -15,6 +15,7 @@ eyre.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 calimero-storage.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 calimero-storage = { workspace = true, features = ["testing"] }
