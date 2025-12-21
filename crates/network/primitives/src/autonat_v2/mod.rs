@@ -228,7 +228,7 @@ impl Behaviour {
     /// Returns an error if server mode is already enabled.
     pub fn enable_server(&mut self) -> Result<(), String> {
         if self.server.is_some() {
-            return Err("Server already enabled".to_owned());
+            return Err("Server already enabled".to_string());
         }
 
         let server = server::Behaviour::default();
@@ -254,7 +254,7 @@ impl Behaviour {
     /// Returns an error if server mode is already disabled.
     pub fn disable_server(&mut self) -> Result<(), String> {
         if self.server.is_none() {
-            return Err("Server already disabled".to_owned());
+            return Err("Server already disabled".to_string());
         }
 
         let old_mode = self.mode;
@@ -358,7 +358,7 @@ mod tests {
     // The client dial_request handler checks this event and emits a `ToBehaviour::PeerHasServerSupport` event.
     // Which is then used by client behaviour to chose random autonat servers for probes.
     fn new_switchable_no_listener() -> Swarm<SwitchableNat> {
-        let node = Swarm::new_ephemeral_tokio(|identity| {
+        Swarm::new_ephemeral_tokio(|identity| {
             let cfg = Config::default().with_probe_interval(Duration::from_millis(100));
             SwitchableNat {
                 autonat: Behaviour::new(cfg),
@@ -367,9 +367,7 @@ mod tests {
                     identity.public().clone(),
                 )),
             }
-        });
-
-        node
+        })
     }
 
     #[tokio::test]
