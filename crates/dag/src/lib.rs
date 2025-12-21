@@ -356,7 +356,7 @@ impl<T: Clone> DagStore<T> {
 
         let mut missing_ids = HashSet::new();
 
-        for (_pending_id, pending) in &self.pending {
+        'outer: for (_pending_id, pending) in &self.pending {
             for parent in &pending.delta.parents {
                 if missing_ids.len() >= delta_query_limit {
                     warn!(
@@ -364,7 +364,7 @@ impl<T: Clone> DagStore<T> {
                         max_query_limit = %self.delta_query_limit,
                         "The requested amount of deltas for missing parents reached limit, only limited amount of deltas returned"
                     );
-                    break;
+                    break 'outer;
                 }
 
                 // Skip genesis
