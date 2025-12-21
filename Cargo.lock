@@ -2101,6 +2101,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "libp2p",
+ "libp2p-swarm-test",
  "multiaddr",
  "rand 0.8.5",
  "serde",

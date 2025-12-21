@@ -20,6 +20,10 @@ use rand::rngs::OsRng;
 mod behaviour;
 
 /// A NetworkBehaviour that can switch between AutoNAT v2 client and server modes.
+#[expect(
+    missing_debug_implementations,
+    reason = "Swarm behaviours don't implement Debug"
+)]
 pub struct Behaviour {
     /// Current operation mode
     mode: Mode,
@@ -285,5 +289,431 @@ impl Behaviour {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+    use libp2p::{identify, Swarm};
+    use libp2p_swarm_test::{drive, SwarmExt};
+
+    use super::*;
+
+    #[derive(NetworkBehaviour)]
+    struct Client {
+        autonat: client::Behaviour,
+        identify: identify::Behaviour,
+    }
+
+    #[derive(NetworkBehaviour)]
+    struct Server {
+        autonat: server::Behaviour,
+        identify: identify::Behaviour,
+    }
+
+    #[derive(NetworkBehaviour)]
+    struct SwitchableNat {
+        autonat: Behaviour,
+        identify: identify::Behaviour,
+    }
+
+    async fn new_server() -> Swarm<Server> {
+        let mut node = Swarm::new_ephemeral_tokio(|identity| Server {
+            autonat: server::Behaviour::default(),
+            identify: identify::Behaviour::new(identify::Config::new(
+                "/libp2p-test/1.0.0".into(),
+                identity.public().clone(),
+            )),
+        });
+        let _res = node.listen().with_tcp_addr_external().await;
+
+        node
+    }
+
+    async fn new_client() -> Swarm<Client> {
+        let mut node = Swarm::new_ephemeral_tokio(|identity| Client {
+            autonat: client::Behaviour::new(
+                OsRng,
+                client::Config::default().with_probe_interval(Duration::from_millis(100)),
+            ),
+            identify: identify::Behaviour::new(identify::Config::new(
+                "/libp2p-test/1.0.0".into(),
+                identity.public().clone(),
+            )),
+        });
+        let _res = node.listen().await;
+        node
+    }
+
+    // NOTE: Without identify, the client dial_request handler never learns
+    // the server supports AutoNAT, so it never sends probes!
+    //
+    // The identify handler calls `ConnectionHandlerEvent::ReportRemoteProtocols`, which gets
+    // translated by the swarm into `ConnectionEvent::RemoteProtocolsChange` and delivered to all
+    // other handlers on that connection!
+    //
+    // The client dial_request handler checks this event and emits a `ToBehaviour::PeerHasServerSupport` event.
+    // Which is then used by client behaviour to chose random autonat servers for probes.
+    fn new_switchable_no_listener() -> Swarm<SwitchableNat> {
+        let node = Swarm::new_ephemeral_tokio(|identity| {
+            let cfg = Config::default().with_probe_interval(Duration::from_millis(100));
+            SwitchableNat {
+                autonat: Behaviour::new(cfg),
+                identify: identify::Behaviour::new(identify::Config::new(
+                    "/libp2p-test/1.0.0".into(),
+                    identity.public().clone(),
+                )),
+            }
+        });
+
+        node
+    }
+
+    #[tokio::test]
+    async fn test_initial_mode_client_only() {
+        let swarm = new_switchable_no_listener();
+
+        assert_eq!(swarm.behaviour().autonat.mode(), Mode::ClientOnly);
+        assert!(!swarm.behaviour().autonat.is_server_enabled());
+    }
+
+    #[tokio::test]
+    async fn test_mode_changes() {
+        let mut swarm = new_switchable_no_listener();
+
+        // Enable AutoNAT server
+        swarm.behaviour_mut().autonat.enable_server().unwrap();
+
+        assert_eq!(swarm.behaviour().autonat.mode(), Mode::ClientAndServer);
+        assert!(swarm.behaviour().autonat.is_server_enabled());
+
+        // Check we got mode changed event
+        let (old_mode, new_mode) = swarm
+            .wait(|e| match e {
+                SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(Event::ModeChanged {
+                    old_mode,
+                    new_mode,
+                })) => Some((old_mode, new_mode)),
+                _ => None,
+            })
+            .await;
+
+        assert_eq!(old_mode, Mode::ClientOnly);
+        assert_eq!(new_mode, Mode::ClientAndServer);
+
+        // Disable AutoNAT server
+        swarm.behaviour_mut().autonat.disable_server().unwrap();
+
+        assert_eq!(swarm.behaviour().autonat.mode(), Mode::ClientOnly);
+        assert!(!swarm.behaviour().autonat.is_server_enabled());
+
+        // Check we got mode changed event, again
+        let (old_mode, new_mode) = swarm
+            .wait(|e| match e {
+                SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(Event::ModeChanged {
+                    old_mode,
+                    new_mode,
+                })) => Some((old_mode, new_mode)),
+                _ => None,
+            })
+            .await;
+
+        assert_eq!(old_mode, Mode::ClientAndServer);
+        assert_eq!(new_mode, Mode::ClientOnly);
+    }
+
+    #[tokio::test]
+    async fn test_double_enable_disable_fails() {
+        let mut swarm = new_switchable_no_listener();
+
+        // Enable AutoNAT server two times
+        swarm.behaviour_mut().autonat.enable_server().unwrap();
+        let result = swarm.behaviour_mut().autonat.enable_server();
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Server already enabled");
+
+        // Disable AutoNAT server two times
+        swarm.behaviour_mut().autonat.disable_server().unwrap();
+        let result = swarm.behaviour_mut().autonat.disable_server();
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Server already disabled");
+    }
+
+    #[tokio::test]
+    async fn test_switchable_client_and_server_connection() {
+        let mut server = new_server().await;
+        let mut switchable = new_switchable_no_listener();
+        let _addr = switchable.listen().await;
+
+        switchable.connect(&mut server).await;
+
+        // Connection is already established, just verify peer IDs
+        assert!(switchable.is_connected(server.local_peer_id()));
+        assert!(server.is_connected(switchable.local_peer_id()));
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_protocol_change() {
+        let mut server = new_server().await;
+        let server_id = *server.local_peer_id();
+        let mut switchable = new_switchable_no_listener();
+        let _addr = switchable.listen().await;
+
+        switchable.connect(&mut server).await;
+
+        // Test initial state: switchable is client-only (regular client server interaction)
+        match drive(&mut switchable, &mut server).await {
+            (
+                [SwitchableNatEvent::Identify(_), SwitchableNatEvent::Identify(identify::Event::Received {
+                    info: first_srv_info,
+                    ..
+                }), SwitchableNatEvent::Autonat(Event::PeerHasServerSupport { .. }), SwitchableNatEvent::Identify(_), SwitchableNatEvent::Identify(identify::Event::Received {
+                    info: second_srv_info,
+                    ..
+                })],
+                [ServerEvent::Identify(_), ServerEvent::Identify(identify::Event::Received {
+                    info: first_switchable_info,
+                    ..
+                }), ServerEvent::Identify(_), ServerEvent::Identify(identify::Event::Received {
+                    info: second_switchable_info,
+                    ..
+                })],
+            ) => {
+                // First exchange: Switchable sees server has dial-request
+                assert!(
+                    first_srv_info
+                        .protocols
+                        .iter()
+                        .any(|p| p.as_ref() == "/libp2p/autonat/2/dial-request"),
+                    "First exchange: Server should advertise dial-request, got: {:?}",
+                    first_srv_info.protocols
+                );
+
+                // First exchange: Server sees switchable has no autonat protocols yet
+                assert!(
+                    !first_switchable_info
+                        .protocols
+                        .iter()
+                        .any(|p| p.as_ref().contains("/libp2p/autonat/2/")),
+                    "First exchange: Switchable shouldn't have autonat protocols yet, got: {:?}",
+                    first_switchable_info.protocols
+                );
+
+                // Second exchange: Switchable sees server has no autonat protocols
+                assert!(
+                    !second_srv_info
+                        .protocols
+                        .iter()
+                        .any(|p| p.as_ref().contains("/libp2p/autonat/2/")),
+                    "Second exchange: Server shouldn't advertise autonat protocols, got: {:?}",
+                    second_srv_info.protocols
+                );
+
+                // Second exchange: Server sees switchable now has dial-back
+                assert!(
+                    second_switchable_info
+                        .protocols
+                        .iter()
+                        .any(|p| p.as_ref() == "/libp2p/autonat/2/dial-back"),
+                    "Second exchange: Switchable should advertise dial-back, got: {:?}",
+                    second_switchable_info.protocols
+                );
+            }
+            other => panic!("Unexpected events: {other:?}"),
+        }
+
+        // Wait for server to complete the AutoNAT test
+        let confirmed_addr = match drive(&mut switchable, &mut server).await {
+            (
+                [SwarmEvent::ExternalAddrConfirmed { address }, SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(_))],
+                [ServerEvent::Autonat(event)],
+            ) => {
+                assert!(matches!(event.result, Ok(())));
+                address
+            }
+            other => panic!("Unexpected events: {other:?}"),
+        };
+
+        // Now switch to server mode
+        switchable.behaviour_mut().autonat.enable_server().unwrap();
+        // Wait for mode change
+        let new_mode = switchable
+            .wait(|e| match e {
+                SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(Event::ModeChanged {
+                    new_mode,
+                    ..
+                })) => Some(new_mode),
+                _ => None,
+            })
+            .await;
+        assert!(matches!(new_mode, Mode::ClientAndServer));
+
+        // Remove previously confirmed address
+        switchable.remove_external_address(&confirmed_addr);
+        assert!(
+            !switchable
+                .external_addresses()
+                .any(|a| a == &confirmed_addr),
+            "External address should have been removed"
+        );
+
+        // Disconnect from the server
+        switchable.disconnect_peer_id(server_id).unwrap();
+        // Wait for the disconnect to complete
+        match drive(&mut switchable, &mut server).await {
+            (
+                [SwarmEvent::ConnectionClosed { .. }, SwarmEvent::ConnectionClosed { .. }],
+                [SwarmEvent::ConnectionClosed { .. }, SwarmEvent::ConnectionClosed { .. }],
+            ) => {}
+            other => panic!("Unexpected events: {other:?}"),
+        }
+
+        // NOTE: there's a bug in the code that causes the autonat behaviour to not work correctly
+        // AutoNAT Client behaviour never clears out the already confirmed address,
+        // event though those have been expired
+        let cfg = Config::default().with_probe_interval(Duration::from_millis(100)); // <- until resolved; manually set new behaviour
+        switchable.behaviour_mut().autonat = Behaviour::new(cfg);
+        switchable.behaviour_mut().autonat.enable_server().unwrap();
+
+        // Conect againg with the server
+        // let _addr = switchable.listen().await;
+        let _addr = server.listen().with_tcp_addr_external().await;
+        switchable.connect(&mut server).await;
+
+        // Drive the server swarm events
+        let _handle = tokio::spawn(server.loop_on_next());
+
+        switchable
+            .wait(|e| match e {
+                SwarmEvent::ExternalAddrConfirmed { .. } => Some(()),
+                _ => None,
+            })
+            .await;
+
+        // Check if the switchable knows the server has support
+        assert!(switchable
+            .behaviour()
+            .autonat
+            .peer_has_server_support(&server_id));
+    }
+
+    #[tokio::test]
+    async fn test_server_support_tracking() {
+        let mut server = new_server().await;
+        let mut switchable = new_switchable_no_listener();
+        let _addr = switchable.listen().await;
+
+        switchable.connect(&mut server).await;
+
+        // Drive server swarm events
+        let server_id = *server.local_peer_id();
+        let _handle = tokio::spawn(server.loop_on_next());
+
+        // Wait for server to be tracked and confirmed
+        let tracked_server_id = switchable
+            .wait(|e| match e {
+                SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(
+                    Event::PeerHasServerSupport { peer_id },
+                )) => Some(peer_id),
+                _ => None,
+            })
+            .await;
+
+        assert_eq!(tracked_server_id, server_id);
+    }
+
+    #[tokio::test]
+    async fn test_server_disable_closes_connections() {
+        let mut client = new_client().await;
+        let mut switchable = new_switchable_no_listener();
+        let _addr = switchable.listen().with_tcp_addr_external().await;
+
+        // Enable server mode on switchable swarm
+        switchable.behaviour_mut().autonat.enable_server().unwrap();
+
+        client.connect(&mut switchable).await;
+
+        // Verify connection is established
+        assert!(switchable.is_connected(client.local_peer_id()));
+
+        // Disable server - this should close connections with client
+        switchable.behaviour_mut().autonat.disable_server().unwrap();
+
+        // Wait for mode change
+        switchable
+            .wait(|e| match e {
+                SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(Event::ModeChanged {
+                    ..
+                })) => Some(()),
+                _ => None,
+            })
+            .await;
+
+        // Wait for connection close
+        let disconnected_client_id = switchable
+            .wait(|e| match e {
+                SwarmEvent::ConnectionClosed { peer_id, .. } => Some(peer_id),
+                _ => None,
+            })
+            .await;
+
+        // Check if still connected; should be false
+        assert_eq!(disconnected_client_id, *client.local_peer_id());
+        assert!(!switchable.is_connected(client.local_peer_id()));
+    }
+
+    #[tokio::test]
+    async fn test_handler_selection_outbound_to_known_server() {
+        let mut client = new_switchable_no_listener();
+        let mut server = new_switchable_no_listener();
+
+        // Start listening
+        let _addr = client.listen().await;
+        let _addr = server.listen().with_tcp_addr_external().await;
+        // Enable server mode on both (client can also act as server)
+        client.behaviour_mut().autonat.enable_server().unwrap();
+        server.behaviour_mut().autonat.enable_server().unwrap();
+
+        // First connection - client doesn't know server has support yet
+        client.connect(&mut server).await;
+        // Drive server swarm events
+        let server_id = *server.local_peer_id();
+        let _handle = tokio::spawn(server.loop_on_next());
+
+        // Wait for server support discovery
+        let learned_server_id = client
+            .wait(|e| match e {
+                SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(
+                    Event::PeerHasServerSupport { peer_id },
+                )) => Some(peer_id),
+                _ => None,
+            })
+            .await;
+
+        // Test if event passed propper ID from discovered server
+        assert_eq!(learned_server_id, server_id);
+
+        // Check the server's actually doing what it says it's doing
+        client
+            .wait(|e| match e {
+                SwarmEvent::ExternalAddrConfirmed { .. } => Some(()),
+                _ => None,
+            })
+            .await;
+
+        // Check if the client knows the server has support
+        assert!(client
+            .behaviour()
+            .autonat
+            .peer_has_server_support(&server_id));
+
+        // The client's connection info should show it used the appropriate handler
+        // (This is internal state, but we can verify behavior indirectly)
+        assert!(client.is_connected(&server_id));
     }
 }

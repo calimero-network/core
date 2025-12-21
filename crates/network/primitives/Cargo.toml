@@ -29,4 +29,7 @@ calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-utils-actix.workspace = true
 
 [dev-dependencies]
+libp2p = { workspace = true, features = ["autonat", "identify", "macros", "tcp", "tokio", "noise", "yamux"] }
+libp2p-swarm-test.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test.workspace = true
