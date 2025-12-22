@@ -153,7 +153,10 @@ async fn test_dag_out_of_order() {
 
     // Check pending
     assert_eq!(dag.pending_stats().count, 1);
-    assert_eq!(dag.get_missing_parents(), vec![[1; 32]]);
+    assert_eq!(
+        dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT),
+        vec![[1; 32]]
+    );
 
     // No deltas applied yet
     assert_eq!(applier.get_applied().await.len(), 0);
@@ -475,7 +478,7 @@ async fn test_dag_get_missing_parents() {
     dag.add_delta(delta1, &applier).await.unwrap();
     dag.add_delta(delta2, &applier).await.unwrap();
 
-    let missing = dag.get_missing_parents();
+    let missing = dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT);
     assert_eq!(missing.len(), 2);
     assert!(missing.contains(&[1; 32]));
     assert!(missing.contains(&[3; 32]));
@@ -531,15 +534,15 @@ async fn test_dag_get_deltas_since() {
     dag.add_delta(d3.clone(), &applier).await.unwrap();
 
     // Get all deltas since root
-    let deltas = dag.get_deltas_since([0; 32]);
+    let (deltas, _) = dag.get_deltas_since([0; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 3);
 
     // Get deltas since d1
-    let deltas = dag.get_deltas_since([1; 32]);
+    let (deltas, _) = dag.get_deltas_since([1; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 2);
 
     // Get deltas since d3 (none)
-    let deltas = dag.get_deltas_since([3; 32]);
+    let (deltas, _) = dag.get_deltas_since([3; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 0);
 }
 
@@ -564,7 +567,7 @@ async fn test_dag_get_deltas_since_branched() {
     dag.add_delta(d3, &applier).await.unwrap();
 
     // Get all since root
-    let deltas = dag.get_deltas_since([0; 32]);
+    let (deltas, _) = dag.get_deltas_since([0; 32], None, MAX_DELTA_QUERY_LIMIT);
     assert_eq!(deltas.len(), 3);
 
     let ids: Vec<_> = deltas.iter().map(|d| d.id).collect();
@@ -651,6 +654,242 @@ async fn test_dag_stress_out_of_order() {
 
     assert_eq!(dag.pending_stats().count, 0);
     assert_eq!(dag.get_heads(), vec![[100; 32]]);
+}
+
+// ============================================================
+// Pagination & Limit Tests for query methods
+// ============================================================
+
+#[tokio::test]
+async fn test_get_missing_parents_pagination() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Add 5 deltas, each missing a unique parent
+    let num_deltas_added = 5_usize;
+    for i in 1..=num_deltas_added {
+        let delta = CausalDelta::new_test(
+            [100 + i as u8; 32],
+            // missing parent
+            vec![[i as u8; 32]],
+            TestPayload { value: i as u32 },
+        );
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+
+    assert_eq!(dag.pending_stats().count, num_deltas_added);
+
+    // Request only 3
+    let missing = dag.get_missing_parents(3);
+    assert_eq!(missing.len(), 3);
+
+    // Request all
+    let missing_all = dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT);
+    assert_eq!(missing_all.len(), num_deltas_added);
+}
+
+#[tokio::test]
+async fn test_get_deltas_since_pagination() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Create chain 1..10
+    let num_deltas_added = 10_usize;
+    let mut prev = [0; 32];
+    for i in 1..=num_deltas_added {
+        let id = [i as u8; 32];
+        let delta = CausalDelta::new_test(id, vec![prev], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+        prev = id;
+    }
+
+    // Request recent history with limit 3
+    // Note: get_deltas_since performs BFS from heads (reverse chronological-ish)
+    // So we expect to see the latest deltas first (10, 9, 8...) or parents of heads.
+    let (deltas, _) = dag.get_deltas_since([0; 32], None, 3);
+
+    assert_eq!(deltas.len(), 3);
+
+    // The current implementation uses VecDeque and pushes parents to back.
+    // It starts with Head (10).
+    // Result should be [10, 9, 8].
+    let ids: Vec<u8> = deltas.iter().map(|d| d.id[0]).collect();
+    assert_eq!(ids, vec![10, 9, 8]);
+}
+
+#[tokio::test]
+async fn test_get_deltas_since_manual_pagination() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Create linear chain 1..10:  10 -> 9 -> ... -> 1 -> Root
+    let mut prev = [0; 32];
+    for i in 1..=10 {
+        let id = [i; 32];
+        let delta = CausalDelta::new_test(id, vec![prev], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+        prev = id;
+    }
+
+    // Page 1: Start from head (None), Limit 3
+    // Expect: 10, 9, 8
+    let (page1, _) = dag.get_deltas_since([0; 32], None, 3);
+    assert_eq!(page1.len(), 3);
+    assert_eq!(page1[0].id, [10; 32]);
+    assert_eq!(page1.last().unwrap().id, [8; 32]);
+
+    // Manual Step: Client identifies the last received ID (8)
+    // and asks for the NEXT batch starting from 8's parent (7).
+    // Note: Clients must interpret the 'parents' field of the last delta to know where to
+    // continue.
+    let next_start = page1.last().unwrap().parents[0];
+    assert_eq!(next_start, [7; 32]);
+
+    // Page 2: Start from [7], Limit 3
+    // Expect: 7, 6, 5
+    let (page2, _) = dag.get_deltas_since([0; 32], Some(vec![next_start]), 3);
+    assert_eq!(page2.len(), 3);
+    assert_eq!(page2[0].id, [7; 32]);
+    assert_eq!(page2.last().unwrap().id, [5; 32]);
+
+    // Page 3: Finish the rest
+    let next_start = page2.last().unwrap().parents[0];
+    let (page3, _) = dag.get_deltas_since([0; 32], Some(vec![next_start]), 10);
+    assert_eq!(page3.len(), 4); // 4, 3, 2, 1
+    assert_eq!(page3[0].id, [4; 32]);
+    assert_eq!(page3.last().unwrap().id, [1; 32]);
+}
+
+#[tokio::test]
+async fn test_pagination_hard_limits() {
+    let applier = TestApplier::new();
+    let delta_query_limit = 10;
+    // Create chain longer than `delta_query_limit` (10)
+    let over_delta_query_limit = delta_query_limit * 2;
+
+    let mut dag = DagStore::new_with_delta_query_limit([0; 32], delta_query_limit);
+
+    // Test `get_deltas_since()` hard cap
+    let mut prev = [0; 32];
+    for i in 1..=over_delta_query_limit {
+        let id = {
+            let mut bytes = [0u8; 32];
+            bytes[0..4].copy_from_slice(&(i as u32).to_le_bytes());
+            bytes
+        };
+        let delta = CausalDelta::new_test(id, vec![prev], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+        prev = id;
+    }
+
+    // Request MORE than the hard cap
+    let (deltas, cursor) = dag.get_deltas_since([0; 32], None, over_delta_query_limit);
+
+    // Assert it was capped at 1000
+    assert_eq!(
+        deltas.len(),
+        delta_query_limit,
+        "Should be capped at delta_query_limit (10)"
+    );
+    // Assert cursor is not empty
+    assert!(
+        !cursor.is_empty(),
+        "Cursor shoudn't be empty when pagination is not finished"
+    );
+
+    // Test `get_missing_parents` hard cap
+    // Clear dag for cleanliness
+    let mut dag = DagStore::new_with_delta_query_limit([0; 32], delta_query_limit);
+
+    // Add 1001 pending deltas with unique missing parents
+    for i in 1..=over_delta_query_limit {
+        let id = {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 1; // distinct from parents
+            bytes[4..8].copy_from_slice(&(i as u32).to_le_bytes());
+            bytes
+        };
+        let parent_id = {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 2; // distinct
+            bytes[4..8].copy_from_slice(&(i as u32).to_le_bytes());
+            bytes
+        };
+
+        let delta = CausalDelta::new_test(id, vec![parent_id], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+
+    // Request MORE than the hard cap
+    let missing = dag.get_missing_parents(over_delta_query_limit);
+
+    // Assert it was capped at 10
+    assert_eq!(
+        missing.len(),
+        delta_query_limit,
+        "Should be capped at delta_query_limit (10)"
+    );
+}
+
+#[tokio::test]
+async fn test_pagination_preserves_branches() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Setup:
+    //       Root (0)
+    //      /   \
+    //  BranchA  BranchB
+    //     |        |
+    //     A1       B1
+    //      \      /
+    //       Merge (M)
+
+    // Branch A
+    let delta_a1 = CausalDelta::new_test([10; 32], vec![[0; 32]], TestPayload { value: 10 });
+    // Branch B
+    let delta_b1 = CausalDelta::new_test([20; 32], vec![[0; 32]], TestPayload { value: 20 });
+    // Merge
+    let delta_merge = CausalDelta::new_test(
+        [30; 32],
+        vec![[10; 32], [20; 32]],
+        TestPayload { value: 30 },
+    );
+
+    dag.add_delta(delta_a1, &applier).await.unwrap();
+    dag.add_delta(delta_b1, &applier).await.unwrap();
+    dag.add_delta(delta_merge, &applier).await.unwrap();
+
+    // The DAG head is [30].
+
+    // Request Page 1 with Limit 1.
+    // Flow: Start at [30]. Pop [30]. Result=[30]. Push parents [10, 20]. Limit reached.
+    // Cursor should contain [10, 20] (or whatever order the queue had).
+    let query_limit = 1;
+    let (page1, cursor1) = dag.get_deltas_since([0; 32], None, query_limit);
+
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page1[0].id, [30; 32]);
+
+    // Verify cursor contains BOTH branches
+    assert_eq!(cursor1.len(), 2);
+    assert!(cursor1.contains(&[10; 32]));
+    assert!(cursor1.contains(&[20; 32]));
+
+    // Request Page 2 using cursor1, using max limits
+    // Flow: Start at [10, 20]. Pop 10. Result=[10]. Pop 20. Result=[10, 20].
+    // Both hit ancestor [0]. Cursor should be empty.
+    let query_limit = MAX_DELTA_QUERY_LIMIT;
+    let (page2, cursor2) = dag.get_deltas_since([0; 32], Some(cursor1), query_limit);
+    assert_eq!(page2.len(), 2);
+
+    // Ensure we got both branches
+    let ids: Vec<u8> = page2.iter().map(|d| d.id[0]).collect();
+    assert!(ids.contains(&10));
+    assert!(ids.contains(&20));
+
+    // Ensure cursor is empty
+    assert!(cursor2.is_empty());
 }
 
 // ============================================================
@@ -855,7 +1094,10 @@ async fn test_extreme_late_parent_arrival() {
 
     // All pending
     assert_eq!(dag.pending_stats().count, 100);
-    assert_eq!(dag.get_missing_parents(), vec![[99; 32]]);
+    assert_eq!(
+        dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT),
+        vec![[99; 32]]
+    );
 
     // Parent finally arrives
     let parent = CausalDelta::new_test([99; 32], vec![[0; 32]], TestPayload { value: 99 });

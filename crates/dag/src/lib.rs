@@ -16,6 +16,12 @@ use std::time::{Duration, Instant};
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::{info, warn};
+
+/// Maximum number of items returned by query methods to prevent resource exhaustion.
+/// Even if a caller requests more, the DAG will cap the result at this size.
+/// The value selected as ~96 KB.
+pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
 
 /// A causal delta with parent references
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -150,6 +156,11 @@ pub struct DagStore<T> {
     /// Root delta (genesis)
     #[allow(dead_code)]
     root: [u8; 32],
+
+    /// Maximum number of items returned by query methods to prevent resource exhaustion.
+    /// Even if a caller requests more, the DAG will cap the result at this size.
+    /// By default, equal to `MAX_DELTA_QUERY_SIZE`.
+    delta_query_limit: usize,
 }
 
 impl<T: Clone> DagStore<T> {
@@ -167,7 +178,27 @@ impl<T: Clone> DagStore<T> {
             pending: HashMap::new(),
             heads,
             root,
+            delta_query_limit: MAX_DELTA_QUERY_LIMIT,
         }
+    }
+
+    /// Test-only ctor for more convenient testing of delta query limits.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn new_with_delta_query_limit(root: [u8; 32], delta_query_limit: usize) -> Self {
+        let mut dag = Self::new(root);
+        dag.set_delta_query_limit(delta_query_limit);
+        dag
+    }
+
+    /// Sets the new delta query limit to be used by query methods.
+    pub fn set_delta_query_limit(&mut self, delta_query_limit: usize) {
+        info!(
+            %delta_query_limit,
+            old_delta_query_limit = %self.delta_query_limit,
+            "Updated DAG Delta query limit"
+        );
+
+        self.delta_query_limit = delta_query_limit;
     }
 
     /// Restore an already-applied delta from persistent storage
@@ -308,11 +339,34 @@ impl<T: Clone> DagStore<T> {
     ///
     /// Note: With proper eviction (removing from both pending AND deltas), stale
     /// pending deltas are fully removed, allowing them to be re-fetched in future syncs.
-    pub fn get_missing_parents(&self) -> Vec<[u8; 32]> {
-        let mut missing = HashSet::new();
+    ///
+    /// # Arguments
+    /// * `limit` - maximum number of deltas to return. Capped at `dag.delta_query_limit`.
+    ///
+    /// # Returns
+    ///
+    /// * Vec of causal deltas that have the following `ancestor`.
+    ///   NOTE: if the client requested more than a `limit` - the node will return only that
+    ///   amount, without raising an error. Only a warning log will be produced.
+    ///   In future, we might change it, if needed, but for now looks like a clean behaviour, the
+    ///   client should be responsible for the pagination himself.
+    pub fn get_missing_parents(&self, query_limit: usize) -> Vec<[u8; 32]> {
+        // Enforce hard cap on the delta query limit
+        let delta_query_limit = std::cmp::min(query_limit, self.delta_query_limit);
 
-        for (_pending_id, pending) in &self.pending {
+        let mut missing_ids = HashSet::new();
+
+        'outer: for (_pending_id, pending) in &self.pending {
             for parent in &pending.delta.parents {
+                if missing_ids.len() >= delta_query_limit {
+                    warn!(
+                        %query_limit,
+                        max_query_limit = %self.delta_query_limit,
+                        "The requested amount of deltas for missing parents reached limit, only limited amount of deltas returned"
+                    );
+                    break 'outer;
+                }
+
                 // Skip genesis
                 if *parent == [0; 32] {
                     continue;
@@ -321,12 +375,12 @@ impl<T: Clone> DagStore<T> {
                 // Only return parents that aren't in the DAG at all
                 // Parents that are in the DAG but pending will cascade when ready
                 if !self.deltas.contains_key(parent) {
-                    missing.insert(*parent);
+                    missing_ids.insert(*parent);
                 }
             }
         }
 
-        missing.into_iter().collect()
+        missing_ids.into_iter().collect()
     }
 
     /// Get IDs of deltas that are currently pending (not yet applied)
@@ -397,12 +451,57 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Get all deltas since a common ancestor (for sync)
-    pub fn get_deltas_since(&self, ancestor: [u8; 32]) -> Vec<CausalDelta<T>> {
+    ///
+    /// # Arguments
+    /// * `ancestor` - the ID of the delta to stop at.
+    /// * `start_ids` - Optional list of IDs to start traversal from. If `None`, starts from current DAG heads.
+    /// * `limit` - maximum number of deltas to return. Capped at `dag.delta_query_limit`.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// 1. The list of deltas found (`Vec<CausalDelta>`).
+    /// 2. A "cursor" (`Vec<[u8; 32]>`) containing the next IDs to fetch. Client can pass this to `start_id` in
+    ///   the next call to resume the process. If the cursor is empty, the traversal is complete.
+    ///
+    ///   NOTE: if the client requested more than a `limit` - the node will return only that
+    ///   amount, without raising an error. Only a warning log will be produced.
+    ///   In future, we might change it, if needed, but for now looks like a clean behaviour, the
+    ///   client should be responsible for the pagination himself.
+    pub fn get_deltas_since(
+        &self,
+        ancestor: [u8; 32],
+        start_ids: Option<Vec<[u8; 32]>>,
+        query_limit: usize,
+    ) -> (Vec<CausalDelta<T>>, Vec<[u8; 32]>) {
+        // Enforce hard cap on the delta query limit
+        let delta_query_limit = std::cmp::min(query_limit, self.delta_query_limit);
+
         let mut result = Vec::new();
         let mut visited = HashSet::new();
-        let mut queue = VecDeque::from_iter(self.heads.iter().copied());
+
+        // Initialize queue: use provided 'start_ids' cursor or default to all current heads
+        let mut queue = if let Some(start_ids) = start_ids {
+            VecDeque::from(start_ids)
+        } else {
+            VecDeque::from_iter(self.heads.iter().copied())
+        };
 
         while let Some(id) = queue.pop_front() {
+            if result.len() >= delta_query_limit {
+                warn!(
+                    %query_limit,
+                    max_query_limit = %self.delta_query_limit,
+                    ?ancestor,
+                    "The requested amount of deltas for ancestor reached limit, only limited amount of deltas returned"
+                );
+
+                // Push the unprocessed ID back to the front.
+                // The current state of the queue represents the cursor for the next page.
+                queue.push_front(id);
+                break;
+            }
+
             if visited.contains(&id) || id == ancestor {
                 continue;
             }
@@ -413,12 +512,26 @@ impl<T: Clone> DagStore<T> {
                 result.push(delta.clone());
 
                 for parent in &delta.parents {
-                    queue.push_back(*parent);
+                    // Only queue parents if we haven't visited them and they aren't the stop-ancestor.
+                    // This is required to eliminate diamond dependencies in a DAG, when different branches can
+                    // merge back into a common ancestor.
+                    if !visited.contains(parent) && *parent != ancestor {
+                        queue.push_back(*parent);
+                    }
                 }
             }
         }
 
-        result
+        // The remaining items in the queue represent the cursor for the next page.
+        // We deduplicate them to keep the cursor clean and efficient.
+        let cursor: Vec<[u8; 32]> = queue
+            .into_iter()
+            // Deduplicate items using HashSet
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        (result, cursor)
     }
 
     /// Check if we have a specific delta
@@ -536,7 +649,10 @@ mod basic_tests {
 
         // Check pending
         assert_eq!(dag.pending_stats().count, 1);
-        assert_eq!(dag.get_missing_parents(), vec![[1; 32]]);
+        assert_eq!(
+            dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT),
+            vec![[1; 32]]
+        );
 
         // Now receive delta1
         let applied1 = dag.add_delta(delta1, &applier).await.unwrap();
