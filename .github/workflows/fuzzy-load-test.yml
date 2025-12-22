@@ -11,6 +11,17 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  # TODO: Remove pull_request trigger after PR testing is complete
+  # This is temporarily added to test the profiling workflow changes
+  pull_request:
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
+      - ".github/workflows/deps/**"
+      - ".github/actions/**"
+      - "scripts/profiling/**"
   workflow_dispatch:
     inputs:
       duration_override:
