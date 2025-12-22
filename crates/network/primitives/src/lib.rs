@@ -1,3 +1,4 @@
+pub mod autonat_v2;
 pub mod blob_types;
 pub mod client;
 pub mod config;

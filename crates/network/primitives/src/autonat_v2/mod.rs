@@ -1,3 +1,14 @@
+//! AutoNAT v2 behaviour module.
+//!
+//! This module provides a switchable AutoNAT v2 behaviour that can operate in
+//! client-only or client-and-server modes. It wraps the libp2p autonat v2
+//! client and server behaviours with intelligent handler routing.
+//!
+//! Key features:
+//! - Track which peers have server support
+//! - Closes connections when switching modes to ensure clean handler state
+//! - Uses protocol negotiation detection to make intelligent routing decisions
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
@@ -9,11 +20,6 @@ use rand::rngs::OsRng;
 mod behaviour;
 
 /// A NetworkBehaviour that can switch between AutoNAT v2 client and server modes.
-///
-/// Key features:
-/// - Track which peers have server support
-/// - Closes connections when switching modes to ensure clean handler state
-/// - Uses protocol negotiation detection to make intelligent routing decisions
 #[expect(
     missing_debug_implementations,
     reason = "Swarm behaviours don't implement Debug"
@@ -47,6 +53,7 @@ pub struct Behaviour {
     client_expecting_dialback: HashSet<PeerId>,
 }
 
+/// Operating mode for the AutoNAT v2 behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Only acting as a client
@@ -56,6 +63,7 @@ pub enum Mode {
     ClientAndServer,
 }
 
+/// Events emitted by the AutoNAT v2 behaviour.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Client tested an address through a server
@@ -68,6 +76,7 @@ pub enum Event {
         bytes_sent: usize,
         /// The peer id of the server that was selected for testing.
         server: PeerId,
+        /// The result of the test.
         result: TestResult,
     },
 
@@ -86,13 +95,21 @@ pub enum Event {
     },
 
     /// Mode has changed
-    ModeChanged { old_mode: Mode, new_mode: Mode },
+    ModeChanged {
+        /// The previous mode.
+        old_mode: Mode,
+        /// The new mode.
+        new_mode: Mode,
+    },
 
     /// Discovered a peer has server support
-    PeerHasServerSupport { peer_id: PeerId },
+    PeerHasServerSupport {
+        /// The peer ID of the peer with server support.
+        peer_id: PeerId,
+    },
 }
 
-/// Result of an address test
+/// Result of an address test.
 #[derive(Debug, Clone)]
 pub enum TestResult {
     /// Address is reachable
@@ -102,7 +119,10 @@ pub enum TestResult {
     },
 
     /// Test failed
-    Failed { error: String },
+    Failed {
+        /// Description of the failure
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +140,7 @@ enum ConnectionRole {
     Server,
 }
 
+/// Configuration for the AutoNAT v2 behaviour.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     /// How many untested address candidates to keep track of
@@ -131,6 +152,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Set the maximum number of address candidates to track.
     pub fn with_max_candidates(self, max_candidates: usize) -> Self {
         Self {
             max_candidates,
@@ -138,6 +160,7 @@ impl Config {
         }
     }
 
+    /// Set the probe interval for testing address candidates.
     pub fn with_probe_interval(self, probe_interval: Duration) -> Self {
         Self {
             probe_interval,
@@ -156,7 +179,7 @@ impl Default for Config {
 }
 
 impl Behaviour {
-    /// Create a new switchable AutoNAT v2 behaviour starting in client-only mode
+    /// Create a new switchable AutoNAT v2 behaviour starting in client-only mode.
     pub fn new(cfg: Config) -> Self {
         let client = client::Behaviour::new(
             OsRng,
@@ -178,27 +201,31 @@ impl Behaviour {
         }
     }
 
-    /// Get the current mode
+    /// Get the current mode.
     pub fn mode(&self) -> Mode {
         self.mode
     }
 
-    /// Check if server is enabled
+    /// Check if server is enabled.
     pub fn is_server_enabled(&self) -> bool {
         self.server.is_some()
     }
 
-    /// Check if a peer has server support
+    /// Check if a peer has server support.
     pub fn peer_has_server_support(&self, peer_id: &PeerId) -> bool {
         self.peers_with_server_support.contains(peer_id)
     }
 
-    /// Get all peers with known server support
+    /// Get all peers with known server support.
     pub fn peers_with_server_support(&self) -> impl Iterator<Item = &PeerId> {
         self.peers_with_server_support.iter()
     }
 
-    /// Enable server mode
+    /// Enable server mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if server mode is already enabled.
     pub fn enable_server(&mut self) -> Result<(), String> {
         if self.server.is_some() {
             return Err("Server already enabled".to_string());
@@ -220,7 +247,11 @@ impl Behaviour {
         Ok(())
     }
 
-    /// Disable server mode and close all connections using server handlers
+    /// Disable server mode and close all connections using server handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if server mode is already disabled.
     pub fn disable_server(&mut self) -> Result<(), String> {
         if self.server.is_none() {
             return Err("Server already disabled".to_string());
@@ -327,7 +358,7 @@ mod tests {
     // The client dial_request handler checks this event and emits a `ToBehaviour::PeerHasServerSupport` event.
     // Which is then used by client behaviour to chose random autonat servers for probes.
     fn new_switchable_no_listener() -> Swarm<SwitchableNat> {
-        let node = Swarm::new_ephemeral_tokio(|identity| {
+        Swarm::new_ephemeral_tokio(|identity| {
             let cfg = Config::default().with_probe_interval(Duration::from_millis(100));
             SwitchableNat {
                 autonat: Behaviour::new(cfg),
@@ -336,9 +367,7 @@ mod tests {
                     identity.public().clone(),
                 )),
             }
-        });
-
-        node
+        })
     }
 
     #[tokio::test]
@@ -346,7 +375,7 @@ mod tests {
         let swarm = new_switchable_no_listener();
 
         assert_eq!(swarm.behaviour().autonat.mode(), Mode::ClientOnly);
-        assert!(!swarm.behaviour().autonat.is_server_enabled())
+        assert!(!swarm.behaviour().autonat.is_server_enabled());
     }
 
     #[tokio::test]
