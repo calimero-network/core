@@ -17,6 +17,10 @@ ENABLE_HEAPTRACK="${ENABLE_HEAPTRACK:-false}"
 PROFILING_OUTPUT_DIR="${PROFILING_OUTPUT_DIR:-/profiling/data}"
 PERF_SAMPLE_FREQ="${PERF_SAMPLE_FREQ:-99}"
 
+# Global variables for signal handling
+MEROD_PID=""
+EXIT_CODE=0
+
 # Ensure profiling directories exist
 mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
@@ -58,9 +62,45 @@ stop_profiling() {
 
 # Trap signals to ensure cleanup
 cleanup() {
+    local signal_exit_code=$?
     echo "[Profiling] Received signal, cleaning up..."
+    
+    # Stop profiling first
     stop_profiling
-    exit 0
+    
+    # Gracefully terminate merod if running
+    if [ -n "$MEROD_PID" ] && kill -0 "$MEROD_PID" 2>/dev/null; then
+        echo "[Profiling] Stopping merod (PID: $MEROD_PID)..."
+        kill -TERM "$MEROD_PID" 2>/dev/null || true
+        
+        # Wait up to 10 seconds for graceful shutdown
+        local wait_count=0
+        while kill -0 "$MEROD_PID" 2>/dev/null && [ $wait_count -lt 10 ]; do
+            sleep 1
+            wait_count=$((wait_count + 1))
+        done
+        
+        # Force kill if still running
+        if kill -0 "$MEROD_PID" 2>/dev/null; then
+            echo "[Profiling] Force killing merod..."
+            kill -KILL "$MEROD_PID" 2>/dev/null || true
+        fi
+        
+        echo "[Profiling] merod stopped"
+    fi
+    
+    # Exit with appropriate code:
+    # - If we have a captured EXIT_CODE from merod, use it
+    # - If signal interrupted us before merod finished, use 128 + signal number
+    # - Default to the signal exit code
+    if [ "$EXIT_CODE" -ne 0 ]; then
+        exit $EXIT_CODE
+    elif [ "$signal_exit_code" -ne 0 ]; then
+        exit $signal_exit_code
+    else
+        # SIGTERM = 15, SIGINT = 2; standard convention is 128 + signal
+        exit 143  # 128 + 15 (SIGTERM)
+    fi
 }
 
 trap cleanup SIGTERM SIGINT
