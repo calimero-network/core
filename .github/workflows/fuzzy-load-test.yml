@@ -32,11 +32,6 @@ on:
         required: false
         default: true
         type: boolean
-      profiling_sample_freq:
-        description: "Perf sampling frequency in Hz (samples per second)"
-        required: false
-        default: "99"
-        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -484,7 +479,7 @@ jobs:
           echo "## Fuzzy Load Test Results with Profiling" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Profiling Enabled:** ${{ github.event.inputs.enable_profiling || 'true' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Sample Frequency:** ${{ github.event.inputs.profiling_sample_freq || '99' }} Hz" >> $GITHUB_STEP_SUMMARY
+          echo "**Sample Frequency:** 99 Hz (default)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store Test" >> $GITHUB_STEP_SUMMARY
