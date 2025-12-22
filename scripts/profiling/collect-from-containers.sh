@@ -40,10 +40,15 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         echo "  Collected container logs"
         
         # Try to generate flamegraph if perf data exists
-        if [ -f "$DATA_DIR/$container/perf-merod.data" ] || ls "$DATA_DIR/$container"/perf-*.data 1> /dev/null 2>&1; then
+        # Find the actual perf data file (could be perf-merod.data, perf-node1.data, etc.)
+        PERF_FILE=$(ls "$DATA_DIR/$container"/perf-*.data 2>/dev/null | head -1)
+        if [ -n "$PERF_FILE" ]; then
+            # Extract just the filename for use inside the container
+            PERF_BASENAME=$(basename "$PERF_FILE")
+            echo "  Found perf data: $PERF_BASENAME"
             echo "  Generating flamegraph for $container..."
             docker exec "$container" /profiling/scripts/generate-flamegraph.sh \
-                --input /profiling/data/perf-merod.data \
+                --input "/profiling/data/$PERF_BASENAME" \
                 --output /profiling/reports/flamegraph.svg \
                 --title "CPU Flamegraph - $container" 2>/dev/null || echo "  Could not generate flamegraph"
             
@@ -52,8 +57,10 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         fi
         
         # Generate memory report
+        # Extract node name from container name or use container as identifier
+        NODE_NAME="${container##*-}"  
         docker exec "$container" /profiling/scripts/generate-memory-report.sh \
-            --node-name merod \
+            --node-name "$NODE_NAME" \
             --output /profiling/reports/memory-report.txt 2>/dev/null || echo "  Could not generate memory report"
         docker cp "$container:/profiling/reports/memory-report.txt" "$REPORTS_DIR/$container/" 2>/dev/null || true
     fi
