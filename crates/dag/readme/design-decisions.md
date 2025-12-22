@@ -390,7 +390,12 @@ pub fn get_full_state(&self) -> HashMap<Key, Value> {
 **Our Approach**:
 ```rust
 // ✅ Accepted: Delta sync
-pub fn get_deltas_since(&self, ancestor: [u8; 32]) -> Vec<CausalDelta<T>> {
+pub fn get_deltas_since(
+    &self,
+    ancestor: [u8; 32],
+    start_id: Option<[u8; 32]>,
+    query_limit: usize,
+) -> Vec<CausalDelta<T>> {
     // BFS from heads to ancestor
     // Returns only missing deltas
 }
@@ -462,7 +467,12 @@ pub struct DagStore<T> {  // No bounds
 }
 
 // Can't return Vec<CausalDelta<T>>
-pub fn get_deltas_since(&self, ancestor: [u8; 32]) -> Vec<&CausalDelta<T>> {
+pub fn get_deltas_since(
+    &self,
+    ancestor: [u8; 32],
+    start_id: Option<[u8; 32]>,
+    query_limit: usize,
+) -> Vec<CausalDelta<T>> {
     // Returns references instead
 }
 ```
@@ -476,7 +486,12 @@ pub fn get_deltas_since(&self, ancestor: [u8; 32]) -> Vec<&CausalDelta<T>> {
 ```rust
 // ✅ Accepted: Require Clone
 impl<T: Clone> DagStore<T> {
-    pub fn get_deltas_since(&self, ancestor: [u8; 32]) -> Vec<CausalDelta<T>> {
+    pub fn get_deltas_since(
+        &self,
+        ancestor: [u8; 32],
+        start_id: Option<[u8; 32]>,
+        query_limit: usize,
+    ) -> Vec<CausalDelta<T>> {
         // Can return owned copies
         result.push(delta.clone());
     }

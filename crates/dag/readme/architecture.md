@@ -391,28 +391,43 @@ impl DeltaStore {
 ### get_deltas_since Algorithm
 
 ```rust
-pub fn get_deltas_since(&self, ancestor: [u8; 32]) -> Vec<CausalDelta<T>> {
+pub fn get_deltas_since(
+        &self,
+        ancestor: [u8; 32],
+        start_id: Option<[u8; 32]>,
+        query_limit: usize,
+) -> Vec<CausalDelta<T>> {
+    let delta_query_limit = std::cmp::min(query_limit, self.delta_query_limit);
+
     let mut result = Vec::new();
     let mut visited = HashSet::new();
-    let mut queue = VecDeque::from_iter(self.heads.iter().copied());
-    
+    let mut queue = if let Some(start_id) = start_id {
+        VecDeque::from([start_id])
+    } else {
+        VecDeque::from_iter(self.heads.iter().copied())
+    };
+
     while let Some(id) = queue.pop_front() {
+        if result.len() >= delta_query_limit {
+            break;
+        }
+
         if visited.contains(&id) || id == ancestor {
             continue;
         }
-        
+
         visited.insert(id);
-        
+
         if let Some(delta) = self.deltas.get(&id) {
             result.push(delta.clone());
-            
+
             // BFS: Visit parents next
             for parent in &delta.parents {
                 queue.push_back(*parent);
             }
         }
     }
-    
+
     result
 }
 ```
@@ -425,6 +440,7 @@ pub fn get_deltas_since(&self, ancestor: [u8; 32]) -> Vec<CausalDelta<T>> {
 **Note**: Result is **not strictly topological**
 - May need to sort by dependencies before applying
 - Works for sync because receiver re-applies through `add_delta` which buffers
+- The function has pagination and cap for delta query limits
 
 ---
 

@@ -8,7 +8,10 @@ use std::time::Duration;
 use std::collections::HashMap;
 
 use calimero_context_primitives::client::ContextClient;
-use calimero_dag::{ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats};
+use calimero_dag::{
+    ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats,
+    MAX_DELTA_QUERY_LIMIT,
+};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -585,7 +588,7 @@ impl DeltaStore {
     /// Returns missing IDs and any cascaded events that need handler execution.
     pub async fn get_missing_parents(&self) -> MissingParentsResult {
         let dag = self.dag.read().await;
-        let potentially_missing = dag.get_missing_parents();
+        let potentially_missing = dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT);
         drop(dag); // Release lock before DB access
 
         // Filter out parents that exist in the database
