@@ -136,27 +136,50 @@ if [ "$ENABLE_JEMALLOC" = "true" ]; then
     fi
 fi
 
+# Track if we're using heaptrack wrapper
+USING_HEAPTRACK="false"
+
 # If heaptrack is enabled, wrap the command
 if [ "$ENABLE_HEAPTRACK" = "true" ]; then
     HEAPTRACK_OUTPUT="$PROFILING_OUTPUT_DIR/heaptrack-${NODE_NAME:-merod}"
     CMD="heaptrack -o $HEAPTRACK_OUTPUT $CMD"
+    USING_HEAPTRACK="true"
     echo "[Profiling] heaptrack enabled (output: $HEAPTRACK_OUTPUT)"
+    if [ "$ENABLE_PERF" = "true" ]; then
+        echo "[Profiling] WARNING: Both heaptrack and perf enabled. Will attempt to find actual merod PID for perf."
+    fi
 fi
 
 # Start the main process
 echo "[Profiling] Starting: $CMD $@"
 
 if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ]; then
-    # Start merod in background, then attach perf
+    # Start merod (or heaptrack wrapper) in background
     $CMD "$@" &
-    MEROD_PID=$!
-    echo "[Profiling] merod started with PID $MEROD_PID"
+    WRAPPER_PID=$!
+    MEROD_PID=$WRAPPER_PID
+    echo "[Profiling] Process started with PID $WRAPPER_PID"
     
     # Give the process time to initialize
     sleep 2
     
-    # Start profiling
-    start_profiling $MEROD_PID
+    # If heaptrack is wrapping merod, find the actual merod child process
+    if [ "$USING_HEAPTRACK" = "true" ]; then
+        # Find merod child process spawned by heaptrack
+        ACTUAL_MEROD_PID=$(pgrep -P "$WRAPPER_PID" -x merod 2>/dev/null | head -1 || true)
+        if [ -n "$ACTUAL_MEROD_PID" ]; then
+            echo "[Profiling] Found actual merod child process: PID $ACTUAL_MEROD_PID (parent heaptrack: $WRAPPER_PID)"
+            PERF_TARGET_PID=$ACTUAL_MEROD_PID
+        else
+            echo "[Profiling] WARNING: Could not find merod child process, attaching perf to heaptrack wrapper"
+            PERF_TARGET_PID=$WRAPPER_PID
+        fi
+    else
+        PERF_TARGET_PID=$MEROD_PID
+    fi
+    
+    # Start profiling on the correct target
+    start_profiling $PERF_TARGET_PID
     
     # Wait for merod to exit
     wait $MEROD_PID
