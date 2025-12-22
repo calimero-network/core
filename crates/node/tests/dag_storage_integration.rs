@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier};
+use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier, MAX_DELTA_QUERY_LIMIT};
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
@@ -178,7 +178,7 @@ async fn test_dag_handles_out_of_order_and_applies_to_storage() {
     // Delta2 should be buffered
     assert_eq!(dag.pending_stats().count, 1, "Delta2 should be pending");
     assert_eq!(
-        dag.get_missing_parents(),
+        dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT),
         vec![[1; 32]],
         "Missing parent delta1"
     );
