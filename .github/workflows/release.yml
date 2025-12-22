@@ -9,11 +9,15 @@ on:
       - Cargo.lock
       - "crates/**"
       - ".github/workflows/release.yml"
+      - ".github/workflows/deps/**"
+      - ".github/actions/**"
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
+      - ".github/workflows/deps/**"
+      - ".github/actions/**"
 
 permissions:
   contents: read
