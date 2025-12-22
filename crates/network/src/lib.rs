@@ -27,7 +27,7 @@ use tracing::error;
 
 use crate::handlers::stream::incoming::FromIncoming;
 
-pub mod autonat;
+pub use calimero_network_primitives::autonat_v2 as autonat;
 pub mod behaviour;
 mod discovery;
 mod handlers;
