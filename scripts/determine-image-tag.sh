@@ -27,14 +27,14 @@ else
 fi
 
 if [ "$EVENT_NAME" == "pull_request" ]; then
-    echo "Checking if Rust crates changed in PR..."
+    echo "Checking if Rust crates or release-triggering files changed in PR..."
     
     CHANGED_FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --jq '.[].filename' 2>/dev/null || echo "")
     CRATES_CHANGED=$(echo "$CHANGED_FILES" | \
-        grep -E '^(Cargo\.toml|Cargo\.lock|crates/|\.github/workflows/release\.yml)' || true)
+        grep -E '^(Cargo\.toml|Cargo\.lock|crates/|\.github/workflows/release\.yml|\.github/workflows/deps/|\.github/actions/)' || true)
     
     if [ -n "$CRATES_CHANGED" ]; then
-        echo "Rust crates changed - release workflow will build/rebuild pr-${PR_NUMBER} image"
+        echo "Rust crates or release-triggering files changed - release workflow will build/rebuild pr-${PR_NUMBER} image"
         echo "Waiting for release workflow to complete..."
         
         MAX_WAIT=1200
@@ -132,7 +132,7 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
             fi
         fi
     else
-        echo "No Rust crates changed in this commit"
+        echo "No Rust crates or release-triggering files changed in this commit"
         echo "Checking if pr-${PR_NUMBER}${TAG_SUFFIX} image exists (from previous commits)..."
         
         PR_TAG="pr-${PR_NUMBER}${TAG_SUFFIX}"
