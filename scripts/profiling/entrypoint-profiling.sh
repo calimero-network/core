@@ -16,6 +16,58 @@ EXIT_CODE=0
 mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 
+try_install_kernel_tools() {
+    local kernel_version=$(uname -r)
+    echo "[Profiling] Detected kernel: $kernel_version"
+    
+    # Check if perf works with current kernel
+    if perf --version >/dev/null 2>&1 && perf record -o /dev/null -- true 2>/dev/null; then
+        echo "[Profiling] perf is compatible with current kernel"
+        return 0
+    fi
+    
+    echo "[Profiling] perf not compatible, attempting to install matching kernel tools..."
+    
+    # Try to install matching kernel tools (requires network)
+    if [[ "$kernel_version" == *"-azure"* ]]; then
+        echo "[Profiling] Azure kernel detected"
+        # Try metapackage first (pulls in correct version automatically)
+        if apt-get update -qq 2>/dev/null && apt-get install -y -qq linux-tools-azure 2>/dev/null; then
+            echo "[Profiling] Installed linux-tools-azure"
+            return 0
+        fi
+        # Fallback to specific version
+        if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
+            echo "[Profiling] Installed linux-tools-${kernel_version}"
+            return 0
+        fi
+    elif [[ "$kernel_version" == *"-aws"* ]]; then
+        echo "[Profiling] AWS kernel detected"
+        if apt-get update -qq 2>/dev/null && apt-get install -y -qq linux-tools-aws 2>/dev/null; then
+            echo "[Profiling] Installed linux-tools-aws"
+            return 0
+        fi
+    elif [[ "$kernel_version" == *"-gcp"* ]]; then
+        echo "[Profiling] GCP kernel detected"
+        if apt-get update -qq 2>/dev/null && apt-get install -y -qq linux-tools-gcp 2>/dev/null; then
+            echo "[Profiling] Installed linux-tools-gcp"
+            return 0
+        fi
+    else
+        # Try generic version
+        if apt-get update -qq 2>/dev/null && apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
+            echo "[Profiling] Installed linux-tools-${kernel_version}"
+            return 0
+        fi
+    fi
+    
+    echo "[Profiling] WARNING: Could not install kernel-specific perf tools"
+    echo "[Profiling] Kernel: $kernel_version"
+    echo "[Profiling] CPU profiling (flamegraphs) will not be available"
+    echo "[Profiling] Memory profiling (jemalloc) still works"
+    return 1
+}
+
 start_profiling() {
     local pid=$1
     local node_name="${NODE_NAME:-merod}"
@@ -23,10 +75,25 @@ start_profiling() {
     echo "[Profiling] Starting profiling for PID $pid (node: $node_name)"
     
     if [ "$ENABLE_PERF" = "true" ]; then
+        # Check if perf is available and compatible
+        if ! perf record -o /dev/null -- true 2>/dev/null; then
+            echo "[Profiling] perf not compatible with host kernel, skipping CPU profiling"
+            return
+        fi
+        
+        echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz)..."
         perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" \
-            -o "$PROFILING_OUTPUT_DIR/perf-${node_name}.data" &
-        echo $! > "$PROFILING_OUTPUT_DIR/perf.pid"
-        echo "[Profiling] perf started with PID $(cat $PROFILING_OUTPUT_DIR/perf.pid)"
+            -o "$PROFILING_OUTPUT_DIR/perf-${node_name}.data" 2>&1 &
+        PERF_PID=$!
+        echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
+        
+        sleep 1
+        if kill -0 "$PERF_PID" 2>/dev/null; then
+            echo "[Profiling] perf recording with PID $PERF_PID"
+        else
+            echo "[Profiling] WARNING: perf failed to start"
+            rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
+        fi
     fi
 }
 
@@ -88,6 +155,11 @@ detect_jemalloc_path() {
         *)         echo "" ;;
     esac
 }
+
+# Try to ensure perf is compatible with host kernel
+if [ "$ENABLE_PERF" = "true" ]; then
+    try_install_kernel_tools
+fi
 
 if [ "$ENABLE_JEMALLOC" = "true" ]; then
     JEMALLOC_PATH="${LD_PRELOAD_JEMALLOC:-$(detect_jemalloc_path)}"
