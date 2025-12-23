@@ -56,11 +56,9 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
             docker cp "$container:/profiling/reports/." "$REPORTS_DIR/$container/" 2>/dev/null || true
         fi
         
-        # Generate memory report
-        # Extract node name from container name or use container as identifier
-        NODE_NAME="${container##*-}"  
+        # Generate memory report (use container name for identification)
         docker exec "$container" /profiling/scripts/generate-memory-report.sh \
-            --node-name "$NODE_NAME" \
+            --node-name "$container" \
             --output /profiling/reports/memory-report.txt 2>/dev/null || echo "  Could not generate memory report"
         docker cp "$container:/profiling/reports/memory-report.txt" "$REPORTS_DIR/$container/" 2>/dev/null || true
     fi

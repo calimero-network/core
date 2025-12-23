@@ -64,8 +64,8 @@ echo "  Output:    $OUTPUT"
     echo ""
     
     # Process memory stats log
-    MEMSTATS_LOG="$INPUT_DIR/memory-stats-${NODE_NAME}.log"
-    if [ -f "$MEMSTATS_LOG" ]; then
+    MEMSTATS_LOG=$(ls -1 "$INPUT_DIR"/memory-stats-*.log 2>/dev/null | head -1 || true)
+    if [ -n "$MEMSTATS_LOG" ] && [ -f "$MEMSTATS_LOG" ]; then
         echo "### Memory Statistics Over Time ###"
         echo ""
         
@@ -100,7 +100,7 @@ echo "  Output:    $OUTPUT"
         echo "(truncated, see full log for details)"
         echo ""
     else
-        echo "No memory stats log found at: $MEMSTATS_LOG"
+        echo "No memory stats log found in: $INPUT_DIR"
         echo ""
     fi
     
@@ -134,7 +134,7 @@ echo "  Output:    $OUTPUT"
     # Process heaptrack data
     echo "### Heaptrack Analysis ###"
     echo ""
-    HEAPTRACK_FILES=$(ls -1 "$INPUT_DIR"/heaptrack-${NODE_NAME}*.zst 2>/dev/null || ls -1 "$INPUT_DIR"/heaptrack-${NODE_NAME}*.gz 2>/dev/null || true)
+    HEAPTRACK_FILES=$(ls -1 "$INPUT_DIR"/heaptrack-*.zst 2>/dev/null || ls -1 "$INPUT_DIR"/heaptrack-*.gz 2>/dev/null || true)
     if [ -n "$HEAPTRACK_FILES" ]; then
         echo "Found heaptrack data:"
         for f in $HEAPTRACK_FILES; do
@@ -144,7 +144,7 @@ echo "  Output:    $OUTPUT"
         
         # If heaptrack_print is available, generate summary
         if command -v heaptrack_print &>/dev/null; then
-            LATEST_HT=$(ls -t "$INPUT_DIR"/heaptrack-${NODE_NAME}* 2>/dev/null | head -1)
+            LATEST_HT=$(ls -t "$INPUT_DIR"/heaptrack-* 2>/dev/null | head -1)
             if [ -n "$LATEST_HT" ]; then
                 echo "Summary from heaptrack_print:"
                 echo "-----------------------------"
