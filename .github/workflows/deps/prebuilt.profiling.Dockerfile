@@ -125,5 +125,5 @@ RUN chmod +x /usr/local/bin/entrypoint-profiling.sh
 # - kernel.perf_event_paranoid set to -1 or 0 on the host
 
 ENTRYPOINT ["/usr/local/bin/entrypoint-profiling.sh"]
-CMD ["--help"]
+CMD ["merod", "--help"]
 
