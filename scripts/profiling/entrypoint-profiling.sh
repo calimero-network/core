@@ -110,6 +110,10 @@ CMD="merod"
 
 # Auto-detect jemalloc library path based on architecture
 detect_jemalloc_path() {
+    if [ -f "/usr/local/lib/libjemalloc.so.2" ]; then
+        echo "/usr/local/lib/libjemalloc.so.2"
+        return
+    fi
     local arch=$(uname -m)
     case "$arch" in
         x86_64)
@@ -130,7 +134,13 @@ if [ "$ENABLE_JEMALLOC" = "true" ]; then
     JEMALLOC_PATH="${LD_PRELOAD_JEMALLOC:-$(detect_jemalloc_path)}"
     if [ -n "$JEMALLOC_PATH" ] && [ -f "$JEMALLOC_PATH" ]; then
         export LD_PRELOAD="$JEMALLOC_PATH"
-        echo "[Profiling] jemalloc profiling enabled (LD_PRELOAD=$LD_PRELOAD)"
+        echo "[Profiling] jemalloc enabled (LD_PRELOAD=$LD_PRELOAD)"
+        if [[ "$JEMALLOC_PATH" == "/usr/local/lib/"* ]]; then
+            echo "[Profiling] Using source-built jemalloc with profiling support"
+        else
+            echo "[Profiling] WARNING: Using system jemalloc which may lack profiling support"
+            echo "[Profiling] MALLOC_CONF settings may produce 'Invalid conf pair' errors"
+        fi
     else
         echo "[Profiling] jemalloc library not found, skipping jemalloc profiling"
     fi

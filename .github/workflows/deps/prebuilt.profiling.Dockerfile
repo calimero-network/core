@@ -29,8 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # jemalloc dependencies
     build-essential \
     autoconf \
-    libjemalloc2 \
-    libjemalloc-dev \
     # Python for additional processing
     python3 \
     python3-pip \
@@ -38,6 +36,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gzip \
     tar \
     && rm -rf /var/lib/apt/lists/*
+
+# Build jemalloc from source
+ARG JEMALLOC_VERSION=5.3.0
+RUN curl -fsSL "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
+        -o /tmp/jemalloc.tar.bz2 \
+    && cd /tmp \
+    && tar -xjf jemalloc.tar.bz2 \
+    && cd "jemalloc-${JEMALLOC_VERSION}" \
+    && ./configure --enable-prof --prefix=/usr/local \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/jemalloc* \
+    && echo "[jemalloc] Built with profiling support"
 
 # Install FlameGraph tools
 RUN git clone --depth 1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph \
@@ -80,11 +92,9 @@ RUN chmod +x /usr/local/bin/merod /usr/local/bin/meroctl
 # Environment variables for profiling
 # jemalloc profiling configuration
 ENV MALLOC_CONF="prof:true,prof_prefix:/profiling/data/jemalloc,lg_prof_interval:30,prof_gdump:true,prof_final:true"
-# Enable jemalloc as the allocator (optional - can be enabled at runtime)
-# Note: Path is architecture-dependent, set dynamically in entrypoint
-# x86_64: /usr/lib/x86_64-linux-gnu/libjemalloc.so.2
-# arm64:  /usr/lib/aarch64-linux-gnu/libjemalloc.so.2
-ENV LD_PRELOAD_JEMALLOC=""
+# Enable jemalloc as the allocator
+# Using source-built jemalloc at /usr/local/lib
+ENV LD_PRELOAD_JEMALLOC="/usr/local/lib/libjemalloc.so.2"
 # Profiling output directory
 ENV PROFILING_OUTPUT_DIR="/profiling/data"
 ENV PROFILING_REPORTS_DIR="/profiling/reports"
