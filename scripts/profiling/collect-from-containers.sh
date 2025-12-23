@@ -57,10 +57,16 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         fi
         
         # Generate memory report (use container name for identification)
-        docker exec "$container" /profiling/scripts/generate-memory-report.sh \
+        echo "  Generating memory report..."
+        if docker exec "$container" /profiling/scripts/generate-memory-report.sh \
             --node-name "$container" \
-            --output /profiling/reports/memory-report.txt 2>/dev/null || echo "  Could not generate memory report"
-        docker cp "$container:/profiling/reports/memory-report.txt" "$REPORTS_DIR/$container/" 2>/dev/null || true
+            --output /profiling/reports/memory-report.txt 2>&1; then
+            docker cp "$container:/profiling/reports/memory-report.txt" "$REPORTS_DIR/$container/" 2>/dev/null && \
+                echo "  Memory report saved to $REPORTS_DIR/$container/memory-report.txt" || \
+                echo "  WARNING: Could not copy memory report"
+        else
+            echo "  Could not generate memory report"
+        fi
     fi
 done
 
