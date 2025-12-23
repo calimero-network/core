@@ -16,70 +16,27 @@ EXIT_CODE=0
 mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 
-check_perf_works() {
-    # Verify perf can actually record (not just that it exists)
-    if perf record -o /dev/null -- true 2>/dev/null; then
-        return 0
-    fi
-    return 1
-}
-
-try_install_kernel_tools() {
+install_kernel_tools() {
     local kernel_version=$(uname -r)
     echo "[Profiling] Detected kernel: $kernel_version"
     
-    # Check if perf works with current kernel
-    if check_perf_works; then
+    if perf record -o /dev/null -- true 2>/dev/null; then
         echo "[Profiling] perf is compatible with current kernel"
         return 0
     fi
     
-    echo "[Profiling] perf not compatible, attempting to install matching kernel tools..."
+    echo "[Profiling] Installing kernel tools..."
     apt-get update -qq 2>/dev/null || true
     
-    # ALWAYS try exact kernel version first (most reliable)
-    echo "[Profiling] Trying exact match: linux-tools-${kernel_version}"
     if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
-        echo "[Profiling] Installed linux-tools-${kernel_version}"
-        if check_perf_works; then
+        if perf record -o /dev/null -- true 2>/dev/null; then
             echo "[Profiling] perf is now working"
             return 0
         fi
-        echo "[Profiling] Installed but perf still not working, trying alternatives..."
-    fi
-    
-    # Fallback to cloud-specific metapackages (may install different version)
-    if [[ "$kernel_version" == *"-azure"* ]]; then
-        echo "[Profiling] Azure kernel detected, trying metapackage..."
-        if apt-get install -y -qq linux-tools-azure 2>/dev/null && check_perf_works; then
-            echo "[Profiling] linux-tools-azure working"
-            return 0
-        fi
-    elif [[ "$kernel_version" == *"-aws"* ]]; then
-        echo "[Profiling] AWS kernel detected, trying metapackage..."
-        if apt-get install -y -qq linux-tools-aws 2>/dev/null && check_perf_works; then
-            echo "[Profiling] linux-tools-aws working"
-            return 0
-        fi
-    elif [[ "$kernel_version" == *"-gcp"* ]]; then
-        echo "[Profiling] GCP kernel detected, trying metapackage..."
-        if apt-get install -y -qq linux-tools-gcp 2>/dev/null && check_perf_works; then
-            echo "[Profiling] linux-tools-gcp working"
-            return 0
-        fi
-    fi
-    
-    # Try linux-tools-generic as last resort
-    echo "[Profiling] Trying linux-tools-generic..."
-    if apt-get install -y -qq linux-tools-generic 2>/dev/null && check_perf_works; then
-        echo "[Profiling] linux-tools-generic working"
-        return 0
     fi
     
     echo "[Profiling] WARNING: Could not install compatible kernel tools"
-    echo "[Profiling] Host kernel: $kernel_version"
     echo "[Profiling] CPU profiling (flamegraphs) will not be available"
-    echo "[Profiling] Memory profiling (jemalloc) still works"
     return 1
 }
 
@@ -89,26 +46,38 @@ start_profiling() {
     
     echo "[Profiling] Starting profiling for PID $pid (node: $node_name)"
     
-    if [ "$ENABLE_PERF" = "true" ]; then
-        # Check if perf is available and compatible
-        if ! perf record -o /dev/null -- true 2>/dev/null; then
-            echo "[Profiling] perf not compatible with host kernel, skipping CPU profiling"
-            return
+    if [ "$ENABLE_PERF" != "true" ]; then
+        return
+    fi
+    
+    if ! perf record -o /dev/null -- true 2>/dev/null; then
+        echo "[Profiling] perf not compatible, skipping CPU profiling"
+        return
+    fi
+    
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "[Profiling] Process $pid is not running, cannot start perf"
+        return
+    fi
+    
+    local perf_output="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
+    local perf_log="$PROFILING_OUTPUT_DIR/perf-${node_name}.log"
+    
+    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz)..."
+    perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
+    PERF_PID=$!
+    echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
+    
+    # Wait a moment to verify perf started successfully
+    sleep 2
+    if kill -0 "$PERF_PID" 2>/dev/null; then
+        echo "[Profiling] perf recording with PID $PERF_PID"
+    else
+        echo "[Profiling] WARNING: perf failed to start"
+        if [ -f "$perf_log" ]; then
+            echo "[Profiling] perf error: $(head -3 "$perf_log" | tr '\n' ' ')"
         fi
-        
-        echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz)..."
-        perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" \
-            -o "$PROFILING_OUTPUT_DIR/perf-${node_name}.data" 2>&1 &
-        PERF_PID=$!
-        echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
-        
-        sleep 1
-        if kill -0 "$PERF_PID" 2>/dev/null; then
-            echo "[Profiling] perf recording with PID $PERF_PID"
-        else
-            echo "[Profiling] WARNING: perf failed to start"
-            rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
-        fi
+        rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
     fi
 }
 
@@ -119,7 +88,19 @@ stop_profiling() {
         local perf_pid=$(cat "$PROFILING_OUTPUT_DIR/perf.pid")
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
-            sleep 2
+            
+            # Wait for perf to finish writing data (up to 5 seconds)
+            local wait_count=0
+            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 5 ]; do
+                sleep 1
+                wait_count=$((wait_count + 1))
+            done
+            
+            # If still running, force kill
+            if kill -0 "$perf_pid" 2>/dev/null; then
+                echo "[Profiling] WARNING: perf did not stop gracefully, forcing kill"
+                kill -KILL "$perf_pid" 2>/dev/null || true
+            fi
         fi
         rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
     fi
@@ -151,14 +132,13 @@ cleanup() {
     elif [ "$signal_exit_code" -ne 0 ]; then
         exit $signal_exit_code
     else
-        exit 143  # 128 + 15 (SIGTERM)
+        exit 143
     fi
 }
 
 trap cleanup SIGTERM SIGINT
 
 detect_jemalloc_path() {
-    # Prefer source-built jemalloc (compiled with --enable-prof)
     if [ -f "/usr/local/lib/libjemalloc.so.2" ]; then
         echo "/usr/local/lib/libjemalloc.so.2"
         return
@@ -171,9 +151,8 @@ detect_jemalloc_path() {
     esac
 }
 
-# Try to ensure perf is compatible with host kernel
 if [ "$ENABLE_PERF" = "true" ]; then
-    try_install_kernel_tools
+    install_kernel_tools
 fi
 
 if [ "$ENABLE_JEMALLOC" = "true" ]; then
@@ -183,8 +162,6 @@ if [ "$ENABLE_JEMALLOC" = "true" ]; then
         echo "[Profiling] jemalloc enabled (LD_PRELOAD=$LD_PRELOAD)"
         if [[ "$JEMALLOC_PATH" == "/usr/local/lib/"* ]]; then
             echo "[Profiling] Using source-built jemalloc with profiling support"
-        else
-            echo "[Profiling] WARNING: System jemalloc may lack profiling support"
         fi
     else
         echo "[Profiling] jemalloc library not found, skipping"
@@ -199,12 +176,28 @@ fi
 
 echo "[Profiling] Executing: $@"
 
-if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ]; then
+SHOULD_PROFILE_WITH_PERF=true
+for arg in "$@"; do
+    if [[ "$arg" == "init" ]] || [[ "$arg" == "--help" ]] || [[ "$arg" == "-h" ]]; then
+        SHOULD_PROFILE_WITH_PERF=false
+        echo "[Profiling] Skipping perf profiling for short-lived command: $arg"
+        break
+    fi
+done
+
+if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD_PROFILE_WITH_PERF" = "true" ]; then
     "$@" &
     MAIN_PID=$!
     echo "[Profiling] Process started with PID $MAIN_PID"
     
-    sleep 2
+    sleep 3
+    
+    if ! kill -0 "$MAIN_PID" 2>/dev/null; then
+        echo "[Profiling] Process already exited, skipping perf profiling"
+        wait $MAIN_PID
+        EXIT_CODE=$?
+        exit $EXIT_CODE
+    fi
     
     if [ "$ENABLE_HEAPTRACK" = "true" ]; then
         ACTUAL_PID=$(pgrep -P "$MAIN_PID" 2>/dev/null | head -1 || echo "$MAIN_PID")
@@ -222,7 +215,6 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ]; then
     EXIT_CODE=$?
     
     stop_profiling
-    
     exit $EXIT_CODE
 else
     exec "$@"
