@@ -11,6 +11,7 @@ nodes:
   count: 4
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-kv-node
+  use_image_entrypoint: true
 
 steps:
   - name: Install KV Store Application on Node 1

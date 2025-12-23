@@ -11,6 +11,7 @@ nodes:
   count: 4
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-handlers-node
+  use_image_entrypoint: true
 
 steps:
   - name: Install KV Store with Handlers on Node 1
