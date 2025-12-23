@@ -27,7 +27,7 @@ on:
       duration_override:
         description: "Override test duration (minutes per app)"
         required: false
-        default: "45"
+        default: "5"
         type: string
       test_app:
         description: "Run specific app test (kv-store, kv-store-with-handlers, or all)"
