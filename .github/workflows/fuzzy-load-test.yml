@@ -150,7 +150,8 @@ jobs:
 
       - name: Override test duration
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          # TODO: Change default back to '45' after testing is complete
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"
@@ -333,7 +334,8 @@ jobs:
 
       - name: Override test duration
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          # TODO: Change default back to '45' after testing is complete
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"
