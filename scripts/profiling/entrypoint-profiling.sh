@@ -16,53 +16,68 @@ EXIT_CODE=0
 mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 
+check_perf_works() {
+    # Verify perf can actually record (not just that it exists)
+    if perf record -o /dev/null -- true 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 try_install_kernel_tools() {
     local kernel_version=$(uname -r)
     echo "[Profiling] Detected kernel: $kernel_version"
     
     # Check if perf works with current kernel
-    if perf --version >/dev/null 2>&1 && perf record -o /dev/null -- true 2>/dev/null; then
+    if check_perf_works; then
         echo "[Profiling] perf is compatible with current kernel"
         return 0
     fi
     
     echo "[Profiling] perf not compatible, attempting to install matching kernel tools..."
+    apt-get update -qq 2>/dev/null || true
     
-    # Try to install matching kernel tools (requires network)
-    if [[ "$kernel_version" == *"-azure"* ]]; then
-        echo "[Profiling] Azure kernel detected"
-        # Try metapackage first (pulls in correct version automatically)
-        if apt-get update -qq 2>/dev/null && apt-get install -y -qq linux-tools-azure 2>/dev/null; then
-            echo "[Profiling] Installed linux-tools-azure"
+    # ALWAYS try exact kernel version first (most reliable)
+    echo "[Profiling] Trying exact match: linux-tools-${kernel_version}"
+    if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
+        echo "[Profiling] Installed linux-tools-${kernel_version}"
+        if check_perf_works; then
+            echo "[Profiling] perf is now working"
             return 0
         fi
-        # Fallback to specific version
-        if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
-            echo "[Profiling] Installed linux-tools-${kernel_version}"
+        echo "[Profiling] Installed but perf still not working, trying alternatives..."
+    fi
+    
+    # Fallback to cloud-specific metapackages (may install different version)
+    if [[ "$kernel_version" == *"-azure"* ]]; then
+        echo "[Profiling] Azure kernel detected, trying metapackage..."
+        if apt-get install -y -qq linux-tools-azure 2>/dev/null && check_perf_works; then
+            echo "[Profiling] linux-tools-azure working"
             return 0
         fi
     elif [[ "$kernel_version" == *"-aws"* ]]; then
-        echo "[Profiling] AWS kernel detected"
-        if apt-get update -qq 2>/dev/null && apt-get install -y -qq linux-tools-aws 2>/dev/null; then
-            echo "[Profiling] Installed linux-tools-aws"
+        echo "[Profiling] AWS kernel detected, trying metapackage..."
+        if apt-get install -y -qq linux-tools-aws 2>/dev/null && check_perf_works; then
+            echo "[Profiling] linux-tools-aws working"
             return 0
         fi
     elif [[ "$kernel_version" == *"-gcp"* ]]; then
-        echo "[Profiling] GCP kernel detected"
-        if apt-get update -qq 2>/dev/null && apt-get install -y -qq linux-tools-gcp 2>/dev/null; then
-            echo "[Profiling] Installed linux-tools-gcp"
-            return 0
-        fi
-    else
-        # Try generic version
-        if apt-get update -qq 2>/dev/null && apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
-            echo "[Profiling] Installed linux-tools-${kernel_version}"
+        echo "[Profiling] GCP kernel detected, trying metapackage..."
+        if apt-get install -y -qq linux-tools-gcp 2>/dev/null && check_perf_works; then
+            echo "[Profiling] linux-tools-gcp working"
             return 0
         fi
     fi
     
-    echo "[Profiling] WARNING: Could not install kernel-specific perf tools"
-    echo "[Profiling] Kernel: $kernel_version"
+    # Try linux-tools-generic as last resort
+    echo "[Profiling] Trying linux-tools-generic..."
+    if apt-get install -y -qq linux-tools-generic 2>/dev/null && check_perf_works; then
+        echo "[Profiling] linux-tools-generic working"
+        return 0
+    fi
+    
+    echo "[Profiling] WARNING: Could not install compatible kernel tools"
+    echo "[Profiling] Host kernel: $kernel_version"
     echo "[Profiling] CPU profiling (flamegraphs) will not be available"
     echo "[Profiling] Memory profiling (jemalloc) still works"
     return 1
