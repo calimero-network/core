@@ -364,6 +364,8 @@ impl DeltaStore {
         let pending_before: std::collections::HashSet<[u8; 32]> =
             dag.get_pending_delta_ids().into_iter().collect();
 
+        // If parents are missing, `result` will be FALSE, and `dag` internally stores it as
+        // pending.
         let result = dag.add_delta(delta, &*self.applier).await?;
 
         // Update context's dag_heads after the DAG has been updated

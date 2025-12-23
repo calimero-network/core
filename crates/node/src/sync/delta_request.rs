@@ -10,10 +10,17 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::delta::CausalDelta;
 use eyre::{bail, OptionExt, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
+
+/// Maximum number of deltas to fetch recursively in a single sync operation.
+/// This prevents OOM where a peer sends a delta with an deep chain with many deltas.
+/// TODO: adjust this number after the benchmarks.
+const MAX_DELTA_FETCH_LIMIT: usize = 3000;
+const DELTA_WARN_LIMIT: usize = 1000;
+const GENESIS_DELTA_ID: [u8; 32] = [0u8; 32];
 
 impl SyncManager {
     /// Request missing deltas from a peer and add them to the DAG
@@ -38,20 +45,36 @@ impl SyncManager {
         let mut stream = self.network_client.open_stream(source).await?;
 
         // Fetch all missing ancestors, then add them in topological order (oldest first)
-        let mut to_fetch = missing_ids;
-        let mut fetched_deltas: Vec<(
-            calimero_dag::CausalDelta<Vec<calimero_storage::interface::Action>>,
-            [u8; 32],
-        )> = Vec::new();
+        let mut to_fetch = missing_ids.clone();
         let mut fetch_count = 0;
+
+        // Track visited IDs to prevent cycles/loops from malicious peers
+        let mut visited_ids = std::collections::HashSet::new();
+        // Initialize visited IDs with the starting set to ensure we don't re-queue them if they appear as parents.
+        for id in &missing_ids {
+            visited_ids.insert(*id);
+        }
 
         // Phase 1: Fetch ALL missing deltas recursively
         // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
         while !to_fetch.is_empty() {
-            let current_batch = to_fetch.clone();
-            to_fetch.clear();
+            // Drain the current batch so we don't hold it in memory while fetching new ones
+            let current_batch = std::mem::take(&mut to_fetch);
 
             for missing_id in current_batch {
+                // Enforce hard limit on fetched deltas count
+                if fetch_count >= MAX_DELTA_FETCH_LIMIT {
+                    warn!(
+                        %context_id,
+                        fetch_count,
+                        limit = MAX_DELTA_FETCH_LIMIT,
+                        "Exceeded maximum delta fetch limit. The sync gap is too large."
+                    );
+
+                    // Stop syncing. Progress so far is saved in DeltaStore (Pending).
+                    return Ok(());
+                }
+
                 fetch_count += 1;
 
                 match self
@@ -63,63 +86,60 @@ impl SyncManager {
                             %context_id,
                             delta_id = ?missing_id,
                             action_count = parent_delta.actions.len(),
-                                total_fetched = fetch_count,
-                                "Received missing parent delta"
+                            total_fetched = fetch_count,
+                            "Received missing parent delta"
                         );
+
+                        // Check what parents THIS delta needs (identify grandparents).
+                        // We also check local storage to avoid re-fetching known deltas.
+                        for parent_id in &parent_delta.parents {
+                            // Skip genesis
+                            if *parent_id == GENESIS_DELTA_ID {
+                                continue;
+                            }
+
+                            // Cycle & Duplicate Detection
+                            // We attempt to insert into `visited`.
+                            // If insert returns true, it's a NEW ID we haven't processed or queued yet.
+                            // Then, verify and add to the queue only if we don't have it in Delta
+                            // Store (should be stored on disk in future).
+                            if visited_ids.insert(*parent_id)
+                                && !delta_store.has_delta(parent_id).await
+                            {
+                                to_fetch.push(*parent_id);
+                            }
+                        }
 
                         // Convert to DAG delta format
                         let dag_delta = calimero_dag::CausalDelta {
                             id: parent_delta.id,
-                            parents: parent_delta.parents.clone(),
+                            parents: parent_delta.parents,
                             payload: parent_delta.actions,
                             hlc: parent_delta.hlc,
                             expected_root_hash: parent_delta.expected_root_hash,
                         };
 
-                        // Store for later (don't add to DAG yet!)
-                        fetched_deltas.push((dag_delta, missing_id));
-
-                        // Check what parents THIS delta needs
-                        for parent_id in &parent_delta.parents {
-                            // Skip genesis
-                            if *parent_id == [0; 32] {
-                                continue;
-                            }
-                            // Skip if we already have it or are about to fetch it
-                            if !delta_store.has_delta(parent_id).await
-                                && !to_fetch.contains(parent_id)
-                                && !fetched_deltas.iter().any(|(d, _)| d.id == *parent_id)
-                            {
-                                to_fetch.push(*parent_id);
-                            }
+                        // Write deltas to DeltaStore. If parents are missing, DeltaStore marks it 'Pending'.
+                        // There's no need for topological order insert.
+                        // NOTE: currently delta store doesn't write the deltas on disk, that
+                        // should be optionally enabled in the future for robustness.
+                        if let Err(e) = delta_store.add_delta(dag_delta).await {
+                            warn!(?e, %context_id, delta_id = ?missing_id, "Failed to persist fetched delta to DAG");
+                            continue;
                         }
                     }
                     Ok(None) => {
                         warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
                     }
                     Err(e) => {
-                        warn!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
-                        break; // Stop requesting if stream fails
+                        error!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
+
+                        // Stop requesting if stream fails
+                        // TODO: in future, this might also mean that the `stream` has some
+                        // critical error and, perhaps, we need to set a limit of failures for the
+                        // specific peer (stream).
+                        break;
                     }
-                }
-            }
-        }
-
-        // Phase 2: Add all fetched deltas to DAG in topological order (oldest first)
-        // We need to add them in reverse order so parents are added before children
-        if !fetched_deltas.is_empty() {
-            info!(
-                %context_id,
-                total_fetched = fetched_deltas.len(),
-                "Adding fetched deltas to DAG in topological order"
-            );
-
-            // Reverse the list so we process oldest (deepest ancestors) first
-            fetched_deltas.reverse();
-
-            for (dag_delta, delta_id) in fetched_deltas {
-                if let Err(e) = delta_store.add_delta(dag_delta).await {
-                    warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
                 }
             }
         }
@@ -132,7 +152,7 @@ impl SyncManager {
             );
 
             // Log warning for very large syncs (informational, not a hard limit)
-            if fetch_count > 1000 {
+            if fetch_count > DELTA_WARN_LIMIT {
                 warn!(
                     %context_id,
                     total_fetched = fetch_count,
