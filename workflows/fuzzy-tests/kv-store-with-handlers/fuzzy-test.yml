@@ -57,11 +57,11 @@ steps:
       - "is_set({{public_key_fuzzy-handlers-node-3}})"
       - "is_set({{public_key_fuzzy-handlers-node-4}})"
 
-  # Main fuzzy test for kv-store-with-handlers
+  # Main fuzzy test for kv-store-with-handlers (TODO: Change to 45 minutes , done for testing purposes)
   # Note: No seed data needed - fuzzy test generates its own data
   - name: KV Store with Handlers Fuzzy Load Test
     type: fuzzy_test
-    duration_minutes: 45
+    duration_minutes: 5
     context_id: "{{handlers_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50

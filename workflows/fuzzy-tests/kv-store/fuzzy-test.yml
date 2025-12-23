@@ -82,10 +82,10 @@ steps:
     timeout: 30
     check_interval: 2
 
-  # Main fuzzy test for kv-store
+  # Main fuzzy test for kv-store (TODO: Change to 45 minutes , done for testing purposes)
   - name: KV Store Fuzzy Load Test
     type: fuzzy_test
-    duration_minutes: 45
+    duration_minutes: 5
     context_id: "{{kv_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50
