@@ -128,14 +128,6 @@ jobs:
 
           cargo build $binaries --release --target ${{ matrix.target }}
 
-      - name: Build profiling binaries (with frame pointers)
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
-        run: |
-          readarray -t binaries <<< "$BINARIES"
-          binaries=$(printf -- '-p %s ' "${binaries[@]}")
-
-          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --release --target ${{ matrix.target }}
-
       - name: Compress artifacts using gzip
         run: |
           mkdir -p artifacts
@@ -148,6 +140,14 @@ jobs:
           for binary in "${binaries[@]}"; do
             tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
           done
+
+      - name: Build profiling binaries (with frame pointers)
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          readarray -t binaries <<< "$BINARIES"
+          binaries=$(printf -- '-p %s ' "${binaries[@]}")
+
+          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --release --target ${{ matrix.target }}
 
       - name: Compress profiling artifacts using gzip
         if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
@@ -256,7 +256,7 @@ jobs:
 
           # Install the latest stable cargo-workspaces (better dependency resolution)
           cargo install cargo-workspaces
-          
+
           # Publish with proper dependency ordering (remove --force to respect dependencies)
           cargo ws publish --yes --allow-dirty \
               --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
