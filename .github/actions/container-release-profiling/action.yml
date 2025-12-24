@@ -1,5 +1,5 @@
 name: Profiling Container release
-description: "Release profiling container based on prebuilt binaries"
+description: "Release profiling container with binaries built with frame pointers enabled"
 
 inputs:
   version:
@@ -30,26 +30,6 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Download built binaries
-      uses: actions/download-artifact@v4
-      with:
-        path: binaries/
-        merge-multiple: true
-
-    - name: Extract Linux binaries
-      shell: bash
-      run: |
-        mkdir -p ./bin/amd64 ./bin/arm64
-
-        readarray -t binaries <<< "${{ inputs.binaries }}"
-
-        for binary in ${binaries[@]}; do
-          echo "Extracting ${binary} binaries"
-
-          tar -xzf binaries/${binary}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
-          tar -xzf binaries/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
-        done
-
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
@@ -109,6 +89,9 @@ runs:
 
     - name: Build and push image
       uses: docker/build-push-action@v5
+      env:
+        CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         context: .
         file: ${{ inputs.dockerfile }}
@@ -119,5 +102,7 @@ runs:
         annotations: ${{ steps.metadata.outputs.annotations }}
         cache-from: ${{ steps.prepare.outputs.cache_from }}
         cache-to: ${{ steps.prepare.outputs.cache_to }}
+        secrets: |
+          id=gh-token,env=CALIMERO_WEBUI_FETCH_TOKEN
         provenance: false
         sbom: false
