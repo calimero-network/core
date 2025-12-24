@@ -83,6 +83,9 @@ jobs:
         run: |
           echo "--- FINAL SUMMARY ---"
 
+          # Change IFS to newline to handle strings with spaces correctly
+          IFS=$'\n'
+
           # Report Build Failures
           if [ "$build_failed" = "true" ]; then
             echo "❌ THE FOLLOWING APPS FAILED TO BUILD:"
@@ -95,7 +98,8 @@ jobs:
 
           # Report WASM Mismatches
           if [ "$wasm_failed" = "true" ]; then
-            echo "\n-------------------------------------------------------"
+            echo ""
+            echo "\-------------------------------------------------------"
             echo "❌ ERROR: The following apps binary .wasm files require attention:"
             for line in $changed_wasm_files; do
               echo "  - $line"
