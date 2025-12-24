@@ -33,6 +33,14 @@ runs:
     - name: Download built binaries
       uses: actions/download-artifact@v4
       with:
+        pattern: artifacts-x86_64-unknown-linux-gnu
+        path: binaries/
+        merge-multiple: true
+
+    - name: Download aarch64 binaries
+      uses: actions/download-artifact@v4
+      with:
+        pattern: artifacts-aarch64-unknown-linux-gnu
         path: binaries/
         merge-multiple: true
 
