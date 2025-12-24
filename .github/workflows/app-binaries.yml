@@ -68,8 +68,12 @@ jobs:
 
           if [ -n "$DIFF_LIST" ]; then
             echo "wasm_failed=true" >> $GITHUB_ENV
-            # Convert newline-separated list to a single line for environment storage
-            echo "changed_wasm_files=$(echo $DIFF_LIST | xargs)" >> $GITHUB_ENV
+            # Handle multiline output for GITHUB_ENV
+            {
+              echo "changed_wasm_files<<EOF"
+              echo "$DIFF_LIST"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
           else
             echo "wasm_failed=false" >> $GITHUB_ENV
           fi
@@ -82,7 +86,7 @@ jobs:
           # Report Build Failures
           if [ "$build_failed" = "true" ]; then
             echo "❌ THE FOLLOWING APPS FAILED TO BUILD:"
-            for app in $failed_apps; do
+            for app in $failed_build_apps; do
               echo "  - $app"
             done
           else
@@ -93,8 +97,10 @@ jobs:
           if [ "$wasm_failed" = "true" ]; then
             echo "\n-------------------------------------------------------"
             echo "❌ ERROR: The following apps binary .wasm files require attention:"
-            echo ""
-            echo "$DIFF_LIST"
+            for line in $changed_wasm_files; do
+              echo "  - $line"
+            done
+
             echo ""
             echo "Legend:"
             echo " M  = Modified (Repo version is outdated)"
@@ -102,9 +108,6 @@ jobs:
             echo " !! = Ignored (Found in .gitignore but differs from build)"
             echo "-------------------------------------------------------"
             echo "Action: Run build.sh locally and commit these files."
-            for file in $changed_wasm_files; do
-              echo "  - $file"
-            done
           else
             echo "✅ All apps binary files match the repository state."
           fi
