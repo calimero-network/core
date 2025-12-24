@@ -90,8 +90,8 @@ runs:
     - name: Build and push image
       uses: docker/build-push-action@v5
       env:
-        CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CALIMERO_WEBUI_FETCH_TOKEN: ${{ inputs.github-token }}
+        CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ inputs.github-token }}
       with:
         context: .
         file: ${{ inputs.dockerfile }}
