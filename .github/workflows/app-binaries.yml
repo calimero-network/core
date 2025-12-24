@@ -12,6 +12,8 @@ permissions:
 jobs:
   build-and-verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
 
     steps:
       - name: Checkout Repository
