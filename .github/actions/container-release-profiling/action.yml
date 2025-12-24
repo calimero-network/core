@@ -33,6 +33,7 @@ runs:
     - name: Download built profiling binaries
       uses: actions/download-artifact@v4
       with:
+        pattern: artifacts-profiling-*
         path: binaries-profiling/
         merge-multiple: true
 
