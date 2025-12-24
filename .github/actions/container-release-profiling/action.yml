@@ -30,6 +30,26 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Download built profiling binaries
+      uses: actions/download-artifact@v4
+      with:
+        path: binaries-profiling/
+        merge-multiple: true
+
+    - name: Extract Linux profiling binaries
+      shell: bash
+      run: |
+        mkdir -p ./bin-profiling/amd64 ./bin-profiling/arm64
+
+        readarray -t binaries <<< "${{ inputs.binaries }}"
+
+        for binary in ${binaries[@]}; do
+          echo "Extracting ${binary} profiling binaries"
+
+          tar -xzf binaries-profiling/${binary}_x86_64-unknown-linux-gnu.tar.gz -C ./bin-profiling/amd64 --no-same-owner
+          tar -xzf binaries-profiling/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin-profiling/arm64 --no-same-owner
+        done
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
@@ -89,9 +109,6 @@ runs:
 
     - name: Build and push image
       uses: docker/build-push-action@v5
-      env:
-        CALIMERO_WEBUI_FETCH_TOKEN: ${{ inputs.github-token }}
-        CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ inputs.github-token }}
       with:
         context: .
         file: ${{ inputs.dockerfile }}
@@ -102,7 +119,5 @@ runs:
         annotations: ${{ steps.metadata.outputs.annotations }}
         cache-from: ${{ steps.prepare.outputs.cache_from }}
         cache-to: ${{ steps.prepare.outputs.cache_to }}
-        secrets: |
-          id=gh-token,env=CALIMERO_WEBUI_FETCH_TOKEN
         provenance: false
         sbom: false

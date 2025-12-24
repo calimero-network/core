@@ -2,44 +2,8 @@
 
 # Dockerfile for prebuilt binaries with profiling tools
 # This image includes perf, flamegraph, jemalloc, and heaptrack for performance analysis
+# Binaries are pre-built with frame pointers enabled in the build-binaries job
 
-# Build stage: Compile binaries with frame pointers enabled
-ARG RUST_VERSION=1.88.0
-FROM rust:${RUST_VERSION}-slim-bookworm AS build
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    clang \
-    make \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-COPY apps ./apps
-COPY tools ./tools
-
-ARG CALIMERO_WEBUI_SRC
-ARG CALIMERO_WEBUI_REPO
-ARG CALIMERO_WEBUI_VERSION
-ARG CALIMERO_WEBUI_FETCH
-ARG CALIMERO_WEBUI_ASSET
-
-# Build with frame pointers enabled 
-ENV RUSTFLAGS="-C force-frame-pointers=yes"
-
-RUN --mount=type=cache,target=/app/target/ \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/usr/local/cargo/registry/ \
-    --mount=type=secret,id=gh-token,env=CALIMERO_WEBUI_FETCH_TOKEN \
-    [ -n "$CALIMERO_WEBUI_FETCH_TOKEN" ] || unset CALIMERO_WEBUI_FETCH_TOKEN && \
-    echo "Building merod and meroctl with frame pointers enabled..." && \
-    cargo build --locked --release -p merod -p meroctl && \
-    cp /app/target/release/merod /app/target/release/meroctl /usr/local/bin/
-
-# Runtime stage: Profiling tools and binaries
 FROM ubuntu:24.04
 
 LABEL org.opencontainers.image.description="Calimero Node with Profiling Tools" \
@@ -116,8 +80,13 @@ RUN useradd \
 # Give user access to profiling directories
 RUN chown -R user:user /profiling
 
-# Copy binaries from build stage (compiled with frame pointers)
-COPY --from=build /usr/local/bin/merod /usr/local/bin/meroctl /usr/local/bin/
+ARG TARGETARCH
+
+# Copy the prebuilt profiling binaries (compiled with frame pointers)
+COPY \
+    bin-profiling/${TARGETARCH}/merod \
+    bin-profiling/${TARGETARCH}/meroctl \
+    /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/merod /usr/local/bin/meroctl
 
