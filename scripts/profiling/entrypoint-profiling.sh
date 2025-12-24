@@ -68,16 +68,41 @@ start_profiling() {
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
     
-    # Wait a moment to verify perf started successfully
     sleep 2
-    if kill -0 "$PERF_PID" 2>/dev/null; then
-        echo "[Profiling] perf recording with PID $PERF_PID"
-    else
-        echo "[Profiling] WARNING: perf failed to start"
+    if ! kill -0 "$PERF_PID" 2>/dev/null; then
+        echo "[Profiling] ERROR: perf process died immediately"
         if [ -f "$perf_log" ]; then
-            echo "[Profiling] perf error: $(head -3 "$perf_log" | tr '\n' ' ')"
+            echo "[Profiling] perf error log:"
+            cat "$perf_log" | head -20
         fi
         rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
+        return
+    fi
+    
+    echo "[Profiling] perf recording with PID $PERF_PID"
+    
+    sleep 3
+    if [ -f "$perf_output" ]; then
+        local initial_size=$(stat -f%z "$perf_output" 2>/dev/null || stat -c%s "$perf_output" 2>/dev/null || echo "0")
+        sleep 3
+        local later_size=$(stat -f%z "$perf_output" 2>/dev/null || stat -c%s "$perf_output" 2>/dev/null || echo "0")
+        if [ "$later_size" -gt "$initial_size" ] && [ "$later_size" -gt 1000 ]; then
+            echo "[Profiling] ✓ perf is collecting data (file size: $initial_size -> $later_size bytes)"
+        else
+            echo "[Profiling] WARNING: perf data file not growing significantly"
+            echo "[Profiling]   Initial size: $initial_size bytes, later size: $later_size bytes"
+            echo "[Profiling]   Possible causes: perf cannot sample process, process is idle, or kernel tools mismatch"
+            if [ -f "$perf_log" ] && [ -s "$perf_log" ]; then
+                echo "[Profiling]   perf log (last 10 lines):"
+                tail -10 "$perf_log" | sed 's/^/[Profiling]     /'
+            fi
+        fi
+    else
+        echo "[Profiling] WARNING: perf data file not created: $perf_output"
+        if [ -f "$perf_log" ] && [ -s "$perf_log" ]; then
+            echo "[Profiling] perf log:"
+            cat "$perf_log" | head -20 | sed 's/^/[Profiling]   /'
+        fi
     fi
 }
 
@@ -89,20 +114,38 @@ stop_profiling() {
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
             
-            # Wait for perf to finish writing data (up to 5 seconds)
             local wait_count=0
             while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 5 ]; do
                 sleep 1
                 wait_count=$((wait_count + 1))
             done
             
-            # If still running, force kill
             if kill -0 "$perf_pid" 2>/dev/null; then
                 echo "[Profiling] WARNING: perf did not stop gracefully, forcing kill"
                 kill -KILL "$perf_pid" 2>/dev/null || true
             fi
         fi
         rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
+        
+        local perf_files=$(ls "$PROFILING_OUTPUT_DIR"/perf-*.data 2>/dev/null || true)
+        if [ -n "$perf_files" ]; then
+            for perf_file in $perf_files; do
+                local file_size=$(stat -f%z "$perf_file" 2>/dev/null || stat -c%s "$perf_file" 2>/dev/null || echo "0")
+                if [ "$file_size" -lt 1000 ]; then
+                    echo "[Profiling] WARNING: perf data file is very small: $perf_file ($file_size bytes)"
+                    echo "[Profiling]   perf may have collected minimal/no samples"
+                else
+                    local sample_count=$(perf report -i "$perf_file" --stdio 2>/dev/null | grep -c "Samples:" || echo "0")
+                    if [ "$sample_count" -gt 0 ]; then
+                        echo "[Profiling] ✓ perf data file created: $perf_file ($file_size bytes)"
+                    else
+                        echo "[Profiling] perf data file exists but may be empty: $perf_file ($file_size bytes)"
+                    fi
+                fi
+            done
+        else
+            echo "[Profiling] WARNING: No perf data files found in $PROFILING_OUTPUT_DIR"
+        fi
     fi
 }
 
