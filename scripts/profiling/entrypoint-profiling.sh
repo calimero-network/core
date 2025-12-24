@@ -81,29 +81,33 @@ start_profiling() {
     
     echo "[Profiling] perf recording with PID $PERF_PID"
     
-    sleep 3
-    if [ -f "$perf_output" ]; then
-        local initial_size=$(stat -f%z "$perf_output" 2>/dev/null || stat -c%s "$perf_output" 2>/dev/null || echo "0")
-        sleep 3
-        local later_size=$(stat -f%z "$perf_output" 2>/dev/null || stat -c%s "$perf_output" 2>/dev/null || echo "0")
-        if [ "$later_size" -gt "$initial_size" ] && [ "$later_size" -gt 1000 ]; then
-            echo "[Profiling] ✓ perf is collecting data (file size: $initial_size -> $later_size bytes)"
-        else
-            echo "[Profiling] WARNING: perf data file not growing significantly"
-            echo "[Profiling]   Initial size: $initial_size bytes, later size: $later_size bytes"
-            echo "[Profiling]   Possible causes: perf cannot sample process, process is idle, or kernel tools mismatch"
-            if [ -f "$perf_log" ] && [ -s "$perf_log" ]; then
-                echo "[Profiling]   perf log (last 10 lines):"
-                tail -10 "$perf_log" | sed 's/^/[Profiling]     /'
+    sleep 2
+    
+    # Check if perf is still running
+    if ! kill -0 "$PERF_PID" 2>/dev/null; then
+        echo "[Profiling] ERROR: perf process died"
+        if [ -f "$perf_log" ]; then
+            echo "[Profiling] perf error log:"
+            cat "$perf_log" | head -20
+        fi
+        rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
+        return
+    fi
+    
+    # Check process CPU usage for informational purposes
+    if command -v ps >/dev/null 2>&1; then
+        local cpu_usage=$(ps -p "$pid" -o %cpu= 2>/dev/null | tr -d ' ' || echo "N/A")
+        echo "[Profiling] Target process CPU usage: ${cpu_usage}%"
+        
+        if [ "$cpu_usage" != "N/A" ] && [ -n "$cpu_usage" ]; then
+            local cpu_int=$(echo "$cpu_usage" | awk -F. '{print $1}')
+            if [ -n "$cpu_int" ] && [ "$cpu_int" -lt 5 ] 2>/dev/null; then
+                echo "[Profiling] Note: Low CPU usage (${cpu_usage}%) may result in fewer samples. perf buffers data and writes periodically."
             fi
         fi
-    else
-        echo "[Profiling] WARNING: perf data file not created: $perf_output"
-        if [ -f "$perf_log" ] && [ -s "$perf_log" ]; then
-            echo "[Profiling] perf log:"
-            cat "$perf_log" | head -20 | sed 's/^/[Profiling]   /'
-        fi
     fi
+    
+    echo "[Profiling] ✓ perf is running. Data will be collected and written periodically."
 }
 
 stop_profiling() {
@@ -131,15 +135,17 @@ stop_profiling() {
         if [ -n "$perf_files" ]; then
             for perf_file in $perf_files; do
                 local file_size=$(stat -f%z "$perf_file" 2>/dev/null || stat -c%s "$perf_file" 2>/dev/null || echo "0")
+                
                 if [ "$file_size" -lt 1000 ]; then
                     echo "[Profiling] WARNING: perf data file is very small: $perf_file ($file_size bytes)"
                     echo "[Profiling]   perf may have collected minimal/no samples"
                 else
-                    local sample_count=$(perf report -i "$perf_file" --stdio 2>/dev/null | grep -c "Samples:" || echo "0")
-                    if [ "$sample_count" -gt 0 ]; then
-                        echo "[Profiling] ✓ perf data file created: $perf_file ($file_size bytes)"
+                    local sample_count=$(perf report -i "$perf_file" --stdio 2>/dev/null | grep -E "^# Samples:" | head -1 | awk '{print $3}' || echo "unknown")
+                    
+                    if [ "$sample_count" != "unknown" ] && [ "$sample_count" != "0" ]; then
+                        echo "[Profiling] ✓ perf data file created: $perf_file ($file_size bytes, $sample_count samples)"
                     else
-                        echo "[Profiling] perf data file exists but may be empty: $perf_file ($file_size bytes)"
+                        echo "[Profiling] perf data file exists but may be empty: $perf_file ($file_size bytes, samples: $sample_count)"
                     fi
                 fi
             done
