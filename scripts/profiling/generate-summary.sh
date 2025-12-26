@@ -24,12 +24,22 @@ mkdir -p "$REPORTS_DIR"
     echo ""
     echo "### Files Collected"
     echo "\`\`\`"
-    find "$DATA_DIR" -type f 2>/dev/null | head -50 || echo "No files found"
+    FILES=$(find "$DATA_DIR" -type f 2>/dev/null | head -50)
+    if [ -z "$FILES" ]; then
+        echo "No files found"
+    else
+        echo "$FILES"
+    fi
     echo "\`\`\`"
     echo ""
     echo "### Reports Generated"
     echo "\`\`\`"
-    find "$REPORTS_DIR" -type f \( -name "*.svg" -o -name "*.txt" \) 2>/dev/null || echo "No reports found"
+    REPORTS=$(find "$REPORTS_DIR" -type f \( -name "*.svg" -o -name "*.txt" \) 2>/dev/null)
+    if [ -z "$REPORTS" ]; then
+        echo "No reports found"
+    else
+        echo "$REPORTS"
+    fi
     echo "\`\`\`"
 } > "$OUTPUT_FILE"
 
