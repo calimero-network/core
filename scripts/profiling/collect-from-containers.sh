@@ -31,6 +31,40 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         mkdir -p "$DATA_DIR/$container"
         mkdir -p "$REPORTS_DIR/$container"
         
+        # CRITICAL: Stop perf gracefully BEFORE copying data
+        # perf buffers samples and only writes them when stopped with SIGINT
+        echo "  Stopping perf profiler to flush data..."
+        docker exec "$container" bash -c '
+            if [ -f /profiling/data/perf.pid ]; then
+                PERF_PID=$(cat /profiling/data/perf.pid)
+                if kill -0 "$PERF_PID" 2>/dev/null; then
+                    echo "    Sending SIGINT to perf (PID $PERF_PID)..."
+                    kill -INT "$PERF_PID" 2>/dev/null || true
+                    # Wait for perf to finish writing data
+                    for i in $(seq 1 10); do
+                        if ! kill -0 "$PERF_PID" 2>/dev/null; then
+                            echo "    perf stopped successfully"
+                            break
+                        fi
+                        sleep 1
+                    done
+                    # Force kill if still running
+                    if kill -0 "$PERF_PID" 2>/dev/null; then
+                        echo "    WARNING: perf did not stop gracefully, forcing kill"
+                        kill -KILL "$PERF_PID" 2>/dev/null || true
+                    fi
+                else
+                    echo "    perf already stopped"
+                fi
+                rm -f /profiling/data/perf.pid
+            else
+                echo "    No perf.pid file found"
+            fi
+        ' 2>/dev/null || echo "  Could not stop perf (container may have already stopped)"
+        
+        # Small delay to ensure file is fully written
+        sleep 1
+        
         # Copy profiling data from container
         docker cp "$container:/profiling/data/." "$DATA_DIR/$container/" 2>/dev/null || echo "  No profiling data in $container"
         docker cp "$container:/profiling/reports/." "$REPORTS_DIR/$container/" 2>/dev/null || echo "  No profiling reports in $container"
@@ -45,7 +79,19 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         if [ -n "$PERF_FILE" ]; then
             # Extract just the filename for use inside the container
             PERF_BASENAME=$(basename "$PERF_FILE")
-            echo "  Found perf data: $PERF_BASENAME"
+            
+            # Check file size to verify perf captured data
+            FILE_SIZE=$(stat -f%z "$PERF_FILE" 2>/dev/null || stat -c%s "$PERF_FILE" 2>/dev/null || echo "0")
+            echo "  Found perf data: $PERF_BASENAME ($FILE_SIZE bytes)"
+            
+            if [ "$FILE_SIZE" -lt 1000 ]; then
+                echo "  WARNING: perf data file is very small ($FILE_SIZE bytes)"
+                echo "  This usually means perf didn't collect samples. Possible causes:"
+                echo "    - Container was killed before perf was stopped gracefully"
+                echo "    - Process had very low CPU usage"
+                echo "    - perf wasn't recording successfully"
+            fi
+            
             echo "  Generating flamegraph for $container..."
             docker exec "$container" /profiling/scripts/generate-flamegraph.sh \
                 --input "/profiling/data/$PERF_BASENAME" \
@@ -54,6 +100,8 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
             
             # Copy generated reports
             docker cp "$container:/profiling/reports/." "$REPORTS_DIR/$container/" 2>/dev/null || true
+        else
+            echo "  No perf data file found"
         fi
         
         # Generate memory report (use container name for identification)
