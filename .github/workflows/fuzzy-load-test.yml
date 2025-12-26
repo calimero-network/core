@@ -11,17 +11,6 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-  # TODO: Remove pull_request trigger after PR testing is complete
-  # This is temporarily added to test the profiling workflow changes
-  pull_request:
-    paths:
-      - "crates/**"
-      - "apps/**"
-      - "workflows/fuzzy-tests/**"
-      - ".github/workflows/fuzzy-load-test.yml"
-      - ".github/workflows/deps/**"
-      - ".github/actions/**"
-      - "scripts/profiling/**"
   workflow_dispatch:
     inputs:
       duration_override:
@@ -173,7 +162,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
+              "0" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
@@ -184,7 +173,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
+              "0" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
@@ -357,7 +346,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
+              "0" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
@@ -368,7 +357,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
+              "0" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
