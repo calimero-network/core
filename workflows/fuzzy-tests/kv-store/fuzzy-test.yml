@@ -9,7 +9,7 @@ nuke_on_end: false
 nodes:
   chain_id: calimero-testnet
   count: 4
-  image: ghcr.io/calimero-network/merod:edge-profiling
+  image: ghcr.io/calimero-network/merod:edge
   prefix: fuzzy-kv-node
   use_image_entrypoint: true
 
@@ -82,10 +82,10 @@ steps:
     timeout: 30
     check_interval: 2
 
-  # Main fuzzy test for kv-store (TODO: Change to 45 minutes , done for testing purposes)
+  # Main fuzzy test for kv-store 
   - name: KV Store Fuzzy Load Test
     type: fuzzy_test
-    duration_minutes: 5
+    duration_minutes: 45
     context_id: "{{kv_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50
