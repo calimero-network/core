@@ -40,6 +40,8 @@ fn create_test_bundle(
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
+        metadata: None,
+        interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: "app.wasm".to_string(),
             hash: None,
@@ -60,6 +62,8 @@ fn create_test_bundle(
                 },
             )
             .collect(),
+        links: None,
+        signature: None,
     };
 
     let manifest_json = serde_json::to_vec(&manifest).unwrap();
@@ -494,6 +498,8 @@ fn create_test_bundle_custom_wasm_path(
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
+        metadata: None,
+        interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: wasm_path.to_string(),
             hash: None,
@@ -501,6 +507,8 @@ fn create_test_bundle_custom_wasm_path(
         }),
         abi: None,
         migrations: vec![],
+        links: None,
+        signature: None,
     };
 
     let manifest_json = serde_json::to_vec(&manifest).unwrap();
