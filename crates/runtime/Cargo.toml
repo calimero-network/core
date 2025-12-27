@@ -37,10 +37,15 @@ name = "demo"
 
 [dev-dependencies]
 assert-json-diff.workspace = true
+criterion = { version = "0.5.1", features = ["html_reports"] }
 eyre.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
 serde_json.workspace = true
+
+[[bench]]
+name = "collections"
+harness = false
 
 [features]
 host-traces = ["owo-colors"]

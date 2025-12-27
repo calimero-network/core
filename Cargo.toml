@@ -26,6 +26,7 @@ exclude = [
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
+    "./apps/collections-benchmark-rust",
     "./crates/merod",
     "./crates/version",
     "./crates/meroctl",
@@ -85,6 +86,7 @@ members = [
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
+    "./apps/collections-benchmark-rust",
 
     "./tools/calimero-abi",
     "./tools/merodb",

@@ -18,6 +18,7 @@ BUILD_SCRIPTS=(
     "apps/team-metrics-custom/build.sh"
     "apps/team-metrics-macro/build.sh"
     "apps/xcall-example/build.sh"
+    "apps/collections-benchmark-rust/build.sh"
 )
 
 run_script() {
