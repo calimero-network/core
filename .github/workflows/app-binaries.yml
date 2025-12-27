@@ -1,0 +1,122 @@
+name: Build and Verify WASM
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build Apps
+        shell: bash
+        run: |
+          # Initialize a list of apps that have failed builds
+          FAILED_BUILD_APPS=""
+
+          # Loop through direct children of apps/
+          for dir in apps/*/; do
+            if [ -f "${dir}build.sh" ]; then
+              app_name=$(basename "$dir")
+              # Collapse logs in GitHub UI
+              echo "::group::Building $app_name"
+
+              chmod +x "${dir}build.sh"
+
+              # Run build script, but if it fails, update EXIT_CODE but don't stop the loop
+              if ! (cd "$dir" && ./build.sh); then
+              echo "::error file=${dir}build.sh::Build failed for $app_name"
+              # Append to the list of failed apps
+              FAILED_BUILD_APPS+="$app_name "
+              fi
+
+              echo "::endgroup::"
+            fi
+          done
+
+          # Trim trailing space and export the list
+          FAILED_BUILD_APPS=$(echo $FAILED_BUILD_APPS| xargs)
+          echo "failed_build_apps=$FAILED_BUILD_APPS" >> $GITHUB_ENV
+
+          # If the list is NOT empty, we'll mark a build failure flag
+          if [ -n "$FAILED_BUILD_APPS" ]; then
+            echo "build_failed=true" >> $GITHUB_ENV
+          else
+            echo "build_failed=false" >> $GITHUB_ENV
+          fi
+
+      - name: Check for WASM mismatches
+        shell: bash
+        run: |
+          echo "Checking for modified or untracked .wasm files..."
+
+          # Look for .wasm files that were not committed or changed
+          DIFF_LIST=$(git status --porcelain --ignored --untracked-files=all | grep '\.wasm' | awk '{print $1 " " $2}' || true)
+
+          if [ -n "$DIFF_LIST" ]; then
+            echo "wasm_failed=true" >> $GITHUB_ENV
+            # Handle multiline output for GITHUB_ENV
+            {
+              echo "changed_wasm_files<<EOF"
+              echo "$DIFF_LIST"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+          else
+            echo "wasm_failed=false" >> $GITHUB_ENV
+          fi
+
+      - name: Summary of verification
+        shell: bash
+        run: |
+          echo "--- FINAL SUMMARY ---"
+
+          # Report Build Failures
+          if [ "$build_failed" = "true" ]; then
+            echo "❌ THE FOLLOWING APPS FAILED TO BUILD:"
+            for app in $failed_build_apps; do
+              echo "  - $app"
+            done
+          else
+            echo "✅ All apps built successfully."
+          fi
+
+          # Change IFS to newline to handle strings with spaces correctly
+          IFS=$'\n'
+
+          # Report WASM Mismatches
+          if [ "$wasm_failed" = "true" ]; then
+            echo ""
+            echo "\-------------------------------------------------------"
+            echo "❌ ERROR: The following apps binary .wasm files require attention:"
+            for line in $changed_wasm_files; do
+              echo "  - $line"
+            done
+
+            echo ""
+            echo "Legend:"
+            echo " M  = Modified (Repo version is outdated)"
+            echo " ?? = Untracked (New file, not yet added to Git)"
+            echo " !! = Ignored (Found in .gitignore but differs from build)"
+            echo "-------------------------------------------------------"
+            echo "Action: Run build.sh locally and commit these files."
+          else
+            echo "✅ All apps binary files match the repository state."
+          fi
+
+          # Fail the job if either occurred
+          if [ "$build_failed" = "true" ] || [ "$wasm_failed" = "true" ]; then
+            exit 1
+          fi
