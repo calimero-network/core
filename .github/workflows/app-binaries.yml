@@ -78,6 +78,15 @@ jobs:
             echo "wasm_failed=false" >> $GITHUB_ENV
           fi
 
+      - name: Upload Mismatched Binaries
+        if: env.changed_wasm_files != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-built-wasm
+          path: |
+            ${{ env.changed_wasm_files }}
+          if-no-files-found: ignore
+
       - name: Summary of verification
         shell: bash
         run: |
