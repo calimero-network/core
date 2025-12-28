@@ -25,7 +25,7 @@ use tracing::{debug, info};
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
-const CHALLENGE_DOMAIN: [u8; 38] = *b"CALIMERO_KEY_SHARE_CHALLENGE_HANDSHAKE";
+pub const CHALLENGE_DOMAIN: [u8; 38] = *b"CALIMERO_KEY_SHARE_CHALLENGE_HANDSHAKE";
 
 impl SyncManager {
     pub(super) async fn initiate_key_share_process(

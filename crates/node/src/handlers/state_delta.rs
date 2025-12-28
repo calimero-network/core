@@ -18,6 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
 use crate::utils::choose_stream;
+use crate::sync::CHALLENGE_DOMAIN;
 
 /// Handles state delta received from a peer (DAG-based)
 ///
@@ -1046,10 +1047,13 @@ async fn request_key_share_with_peer(
                 unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
             };
 
+            let mut peer_payload = CHALLENGE_DOMAIN.to_vec();
+            peer_payload.extend_from_slice(&challenge);
+
             // Verify their signature
             let their_signature = Signature::from_bytes(&their_signature_bytes);
             their_identity
-                .verify(&challenge, &their_signature)
+                .verify(&peer_payload, &their_signature)
                 .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
 
             debug!(%context_id, %their_identity, "Peer authenticated successfully");
@@ -1078,8 +1082,11 @@ async fn request_key_share_with_peer(
                 unexpected => bail!("expected Challenge, got {:?}", unexpected),
             };
 
-            // Sign their challenge
-            let our_signature = our_private_key.sign(&their_challenge)?;
+            let mut payload = CHALLENGE_DOMAIN.to_vec();
+            payload.extend_from_slice(&their_challenge);
+
+            // Sign their challenge with a payload
+            let our_signature = our_private_key.sign(&payload)?;
 
             debug!(%context_id, %our_identity, "Sending authentication response (initiator)");
 
@@ -1158,8 +1165,11 @@ async fn request_key_share_with_peer(
                 unexpected => bail!("expected Challenge, got {:?}", unexpected),
             };
 
-            // Sign their challenge
-            let our_signature = our_private_key.sign(&their_challenge)?;
+            let mut payload = CHALLENGE_DOMAIN.to_vec();
+            payload.extend_from_slice(&their_challenge);
+
+            // Sign their challenge with a payload
+            let our_signature = our_private_key.sign(&payload)?;
 
             debug!(%context_id, %our_identity, "Sending authentication response (responder)");
 
@@ -1218,10 +1228,13 @@ async fn request_key_share_with_peer(
                 unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
             };
 
+            let mut peer_payload = CHALLENGE_DOMAIN.to_vec();
+            peer_payload.extend_from_slice(&challenge);
+
             // Verify their signature
             let their_signature = Signature::from_bytes(&their_signature_bytes);
             their_identity
-                .verify(&challenge, &their_signature)
+                .verify(&peer_payload, &their_signature)
                 .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
 
             debug!(%context_id, %their_identity, "Peer authenticated successfully");
