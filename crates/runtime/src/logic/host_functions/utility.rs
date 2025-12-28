@@ -37,6 +37,9 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::DeserializationError` if the headers cannot be deserialized.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
+    ///
+    /// BLOCKED: This function is temporarily disabled.
+    /// It will always return 1 (failure) and write an error message to the destination register.
     pub fn fetch(
         &mut self,
         src_url_ptr: u64,
@@ -45,6 +48,26 @@ impl VMHostFunctions<'_> {
         src_body_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        const BLOCKED: bool = true;
+
+        if BLOCKED {
+            // Log a warning on the host side if an attempt to use this host fn is made
+            tracing::warn!(target: "runtime::host::utility", "Blocked attempt to access 'fetch' host function (temporarily disabled)");
+
+            // Message to return to the Wasm guest
+            let error_message = "Host function 'fetch' is temporarily disabled.";
+
+            // Write the error message to the destination register so the guest can read the reason
+            self.with_logic_mut(|logic| {
+                logic
+                    .registers
+                    .set(logic.limits, dest_register_id, error_message.as_bytes())
+            })?;
+
+            // Return 1 to indicate a "Network/HTTP Failure" to the guest, instead of panicking in the VM
+            return Ok(1);
+        }
+
         let url = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_url_ptr)? };
         let method = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_method_ptr)? };
         let headers = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_headers_ptr)? };
