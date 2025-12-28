@@ -5,8 +5,8 @@ cd "$(dirname $0)"
 
 TARGET="${CARGO_TARGET_DIR:-../../target}"
 
-# Get the absolute path to the project root
-PROJECT_ROOT=$(pwd)
+# Find the real workspace root
+WORKSPACE_ROOT=$(cargo metadata --format-version 1 | jq -r '.workspace_root')
 # Get the cargo home (usually ~/.cargo)
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 # Get the path to the Rust standard library source
@@ -19,7 +19,7 @@ mkdir -p res
 RUSTFLAGS=" \
   --remap-path-prefix $PROJECT_ROOT=project \
   --remap-path-prefix $CARGO_HOME_DIR=cargo \
-  --remap-path-prefix $RUST_SYSROOT=rust \
+  --remap-path-prefix $RUST_SYSROOT=/rustc \
   -C debuginfo=0" \
 cargo build --target wasm32-unknown-unknown --profile app-release
 
