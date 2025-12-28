@@ -17,8 +17,8 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
-use crate::utils::choose_stream;
 use crate::sync::CHALLENGE_DOMAIN;
+use crate::utils::choose_stream;
 
 /// Handles state delta received from a peer (DAG-based)
 ///
