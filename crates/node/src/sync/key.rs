@@ -25,6 +25,8 @@ use tracing::{debug, info};
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
+const CHALLENGE_DOMAIN: [u8; 38] = *b"CALIMERO_KEY_SHARE_CHALLENGE_HANDSHAKE";
+
 impl SyncManager {
     pub(super) async fn initiate_key_share_process(
         &self,
@@ -204,9 +206,12 @@ impl SyncManager {
             sqx_in.expect(sequence_id)?;
 
             // Verify their signature
+            let mut peer_payload = CHALLENGE_DOMAIN.to_vec();
+            peer_payload.extend_from_slice(&challenge);
+
             let their_signature = Signature::from_bytes(&their_signature_bytes);
             their_identity
-                .verify(&challenge, &their_signature)
+                .verify(&peer_payload, &their_signature)
                 .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
 
             info!(
@@ -233,8 +238,11 @@ impl SyncManager {
 
             sqx_in.expect(sequence_id)?;
 
-            // Sign their challenge
-            let our_signature = our_private_key.sign(&their_challenge)?;
+            let mut payload = CHALLENGE_DOMAIN.to_vec();
+            payload.extend_from_slice(&their_challenge);
+
+            // Sign their challenge with a payload
+            let our_signature = our_private_key.sign(&payload)?;
 
             debug!(
                 context_id=%context.id,
@@ -273,8 +281,11 @@ impl SyncManager {
 
             sqx_in.expect(sequence_id)?;
 
-            // Sign their challenge
-            let our_signature = our_private_key.sign(&their_challenge)?;
+            let mut payload = CHALLENGE_DOMAIN.to_vec();
+            payload.extend_from_slice(&their_challenge);
+
+            // Sign their challenge with a payload
+            let our_signature = our_private_key.sign(&payload)?;
 
             debug!(
                 context_id=%context.id,
@@ -334,9 +345,12 @@ impl SyncManager {
             sqx_in.expect(sequence_id)?;
 
             // Verify their signature
+            let mut peer_payload = CHALLENGE_DOMAIN.to_vec();
+            peer_payload.extend_from_slice(&challenge);
+
             let their_signature = Signature::from_bytes(&their_signature_bytes);
             their_identity
-                .verify(&challenge, &their_signature)
+                .verify(&peer_payload, &their_signature)
                 .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
 
             info!(
@@ -346,7 +360,7 @@ impl SyncManager {
             );
         }
 
-        // Step 6: Now exchange sender_keys (both parties authenticated)
+        // Now exchange sender_keys (both parties authenticated)
         // Asymmetric to avoid deadlock: initiator sends first, responder sends first
         if is_initiator {
             // Initiator sends their sender_key first
