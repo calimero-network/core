@@ -158,7 +158,8 @@ fn target_dir() -> eyre::Result<PathBuf> {
     let profile = env::var("PROFILE")?;
 
     while out_dir.pop() {
-        if out_dir.file_name()
+        if out_dir
+            .file_name()
             .and_then(|name| name.to_str())
             .map_or(false, |name| name == profile)
         {
