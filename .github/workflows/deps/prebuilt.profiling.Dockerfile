@@ -2,7 +2,7 @@
 
 # Dockerfile for prebuilt binaries with profiling tools
 # This image includes perf, flamegraph, jemalloc, and heaptrack for performance analysis
-# Binaries are pre-built with frame pointers enabled in the build-binaries job
+# Binaries are pre-built with frame pointers enabled and debug symbols preserved (profiling profile)
 
 FROM ubuntu:24.04
 

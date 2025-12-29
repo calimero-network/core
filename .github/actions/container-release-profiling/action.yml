@@ -1,5 +1,5 @@
 name: Profiling Container release
-description: "Release profiling container with binaries built with frame pointers enabled"
+description: "Release profiling container with binaries built with frame pointers enabled and debug symbols preserved"
 
 inputs:
   version:
