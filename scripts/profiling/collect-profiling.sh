@@ -112,6 +112,34 @@ echo "Generating memory report..."
     --input-dir "$INPUT_DIR" \
     --output "$COLLECT_DIR/memory-report-${NODE_NAME}.txt" || echo "Warning: Memory report generation failed"
 
+# Generate memory flamegraph from jemalloc heap dumps
+echo "Generating memory flamegraph..."
+HEAP_DUMP=$(ls -t "$INPUT_DIR"/jemalloc*.heap 2>/dev/null | head -1)
+if [ -n "$HEAP_DUMP" ]; then
+    echo "  Found heap dump: $(basename "$HEAP_DUMP")"
+    
+    # Try to find a baseline (first heap dump) for differential analysis
+    BASELINE_HEAP=$(ls -t "$INPUT_DIR"/jemalloc*.heap 2>/dev/null | tail -1)
+    if [ -n "$BASELINE_HEAP" ] && [ "$BASELINE_HEAP" != "$HEAP_DUMP" ]; then
+        echo "  Using baseline: $(basename "$BASELINE_HEAP") for differential analysis"
+        /profiling/scripts/generate-memory-flamegraph.sh \
+            --input "$HEAP_DUMP" \
+            --base "$BASELINE_HEAP" \
+            --output "$COLLECT_DIR/memory-flamegraph-${NODE_NAME}.svg" \
+            --title "Memory Flamegraph (Diff) - $NODE_NAME" \
+            --colors mem || echo "Warning: Memory flamegraph generation failed"
+    else
+        # Single heap dump analysis
+        /profiling/scripts/generate-memory-flamegraph.sh \
+            --input "$HEAP_DUMP" \
+            --output "$COLLECT_DIR/memory-flamegraph-${NODE_NAME}.svg" \
+            --title "Memory Flamegraph - $NODE_NAME" \
+            --colors mem || echo "Warning: Memory flamegraph generation failed"
+    fi
+else
+    echo "  No heap dump files found"
+fi
+
 # Create summary file
 echo ""
 echo "Creating summary..."

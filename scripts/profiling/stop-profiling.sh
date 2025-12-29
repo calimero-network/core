@@ -104,6 +104,28 @@ if [ "$GENERATE_REPORTS" = true ]; then
         --input-dir "$OUTPUT_DIR" \
         --output "$REPORTS_DIR/memory-report-${NODE_NAME}.txt"
     
+    # Generate memory flamegraph
+    echo "Generating memory flamegraph..."
+    HEAP_DUMP=$(ls -t "$OUTPUT_DIR"/jemalloc*.heap 2>/dev/null | head -1)
+    if [ -n "$HEAP_DUMP" ]; then
+        # Try to find a baseline for differential analysis
+        BASELINE_HEAP=$(ls -t "$OUTPUT_DIR"/jemalloc*.heap 2>/dev/null | tail -1)
+        if [ -n "$BASELINE_HEAP" ] && [ "$BASELINE_HEAP" != "$HEAP_DUMP" ]; then
+            /profiling/scripts/generate-memory-flamegraph.sh \
+                --input "$HEAP_DUMP" \
+                --base "$BASELINE_HEAP" \
+                --output "$REPORTS_DIR/memory-flamegraph-${NODE_NAME}.svg" \
+                --title "Memory Flamegraph (Diff) - $NODE_NAME" \
+                --colors mem || echo "Warning: Memory flamegraph generation failed"
+        else
+            /profiling/scripts/generate-memory-flamegraph.sh \
+                --input "$HEAP_DUMP" \
+                --output "$REPORTS_DIR/memory-flamegraph-${NODE_NAME}.svg" \
+                --title "Memory Flamegraph - $NODE_NAME" \
+                --colors mem || echo "Warning: Memory flamegraph generation failed"
+        fi
+    fi
+    
     echo ""
     echo "Reports generated in: $REPORTS_DIR"
     ls -la "$REPORTS_DIR"/ 2>/dev/null || true

@@ -50,7 +50,8 @@ RUN curl -fsSL "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLO
     && make install \
     && ldconfig \
     && rm -rf /tmp/jemalloc* \
-    && echo "[jemalloc] Built with profiling support"
+    && echo "[jemalloc] Built with profiling support" \
+    && jeprof --version 
 
 # Install FlameGraph tools
 RUN git clone --depth 1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph \

@@ -115,6 +115,100 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         else
             echo "  Could not generate memory report"
         fi
+        
+        # Generate memory flamegraph from jemalloc heap dumps
+        echo "  Generating memory flamegraph..."
+        HEAP_DUMP=$(ls -t "$DATA_DIR/$container"/jemalloc*.heap 2>/dev/null | head -1)
+        if [ -n "$HEAP_DUMP" ]; then
+            HEAP_BASENAME=$(basename "$HEAP_DUMP")
+            echo "  Found heap dump: $HEAP_BASENAME"
+            
+            # Validate heap dump file size
+            HEAP_SIZE=$(stat -f%z "$HEAP_DUMP" 2>/dev/null || stat -c%s "$HEAP_DUMP" 2>/dev/null || echo "0")
+            if [ "$HEAP_SIZE" -lt 100 ]; then
+                echo "  WARNING: Heap dump is very small ($HEAP_SIZE bytes), may be invalid"
+            else
+                echo "  Heap dump size: $HEAP_SIZE bytes"
+            fi
+            
+            # Try to find a baseline (first heap dump) for differential analysis
+            BASELINE_HEAP=$(ls -t "$DATA_DIR/$container"/jemalloc*.heap 2>/dev/null | tail -1)
+            if [ -n "$BASELINE_HEAP" ] && [ "$BASELINE_HEAP" != "$HEAP_DUMP" ]; then
+                BASELINE_BASENAME=$(basename "$BASELINE_HEAP")
+                echo "  Using baseline: $BASELINE_BASENAME for differential analysis"
+                
+                # Retry logic for container operations (max 2 retries)
+                RETRY_COUNT=0
+                MAX_RETRIES=2
+                while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
+                    if docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
+                        --input "/profiling/data/$HEAP_BASENAME" \
+                        --base "/profiling/data/$BASELINE_BASENAME" \
+                        --output /profiling/reports/memory-flamegraph.svg \
+                        --title "Memory Flamegraph (Diff) - $container" \
+                        --colors mem 2>/dev/null; then
+                        break
+                    fi
+                    
+                    RETRY_COUNT=$((RETRY_COUNT + 1))
+                    if [ $RETRY_COUNT -le $MAX_RETRIES ]; then
+                        echo "  Retry $RETRY_COUNT/$MAX_RETRIES: Generating differential memory flamegraph..."
+                        sleep 2
+                    else
+                        echo "  Could not generate differential memory flamegraph after $MAX_RETRIES retries"
+                        # Fallback to single heap dump
+                        docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
+                            --input "/profiling/data/$HEAP_BASENAME" \
+                            --output /profiling/reports/memory-flamegraph.svg \
+                            --title "Memory Flamegraph - $container" \
+                            --colors mem 2>/dev/null || echo "  Could not generate memory flamegraph"
+                    fi
+                done
+            else
+                # Single heap dump analysis with retry
+                RETRY_COUNT=0
+                MAX_RETRIES=2
+                while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
+                    if docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
+                        --input "/profiling/data/$HEAP_BASENAME" \
+                        --output /profiling/reports/memory-flamegraph.svg \
+                        --title "Memory Flamegraph - $container" \
+                        --colors mem 2>/dev/null; then
+                        break
+                    fi
+                    
+                    RETRY_COUNT=$((RETRY_COUNT + 1))
+                    if [ $RETRY_COUNT -le $MAX_RETRIES ]; then
+                        echo "  Retry $RETRY_COUNT/$MAX_RETRIES: Generating memory flamegraph..."
+                        sleep 2
+                    else
+                        echo "  Could not generate memory flamegraph after $MAX_RETRIES retries"
+                    fi
+                done
+            fi
+            
+            # Copy generated memory flamegraphs with retry
+            RETRY_COUNT=0
+            MAX_RETRIES=2
+            while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
+                if docker cp "$container:/profiling/reports/memory-flamegraph.svg" "$REPORTS_DIR/$container/" 2>/dev/null; then
+                    echo "  Memory flamegraph saved"
+                    break
+                fi
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -le $MAX_RETRIES ]; then
+                    echo "  Retry $RETRY_COUNT/$MAX_RETRIES: Copying memory flamegraph..."
+                    sleep 1
+                else
+                    echo "  WARNING: Could not copy memory flamegraph after $MAX_RETRIES retries"
+                fi
+            done
+            
+            # Copy icicle graph (non-critical, no retry)
+            docker cp "$container:/profiling/reports/memory-flamegraph-icicle.svg" "$REPORTS_DIR/$container/" 2>/dev/null || true
+        else
+            echo "  No heap dump files found"
+        fi
     fi
 done
 
