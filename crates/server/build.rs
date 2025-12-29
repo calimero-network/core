@@ -154,16 +154,22 @@ fn try_main() -> eyre::Result<()> {
 
 // https://github.com/rust-lang/cargo/issues/9661#issuecomment-1722358176
 fn target_dir() -> eyre::Result<PathBuf> {
-    let mut out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let profile = env::var("PROFILE")?;
+    let components: Vec<_> = out_dir.components().collect();
+    let profile_names = ["profiling", "app-release", "release", "dev", &profile];
 
-    while out_dir.pop() {
-        if out_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map_or(false, |name| name == profile)
-        {
-            return Ok(out_dir);
+    for profile_name in profile_names.iter() {
+        for (i, component) in components.iter().enumerate() {
+            if let std::path::Component::Normal(name) = component {
+                if name.to_str() == Some(profile_name) {
+                    let mut result = PathBuf::new();
+                    for comp in components.iter().take(i + 1) {
+                        result.push(comp);
+                    }
+                    return Ok(result);
+                }
+            }
         }
     }
 
