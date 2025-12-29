@@ -11,6 +11,13 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  # TODO: Remove pull_request trigger before merging - this is temporary for testin
+  pull_request:
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
   workflow_dispatch:
     inputs:
       duration_override:
@@ -162,7 +169,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "0" \
+              "${{ github.event.pull_request.number || '0' }}" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
@@ -173,7 +180,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "0" \
+              "${{ github.event.pull_request.number || '0' }}" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
@@ -346,7 +353,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "0" \
+              "${{ github.event.pull_request.number || '0' }}" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
@@ -357,7 +364,7 @@ jobs:
             chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
-              "0" \
+              "${{ github.event.pull_request.number || '0' }}" \
               "${{ github.repository_owner }}" \
               "${{ github.repository }}" \
               "${{ github.head_ref || github.ref_name }}" \
