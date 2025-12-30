@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run vmagent with static port configuration for Victoria Metrics collection
-# Usage: run-vmagent.sh <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port]
+# Usage: run-vmagent.sh <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port] [port_increment]
 
 set -euo pipefail
 
@@ -16,10 +16,11 @@ BEARER_TOKEN_FILE="${9:-}"
 HTTP_PORT="${10:-8429}"
 NODE_PATTERN="${11:-}"  # e.g., "fuzzy-kv-node" or "fuzzy-handlers-node"
 NODE_COUNT="${12:-4}"   # Number of nodes (default: 4)
-BASE_PORT="${13:-2428}" # Starting port (default: 2428)
+BASE_PORT="${13:-3001}" # Starting port (default: 3001 for e2e_mode RPC ports)
+PORT_INCREMENT="${14:-2}" # Port increment between nodes (default: 2 for e2e_mode)
 
 if [ -z "$TEST_CASE" ] || [ -z "$VMAGENT_DIR" ] || [ -z "$VICTORIA_URL" ] || [ -z "$NODE_PATTERN" ]; then
-    echo "Usage: $0 <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port]"
+    echo "Usage: $0 <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port] [port_increment]"
     exit 1
 fi
 
@@ -28,7 +29,7 @@ VMAGENT_LOG="/tmp/vmagent-${TEST_CASE}.log"
 VMAGENT_CMD="$VMAGENT_DIR/vmagent"
 
 # Function to generate vmagent scrape config using static port configuration
-# Uses predictable ports (base_port, base_port+1, ..., base_port+node_count-1)
+# Uses predictable ports starting from base_port, incrementing by port_increment for each node
 generate_scrape_config() {
     local config_file="$1"
     local test_name="$2"
@@ -39,6 +40,7 @@ generate_scrape_config() {
     local node_pattern="$7"
     local node_count="$8"
     local base_port="$9"
+    local port_increment="${10:-2}"
     
     cat > "$config_file" <<EOF
 global:
@@ -59,13 +61,14 @@ scrape_configs:
 EOF
     
     # Generate static targets for predictable ports
-    # Ports are sequential starting from base_port: base_port, base_port+1, ..., base_port+node_count-1
+    # Ports start from base_port and increment by port_increment for each node
+    # e.g., base_port=3001, port_increment=2: 3001, 3003, 3005, 3007
     local ports_found=0
     local port
     local node_idx
     
     for node_idx in $(seq 1 "$node_count"); do
-        port=$((base_port + node_idx - 1))
+        port=$((base_port + (node_idx - 1) * port_increment))
         local node_name="${node_pattern}-${node_idx}"
         
         # Try to find process PID for better labeling (optional, won't fail if not found)
@@ -115,11 +118,12 @@ EOF
         ports_found=$((ports_found + 1))
     done
     
-    echo "Generated scrape config with $ports_found static targets (ports ${base_port}-$((base_port + node_count - 1)))" >&2
+    local last_port=$((base_port + (node_count - 1) * port_increment))
+    echo "Generated scrape config with $ports_found static targets (ports ${base_port}-${last_port}, increment ${port_increment})" >&2
 }
 
 # Generate initial config
-generate_scrape_config "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT"
+generate_scrape_config "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT" "$PORT_INCREMENT"
 
 # Validate config file exists and is readable
 if [ ! -f "$VMAGENT_CONFIG" ]; then
@@ -140,7 +144,9 @@ echo "Instance name: $INSTANCE_NAME"
 echo "HTTP listen port: $HTTP_PORT"
 echo "Node count: $NODE_COUNT"
 echo "Base port: $BASE_PORT"
-echo "Ports: ${BASE_PORT}-$((BASE_PORT + NODE_COUNT - 1))"
+echo "Port increment: $PORT_INCREMENT"
+LAST_PORT=$((BASE_PORT + (NODE_COUNT - 1) * PORT_INCREMENT))
+echo "Ports: ${BASE_PORT}-${LAST_PORT} (increment ${PORT_INCREMENT})"
 
 # Start vmagent in background
 $VMAGENT_CMD \
@@ -174,10 +180,11 @@ update_scrape_config_background() {
     local node_pattern="$8"
     local node_count="$9"
     local base_port="${10}"
+    local port_increment="${11:-2}"
     
     while kill -0 "$pid" 2>/dev/null; do
         sleep 30  # Update every 30 seconds to refresh process info
-        if ! generate_scrape_config "$config_file" "$test_name" "$instance_name" "$run_id" "$commit_hash" "$branch" "$node_pattern" "$node_count" "$base_port"; then
+        if ! generate_scrape_config "$config_file" "$test_name" "$instance_name" "$run_id" "$commit_hash" "$branch" "$node_pattern" "$node_count" "$base_port" "$port_increment"; then
             echo "ERROR: Failed to generate scrape config" >&2
         fi
         # Signal vmagent to reload config (SIGHUP)
@@ -189,7 +196,7 @@ update_scrape_config_background() {
 }
 
 # Start background task to update config (refreshes process info labels)
-update_scrape_config_background "$VMAGENT_PID" "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT" &
+update_scrape_config_background "$VMAGENT_PID" "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT" "$PORT_INCREMENT" &
 UPDATE_PID=$!
 
 # Export PIDs for cleanup (output to GITHUB_OUTPUT if set, otherwise stdout)
