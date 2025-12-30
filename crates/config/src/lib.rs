@@ -15,6 +15,8 @@ use tokio::fs::{read_to_string, write};
 
 use mero_auth::config::AuthConfig;
 
+pub use calimero_node_primitives::NodeMode;
+
 pub const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -25,6 +27,9 @@ pub struct ConfigFile {
         default = "libp2p_identity::Keypair::generate_ed25519"
     )]
     pub identity: libp2p_identity::Keypair,
+
+    #[serde(default)]
+    pub mode: NodeMode,
 
     #[serde(flatten)]
     pub network: NetworkConfig,
@@ -230,6 +235,7 @@ impl ConfigFile {
     #[must_use]
     pub const fn new(
         identity: libp2p_identity::Keypair,
+        mode: NodeMode,
         network: NetworkConfig,
         sync: SyncConfig,
         datastore: DataStoreConfig,
@@ -238,6 +244,7 @@ impl ConfigFile {
     ) -> Self {
         Self {
             identity,
+            mode,
             network,
             sync,
             datastore,

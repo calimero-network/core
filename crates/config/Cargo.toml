@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["fs"] }
 toml.workspace = true
 
 calimero-context.workspace = true
+calimero-node-primitives.workspace = true
 calimero-server = { workspace = true }
 calimero-network-primitives.workspace = true
 mero-auth = { path = "../auth" }

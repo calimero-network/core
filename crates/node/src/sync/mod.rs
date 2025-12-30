@@ -38,3 +38,5 @@ mod tracking;
 
 pub use config::SyncConfig;
 pub use manager::SyncManager;
+
+pub use key::CHALLENGE_DOMAIN;

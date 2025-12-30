@@ -39,6 +39,7 @@ calimero-config.workspace = true
 calimero-context.workspace = true
 calimero-context-config = { workspace = true, features = ["client"] }
 calimero-node.workspace = true
+calimero-node-primitives.workspace = true
 calimero-network-primitives.workspace = true
 calimero-server.workspace = true
 calimero-store.workspace = true
