@@ -192,7 +192,8 @@ jobs:
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
 
           # Start vmagent with static port configuration
-          # Node count: 4, Base port: 2428 (ports 2428-2431)
+          # Node count: 4, Base port: 3001, Port increment: 2 (ports 3001, 3003, 3005, 3007)
+          # Ports are RPC server ports used in e2e_mode (dynamic port allocation)
           "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
             "$TEST_CASE" \
             "$INSTANCE_NAME" \
@@ -206,7 +207,8 @@ jobs:
             "8429" \
             "fuzzy-kv-node" \
             "4" \
-            "2428"
+            "3001" \
+            "2"
 
           # Extract PIDs from GITHUB_OUTPUT
           UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
@@ -364,7 +366,8 @@ jobs:
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
 
           # Start vmagent with static port configuration
-          # Node count: 4, Base port: 2428 (ports 2428-2431)
+          # Node count: 4, Base port: 3001, Port increment: 2 (ports 3001, 3003, 3005, 3007)
+          # Ports are RPC server ports used in e2e_mode (dynamic port allocation)
           "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
             "$TEST_CASE" \
             "$INSTANCE_NAME" \
@@ -378,7 +381,8 @@ jobs:
             "8430" \
             "fuzzy-handlers-node" \
             "4" \
-            "2428"
+            "3001" \
+            "2"
 
           # Extract PIDs from GITHUB_OUTPUT
           UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
