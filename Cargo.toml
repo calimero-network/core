@@ -92,7 +92,8 @@ members = [
 
 [workspace.dependencies]
 actix = "0.13.5"
-alloy = "1.0"
+alloy = { version = "1.0", default-features = false, features = ["std", "reqwest", "reqwest-rustls-tls", "essentials"] }
+alloy-transport-http = { version = "1.0", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
 alloy-sol-types = "1.4"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
@@ -102,7 +103,7 @@ base64 = "0.22.0"
 borsh = "1.3.1"
 bs58 = "0.5.0"
 bytes = "1.6.0"
-cached-path = "0.8.1"
+cached-path = { version = "0.8.1", default-features = false, features = ["rustls-tls"] }
 camino = "1.1.6"
 candid = "0.10.10"
 cargo_metadata = "0.20.0"
@@ -146,7 +147,7 @@ memchr = "2"
 multiaddr = "0.18.1"
 near-account-id = "1.0.0"
 near-crypto = "0.27.0"
-near-jsonrpc-client = "0.14.0"
+near-jsonrpc-client = { version = "0.14.0", default-features = false, features = ["rustls-tls"] }
 near-jsonrpc-primitives = "0.27.0"
 near-primitives = "0.27.0"
 near-workspaces = "0.15.0"
@@ -161,7 +162,7 @@ proc-macro2 = "1.0"
 prometheus-client = "0.23"
 quote = "1.0.37"
 rand = "0.8.5"
-reqwest = "0.12.2"
+reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 ring = "0.17.8"
 rocksdb = "0.22.0"
 rust-embed = "8.5.0"

@@ -52,7 +52,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid = { version = "1.6", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
-web3.workspace = true
 
 [dev-dependencies]
 mockall = "0.11"
@@ -66,6 +65,6 @@ cached-path.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 # cached-path compat
-reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
+reqwest-compat = { version = "0.11", package = "reqwest", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
