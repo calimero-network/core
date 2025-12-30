@@ -1,4 +1,8 @@
 name: Fuzzy Load Test - Long Running Performance
+# TODO: N - This workflow is currently configured for testing:
+# - Runs on pull_request events (should only run on master push)
+# - Default duration set to 5 minutes (should be 45 minutes)
+# Remove this TODO and revert the changes once testing is complete
 
 permissions:
   contents: read
@@ -11,12 +15,18 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
   workflow_dispatch:
     inputs:
       duration_override:
         description: "Override test duration (minutes per app)"
         required: false
-        default: "45"
+        default: "5"
         type: string
       test_app:
         description: "Run specific app test (kv-store, kv-store-with-handlers, or all)"
@@ -143,7 +153,7 @@ jobs:
 
       - name: Override test duration
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"
@@ -153,14 +163,58 @@ jobs:
         run: |
           mkdir -p fuzzy-test-logs/kv-store
 
-      - name: Run KV Store Fuzzy Test
-        id: kv-test
-        continue-on-error: true
+      - name: Setup vmagent for metrics collection
+        id: setup-vmagent
         run: |
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          ./scripts/setup-vmagent.sh \
+            "kv-store" \
+            "kv-store-${SHORT_COMMIT}" \
+            "${{ github.run_id }}" \
+            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
+            "8429" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}"
+
+      - name: Run KV Store Fuzzy Test with Metrics Collection
+        id: kv-test
+        run: |
+          set -euo pipefail
           cd workflows/fuzzy-tests/kv-store
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
+          # Configuration
+          TEST_CASE="kv-store"
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
+
+          # Start vmagent with static port configuration
+          # Node count: 4, Base port: 3001, Port increment: 2 (ports 3001, 3003, 3005, 3007)
+          # Ports are RPC server ports used in e2e_mode (dynamic port allocation)
+          "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
+            "$TEST_CASE" \
+            "$INSTANCE_NAME" \
+            "${{ github.run_id }}" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}" \
+            "${{ steps.setup-vmagent.outputs.vmagent_dir }}" \
+            "${{ steps.setup-vmagent.outputs.victoria_url }}" \
+            "${{ steps.setup-vmagent.outputs.auth_enabled }}" \
+            "${{ steps.setup-vmagent.outputs.bearer_token_file }}" \
+            "8429" \
+            "fuzzy-kv-node" \
+            "4" \
+            "3001" \
+            "2"
+
+          # Extract PIDs from GITHUB_OUTPUT
+          UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+          VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+
+          # Run fuzzy test
           set +e
           set -o pipefail 
           merobox bootstrap run \
@@ -173,10 +227,18 @@ jobs:
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store/merobox-output.log
 
           exit_code=$?
-          set +o pipefail  
+          set +o pipefail
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          # Cleanup vmagent
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
+            "$TEST_CASE" \
+            "$UPDATE_PID" \
+            "$VMAGENT_PID" \
+            "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
+            "/tmp/vmagent-${TEST_CASE}.log"
 
           exit $exit_code
 
@@ -199,6 +261,20 @@ jobs:
             mkdir -p "fuzzy-test-logs/kv-store/$relpath"
             cp -r "$logdir"/* "fuzzy-test-logs/kv-store/$relpath/" 2>/dev/null || true
           done
+
+      - name: Collect and upload vmagent logs
+        if: always()
+        run: |
+          if [ -f /tmp/vmagent-kv-store.log ]; then
+            echo "=== vmagent logs ==="
+            tail -100 /tmp/vmagent-kv-store.log || true
+            # Copy to artifact directory
+            mkdir -p fuzzy-test-logs/kv-store
+            cp /tmp/vmagent-kv-store.log fuzzy-test-logs/kv-store/vmagent.log
+            if [ -f /tmp/vmagent_scrape_kv-store.yml ]; then
+              cp /tmp/vmagent_scrape_kv-store.yml fuzzy-test-logs/kv-store/vmagent_config.yml
+            fi
+          fi
 
       - name: Upload KV Store test artifacts
         if: always()
@@ -251,7 +327,7 @@ jobs:
 
       - name: Override test duration
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"
@@ -261,16 +337,60 @@ jobs:
         run: |
           mkdir -p fuzzy-test-logs/kv-store-with-handlers
 
-      - name: Run Handlers Fuzzy Test
-        id: handlers-test
-        continue-on-error: true
+      - name: Setup vmagent for metrics collection
+        id: setup-vmagent-handlers
         run: |
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          ./scripts/setup-vmagent.sh \
+            "kv-store-with-handlers" \
+            "kv-store-with-handlers-${SHORT_COMMIT}" \
+            "${{ github.run_id }}" \
+            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
+            "8430" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}"
+
+      - name: Run Handlers Fuzzy Test with Metrics Collection
+        id: handlers-test
+        run: |
+          set -euo pipefail
           cd workflows/fuzzy-tests/kv-store-with-handlers
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
+          # Configuration
+          TEST_CASE="kv-store-with-handlers"
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
+
+          # Start vmagent with static port configuration
+          # Node count: 4, Base port: 3001, Port increment: 2 (ports 3001, 3003, 3005, 3007)
+          # Ports are RPC server ports used in e2e_mode (dynamic port allocation)
+          "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
+            "$TEST_CASE" \
+            "$INSTANCE_NAME" \
+            "${{ github.run_id }}" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.vmagent_dir }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.victoria_url }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}" \
+            "8430" \
+            "fuzzy-handlers-node" \
+            "4" \
+            "3001" \
+            "2"
+
+          # Extract PIDs from GITHUB_OUTPUT
+          UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+          VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+
+          # Run the actual fuzzy test
           set +e
-          set -o pipefail  
+          set -o pipefail 
           merobox bootstrap run \
               fuzzy-test.yml \
               --no-docker \
@@ -281,10 +401,18 @@ jobs:
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
 
           exit_code=$?
-          set +o pipefail 
+          set +o pipefail
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          # Cleanup vmagent
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
+            "$TEST_CASE" \
+            "$UPDATE_PID" \
+            "$VMAGENT_PID" \
+            "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
+            "/tmp/vmagent-${TEST_CASE}.log"
 
           exit $exit_code
 
@@ -307,6 +435,20 @@ jobs:
             mkdir -p "fuzzy-test-logs/kv-store-with-handlers/$relpath"
             cp -r "$logdir"/* "fuzzy-test-logs/kv-store-with-handlers/$relpath/" 2>/dev/null || true
           done
+
+      - name: Collect and upload vmagent logs
+        if: always()
+        run: |
+          if [ -f /tmp/vmagent-kv-store-with-handlers.log ]; then
+            echo "=== vmagent logs ==="
+            tail -100 /tmp/vmagent-kv-store-with-handlers.log || true
+            # Copy to artifact directory
+            mkdir -p fuzzy-test-logs/kv-store-with-handlers
+            cp /tmp/vmagent-kv-store-with-handlers.log fuzzy-test-logs/kv-store-with-handlers/vmagent.log
+            if [ -f /tmp/vmagent_scrape_kv-store-with-handlers.yml ]; then
+              cp /tmp/vmagent_scrape_kv-store-with-handlers.yml fuzzy-test-logs/kv-store-with-handlers/vmagent_config.yml
+            fi
+          fi
 
       - name: Upload Handlers test artifacts
         if: always()
