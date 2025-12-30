@@ -2,15 +2,16 @@ name: "KV Store Fuzzy Load Test"
 description: "Long-running fuzzy load test for kv-store application"
 
 # Test configuration
-no_docker: true
+no_docker: false
 nuke_on_start: true
 nuke_on_end: false
 
 nodes:
   chain_id: calimero-testnet
   count: 4
-  image: ghcr.io/calimero-network/merod:edge
+  image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-kv-node
+  use_image_entrypoint: true
 
 steps:
   - name: Install KV Store Application on Node 1

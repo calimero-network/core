@@ -2,15 +2,16 @@ name: "KV Store with Handlers Fuzzy Load Test"
 description: "Long-running fuzzy load test for kv-store-with-handlers application"
 
 # Test configuration
-no_docker: true
+no_docker: false 
 nuke_on_start: true
 nuke_on_end: false
 
 nodes:
   chain_id: calimero-testnet
   count: 4
-  image: ghcr.io/calimero-network/merod:edge
+  image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-handlers-node
+  use_image_entrypoint: true
 
 steps:
   - name: Install KV Store with Handlers on Node 1
@@ -56,7 +57,7 @@ steps:
       - "is_set({{public_key_fuzzy-handlers-node-3}})"
       - "is_set({{public_key_fuzzy-handlers-node-4}})"
 
-  # Main fuzzy test for kv-store-with-handlers
+  # Main fuzzy test for kv-store-with-handlers 
   # Note: No seed data needed - fuzzy test generates its own data
   - name: KV Store with Handlers Fuzzy Load Test
     type: fuzzy_test
