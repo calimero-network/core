@@ -1,4 +1,8 @@
 name: Fuzzy Load Test - Long Running Performance
+# TODO: N - This workflow is currently configured for testing:
+# - Runs on pull_request events (should only run on master push)
+# - Default duration set to 5 minutes (should be 45 minutes)
+# Remove this TODO and revert the changes once testing is complete
 
 permissions:
   contents: read
@@ -11,12 +15,18 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
   workflow_dispatch:
     inputs:
       duration_override:
         description: "Override test duration (minutes per app)"
         required: false
-        default: "45"
+        default: "5"
         type: string
       test_app:
         description: "Run specific app test (kv-store, kv-store-with-handlers, or all)"
@@ -143,7 +153,7 @@ jobs:
 
       - name: Override test duration
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"
@@ -311,7 +321,7 @@ jobs:
 
       - name: Override test duration
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"

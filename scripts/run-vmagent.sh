@@ -82,7 +82,7 @@ EOF
                 ports_found=$((ports_found + 1))
             fi
         fi
-    done < <(ss -tlnp 2>/dev/null | grep LISTEN | grep -E ':(242[0-9]|243[0-9]|244[0-9]|245[0-9])' || true)
+    done < <(ss -tlnp 2>/dev/null | grep LISTEN | grep -E ':(242[0-9]|243[0-9]|244[0-9]|245[0-9]|246[0-9]|247[0-9]|248[0-9]|249[0-9])' || true)
     
     if [ "$ports_found" -eq 0 ]; then
         echo "    # No merod processes found yet, will be discovered dynamically" >> "$config_file"
