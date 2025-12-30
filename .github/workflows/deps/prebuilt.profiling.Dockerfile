@@ -30,6 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # jemalloc dependencies
     build-essential \
     autoconf \
+    # libunwind for proper stack unwinding in jemalloc heap profiling
+    libunwind-dev \
+    # binutils for addr2line (symbol resolution)
+    binutils \
     # Python for additional processing
     python3 \
     python3-pip \
@@ -38,19 +42,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     && rm -rf /var/lib/apt/lists/*
 
-# Build jemalloc from source
+# Build jemalloc from source with libunwind support for proper stack unwinding
 ARG JEMALLOC_VERSION=5.3.0
 RUN curl -fsSL "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
         -o /tmp/jemalloc.tar.bz2 \
     && cd /tmp \
     && tar -xjf jemalloc.tar.bz2 \
     && cd "jemalloc-${JEMALLOC_VERSION}" \
-    && ./configure --enable-prof --prefix=/usr/local \
+    && ./configure --enable-prof --enable-prof-libunwind --prefix=/usr/local \
     && make -j$(nproc) \
     && make install \
     && ldconfig \
     && rm -rf /tmp/jemalloc* \
-    && echo "[jemalloc] Built with profiling support" \
+    && echo "[jemalloc] Built with profiling and libunwind support" \
     && jeprof --version 
 
 # Install FlameGraph tools

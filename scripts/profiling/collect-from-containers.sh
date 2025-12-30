@@ -89,42 +89,57 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
             
             # Memory flamegraph
             echo "  Generating memory flamegraph..."
-            HEAP_FILE=$(docker exec "$container" bash -c 'ls -t /profiling/data/jemalloc*.heap 2>/dev/null | head -1' 2>/dev/null || true)
-            if [ -n "$HEAP_FILE" ]; then
-                HEAP_BASENAME=$(basename "$HEAP_FILE")
-                echo "    Found heap dump: $HEAP_BASENAME"
-                
-                BASELINE_FILE=$(docker exec "$container" bash -c 'ls -t /profiling/data/jemalloc*.heap 2>/dev/null | tail -1' 2>/dev/null || true)
-                BASELINE_BASENAME=""
-                if [ -n "$BASELINE_FILE" ]; then
-                    BASELINE_BASENAME=$(basename "$BASELINE_FILE")
-                fi
-                
-                if [ -n "$BASELINE_BASENAME" ] && [ "$BASELINE_BASENAME" != "$HEAP_BASENAME" ]; then
-                    echo "    Using baseline: $BASELINE_BASENAME for differential analysis"
-                    docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
-                        --input "/profiling/data/$HEAP_BASENAME" \
-                        --base "/profiling/data/$BASELINE_BASENAME" \
-                        --output /profiling/reports/memory-flamegraph.svg \
-                        --title "Memory Flamegraph (Diff) - $container" \
-                        --colors mem 2>&1 || {
-                            echo "    Differential analysis failed, trying single heap dump..."
-                            docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
-                                --input "/profiling/data/$HEAP_BASENAME" \
-                                --output /profiling/reports/memory-flamegraph.svg \
-                                --title "Memory Flamegraph - $container" \
-                                --colors mem 2>&1 || echo "    Could not generate memory flamegraph"
-                        }
+            # Find the merod process PID from heap dumps (it's usually the most common PID)
+            # jemalloc heap files are named: jemalloc.{PID}.{seq}.{type}.heap
+            MEROD_PID=$(docker exec "$container" bash -c '
+                ls /profiling/data/jemalloc*.heap 2>/dev/null | 
+                sed -n "s/.*jemalloc\.\([0-9]*\)\..*/\1/p" | 
+                sort | uniq -c | sort -rn | head -1 | awk "{print \$2}"
+            ' 2>/dev/null || true)
+            
+            if [ -n "$MEROD_PID" ]; then
+                echo "    Found merod PID: $MEROD_PID"
+                # Get latest heap dump for this specific PID
+                HEAP_FILE=$(docker exec "$container" bash -c "ls -t /profiling/data/jemalloc.${MEROD_PID}.*.heap 2>/dev/null | head -1" 2>/dev/null || true)
+                if [ -n "$HEAP_FILE" ]; then
+                    HEAP_BASENAME=$(basename "$HEAP_FILE")
+                    echo "    Found heap dump: $HEAP_BASENAME"
+                    
+                    # Get earliest heap dump for this same PID as baseline
+                    BASELINE_FILE=$(docker exec "$container" bash -c "ls -t /profiling/data/jemalloc.${MEROD_PID}.*.heap 2>/dev/null | tail -1" 2>/dev/null || true)
+                    BASELINE_BASENAME=""
+                    if [ -n "$BASELINE_FILE" ]; then
+                        BASELINE_BASENAME=$(basename "$BASELINE_FILE")
+                    fi
+                    
+                    if [ -n "$BASELINE_BASENAME" ] && [ "$BASELINE_BASENAME" != "$HEAP_BASENAME" ]; then
+                        echo "    Using baseline: $BASELINE_BASENAME for differential analysis"
+                        docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
+                            --input "/profiling/data/$HEAP_BASENAME" \
+                            --base "/profiling/data/$BASELINE_BASENAME" \
+                            --output /profiling/reports/memory-flamegraph.svg \
+                            --title "Memory Flamegraph (Diff) - $container" \
+                            --colors mem 2>&1 || {
+                                echo "    Differential analysis failed, trying single heap dump..."
+                                docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
+                                    --input "/profiling/data/$HEAP_BASENAME" \
+                                    --output /profiling/reports/memory-flamegraph.svg \
+                                    --title "Memory Flamegraph - $container" \
+                                    --colors mem 2>&1 || echo "    Could not generate memory flamegraph"
+                            }
+                    else
+                        echo "    Using single heap dump analysis"
+                        docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
+                            --input "/profiling/data/$HEAP_BASENAME" \
+                            --output /profiling/reports/memory-flamegraph.svg \
+                            --title "Memory Flamegraph - $container" \
+                            --colors mem 2>&1 || echo "    Could not generate memory flamegraph"
+                    fi
                 else
-                    echo "    Using single heap dump analysis"
-                    docker exec "$container" /profiling/scripts/generate-memory-flamegraph.sh \
-                        --input "/profiling/data/$HEAP_BASENAME" \
-                        --output /profiling/reports/memory-flamegraph.svg \
-                        --title "Memory Flamegraph - $container" \
-                        --colors mem 2>&1 || echo "    Could not generate memory flamegraph"
+                    echo "    No heap dumps found for merod PID $MEROD_PID"
                 fi
             else
-                echo "    No heap dumps found"
+                echo "    No merod heap dumps found"
             fi
         fi
         
