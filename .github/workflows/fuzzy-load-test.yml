@@ -191,7 +191,8 @@ jobs:
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
 
-          # Start vmagent with dynamic process discovery
+          # Start vmagent with static port configuration
+          # Node count: 4, Base port: 2428 (ports 2428-2431)
           "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
             "$TEST_CASE" \
             "$INSTANCE_NAME" \
@@ -203,7 +204,9 @@ jobs:
             "${{ steps.setup-vmagent.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent.outputs.bearer_token_file }}" \
             "8429" \
-            "fuzzy-kv-node"
+            "fuzzy-kv-node" \
+            "4" \
+            "2428"
 
           # Extract PIDs from GITHUB_OUTPUT
           UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
@@ -360,7 +363,8 @@ jobs:
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
 
-          # Start vmagent with dynamic process discovery
+          # Start vmagent with static port configuration
+          # Node count: 4, Base port: 2428 (ports 2428-2431)
           "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
             "$TEST_CASE" \
             "$INSTANCE_NAME" \
@@ -372,7 +376,9 @@ jobs:
             "${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}" \
             "8430" \
-            "fuzzy-handlers-node"
+            "fuzzy-handlers-node" \
+            "4" \
+            "2428"
 
           # Extract PIDs from GITHUB_OUTPUT
           UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")

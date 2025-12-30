@@ -1,6 +1,6 @@
 #!/bin/bash
-# Run vmagent with dynamic process discovery for Victoria Metrics collection
-# Usage: run-vmagent.sh <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern>
+# Run vmagent with static port configuration for Victoria Metrics collection
+# Usage: run-vmagent.sh <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port]
 
 set -euo pipefail
 
@@ -15,9 +15,11 @@ AUTH_ENABLED="${8:-false}"
 BEARER_TOKEN_FILE="${9:-}"
 HTTP_PORT="${10:-8429}"
 NODE_PATTERN="${11:-}"  # e.g., "fuzzy-kv-node" or "fuzzy-handlers-node"
+NODE_COUNT="${12:-4}"   # Number of nodes (default: 4)
+BASE_PORT="${13:-2428}" # Starting port (default: 2428)
 
 if [ -z "$TEST_CASE" ] || [ -z "$VMAGENT_DIR" ] || [ -z "$VICTORIA_URL" ] || [ -z "$NODE_PATTERN" ]; then
-    echo "Usage: $0 <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern>"
+    echo "Usage: $0 <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port]"
     exit 1
 fi
 
@@ -25,7 +27,8 @@ VMAGENT_CONFIG="/tmp/vmagent_scrape_${TEST_CASE}.yml"
 VMAGENT_LOG="/tmp/vmagent-${TEST_CASE}.log"
 VMAGENT_CMD="$VMAGENT_DIR/vmagent"
 
-# Function to generate vmagent scrape config from merod processes
+# Function to generate vmagent scrape config using static port configuration
+# Uses predictable ports (base_port, base_port+1, ..., base_port+node_count-1)
 generate_scrape_config() {
     local config_file="$1"
     local test_name="$2"
@@ -34,6 +37,8 @@ generate_scrape_config() {
     local commit_hash="$5"
     local branch="$6"
     local node_pattern="$7"
+    local node_count="$8"
+    local base_port="$9"
     
     cat > "$config_file" <<EOF
 global:
@@ -53,54 +58,68 @@ global:
 scrape_configs:
 EOF
     
-    # Find all merod processes listening on ports
-    # Scan all listening ports in the merod range (2420-2500) and match to merod processes
+    # Generate static targets for predictable ports
+    # Ports are sequential starting from base_port: base_port, base_port+1, ..., base_port+node_count-1
     local ports_found=0
-    while IFS= read -r line; do
-        # Extract port and pid from ss output
-        # Format: LISTEN 0 4096 0.0.0.0:PORT 0.0.0.0:* users:(("merod",pid=12345,fd=3))
-        local port=$(echo "$line" | awk '{print $4}' | cut -d: -f2)
-        # Use sed instead of grep -oP for portability
-        local pid=$(echo "$line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' || echo "")
+    local port
+    local node_idx
+    
+    for node_idx in $(seq 1 "$node_count"); do
+        port=$((base_port + node_idx - 1))
+        local node_name="${node_pattern}-${node_idx}"
         
-        if [ -n "$port" ] && [ -n "$pid" ]; then
-            # Verify it's a merod process by checking command line
-            local cmdline=$(cat "/proc/${pid}/cmdline" 2>/dev/null | tr '\0' ' ' || echo "")
-            if echo "$cmdline" | grep -q "merod.*${node_pattern}"; then
-                # Extract node name using sed for portability
-                # Note: sed returns exit code 0 even when no match is found (just outputs nothing)
-                # So we check if node_name is empty and use fallback
-                local node_name=$(echo "$cmdline" | sed -n "s/.*\(${node_pattern}-[0-9]*\).*/\1/p")
-                if [ -z "$node_name" ]; then
-                    node_name="node-${pid}"
+        # Try to find process PID for better labeling (optional, won't fail if not found)
+        local pid=""
+        
+        # Attempt to find PID listening on this port (may fail in CI, that's OK)
+        if command -v ss >/dev/null 2>&1; then
+            local ss_line=$(ss -tlnp 2>/dev/null | grep ":${port}" | grep LISTEN | head -1 || true)
+            if [ -n "$ss_line" ]; then
+                pid=$(echo "$ss_line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' || echo "")
+                if [ -n "$pid" ] && [ -d "/proc/${pid}" ]; then
+                    # Verify it matches our node pattern
+                    local cmdline=$(cat "/proc/${pid}/cmdline" 2>/dev/null | tr '\0' ' ' || echo "")
+                    if ! echo "$cmdline" | grep -q "${node_pattern}"; then
+                        # PID doesn't match pattern, clear it
+                        pid=""
+                    fi
+                else
+                    pid=""
                 fi
-                cat >> "$config_file" <<EOF
+            fi
+        fi
+        
+        # Write config with or without process_id label
+        if [ -n "$pid" ]; then
+            cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
     scrape_interval: "10s"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["localhost:${port}"]
         labels:
+          node_name: "${node_name}"
           process_id: "${pid}"
+EOF
+        else
+            cat >> "$config_file" <<EOF
+  - job_name: "merod-${node_name}"
+    scrape_interval: "10s"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["localhost:${port}"]
+        labels:
           node_name: "${node_name}"
 EOF
-                ports_found=$((ports_found + 1))
-            fi
         fi
-    done < <(ss -tlnp 2>/dev/null | grep LISTEN | grep -E ':(242[0-9]|243[0-9]|244[0-9]|245[0-9]|246[0-9]|247[0-9]|248[0-9]|249[0-9])' || true)
+        ports_found=$((ports_found + 1))
+    done
     
-    if [ "$ports_found" -eq 0 ]; then
-        echo "    # No merod processes found yet, will be discovered dynamically" >> "$config_file"
-        echo "    - job_name: 'no-processes'" >> "$config_file"
-        echo "      static_configs:" >> "$config_file"
-        echo "        - targets: ['placeholder:2428']" >> "$config_file"
-    fi
-    
-    echo "Generated scrape config with $ports_found merod processes" >&2
+    echo "Generated scrape config with $ports_found static targets (ports ${base_port}-$((base_port + node_count - 1)))" >&2
 }
 
 # Generate initial config
-generate_scrape_config "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN"
+generate_scrape_config "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT"
 
 # Validate config file exists and is readable
 if [ ! -f "$VMAGENT_CONFIG" ]; then
@@ -119,6 +138,9 @@ echo "VictoriaMetrics URL: $VICTORIA_URL"
 echo "Auth enabled: $AUTH_ENABLED"
 echo "Instance name: $INSTANCE_NAME"
 echo "HTTP listen port: $HTTP_PORT"
+echo "Node count: $NODE_COUNT"
+echo "Base port: $BASE_PORT"
+echo "Ports: ${BASE_PORT}-$((BASE_PORT + NODE_COUNT - 1))"
 
 # Start vmagent in background
 $VMAGENT_CMD \
@@ -140,7 +162,7 @@ if ! kill -0 $VMAGENT_PID 2>/dev/null; then
     exit 1
 fi
 
-# Function to update scrape config periodically (for dynamic process discovery)
+# Function to update scrape config periodically (to refresh process info labels)
 update_scrape_config_background() {
     local pid="$1"
     local config_file="$2"
@@ -150,10 +172,12 @@ update_scrape_config_background() {
     local commit_hash="$6"
     local branch="$7"
     local node_pattern="$8"
+    local node_count="$9"
+    local base_port="${10}"
     
     while kill -0 "$pid" 2>/dev/null; do
-        sleep 30  # Update every 30 seconds
-        if ! generate_scrape_config "$config_file" "$test_name" "$instance_name" "$run_id" "$commit_hash" "$branch" "$node_pattern"; then
+        sleep 30  # Update every 30 seconds to refresh process info
+        if ! generate_scrape_config "$config_file" "$test_name" "$instance_name" "$run_id" "$commit_hash" "$branch" "$node_pattern" "$node_count" "$base_port"; then
             echo "ERROR: Failed to generate scrape config" >&2
         fi
         # Signal vmagent to reload config (SIGHUP)
@@ -164,8 +188,8 @@ update_scrape_config_background() {
     done
 }
 
-# Start background task to update config
-update_scrape_config_background "$VMAGENT_PID" "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" &
+# Start background task to update config (refreshes process info labels)
+update_scrape_config_background "$VMAGENT_PID" "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT" &
 UPDATE_PID=$!
 
 # Export PIDs for cleanup (output to GITHUB_OUTPUT if set, otherwise stdout)
