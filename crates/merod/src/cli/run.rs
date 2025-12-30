@@ -12,7 +12,6 @@ use mero_auth::embedded::default_config;
 use tracing::info;
 
 use super::auth_mode::AuthModeArg;
-use super::node_mode::NodeModeArg;
 use crate::cli::RootArgs;
 
 /// Run a node
@@ -21,10 +20,6 @@ pub struct RunCommand {
     /// Override the authentication mode configured in config.toml
     #[arg(long, value_enum)]
     pub auth_mode: Option<AuthModeArg>,
-
-    /// Node operation mode (standard or read-only)
-    #[arg(long, value_enum, default_value_t = NodeModeArg::Standard)]
-    pub mode: NodeModeArg,
 }
 
 impl RunCommand {
@@ -41,8 +36,8 @@ impl RunCommand {
             config.network.server.auth_mode = mode.into();
         }
 
-        // Convert CLI mode to NodeMode
-        let node_mode: NodeMode = self.mode.into();
+        // Read node mode from config
+        let node_mode = config.mode;
 
         // In read-only mode, disable JSON-RPC to prevent execution requests
         if node_mode == NodeMode::ReadOnly {

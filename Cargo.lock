@@ -1930,6 +1930,7 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-context",
  "calimero-network-primitives",
+ "calimero-node-primitives",
  "calimero-server",
  "camino",
  "eyre",
@@ -2165,6 +2166,7 @@ dependencies = [
  "calimero-store-rocksdb",
  "calimero-utils-actix",
  "camino",
+ "clap",
  "dashmap 6.1.0",
  "eyre",
  "flate2",
@@ -2436,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.26"
+version = "0.10.0-rc.27"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
@@ -6491,6 +6493,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-network-primitives",
  "calimero-node",
+ "calimero-node-primitives",
  "calimero-server",
  "calimero-store",
  "calimero-store-rocksdb",
