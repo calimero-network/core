@@ -9,7 +9,6 @@ use crate::defaults;
 mod auth_mode;
 mod config;
 mod init;
-mod node_mode;
 mod run;
 
 use config::ConfigCommand;

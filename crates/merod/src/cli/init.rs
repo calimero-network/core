@@ -1,7 +1,7 @@
 use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
-    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
-    SyncConfig,
+    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, NodeMode,
+    ServerConfig, SyncConfig,
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
@@ -240,6 +240,11 @@ pub struct InitCommand {
     /// Force initialization even if the directory already exists
     #[clap(long)]
     pub force: bool,
+
+    /// Node operation mode (standard or read-only)
+    /// Node operation mode (standard or read-only)
+    #[clap(long, value_enum, default_value_t = NodeMode::Standard)]
+    pub mode: NodeMode,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -416,6 +421,7 @@ impl InitCommand {
 
         let config = ConfigFile::new(
             identity,
+            self.mode,
             NetworkConfig::new(
                 SwarmConfig::new(listen),
                 BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),

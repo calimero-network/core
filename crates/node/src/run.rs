@@ -34,15 +34,7 @@ use crate::gc::GarbageCollector;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
-/// Node operation mode
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum NodeMode {
-    /// Standard mode - full node functionality with JSON-RPC execution
-    #[default]
-    Standard,
-    /// Read-only mode - disables JSON-RPC execution, used for TEE observer nodes
-    ReadOnly,
-}
+pub use calimero_node_primitives::NodeMode;
 
 /// Configuration for specialized node functionality (e.g., read-only nodes).
 #[derive(Debug, Clone)]
