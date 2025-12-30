@@ -38,36 +38,24 @@ if [ ! -f "/tmp/vmutils-${TEST_CASE}.tar.gz" ]; then
     exit 1
 fi
 
-# Extract vmagent-prod binary from tar (files are at root level in archive)
-# Extract to a temporary directory first for safer handling
-TEMP_EXTRACT_DIR="/tmp/vmutils-extract-${TEST_CASE}"
-mkdir -p "$TEMP_EXTRACT_DIR"
-tar -xzf "/tmp/vmutils-${TEST_CASE}.tar.gz" -C "$TEMP_EXTRACT_DIR"
+# Extract vmagent-prod binary from tar
+tar -xzf "/tmp/vmutils-${TEST_CASE}.tar.gz" -C "$VMAGENT_DIR" vmagent-prod
 
-# Find vmagent-prod binary (it's at root level in the archive)
-VMAGENT_BINARY_FOUND=false
-if [ -f "$TEMP_EXTRACT_DIR/vmagent-prod" ]; then
-    mv "$TEMP_EXTRACT_DIR/vmagent-prod" "$VMAGENT_DIR/vmagent"
-    VMAGENT_BINARY_FOUND=true
-else
-    # Fallback: search recursively in case structure is different
-    VMAGENT_PATH=$(find "$TEMP_EXTRACT_DIR" -name "vmagent-prod" -type f | head -1)
-    if [ -n "$VMAGENT_PATH" ]; then
-        mv "$VMAGENT_PATH" "$VMAGENT_DIR/vmagent"
-        VMAGENT_BINARY_FOUND=true
-    fi
-fi
-
-# Clean up temporary extraction directory
-rm -rf "$TEMP_EXTRACT_DIR"
-rm -f "/tmp/vmutils-${TEST_CASE}.tar.gz"
+# Rename to vmagent
+mv "$VMAGENT_DIR/vmagent-prod" "$VMAGENT_DIR/vmagent"
 
 # Verify binary was extracted
-if [ "$VMAGENT_BINARY_FOUND" = "false" ] || [ ! -f "$VMAGENT_DIR/vmagent" ]; then
+if [ ! -f "$VMAGENT_DIR/vmagent" ]; then
     echo "ERROR: vmagent-prod binary not found in tar archive"
     echo "Archive URL: https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v${VMAGENT_VERSION}/vmutils-linux-${VMAGENT_ARCH}-v${VMAGENT_VERSION}.tar.gz"
+    echo "Archive contents:"
+    tar -tzf "/tmp/vmutils-${TEST_CASE}.tar.gz" | head -10 || true
+    rm -f "/tmp/vmutils-${TEST_CASE}.tar.gz"
     exit 1
 fi
+
+# Clean up tar file
+rm -f "/tmp/vmutils-${TEST_CASE}.tar.gz"
 
 chmod +x "$VMAGENT_DIR/vmagent"
 

@@ -179,7 +179,6 @@ jobs:
 
       - name: Run KV Store Fuzzy Test with Metrics Collection
         id: kv-test
-        continue-on-error: true
         run: |
           set -euo pipefail
           cd workflows/fuzzy-tests/kv-store
@@ -193,7 +192,7 @@ jobs:
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
 
           # Start vmagent with dynamic process discovery
-          ../../scripts/run-vmagent.sh \
+          "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
             "$TEST_CASE" \
             "$INSTANCE_NAME" \
             "${{ github.run_id }}" \
@@ -229,7 +228,7 @@ jobs:
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
 
           # Cleanup vmagent
-          ../../scripts/cleanup-vmagent.sh \
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
             "$TEST_CASE" \
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
@@ -349,7 +348,6 @@ jobs:
 
       - name: Run Handlers Fuzzy Test with Metrics Collection
         id: handlers-test
-        continue-on-error: true
         run: |
           set -euo pipefail
           cd workflows/fuzzy-tests/kv-store-with-handlers
@@ -363,7 +361,7 @@ jobs:
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
 
           # Start vmagent with dynamic process discovery
-          ../../scripts/run-vmagent.sh \
+          "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
             "$TEST_CASE" \
             "$INSTANCE_NAME" \
             "${{ github.run_id }}" \
@@ -399,7 +397,7 @@ jobs:
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
 
           # Cleanup vmagent
-          ../../scripts/cleanup-vmagent.sh \
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
             "$TEST_CASE" \
             "$UPDATE_PID" \
             "$VMAGENT_PID" \

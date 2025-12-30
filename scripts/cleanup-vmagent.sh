@@ -36,14 +36,30 @@ fi
 if [ -n "$UPDATE_PID" ] && kill -0 "$UPDATE_PID" 2>/dev/null; then
     echo "Stopping config updater (PID: $UPDATE_PID)..."
     kill "$UPDATE_PID" 2>/dev/null || true
-    wait "$UPDATE_PID" 2>/dev/null || true
+    # Poll until process terminates (max 10 seconds)
+    count=0
+    while kill -0 "$UPDATE_PID" 2>/dev/null && [ $count -lt 20 ]; do
+        sleep 0.5
+        count=$((count + 1))
+    done
+    if kill -0 "$UPDATE_PID" 2>/dev/null; then
+        echo "WARNING: Config updater (PID: $UPDATE_PID) did not terminate within 10 seconds"
+    fi
 fi
 
 # Stop vmagent
 if [ -n "$VMAGENT_PID" ] && kill -0 "$VMAGENT_PID" 2>/dev/null; then
     echo "Stopping vmagent (PID: $VMAGENT_PID)..."
     kill "$VMAGENT_PID" 2>/dev/null || true
-    wait "$VMAGENT_PID" 2>/dev/null || true
+    # Poll until process terminates (max 10 seconds)
+    count=0
+    while kill -0 "$VMAGENT_PID" 2>/dev/null && [ $count -lt 20 ]; do
+        sleep 0.5
+        count=$((count + 1))
+    done
+    if kill -0 "$VMAGENT_PID" 2>/dev/null; then
+        echo "WARNING: vmagent (PID: $VMAGENT_PID) did not terminate within 10 seconds"
+    fi
 fi
 
 # Display final log

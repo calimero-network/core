@@ -68,7 +68,12 @@ EOF
             local cmdline=$(cat "/proc/${pid}/cmdline" 2>/dev/null | tr '\0' ' ' || echo "")
             if echo "$cmdline" | grep -q "merod.*${node_pattern}"; then
                 # Extract node name using sed for portability
-                local node_name=$(echo "$cmdline" | sed -n "s/.*\(${node_pattern}-[0-9]*\).*/\1/p" || echo "node-${pid}")
+                # Note: sed returns exit code 0 even when no match is found (just outputs nothing)
+                # So we check if node_name is empty and use fallback
+                local node_name=$(echo "$cmdline" | sed -n "s/.*\(${node_pattern}-[0-9]*\).*/\1/p")
+                if [ -z "$node_name" ]; then
+                    node_name="node-${pid}"
+                fi
                 cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
     scrape_interval: "10s"
