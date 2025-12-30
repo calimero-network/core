@@ -44,11 +44,12 @@ generate_scrape_config() {
     
     cat > "$config_file" <<EOF
 global:
-  scrape_interval: 10s
+  scrape_interval: 5s
   external_labels:
     execution_platform: "gha"
     execution_environment: "vm"
     instance_name: "${instance_name}"
+    merod_name: "${instance_name}"
     instance_type: "merod"
     test_name: "${test_name}"
     workflow_run: "${run_id}"
@@ -96,7 +97,7 @@ EOF
         if [ -n "$pid" ]; then
             cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
-    scrape_interval: "10s"
+    scrape_interval: "5s"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["localhost:${port}"]
@@ -107,7 +108,7 @@ EOF
         else
             cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
-    scrape_interval: "10s"
+    scrape_interval: "5s"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["localhost:${port}"]
