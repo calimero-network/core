@@ -166,13 +166,15 @@ jobs:
       - name: Setup vmagent for metrics collection
         id: setup-vmagent
         run: |
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "kv-store" \
-            "kv-store-${{ github.sha }}" \
+            "kv-store-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
             "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8429" \
-            "${{ github.sha }}" \
+            "$COMMIT_HASH" \
             "${{ github.ref_name }}"
 
       - name: Run KV Store Fuzzy Test with Metrics Collection
@@ -334,13 +336,15 @@ jobs:
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-handlers
         run: |
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "kv-store-with-handlers" \
-            "kv-store-with-handlers-${{ github.sha }}" \
+            "kv-store-with-handlers-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
             "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8430" \
-            "${{ github.sha }}" \
+            "$COMMIT_HASH" \
             "${{ github.ref_name }}"
 
       - name: Run Handlers Fuzzy Test with Metrics Collection

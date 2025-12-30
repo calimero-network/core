@@ -167,4 +167,6 @@ UPDATE_PID=$!
 OUTPUT_FILE="${GITHUB_OUTPUT:-/dev/stdout}"
 echo "update_pid=$UPDATE_PID" >> "$OUTPUT_FILE"
 echo "vmagent_pid=$VMAGENT_PID" >> "$OUTPUT_FILE"
+echo "Started vmagent with PID: $VMAGENT_PID"
+echo "Started config updater with PID: $UPDATE_PID"
 
