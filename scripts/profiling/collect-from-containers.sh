@@ -69,15 +69,14 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         if [ "$CONTAINER_RUNNING" = "true" ]; then
             # CPU flamegraph
             echo "  Generating CPU flamegraph..."
-            if docker exec "$container" ls /profiling/data/perf-*.data >/dev/null 2>&1; then
-                PERF_BASENAME=$(docker exec "$container" ls -t /profiling/data/perf-*.data 2>/dev/null | head -1 | xargs basename 2>/dev/null)
-                if [ -n "$PERF_BASENAME" ]; then
-                    echo "    Found perf data: $PERF_BASENAME"
-                    docker exec "$container" /profiling/scripts/generate-flamegraph.sh \
-                        --input "/profiling/data/$PERF_BASENAME" \
-                        --output /profiling/reports/flamegraph.svg \
-                        --title "CPU Flamegraph - $container" 2>&1 || echo "    Could not generate CPU flamegraph"
-                fi
+            PERF_FILE=$(docker exec "$container" bash -c 'ls -t /profiling/data/perf-*.data 2>/dev/null | head -1' 2>/dev/null || true)
+            if [ -n "$PERF_FILE" ]; then
+                PERF_BASENAME=$(basename "$PERF_FILE")
+                echo "    Found perf data: $PERF_BASENAME"
+                docker exec "$container" /profiling/scripts/generate-flamegraph.sh \
+                    --input "/profiling/data/$PERF_BASENAME" \
+                    --output /profiling/reports/flamegraph.svg \
+                    --title "CPU Flamegraph - $container" 2>&1 || echo "    Could not generate CPU flamegraph"
             else
                 echo "    No perf data found"
             fi
@@ -90,11 +89,16 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
             
             # Memory flamegraph
             echo "  Generating memory flamegraph..."
-            HEAP_BASENAME=$(docker exec "$container" ls -t /profiling/data/jemalloc*.heap 2>/dev/null | head -1 | xargs basename 2>/dev/null)
-            if [ -n "$HEAP_BASENAME" ]; then
+            HEAP_FILE=$(docker exec "$container" bash -c 'ls -t /profiling/data/jemalloc*.heap 2>/dev/null | head -1' 2>/dev/null || true)
+            if [ -n "$HEAP_FILE" ]; then
+                HEAP_BASENAME=$(basename "$HEAP_FILE")
                 echo "    Found heap dump: $HEAP_BASENAME"
                 
-                BASELINE_BASENAME=$(docker exec "$container" ls -t /profiling/data/jemalloc*.heap 2>/dev/null | tail -1 | xargs basename 2>/dev/null)
+                BASELINE_FILE=$(docker exec "$container" bash -c 'ls -t /profiling/data/jemalloc*.heap 2>/dev/null | tail -1' 2>/dev/null || true)
+                BASELINE_BASENAME=""
+                if [ -n "$BASELINE_FILE" ]; then
+                    BASELINE_BASENAME=$(basename "$BASELINE_FILE")
+                fi
                 
                 if [ -n "$BASELINE_BASENAME" ] && [ "$BASELINE_BASENAME" != "$HEAP_BASENAME" ]; then
                     echo "    Using baseline: $BASELINE_BASENAME for differential analysis"
