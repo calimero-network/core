@@ -1,0 +1,224 @@
+description: Late join test workflow - Node 1 performs 5000 inserts, then Node 2 joins and verifies all changes are synced
+name: Late Join Test with 5000 Inserts
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: late-join-node
+
+steps:
+  # Setup Phase: Install app and create context on Node 1
+  - name: Install KV Store Application on Node 1
+    type: install_application
+    node: late-join-node-1
+    path: "res/kv_store.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: late-join-node-1
+    application_id: "{{app_id}}"
+    params: "{}"
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Bulk Insert Phase: Node 1 performs 5000 inserts
+  - name: Perform 5000 Inserts on Node 1
+    type: repeat
+    count: 5000
+    outputs:
+      current_iteration: iteration
+    steps:
+      - name: Insert Key-Value Pair
+        type: call
+        node: late-join-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: set
+        args:
+          key: "key_{{current_iteration}}"
+          value: "value_{{current_iteration}}"
+        outputs:
+          insert_result: result
+
+  # Verification Phase: Verify Node 1 has all 5000 entries
+
+  - name: Get Entry Count on Node 1
+    type: call
+    node: late-join-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    outputs:
+      node1_entry_count: result.output
+
+  - name: Assert Node 1 Has 5000 Entries
+    type: json_assert
+    statements:
+      - "equal({{node1_entry_count}}, 5000)"
+
+  # Late Join Phase: Node 2 joins the context
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: late-join-node-2
+    outputs:
+      public_key_node_2: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 2
+
+  - name: Invite Node 2 to Join Context
+    type: invite_identity
+    node: late-join-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_node_2}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_node_2: invitation
+
+  - name: Node 2 Joins Context
+    type: join_context
+    node: late-join-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_node_2}}"
+    invitation: "{{invitation_node_2}}"
+
+  # Sync Phase: Wait for Node 2 to sync all state
+
+  - name: Wait for Node 2 to Sync All State
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - late-join-node-1
+      - late-join-node-2
+    timeout: 1000
+    check_interval: 2
+    trigger_sync: true
+    outputs:
+      sync_root_hash: root_hash
+      sync_time: elapsed_seconds
+
+  # Verification Phase: Verify Node 2 has all 5000 entries
+
+  - name: Get Entry Count on Node 2
+    type: call
+    node: late-join-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node_2}}"
+    method: len
+    outputs:
+      node2_entry_count: result.output
+
+  - name: Assert Node 2 Has 5000 Entries
+    type: json_assert
+    statements:
+      - "equal({{node2_entry_count}}, 5000)"
+
+  - name: Get All Entries on Node 2
+    type: call
+    node: late-join-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node_2}}"
+    method: entries
+    outputs:
+      node2_entries: result.output
+
+  - name: Assert Node 2 Entries Are Not Empty
+    type: json_assert
+    statements:
+      - 'json_subset({{node2_entries}}, {"key_1": "value_1", "key_2499": "value_2499", "key_4999": "value_4999", "key_5000": "value_5000"})'
+
+  # Sample Verification: Check specific keys are accessible
+
+  - name: Verify Key 1 on Node 2
+    type: call
+    node: late-join-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node_2}}"
+    method: get
+    args:
+      key: "key_1"
+    outputs:
+      key1_value: result.output
+
+  - name: Assert Key 1 Value on Node 2
+    type: json_assert
+    statements:
+      - 'equal({{key1_value}}, "value_1")'
+
+  - name: Verify Key 2499 on Node 2
+    type: call
+    node: late-join-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node_2}}"
+    method: get
+    args:
+      key: "key_2499"
+    outputs:
+      key2499_value: result.output
+
+  - name: Assert Key 2499 Value on Node 2
+    type: json_assert
+    statements:
+      - 'equal({{key2499_value}}, "value_2499")'
+
+  - name: Verify Key 4999 on Node 2
+    type: call
+    node: late-join-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node_2}}"
+    method: get
+    args:
+      key: "key_4999"
+    outputs:
+      key4999_value: result.output
+
+  - name: Assert Key 4999 Value on Node 2
+    type: json_assert
+    statements:
+      - 'equal({{key4999_value}}, "value_4999")'
+
+  - name: Verify Key 5000 on Node 2
+    type: call
+    node: late-join-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node_2}}"
+    method: get
+    args:
+      key: "key_5000"
+    outputs:
+      key5000_value: result.output
+
+  - name: Assert Key 5000 Value on Node 2
+    type: json_assert
+    statements:
+      - 'equal({{key5000_value}}, "value_5000")'
+
+  # Cross-Verification: Verify Node 1 still has all entries
+
+  - name: Get Entry Count on Node 1 After Sync
+    type: call
+    node: late-join-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: len
+    outputs:
+      node1_final_count: result.output
+
+  - name: Assert Node 1 Still Has 5000 Entries
+    type: json_assert
+    statements:
+      - "equal({{node1_final_count}}, 5000)"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 600
