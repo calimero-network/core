@@ -94,6 +94,27 @@ fi
 # Generate the flamegraph
 FOLDED="${OUTPUT%.svg}.folded"
 
+# Restore perf.map files if they exist (for WASM JIT code symbolization)
+# perf script automatically looks for /tmp/perf-<pid>.map files
+PERF_MAP_DIR="${PROFILING_OUTPUT_DIR:-/profiling/data}"
+if [ -d "$PERF_MAP_DIR" ]; then
+    # Find any preserved perf.map files and restore them to /tmp
+    for perf_map_file in "$PERF_MAP_DIR"/perf-*.map; do
+        if [ -f "$perf_map_file" ]; then
+            # Extract PID from filename (format: perf-<name>-<pid>.map)
+            MAP_BASENAME=$(basename "$perf_map_file")
+            if [[ "$MAP_BASENAME" =~ perf-.*-([0-9]+)\.map ]]; then
+                RESTORE_PID="${BASH_REMATCH[1]}"
+                RESTORE_TARGET="/tmp/perf-${RESTORE_PID}.map"
+                if [ ! -f "$RESTORE_TARGET" ]; then
+                    echo "Restoring perf.map file for PID $RESTORE_PID (for WASM symbolization)..."
+                    cp "$perf_map_file" "$RESTORE_TARGET" 2>/dev/null || true
+                fi
+            fi
+        fi
+    done
+fi
+
 echo "Converting perf data to folded stacks..."
 perf script -i "$INPUT" 2>/dev/null | "$STACKCOLLAPSE" > "$FOLDED"
 

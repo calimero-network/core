@@ -2240,6 +2240,7 @@ dependencies = [
  "tracing",
  "ureq",
  "wasmer",
+ "wasmer-compiler-cranelift",
  "wasmer-types",
 ]
 

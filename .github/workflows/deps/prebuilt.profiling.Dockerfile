@@ -110,6 +110,8 @@ ENV FLAMEGRAPH_DIR="/opt/FlameGraph"
 ENV PERF_SAMPLE_FREQ="99"
 # Enable debug symbols (useful for profiling)
 ENV RUST_BACKTRACE="1"
+# Enable Wasmer PerfMap profiling for WASM stack traces in flamegraphs
+ENV ENABLE_WASMER_PROFILING="true"
 
 # Working directory for data
 WORKDIR /data

@@ -4,6 +4,13 @@ use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
 use wasmer::{CompileError, DeserializeError, Instance, NativeEngineExt, SerializeError, Store};
 
+// Profiling feature: Only compile these imports when profiling feature is enabled
+
+#[cfg(feature = "profiling")]
+use wasmer::EngineBuilder;
+#[cfg(feature = "profiling")]
+use wasmer_compiler_cranelift::Cranelift;
+
 mod constants;
 mod constraint;
 pub mod errors;
@@ -29,7 +36,7 @@ impl Default for Engine {
     fn default() -> Self {
         let limits = VMLimits::default();
 
-        let engine = wasmer::Engine::default();
+        let engine = Self::create_engine();
 
         Self::new(engine, limits)
     }
@@ -41,6 +48,26 @@ impl Engine {
         engine.set_tunables(WasmerTunables::new(&limits));
 
         Self { limits, engine }
+    }
+
+    /// Create an engine, enabling PerfMap profiling if the profiling feature is enabled
+    fn create_engine() -> wasmer::Engine {
+        #[cfg(feature = "profiling")]
+        {
+            if std::env::var("ENABLE_WASMER_PROFILING")
+                .map(|v| v == "true")
+                .unwrap_or(false)
+            {
+                info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
+                // Use EngineBuilder with Cranelift compiler
+                let config = Cranelift::default();
+                let engine = EngineBuilder::new(config).engine();
+                return engine.into();
+            }
+        }
+
+        // Default engine (no profiling)
+        wasmer::Engine::default()
     }
 
     #[must_use]

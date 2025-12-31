@@ -147,7 +147,8 @@ jobs:
           readarray -t binaries <<< "$BINARIES"
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
-          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }}
+          # Build with frame pointers and enable Wasmer PerfMap profiling feature
+          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }} --features calimero-runtime/profiling
 
       - name: Compress profiling artifacts using gzip
         if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
