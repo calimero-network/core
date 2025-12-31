@@ -1,7 +1,7 @@
 use core::ptr::NonNull;
 
-use wasmer::sys::{BaseTunables, Tunables};
 use wasmer::sys::vm::{VMConfig, VMMemory, VMMemoryDefinition, VMTable, VMTableDefinition};
+use wasmer::sys::{BaseTunables, Tunables};
 use wasmer_types::{
     MemoryError, MemoryStyle, MemoryType, Pages, TableStyle, TableType, WASM_MAX_PAGES,
 };
