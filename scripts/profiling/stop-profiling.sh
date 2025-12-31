@@ -88,6 +88,8 @@ if [ -n "$MEROD_PID" ]; then
             else
                 echo "  WARNING: Could not copy perf.map file"
             fi
+        else
+            echo "  Note: No perf.map file found (Wasmer does not generate perf.map files)"
         fi
     fi
 fi

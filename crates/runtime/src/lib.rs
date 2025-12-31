@@ -2,14 +2,11 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{CompileError, DeserializeError, Instance, NativeEngineExt, SerializeError, Store};
+use wasmer::{CompileError, DeserializeError, Instance, SerializeError, Store};
 
 // Profiling feature: Only compile these imports when profiling feature is enabled
-
 #[cfg(feature = "profiling")]
-use wasmer::EngineBuilder;
-#[cfg(feature = "profiling")]
-use wasmer_compiler_cranelift::Cranelift;
+use wasmer::sys::{CompilerConfig, Cranelift};
 
 mod constants;
 mod constraint;
@@ -45,12 +42,16 @@ impl Default for Engine {
 impl Engine {
     #[must_use]
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
-        engine.set_tunables(WasmerTunables::new(&limits));
+        // Set tunables if this is a sys engine (native engine)
+        if engine.is_sys() {
+            use wasmer::sys::NativeEngineExt;
+            engine.set_tunables(WasmerTunables::new(&limits));
+        }
 
         Self { limits, engine }
     }
 
-    /// Create an engine, enabling PerfMap profiling if the profiling feature is enabled
+    /// Create an engine, using Cranelift compiler for profiling builds with PerfMap support
     fn create_engine() -> wasmer::Engine {
         #[cfg(feature = "profiling")]
         {
@@ -59,10 +60,10 @@ impl Engine {
                 .unwrap_or(false)
             {
                 info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
-                // Use EngineBuilder with Cranelift compiler
-                let config = Cranelift::default();
-                let engine = EngineBuilder::new(config).engine();
-                return engine.into();
+                // Create Cranelift config and enable PerfMap file generation
+                let mut config = Cranelift::default();
+                config.enable_perfmap();
+                return wasmer::Engine::from(config);
             }
         }
 
@@ -74,6 +75,7 @@ impl Engine {
     pub fn headless() -> Self {
         let limits = VMLimits::default();
 
+        use wasmer::sys::NativeEngineExt;
         let engine = wasmer::Engine::headless();
 
         Self::new(engine, limits)
