@@ -11,6 +11,12 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
 
   workflow_dispatch:
     inputs:
@@ -140,8 +146,9 @@ jobs:
 
       - name: Override test duration
         run: |
-          # TODO: Change default back to '45' after testing is complete
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          # TODO: REVERT BEFORE PR MERGE - Change default back to '45' after testing is complete
+          # This 5-minute duration is only for testing purposes
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"
@@ -324,8 +331,9 @@ jobs:
 
       - name: Override test duration
         run: |
-          # TODO: Change default back to '45' after testing is complete
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          # TODO: REVERT BEFORE PR MERGE - Change default back to '45' after testing is complete
+          # This 5-minute duration is only for testing purposes
+          DURATION="${{ github.event.inputs.duration_override || '5' }}"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
           echo "Updated test duration to $DURATION minutes"
