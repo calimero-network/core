@@ -11,6 +11,11 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
 
   workflow_dispatch:
     inputs:
