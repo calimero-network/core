@@ -117,14 +117,14 @@ start_profiling() {
         else
             (
                 echo "[Profiling] Monitoring for perf.map file generation..."
-                local check_count=0
-                local max_checks=30
+                check_count=0
+                max_checks=30
                 while [ $check_count -lt $max_checks ]; do
                     sleep 2
                     check_count=$((check_count + 1))
-                    local perf_map="/tmp/perf-${pid}.map"
+                    perf_map="/tmp/perf-${pid}.map"
                     if [ -f "$perf_map" ]; then
-                        local map_size=$(stat -f%z "$perf_map" 2>/dev/null || stat -c%s "$perf_map" 2>/dev/null || echo "0")
+                        map_size=$(stat -f%z "$perf_map" 2>/dev/null || stat -c%s "$perf_map" 2>/dev/null || echo "0")
                         echo "[Profiling] ✓ perf.map file detected: $perf_map ($map_size bytes)"
                         echo "[Profiling]   This file enables WASM function name symbolization in flamegraphs"
                         break
