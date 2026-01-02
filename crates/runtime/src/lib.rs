@@ -2,7 +2,11 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{CompileError, DeserializeError, Instance, NativeEngineExt, SerializeError, Store};
+use wasmer::{CompileError, DeserializeError, Instance, SerializeError, Store};
+
+// Profiling feature: Only compile these imports when profiling feature is enabled
+#[cfg(feature = "profiling")]
+use wasmer::sys::{CompilerConfig, Cranelift};
 
 mod constants;
 mod constraint;
@@ -29,7 +33,7 @@ impl Default for Engine {
     fn default() -> Self {
         let limits = VMLimits::default();
 
-        let engine = wasmer::Engine::default();
+        let engine = Self::create_engine();
 
         Self::new(engine, limits)
     }
@@ -38,15 +42,54 @@ impl Default for Engine {
 impl Engine {
     #[must_use]
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
-        engine.set_tunables(WasmerTunables::new(&limits));
+        // Set tunables if this is a sys engine (native engine)
+        if engine.is_sys() {
+            use wasmer::sys::NativeEngineExt;
+            engine.set_tunables(WasmerTunables::new(&limits));
+        }
 
         Self { limits, engine }
+    }
+
+    /// Create an engine, using Cranelift compiler for profiling builds with PerfMap support
+    fn create_engine() -> wasmer::Engine {
+        #[cfg(feature = "profiling")]
+        {
+            if std::env::var("ENABLE_WASMER_PROFILING")
+                .map(|v| v == "true")
+                .unwrap_or(false)
+            {
+                info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
+                // Create Cranelift config and enable PerfMap file generation
+                let mut config = Cranelift::default();
+                config.enable_perfmap();
+                return wasmer::Engine::from(config);
+            }
+        }
+
+        // Default engine (no profiling)
+        wasmer::Engine::default()
     }
 
     #[must_use]
     pub fn headless() -> Self {
         let limits = VMLimits::default();
 
+        // Headless engines lack a compiler, so Wasmer skips perf.map generation.
+        // For profiling, use a full engine to enable WASM symbol resolution.
+        #[cfg(feature = "profiling")]
+        {
+            if std::env::var("ENABLE_WASMER_PROFILING")
+                .map(|v| v == "true")
+                .unwrap_or(false)
+            {
+                debug!("Using profiling-enabled engine for precompiled module (required for perf.map generation)");
+                let engine = Self::create_engine();
+                return Self::new(engine, limits);
+            }
+        }
+
+        use wasmer::sys::NativeEngineExt;
         let engine = wasmer::Engine::headless();
 
         Self::new(engine, limits)

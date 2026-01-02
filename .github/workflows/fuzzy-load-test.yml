@@ -11,6 +11,11 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
 
   workflow_dispatch:
     inputs:
@@ -81,11 +86,15 @@ jobs:
         run: |
           cd apps/kv-store
           ./build.sh
+        env:
+          WASM_PROFILING: "true"
 
       - name: Build kv-store-with-handlers app
         run: |
           cd apps/kv-store-with-handlers
           ./build.sh
+        env:
+          WASM_PROFILING: "true"
 
       - name: Verify WASM files exist
         run: |
@@ -140,7 +149,8 @@ jobs:
 
       - name: Override test duration
         run: |
-          # TODO: Change default back to '45' after testing is complete
+          # TODO: REVERT BEFORE PR MERGE - Change default back to '45' after testing is complete
+          # This 5-minute duration is only for testing purposes
           DURATION="${{ github.event.inputs.duration_override || '45' }}"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
@@ -324,7 +334,8 @@ jobs:
 
       - name: Override test duration
         run: |
-          # TODO: Change default back to '45' after testing is complete
+          # TODO: REVERT BEFORE PR MERGE - Change default back to '45' after testing is complete
+          # This 5-minute duration is only for testing purposes
           DURATION="${{ github.event.inputs.duration_override || '45' }}"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml

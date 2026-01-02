@@ -37,7 +37,12 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
         echo "Rust crates or release-triggering files changed - release workflow will build/rebuild pr-${PR_NUMBER} image"
         echo "Waiting for release workflow to complete..."
         
-        MAX_WAIT=1200
+        if [ "$PROFILING_MODE" = "--profiling" ]; then
+            MAX_WAIT=1800  # 30 minutes for profiling containers
+            echo "Profiling mode: extended wait time to 30 minutes (profiling containers take longer to build)"
+        else
+            MAX_WAIT=1200  # 20 minutes for standard containers
+        fi
         WAIT_INTERVAL=10
         ELAPSED=0
         

@@ -7,6 +7,7 @@ ENABLE_PROFILING="${ENABLE_PROFILING:-true}"
 ENABLE_JEMALLOC="${ENABLE_JEMALLOC:-true}"
 ENABLE_PERF="${ENABLE_PERF:-true}"
 ENABLE_HEAPTRACK="${ENABLE_HEAPTRACK:-false}"
+ENABLE_WASMER_PROFILING="${ENABLE_WASMER_PROFILING:-true}"
 PROFILING_OUTPUT_DIR="${PROFILING_OUTPUT_DIR:-/profiling/data}"
 PERF_SAMPLE_FREQ="${PERF_SAMPLE_FREQ:-99}"
 
@@ -108,6 +109,33 @@ start_profiling() {
     fi
     
     echo "[Profiling] ✓ perf is running. Data will be collected and written periodically."
+    
+    # Monitor for perf.map file generation (for WASM JIT code symbolization)
+    if [ "$ENABLE_WASMER_PROFILING" = "true" ]; then
+        if [ -z "$pid" ]; then
+            echo "[Profiling] WARNING: PID not available, cannot monitor perf.map file"
+        else
+            (
+                echo "[Profiling] Monitoring for perf.map file generation..."
+                check_count=0
+                max_checks=30
+                while [ $check_count -lt $max_checks ]; do
+                    sleep 2
+                    check_count=$((check_count + 1))
+                    perf_map="/tmp/perf-${pid}.map"
+                    if [ -f "$perf_map" ]; then
+                        map_size=$(stat -f%z "$perf_map" 2>/dev/null || stat -c%s "$perf_map" 2>/dev/null || echo "0")
+                        echo "[Profiling] ✓ perf.map file detected: $perf_map ($map_size bytes)"
+                        echo "[Profiling]   This file enables WASM function name symbolization in flamegraphs"
+                        break
+                    fi
+                done
+                if [ $check_count -eq $max_checks ]; then
+                    echo "[Profiling] Note: perf.map file not detected after ${max_checks} checks (60 seconds)"
+                fi
+            ) &
+        fi
+    fi
 }
 
 stop_profiling() {
@@ -151,6 +179,28 @@ stop_profiling() {
             done
         else
             echo "[Profiling] WARNING: No perf data files found in $PROFILING_OUTPUT_DIR"
+        fi
+    fi
+    
+    # Preserve perf.map files for JIT code symbolization
+    # Wasmer writes perf.map files to /tmp/perf-<pid>.map for WASM function names
+    if [ "$ENABLE_WASMER_PROFILING" = "true" ]; then
+        local merod_pid=$(pgrep -x merod 2>/dev/null | head -1)
+        if [ -n "$merod_pid" ]; then
+            local perf_map="/tmp/perf-${merod_pid}.map"
+            if [ -f "$perf_map" ]; then
+                local perf_map_copy="$PROFILING_OUTPUT_DIR/perf-${NODE_NAME:-merod}-${merod_pid}.map"
+                echo "[Profiling] Copying perf.map file for WASM symbolization..."
+                cp "$perf_map" "$perf_map_copy" 2>/dev/null || true
+                if [ -f "$perf_map_copy" ]; then
+                    local map_size=$(stat -f%z "$perf_map_copy" 2>/dev/null || stat -c%s "$perf_map_copy" 2>/dev/null || echo "0")
+                    echo "[Profiling] ✓ perf.map file preserved: $(basename "$perf_map_copy") ($map_size bytes)"
+                else
+                    echo "[Profiling] WARNING: Could not copy perf.map file"
+                fi
+            else
+                echo "[Profiling] Note: No perf.map file found at $perf_map (WASM profiling may not be active)"
+            fi
         fi
     fi
 }

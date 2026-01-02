@@ -9,10 +9,19 @@ rustup target add wasm32-unknown-unknown
 
 mkdir -p res
 
-RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unknown --profile app-release
+# Use app-profiling profile when WASM_PROFILING is set to preserve function names
+if [ "${WASM_PROFILING:-false}" = "true" ]; then
+    echo "Building with profiling profile "
+    PROFILE="app-profiling"
+else
+    PROFILE="app-release"
+fi
 
-cp $TARGET/wasm32-unknown-unknown/app-release/kv_store_with_handlers.wasm ./res/
+RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unknown --profile "$PROFILE"
 
-if command -v wasm-opt > /dev/null; then
+cp $TARGET/wasm32-unknown-unknown/$PROFILE/kv_store_with_handlers.wasm ./res/
+
+# Skip wasm-opt for profiling builds to preserve debug info
+if [ "$PROFILE" = "app-release" ] && command -v wasm-opt > /dev/null; then
   wasm-opt -Oz ./res/kv_store_with_handlers.wasm -o ./res/kv_store_with_handlers.wasm
 fi

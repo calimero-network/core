@@ -74,6 +74,24 @@ if [ -n "$MEROD_PID" ]; then
     echo "Triggering final jemalloc heap dump..."
     kill -USR1 "$MEROD_PID" 2>/dev/null || true
     sleep 1
+    
+    # Preserve perf.map files for JIT code symbolization (if Wasmer profiling is enabled)
+    if [ "${ENABLE_WASMER_PROFILING:-true}" = "true" ]; then
+        PERF_MAP="/tmp/perf-${MEROD_PID}.map"
+        if [ -f "$PERF_MAP" ]; then
+            PERF_MAP_COPY="$OUTPUT_DIR/perf-${NODE_NAME}-${MEROD_PID}.map"
+            echo "Copying perf.map file for WASM symbolization..."
+            cp "$PERF_MAP" "$PERF_MAP_COPY" 2>/dev/null || true
+            if [ -f "$PERF_MAP_COPY" ]; then
+                MAP_SIZE=$(stat -f%z "$PERF_MAP_COPY" 2>/dev/null || stat -c%s "$PERF_MAP_COPY" 2>/dev/null || echo "0")
+                echo "  ✓ perf.map file preserved: $(basename "$PERF_MAP_COPY") ($MAP_SIZE bytes)"
+            else
+                echo "  WARNING: Could not copy perf.map file"
+            fi
+        else
+            echo "  Note: No perf.map file found (Wasmer does not generate perf.map files)"
+        fi
+    fi
 fi
 
 echo ""
