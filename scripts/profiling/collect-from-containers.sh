@@ -67,6 +67,18 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         
         # Generate reports inside container while it's still running
         if [ "$CONTAINER_RUNNING" = "true" ]; then
+            # Preserve perf.map files from /tmp for WASM symbolization
+            # Wasmer writes JIT function mappings to /tmp/perf-<pid>.map
+            echo "  Collecting perf.map files for WASM symbolization..."
+            docker exec "$container" bash -c '
+                for perf_map in /tmp/perf-*.map; do
+                    if [ -f "$perf_map" ]; then
+                        cp "$perf_map" /profiling/data/ 2>/dev/null || true
+                        echo "    Collected: $(basename "$perf_map") ($(stat -c%s "$perf_map" 2>/dev/null || stat -f%z "$perf_map" 2>/dev/null) bytes)"
+                    fi
+                done
+            ' 2>/dev/null || echo "    No perf.map files found"
+            
             # CPU flamegraph
             echo "  Generating CPU flamegraph..."
             PERF_FILE=$(docker exec "$container" bash -c 'ls -t /profiling/data/perf-*.data 2>/dev/null | head -1' 2>/dev/null || true)

@@ -101,10 +101,18 @@ if [ -d "$PERF_MAP_DIR" ]; then
     # Find any preserved perf.map files and restore them to /tmp
     for perf_map_file in "$PERF_MAP_DIR"/perf-*.map; do
         if [ -f "$perf_map_file" ]; then
-            # Extract PID from filename (format: perf-<name>-<pid>.map)
             MAP_BASENAME=$(basename "$perf_map_file")
+            RESTORE_PID=""
+            
+            # Try format: perf-<name>-<pid>.map (e.g., perf-fuzzy-kv-node-1-196.map)
             if [[ "$MAP_BASENAME" =~ perf-.*-([0-9]+)\.map ]]; then
                 RESTORE_PID="${BASH_REMATCH[1]}"
+            # Try format: perf-<pid>.map (direct from Wasmer, e.g., perf-196.map)
+            elif [[ "$MAP_BASENAME" =~ ^perf-([0-9]+)\.map$ ]]; then
+                RESTORE_PID="${BASH_REMATCH[1]}"
+            fi
+            
+            if [ -n "$RESTORE_PID" ]; then
                 RESTORE_TARGET="/tmp/perf-${RESTORE_PID}.map"
                 if [ ! -f "$RESTORE_TARGET" ]; then
                     echo "Restoring perf.map file for PID $RESTORE_PID (for WASM symbolization)..."
