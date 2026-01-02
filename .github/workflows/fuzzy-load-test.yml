@@ -87,11 +87,15 @@ jobs:
         run: |
           cd apps/kv-store
           ./build.sh
+        env:
+          WASM_PROFILING: "true"
 
       - name: Build kv-store-with-handlers app
         run: |
           cd apps/kv-store-with-handlers
           ./build.sh
+        env:
+          WASM_PROFILING: "true"
 
       - name: Verify WASM files exist
         run: |
