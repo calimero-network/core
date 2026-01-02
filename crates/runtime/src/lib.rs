@@ -75,6 +75,20 @@ impl Engine {
     pub fn headless() -> Self {
         let limits = VMLimits::default();
 
+        // Headless engines lack a compiler, so Wasmer skips perf.map generation.
+        // For profiling, use a full engine to enable WASM symbol resolution.
+        #[cfg(feature = "profiling")]
+        {
+            if std::env::var("ENABLE_WASMER_PROFILING")
+                .map(|v| v == "true")
+                .unwrap_or(false)
+            {
+                debug!("Using profiling-enabled engine for precompiled module (required for perf.map generation)");
+                let engine = Self::create_engine();
+                return Self::new(engine, limits);
+            }
+        }
+
         use wasmer::sys::NativeEngineExt;
         let engine = wasmer::Engine::headless();
 
