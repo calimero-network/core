@@ -202,8 +202,9 @@ trybuild = "1.0"
 ureq = "2.9.7"
 url = "2.5.2"
 velcro = "0.5.4"
-wasmer = "4.2.5"
-wasmer-types = "4.2.5"
+wasmer = "6.1.0"
+wasmer-types = "6.1.0"
+wasmer-compiler-cranelift = "6.1.0"
 web3 = "0.19.0"
 webbrowser = "1.0.4"
 pyo3 = "0.20"
@@ -265,3 +266,13 @@ debug = true
 strip = false
 lto = false
 codegen-units = 1
+
+# Profile for WASM apps with profiling support
+[profile.app-profiling]
+inherits = "release"
+codegen-units = 1
+opt-level = 2
+lto = true
+debug = true
+strip = false
+overflow-checks = true
