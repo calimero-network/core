@@ -26,6 +26,7 @@ tracing.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
+wasmer-compiler-cranelift = { workspace = true, optional = true }
 
 calimero-primitives.workspace = true
 calimero-node-primitives.workspace = true
@@ -44,3 +45,4 @@ serde_json.workspace = true
 
 [features]
 host-traces = ["owo-colors"]
+profiling = ["wasmer-compiler-cranelift"]

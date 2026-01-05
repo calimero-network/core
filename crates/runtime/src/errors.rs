@@ -254,6 +254,7 @@ impl From<RuntimeError> for FunctionCallError {
             ) => Self::WasmTrap(WasmTrap::IllegalArithmetic),
             Some(TrapCode::UnreachableCodeReached) => Self::WasmTrap(WasmTrap::Unreachable),
             Some(TrapCode::UnalignedAtomic) => Self::WasmTrap(WasmTrap::UnalignedAtomic),
+            Some(TrapCode::UncaughtException) => Self::WasmTrap(WasmTrap::Indeterminate),
             None => Self::WasmTrap(WasmTrap::Indeterminate),
         }
     }
