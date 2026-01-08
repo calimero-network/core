@@ -86,16 +86,14 @@ impl Handler<NetworkEvent> for NodeManager {
                         parent_ids,
                         hlc,
                         root_hash,
-                        artifact,
                         nonce,
-                        events,
+                        payload,
                     } => {
                         info!(
                             %context_id,
                             %author_id,
                             delta_id = ?delta_id,
                             parent_count = parent_ids.len(),
-                            has_events = events.is_some(),
                             "Matched StateDelta message"
                         );
 
@@ -119,9 +117,8 @@ impl Handler<NetworkEvent> for NodeManager {
                                     parent_ids,
                                     hlc,
                                     root_hash,
-                                    artifact.into_owned(),
                                     nonce,
-                                    events.map(|e| e.into_owned()),
+                                    payload.into_owned(),
                                 )
                                 .await
                                 {
