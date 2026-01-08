@@ -1,0 +1,122 @@
+name: Merobox Windows Test
+
+permissions:
+    contents: read
+
+on:
+    push:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - ".github/workflows/merobox-workflows-windows.yml"
+
+    pull_request:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - ".github/workflows/merobox-workflows-windows.yml"
+
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+
+jobs:
+    build-merod:
+        name: Build Merod Binary
+        runs-on: windows-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-
+
+            - name: Build merod binary
+              run: cargo build --release -p merod
+              shell: pwsh
+
+            - name: Verify binary exists
+              run: |
+                  if (-not (Test-Path "target/release/merod.exe")) {
+                      exit 1
+                  }
+              shell: pwsh
+
+            - name: Upload merod binary artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: merod-windows-binary
+                  path: target/release/merod.exe
+                  retention-days: 1
+
+    test:
+        name: Test Nodes on Windows
+        needs: build-merod
+        runs-on: windows-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Download merod binary artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: merod-windows-binary
+                  path: target/release/
+
+            - name: Verify merod binary
+              run: |
+                  if (-not (Test-Path "target/release/merod.exe")) {
+                      exit 1
+                  }
+              shell: pwsh
+
+            - name: Set up Python 3.11
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Clone merobox
+              run: |
+                  git clone https://github.com/calimero-network/merobox.git
+              shell: pwsh
+
+            - name: Install merobox
+              run: |
+                  pip install -e ./merobox
+              shell: pwsh
+
+            - name: Verify merobox installation
+              run: |
+                  merobox --version
+              shell: pwsh
+
+            - name: Get merod binary path
+              id: merod-path
+              run: |
+                  $binaryPath = (Resolve-Path "target/release/merod.exe").Path
+                  echo "path=$binaryPath" >> $env:GITHUB_OUTPUT
+              shell: pwsh
+
+            - name: Run nodes test
+              run: |
+                  merobox run --count 2 --no-docker --binary-path "${{ steps.merod-path.outputs.path }}"
+              shell: pwsh
