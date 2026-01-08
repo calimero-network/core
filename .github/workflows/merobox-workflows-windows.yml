@@ -130,4 +130,12 @@ jobs:
                   PYTHONIOENCODING: utf-8
               run: |
                   merobox run --count 2 --no-docker --binary-path "${{ steps.merod-path.outputs.path }}"
+                  if ($LASTEXITCODE -ne 0) {
+                      Write-Host "merobox run exited with code $LASTEXITCODE"
+                      Write-Host "Checking node status..."
+                      merobox list
+                      exit $LASTEXITCODE
+                  }
+                  Write-Host "All nodes started successfully"
+                  merobox list
               shell: pwsh
