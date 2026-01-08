@@ -72,6 +72,8 @@ jobs:
         name: Test Nodes on Windows
         needs: build-merod
         runs-on: windows-latest
+        env:
+            PYTHONIOENCODING: utf-8
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
@@ -116,7 +118,16 @@ jobs:
                   echo "path=$binaryPath" >> $env:GITHUB_OUTPUT
               shell: pwsh
 
+            - name: Set UTF-8 encoding
+              run: |
+                  $env:PYTHONIOENCODING = "utf-8"
+                  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                  chcp 65001 | Out-Null
+              shell: pwsh
+
             - name: Run nodes test
+              env:
+                  PYTHONIOENCODING: utf-8
               run: |
                   merobox run --count 2 --no-docker --binary-path "${{ steps.merod-path.outputs.path }}"
               shell: pwsh
