@@ -256,3 +256,4 @@ lto = true
 debug = false
 strip = "symbols"
 overflow-checks = true
+panic = "abort"
