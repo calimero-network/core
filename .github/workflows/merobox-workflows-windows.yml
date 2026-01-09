@@ -1,4 +1,4 @@
-name: Merobox Windows Test
+name: Merobox Workflows - Windows
 
 permissions:
     contents: read
@@ -8,12 +8,14 @@ on:
         branches: [master]
         paths:
             - "crates/**"
+            - "apps/**"
             - ".github/workflows/merobox-workflows-windows.yml"
 
     pull_request:
         branches: [master]
         paths:
             - "crates/**"
+            - "apps/**"
             - ".github/workflows/merobox-workflows-windows.yml"
 
     workflow_dispatch:
@@ -27,6 +29,49 @@ env:
     RUST_BACKTRACE: 1
 
 jobs:
+    build-apps:
+        name: Build Apps
+        runs-on: windows-latest
+        outputs:
+            cache-key: ${{ steps.cache-key.outputs.key }}
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+
+            - name: Cache Rust dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-
+
+            - name: Generate cache key
+              id: cache-key
+              run: echo "key=${{ runner.os }}-build-${{ github.sha }}" >> $env:GITHUB_OUTPUT
+              shell: pwsh
+
+            - name: Build all apps
+              run: bash scripts/build-all-apps.sh
+              shell: pwsh
+
+            - name: Cache build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/app-release
+                      apps/*/res/*.wasm
+                      apps/*/res/*.mpk
+                  key: ${{ steps.cache-key.outputs.key }}
+
     build-merod:
         name: Build Merod Binary
         runs-on: windows-latest
@@ -69,14 +114,23 @@ jobs:
                   retention-days: 1
 
     test:
-        name: Test Nodes on Windows
-        needs: build-merod
+        name: Run All Merobox Workflows (Windows)
+        needs: [build-apps, build-merod]
         runs-on: windows-latest
         env:
             PYTHONIOENCODING: utf-8
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
+
+            - name: Restore build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      target/app-release
+                      apps/*/res/*.wasm
+                      apps/*/res/*.mpk
+                  key: ${{ needs.build-apps.outputs.cache-key }}
 
             - name: Download merod binary artifact
               uses: actions/download-artifact@v4
@@ -111,13 +165,6 @@ jobs:
                   merobox --version
               shell: pwsh
 
-            - name: Get merod binary path
-              id: merod-path
-              run: |
-                  $binaryPath = (Resolve-Path "target/release/merod.exe").Path
-                  echo "path=$binaryPath" >> $env:GITHUB_OUTPUT
-              shell: pwsh
-
             - name: Set UTF-8 encoding
               run: |
                   $env:PYTHONIOENCODING = "utf-8"
@@ -125,17 +172,136 @@ jobs:
                   chcp 65001 | Out-Null
               shell: pwsh
 
-            - name: Run nodes test
+            - name: Get merod binary path
+              id: merod-path
+              run: |
+                  $binaryPath = (Resolve-Path "target/release/merod.exe").Path
+                  echo "path=$binaryPath" >> $env:GITHUB_OUTPUT
+              shell: pwsh
+
+            - name: Run All Workflows
+              id: run_workflows
               env:
                   PYTHONIOENCODING: utf-8
               run: |
-                  merobox run --count 2 --no-docker --binary-path "${{ steps.merod-path.outputs.path }}"
-                  if ($LASTEXITCODE -ne 0) {
-                      Write-Host "merobox run exited with code $LASTEXITCODE"
-                      Write-Host "Checking node status..."
-                      merobox list
-                      exit $LASTEXITCODE
+                  $failedWorkflows = @()
+                  $workflowFiles = Get-ChildItem -Path "apps\*" -Include "*.yml", "*.yaml" -Recurse | Where-Object { $_.DirectoryName -like "*workflows*" }
+
+                  foreach ($workflowFile in $workflowFiles) {
+                      $appDir = $workflowFile.Directory.Parent.FullName
+                      $workflowFileName = $workflowFile.Name
+                      $maxAttempts = 2
+                      $attempt = 1
+                      $success = $false
+
+                      while ($attempt -le $maxAttempts) {
+                          if ($attempt -gt 1) {
+                              merobox stop --all 2>$null
+                              merobox nuke --force 2>$null
+                              Start-Sleep -Seconds 2
+                          }
+
+                          Push-Location $appDir
+                          try {
+                              $workflowPath = "workflows\$workflowFileName"
+                              $binaryPath = "${{ steps.merod-path.outputs.path }}"
+
+                              merobox bootstrap run `
+                                  $workflowPath `
+                                  --no-docker `
+                                  --binary-path $binaryPath `
+                                  --e2e-mode
+
+                              if ($LASTEXITCODE -eq 0) {
+                                  $success = $true
+                                  break
+                              }
+                          } finally {
+                              Pop-Location
+                          }
+
+                          $attempt++
+                      }
+
+                      merobox stop --all 2>$null
+                      merobox nuke --force 2>$null
+
+                      if (-not $success) {
+                          $failedWorkflows += $workflowFile.FullName
+                      }
+
+                      Start-Sleep -Seconds 2
                   }
-                  Write-Host "All nodes started successfully"
-                  merobox list
+
+                  if ($failedWorkflows.Count -gt 0) {
+                      echo "has_failures=true" >> $env:GITHUB_OUTPUT
+                      $failedWorkflows | Out-File -FilePath "apps\failed_workflows.txt" -Encoding utf8
+                  } else {
+                      echo "has_failures=false" >> $env:GITHUB_OUTPUT
+                  }
               shell: pwsh
+
+            - name: Upload Failed Workflows
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: failed-workflows-windows
+                  path: apps/failed_workflows.txt
+                  retention-days: 1
+
+            - name: Fail if workflows failed
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              run: exit 1
+              shell: pwsh
+
+            - name: Upload Workflow Data Artifacts
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: merobox-workflow-data-windows-${{ github.sha }}
+                  path: |
+                      apps/*/res/*.wasm
+                      apps/*/res/abi.json
+                      apps/*/res/*.mpk
+                      apps/*/res/state-schema.json
+                      apps/*/data/
+                  retention-days: 7
+                  if-no-files-found: warn
+
+    comment:
+        name: Report Failed Workflows
+        needs: test
+        runs-on: ubuntu-latest
+        if: always() && github.event_name == 'pull_request'
+        steps:
+            - name: Download Failed Workflows
+              id: download
+              uses: actions/download-artifact@v4
+              continue-on-error: true
+              with:
+                  name: failed-workflows-windows
+
+            - name: Prepare Failure Comment
+              if: steps.download.outcome == 'success'
+              run: |
+                  failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+                  message="## Merobox Workflows Failed (Windows)
+
+                  The following workflow(s) failed after retries:
+                  $failed_list
+
+                  Please check the workflow logs for more details."
+
+                  jq -n \
+                    --arg pr '${{ github.event.number }}' \
+                    --arg tag merobox-workflows-windows-report \
+                    --arg mode recreate \
+                    --arg message "$message" \
+                    '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+            - name: Upload Comment
+              if: steps.download.outcome == 'success'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: pr-comment-payload-windows
+                  path: payload.json
