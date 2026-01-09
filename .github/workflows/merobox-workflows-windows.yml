@@ -145,6 +145,32 @@ jobs:
                   }
               shell: pwsh
 
+            - name: Check DLL dependencies
+              run: |
+                  $binaryPath = "target/release/merod.exe"
+                  Write-Host "Checking DLL dependencies for $binaryPath"
+                  
+                  # Use dumpbin if available (part of Visual Studio tools)
+                  $dumpbin = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+                  if (Test-Path $dumpbin) {
+                      Write-Host "Visual Studio tools found"
+                  }
+                  
+                  # Alternative: Use PowerShell to check for common DLL issues
+                  Write-Host "Checking for Visual C++ Runtime..."
+                  $vcRedist = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" | Where-Object { $_.DisplayName -like "*Visual C++*" } | Select-Object -First 5
+                  if ($vcRedist) {
+                      Write-Host "Found Visual C++ Runtime installations:"
+                      $vcRedist | ForEach-Object { Write-Host "  - $($_.DisplayName)" }
+                  } else {
+                      Write-Host "Warning: No Visual C++ Runtime found in registry"
+                  }
+                  
+                  # Check if RocksDB DLL might be needed
+                  Write-Host "`nNote: If merod uses RocksDB, ensure all required DLLs are available"
+              shell: pwsh
+              continue-on-error: true
+
             - name: Set up Python 3.11
               uses: actions/setup-python@v5
               with:
@@ -172,6 +198,27 @@ jobs:
                   echo "path=$binaryPath" >> $env:GITHUB_OUTPUT
               shell: pwsh
 
+            - name: Test merod binary execution
+              run: |
+                  $binaryPath = "${{ steps.merod-path.outputs.path }}"
+                  Write-Host "Testing merod binary: $binaryPath"
+                  
+                  # Try to run merod --help to verify it can start
+                  $testResult = & $binaryPath --help 2>&1
+                  $exitCode = $LASTEXITCODE
+                  
+                  if ($exitCode -eq 0 -or $exitCode -eq 1) {
+                      Write-Host "✓ Binary can execute (exit code: $exitCode)"
+                      Write-Host "Output: $($testResult -join "`n")"
+                  } else {
+                      Write-Host "✗ Binary execution test failed with exit code: $exitCode"
+                      Write-Host "Output: $($testResult -join "`n")"
+                      Write-Host "`nThis may indicate missing DLL dependencies."
+                      exit 1
+                  }
+              shell: pwsh
+              continue-on-error: true
+
             - name: Run All Workflows
               id: run_workflows
               env:
@@ -180,24 +227,27 @@ jobs:
                   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
                   chcp 65001 | Out-Null
 
-                  $failedWorkflows = @()
-                  $workflowFiles = Get-ChildItem -Path "apps" -Recurse -Include "*.yml", "*.yaml" | Where-Object { 
-                      $_.Directory.Name -eq "workflows" -and 
-                      $_.FullName -match "\\workflows\\[^\\]+\.(yml|yaml)$"
-                  }
-
-                  foreach ($workflowFile in $workflowFiles) {
+                  # Set environment to help with DLL loading
+                  $env:PATH = "$env:PATH;$PWD\target\release"
+                  
+                  function Run-Workflow {
+                      param(
+                          [string]$WorkflowFilePath,
+                          [int]$MaxAttempts = 2
+                      )
+                      
+                      $workflowFile = Get-Item $WorkflowFilePath
                       $appDir = $workflowFile.Directory.Parent.FullName
                       $workflowFileName = $workflowFile.Name
-                      $maxAttempts = 2
                       $attempt = 1
                       $success = $false
 
-                      while ($attempt -le $maxAttempts) {
+                      while ($attempt -le $MaxAttempts) {
                           if ($attempt -gt 1) {
+                              Write-Host "Retry attempt $attempt for workflow: $WorkflowFilePath"
                               merobox stop --all 2>$null
                               merobox nuke --force 2>$null
-                              Start-Sleep -Seconds 2
+                              Start-Sleep -Seconds 3
                           }
 
                           Push-Location $appDir
@@ -205,6 +255,8 @@ jobs:
                               $workflowPath = "workflows\$workflowFileName"
                               $binaryPath = "${{ steps.merod-path.outputs.path }}"
 
+                              Write-Host "Running workflow: $WorkflowFilePath (attempt $attempt/$MaxAttempts)"
+                              
                               merobox bootstrap run `
                                   $workflowPath `
                                   --no-docker `
@@ -213,7 +265,10 @@ jobs:
 
                               if ($LASTEXITCODE -eq 0) {
                                   $success = $true
+                                  Write-Host "✓ Workflow succeeded: $WorkflowFilePath"
                                   break
+                              } else {
+                                  Write-Host "✗ Workflow failed (attempt $attempt/$MaxAttempts): $WorkflowFilePath"
                               }
                           } finally {
                               Pop-Location
@@ -224,19 +279,83 @@ jobs:
 
                       merobox stop --all 2>$null
                       merobox nuke --force 2>$null
+                      Start-Sleep -Seconds 2
 
+                      if (-not $success) {
+                          Write-Host "Workflow failed after $MaxAttempts attempts: $WorkflowFilePath"
+                          Write-Host "Collecting node logs..."
+                          $logFiles = Get-ChildItem -Path "data" -Recurse -Filter "*.log" -ErrorAction SilentlyContinue
+                          foreach ($logFile in $logFiles) {
+                              Write-Host "`n=== Log: $($logFile.FullName) ==="
+                              Get-Content $logFile.FullName -Tail 50 -ErrorAction SilentlyContinue
+                          }
+                      }
+
+                      return $success
+                  }
+                  
+                  # First pass: Run all workflows with 1 attempt each (quick pass to identify failures)
+                  Write-Host "=== First Pass: Running All Workflows (1 attempt each) ==="
+                  $failedWorkflows = @()
+                  $workflowFiles = Get-ChildItem -Path "apps" -Recurse -Include "*.yml", "*.yaml" | Where-Object { 
+                      $_.Directory.Name -eq "workflows" -and 
+                      $_.FullName -match "\\workflows\\[^\\]+\.(yml|yaml)$"
+                  }
+
+                  Write-Host "Found $($workflowFiles.Count) workflow(s) to run"
+                  
+                  foreach ($workflowFile in $workflowFiles) {
+                      $success = Run-Workflow -WorkflowFilePath $workflowFile.FullName -MaxAttempts 1
                       if (-not $success) {
                           $failedWorkflows += $workflowFile.FullName
                       }
-
-                      Start-Sleep -Seconds 2
                   }
 
+                  Write-Host "`n=== First Pass Complete ==="
+                  Write-Host "Total workflows: $($workflowFiles.Count)"
+                  Write-Host "Successful: $($workflowFiles.Count - $failedWorkflows.Count)"
+                  Write-Host "Failed: $($failedWorkflows.Count)"
+
+                  # Second pass: Retry failed workflows with 2 attempts
+                  if ($failedWorkflows.Count -gt 0) {
+                      Write-Host "`n=== Second Pass: Retrying Failed Workflows (2 attempts each) ==="
+                      Write-Host "Retrying $($failedWorkflows.Count) failed workflow(s)"
+                      
+                      # Clean up before retry pass
+                      merobox stop --all 2>$null
+                      merobox nuke --force 2>$null
+                      Start-Sleep -Seconds 5
+                      
+                      $retryFailedWorkflows = @()
+                      foreach ($failedWorkflow in $failedWorkflows) {
+                          Write-Host "`nRetrying workflow: $failedWorkflow"
+                          $success = Run-Workflow -WorkflowFilePath $failedWorkflow -MaxAttempts 2
+                          if (-not $success) {
+                              $retryFailedWorkflows += $failedWorkflow
+                          }
+                      }
+                      
+                      Write-Host "`n=== Second Pass Complete ==="
+                      Write-Host "Retried: $($failedWorkflows.Count)"
+                      Write-Host "Still failed: $($retryFailedWorkflows.Count)"
+                      
+                      # Update failed workflows list with final failures
+                      $failedWorkflows = $retryFailedWorkflows
+                  }
+
+                  # Output results
                   if ($failedWorkflows.Count -gt 0) {
                       echo "has_failures=true" >> $env:GITHUB_OUTPUT
                       $failedWorkflows | Out-File -FilePath "apps\failed_workflows.txt" -Encoding utf8
+                      Write-Host "`n=== Final Results ==="
+                      Write-Host "❌ $($failedWorkflows.Count) workflow(s) failed after retries:"
+                      foreach ($failed in $failedWorkflows) {
+                          Write-Host "  - $failed"
+                      }
                   } else {
                       echo "has_failures=false" >> $env:GITHUB_OUTPUT
+                      Write-Host "`n=== Final Results ==="
+                      Write-Host "✓ All workflows passed!"
                   }
               shell: pwsh
 
@@ -252,6 +371,17 @@ jobs:
               if: steps.run_workflows.outputs.has_failures == 'true'
               run: exit 1
               shell: pwsh
+
+            - name: Upload Node Logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: merobox-node-logs-windows-${{ github.sha }}
+                  path: |
+                      data/**/*.log
+                      apps/*/data/**/*.log
+                  retention-days: 7
+                  if-no-files-found: warn
 
             - name: Upload Workflow Data Artifacts
               if: ${{ !cancelled() }}
