@@ -165,13 +165,6 @@ jobs:
                   merobox --version
               shell: pwsh
 
-            - name: Set UTF-8 encoding
-              run: |
-                  $env:PYTHONIOENCODING = "utf-8"
-                  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-                  chcp 65001 | Out-Null
-              shell: pwsh
-
             - name: Get merod binary path
               id: merod-path
               run: |
@@ -184,6 +177,9 @@ jobs:
               env:
                   PYTHONIOENCODING: utf-8
               run: |
+                  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                  chcp 65001 | Out-Null
+
                   $failedWorkflows = @()
                   $workflowFiles = Get-ChildItem -Path "apps\*" -Include "*.yml", "*.yaml" -Recurse | Where-Object { $_.DirectoryName -like "*workflows*" }
 
