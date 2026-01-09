@@ -60,8 +60,8 @@ jobs:
               shell: pwsh
 
             - name: Build all apps
-              run: bash scripts/build-all-apps.sh
-              shell: pwsh
+              run: ./scripts/build-all-apps.sh
+              shell: bash
 
             - name: Cache build artifacts
               uses: actions/cache@v4
@@ -181,7 +181,10 @@ jobs:
                   chcp 65001 | Out-Null
 
                   $failedWorkflows = @()
-                  $workflowFiles = Get-ChildItem -Path "apps\*" -Include "*.yml", "*.yaml" -Recurse | Where-Object { $_.DirectoryName -like "*workflows*" }
+                  $workflowFiles = Get-ChildItem -Path "apps" -Recurse -Include "*.yml", "*.yaml" | Where-Object { 
+                      $_.Directory.Name -eq "workflows" -and 
+                      $_.FullName -match "\\workflows\\[^\\]+\.(yml|yaml)$"
+                  }
 
                   foreach ($workflowFile in $workflowFiles) {
                       $appDir = $workflowFile.Directory.Parent.FullName
