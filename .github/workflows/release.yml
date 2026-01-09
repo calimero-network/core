@@ -261,7 +261,7 @@ jobs:
           # Publish with proper dependency ordering (remove --force to respect dependencies)
           cargo ws publish --yes --allow-dirty \
               --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
-              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
+              -m $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
 
   release-merod-container:
     name: Release Merod container
