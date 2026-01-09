@@ -220,12 +220,6 @@ jobs:
               if: steps.run_workflows.outputs.has_failures == 'true'
               run: exit 1
 
-            - name: Fail if workflow was cancelled
-              if: cancelled()
-              run: |
-                  echo "Workflow was cancelled"
-                  exit 1
-
     comment:
         name: Report Failed Workflows
         needs: test
@@ -237,8 +231,11 @@ jobs:
               run: |
                   if [ "${{ needs.test.result }}" != "success" ]; then
                       echo "job_failed=true" >> $GITHUB_OUTPUT
+                      # Check if job was cancelled (result will be "cancelled" if it was cancelled)
                       if [ "${{ needs.test.result }}" == "cancelled" ]; then
                           echo "was_cancelled=true" >> $GITHUB_OUTPUT
+                      else
+                          echo "was_cancelled=false" >> $GITHUB_OUTPUT
                       fi
                   else
                       echo "job_failed=false" >> $GITHUB_OUTPUT
