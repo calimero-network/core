@@ -160,6 +160,12 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+      - name: Fail if workflow was cancelled
+        if: cancelled()
+        run: |
+          echo "NEAR proposals workflow was cancelled"
+          exit 1
+
   icp:
     name: Test ICP Proposals
     needs: [determine-image-tag, download-contracts]
@@ -248,6 +254,12 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+      - name: Fail if workflow was cancelled
+        if: cancelled()
+        run: |
+          echo "ICP proposals workflow was cancelled"
+          exit 1
+
   ethereum:
     name: Test Ethereum Proposals
     needs: [determine-image-tag, download-contracts]
@@ -334,6 +346,12 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+      - name: Fail if workflow was cancelled
+        if: cancelled()
+        run: |
+          echo "Ethereum proposals workflow was cancelled"
+          exit 1
+
   comment:
     name: Report Failed Workflows
     needs: [near, icp, ethereum]
@@ -405,3 +423,9 @@ jobs:
         with:
           name: pr-comment-payload
           path: payload.json
+
+      - name: Fail if any workflow failed or was cancelled
+        if: steps.check.outputs.has_failures == 'true'
+        run: |
+          echo "One or more proposal workflows failed or were cancelled"
+          exit 1
