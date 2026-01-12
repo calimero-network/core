@@ -249,8 +249,45 @@ jobs:
 
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
-          # Publish all publishable crates from the workspace, skipping excluded packages
-          # Using --no-git flags to avoid git operations during publishing
+          
+          # Check if this is a prerelease version
+          IS_PRERELEASE=false
+          if [[ "${VERSION}" =~ -[a-z]+(\.[0-9]+)?$ ]]; then
+            IS_PRERELEASE=true
+            echo "Detected prerelease version: ${VERSION}"
+            echo "For prereleases, Cargo requires exact versions (=VERSION) instead of caret (^VERSION)."
+            echo "Converting workspace dependencies to exact versions..."
+            
+            # Convert workspace dependencies to exact versions for prereleases
+            # This is the proper fix: use =VERSION instead of ^VERSION for prerelease dependencies
+            find crates -name "Cargo.toml" -type f | while read -r cargo_toml; do
+              # Only process packages with publish = true
+              if ! grep -q '^publish = true' "$cargo_toml"; then
+                continue
+              fi
+              
+              # Convert workspace dependencies to exact versions
+              # This ensures Cargo uses =VERSION instead of ^VERSION for prereleases
+              # Pattern 1: calimero-*.workspace = true -> calimero-* = { version = "=VERSION" }
+              # Pattern 2: calimero-* = { workspace = true } -> calimero-* = { version = "=VERSION" }
+              # Pattern 3: calimero-* = { workspace = true, ... } -> calimero-* = { version = "=VERSION", ... }
+              sed -i.bak \
+                -e "s/^\(calimero-[a-z0-9-]*\)\.workspace = true$/\1 = { version = \"=${VERSION}\" }/" \
+                -e "s/\(calimero-[a-z0-9-]*\) = { workspace = true }/\1 = { version = \"=${VERSION}\" }/" \
+                -e "s/\(calimero-[a-z0-9-]*\) = { workspace = true,\([^}]*\)}/\1 = { version = \"=${VERSION}\",\2}/" \
+                "$cargo_toml"
+              
+              # Clean up backup files
+              rm -f "${cargo_toml}.bak"
+            done
+            
+            echo "Converted workspace dependencies to exact versions"
+          fi
+          
+          # Publish all crates in dependency order
+          # cargo ws publish automatically determines the correct topological order
+          # based on the dependency graph (including dev-dependencies)
+          echo "Publishing all crates in dependency order..."
           cargo ws publish --yes --allow-dirty --force '*' \
               --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-'
 
