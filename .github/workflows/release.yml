@@ -252,8 +252,7 @@ jobs:
           # Publish all publishable crates from the workspace, skipping excluded packages
           # Using --no-git flags to avoid git operations during publishing
           cargo ws publish --yes --allow-dirty --force '*' \
-              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
-              -m $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
+              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-'
 
   release-merod-container:
     name: Release Merod container
