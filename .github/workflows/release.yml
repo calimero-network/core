@@ -238,8 +238,6 @@ jobs:
         with:
           shared-key: release
 
-      - name: Update dependencies
-        run: cargo update --workspace
       - name: Publish calimero-workspaces on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -247,21 +245,14 @@ jobs:
         run: |
           set -x
 
-          # Update BOTH version fields in Cargo.toml
-          sed -i '0,/^version = "0\.0\.0"$/s//version = "'${VERSION}'"/' Cargo.toml
           sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
 
-          # Verify the changes
-          grep -A2 "^\[workspace.package\]" Cargo.toml
-          grep "# crates_version" Cargo.toml
-
-          # Install the latest stable cargo-workspaces (better dependency resolution)
-          cargo install cargo-workspaces
-
-          # Publish with proper dependency ordering (remove --force to respect dependencies)
-          cargo ws publish --yes --allow-dirty \
-              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
-              -m $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
+          # Install the specific version of cargo-workspaces that we know works
+          cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
+          # Publish all publishable crates from the workspace, skipping excluded packages
+          # Using --no-git flags to avoid git operations during publishing
+          cargo ws publish --yes --allow-dirty --force '*' \
+              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-'
 
   release-merod-container:
     name: Release Merod container
