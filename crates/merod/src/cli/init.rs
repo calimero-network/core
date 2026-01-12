@@ -367,15 +367,9 @@ impl InitCommand {
                 .insert(config.name.to_owned(), local_config);
         }
 
-        let relayer = self.relayer_url.unwrap_or_else(|| {
-            if self.protocol == ConfigProtocol::MockRelayer {
-                defaults::default_relayer_url()
-            } else {
-                defaults::DEFAULT_RELAYER_URL
-                    .parse()
-                    .expect("invalid default relayer URL")
-            }
-        });
+        let relayer = self
+            .relayer_url
+            .unwrap_or_else(|| defaults::default_relayer_url(self.protocol));
 
         let client_config = ClientConfig {
             signer: ClientSigner {
