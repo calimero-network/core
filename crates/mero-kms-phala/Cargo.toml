@@ -1,0 +1,33 @@
+[package]
+name = "mero-kms-phala"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Key management service for merod nodes running in Phala Cloud TEE"
+publish = false
+
+[[bin]]
+name = "mero-kms-phala"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+dstack-sdk = { git = "https://github.com/Dstack-TEE/dstack.git" }
+eyre.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { workspace = true, features = ["cors", "trace"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+calimero-server-primitives.workspace = true
+calimero-tee-attestation.workspace = true
+
+[package.metadata.workspaces]
+independent = true
