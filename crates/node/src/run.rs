@@ -93,10 +93,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         network_manager
     });
 
-    let _ignored = network_client
-        .subscribe(IdentTopic::new("meta_topic".to_owned()))
-        .await?;
-
     info!(
         topic = %config.specialized_node.invite_topic,
         "Subscribing to specialized node invite topic"
