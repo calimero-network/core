@@ -101,7 +101,7 @@ fn create_test_bundle(
 }
 
 /// Create a test NodeClient with temporary directories
-/// 
+///
 /// The `datastore` parameter allows injecting a custom Store implementation.
 /// If `None` is provided, defaults to `InMemoryDB` (no file I/O, faster tests).
 async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempDir, TempDir) {
