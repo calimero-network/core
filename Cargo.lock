@@ -2195,7 +2195,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-storage",
  "calimero-store",
- "calimero-store-rocksdb",
  "calimero-utils-actix",
  "camino",
  "clap",
