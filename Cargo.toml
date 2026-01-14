@@ -237,6 +237,7 @@ calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 calimero-version = { path = "./crates/version" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
+mero-auth = { path = "./crates/auth" }
 kv-store = { path = "./apps/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }
 
