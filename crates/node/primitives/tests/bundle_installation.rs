@@ -595,21 +595,34 @@ async fn test_bundle_no_metadata() {
         vec![],
     );
 
-    // Install bundle (no metadata needed - bundle detection happens via is_bundle_blob())
+    // Install bundle (metadata is extracted from manifest in Registry v2)
     let application_id = node_client
         .install_application_from_path(bundle_path, vec![])
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify metadata is empty (bundles don't need metadata)
+    // Verify metadata contains package and version extracted from manifest
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
+    // Metadata should contain at least package and version
     assert!(
-        application.metadata.is_empty(),
-        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
+        !application.metadata.is_empty(),
+        "Bundle metadata should contain package and version extracted from manifest"
+    );
+
+    // Verify package and version are present
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.metadata",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "1.0.0",
+        "Version should match manifest"
     );
 }
 
@@ -863,15 +876,28 @@ async fn test_bundle_extract_dir_derived_from_manifest() {
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify metadata is empty (bundles don't need metadata)
+    // Verify metadata contains package and version extracted from manifest
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
+    // Metadata should contain at least package and version
     assert!(
-        application.metadata.is_empty(),
-        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
+        !application.metadata.is_empty(),
+        "Bundle metadata should contain package and version extracted from manifest"
+    );
+
+    // Verify package and version are present
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.derived",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "2.5.0",
+        "Version should match manifest"
     );
 
     // Verify files were extracted to correct location derived from manifest
@@ -1069,15 +1095,29 @@ async fn test_install_application_from_bundle_blob_no_metadata() {
         .await
         .expect("Should install from bundle blob without metadata");
 
-    // Verify metadata is empty (bundles don't need metadata)
+    // Verify metadata contains package and version extracted from manifest
+    // (Registry v2: metadata is extracted from bundle manifest)
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
+    // Metadata should contain at least package and version
     assert!(
-        application.metadata.is_empty(),
-        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
+        !application.metadata.is_empty(),
+        "Bundle metadata should contain package and version extracted from manifest"
+    );
+
+    // Verify package and version are present
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.metadata",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "1.0.0",
+        "Version should match manifest"
     );
 }
 
@@ -1259,10 +1299,10 @@ async fn test_bundle_blob_sharing_integration() {
         .expect("User 2 should install from bundle blob");
 
     // Step 5: Verify ApplicationId consistency
-    // Same blob_id + size + source + empty metadata = same ApplicationId
+    // Same blob_id + size + source + same metadata (extracted from manifest) = same ApplicationId
     assert_eq!(
         application_id_user1, application_id_user2,
-        "ApplicationId should be identical (same blob_id, size, source, empty metadata)"
+        "ApplicationId should be identical (same blob_id, size, source, and metadata from manifest)"
     );
 
     // Verify both can access their applications
@@ -1292,17 +1332,29 @@ async fn test_bundle_blob_sharing_integration() {
     );
     assert_eq!(
         app_user1_final.metadata, app_user2_final.metadata,
-        "Metadata should be identical (both empty for bundles)"
+        "Metadata should be identical (extracted from same bundle manifest)"
     );
 
-    // Both should have empty metadata (bundles don't need metadata)
+    // Both should have metadata extracted from bundle manifest (Registry v2)
     assert!(
-        app_user1_final.metadata.is_empty(),
-        "User 1 should have empty metadata (bundles don't need metadata)"
+        !app_user1_final.metadata.is_empty(),
+        "User 1 should have metadata extracted from bundle manifest"
     );
     assert!(
-        app_user2_final.metadata.is_empty(),
-        "User 2 should have empty metadata (bundles don't need metadata)"
+        !app_user2_final.metadata.is_empty(),
+        "User 2 should have metadata extracted from bundle manifest"
+    );
+
+    // Verify metadata contains package and version
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&app_user1_final.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.integration",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "1.0.0",
+        "Version should match manifest"
     );
 
     // Step 6: Verify User 2 can get application bytes (WASM)
