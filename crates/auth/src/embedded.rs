@@ -130,6 +130,8 @@ pub fn default_config() -> AuthConfig {
                         "http://host.docker.internal:*".to_string(),
                         "http://*.nip.io:*".to_string(),
                         "https://*.nip.io:*".to_string(),
+                        "https:".to_string(), // Allow all HTTPS connections for configurable registries
+                        "http:".to_string(),  // Allow HTTP for local development registries
                     ],
                 },
             },
