@@ -187,10 +187,6 @@ jobs:
                   path: sdk-js/failed_workflows.txt
                   retention-days: 1
 
-            - name: Fail if workflows failed
-              if: steps.run_workflows.outputs.has_failures == 'true'
-              run: exit 1
-
             - name: Upload Workflow Data Artifacts
               if: ${{ !cancelled() }}
               uses: actions/upload-artifact@v4
@@ -215,12 +211,31 @@ jobs:
                   retention-days: 7
                   if-no-files-found: warn
 
+            - name: Fail if workflows failed
+              if: steps.run_workflows.outputs.has_failures == 'true'
+              run: exit 1
+
     comment:
         name: Report Failed Workflows
         needs: test-sdk-js
         runs-on: ubuntu-latest
         if: always() && github.event_name == 'pull_request'
         steps:
+            - name: Check if main job failed or was cancelled
+              id: check_status
+              run: |
+                  if [ "${{ needs.test-sdk-js.result }}" != "success" ]; then
+                      echo "job_failed=true" >> $GITHUB_OUTPUT
+                      # Check if job was cancelled (result will be "cancelled" if it was cancelled)
+                      if [ "${{ needs.test-sdk-js.result }}" == "cancelled" ]; then
+                          echo "was_cancelled=true" >> $GITHUB_OUTPUT
+                      else
+                          echo "was_cancelled=false" >> $GITHUB_OUTPUT
+                      fi
+                  else
+                      echo "job_failed=false" >> $GITHUB_OUTPUT
+                  fi
+
             - name: Download Failed Workflows
               id: download
               uses: actions/download-artifact@v4
@@ -252,3 +267,13 @@ jobs:
               with:
                   name: pr-comment-payload
                   path: payload.json
+
+            - name: Fail if main job failed or was cancelled
+              if: steps.check_status.outputs.job_failed == 'true'
+              run: |
+                  if [ "${{ steps.check_status.outputs.was_cancelled }}" == "true" ]; then
+                      echo "Workflow was cancelled"
+                  else
+                      echo "Workflow failed"
+                  fi
+                  exit 1

@@ -13,6 +13,7 @@ target/
 .DS_Store
 .idea/
 .vscode/
+.claude/
 
 # typescript
 *.map
