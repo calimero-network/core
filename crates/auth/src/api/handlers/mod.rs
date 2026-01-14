@@ -170,6 +170,9 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
         return match Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", file.metadata.mimetype())
+            .header("Cache-Control", "no-cache, no-store, must-revalidate")
+            .header("Pragma", "no-cache")
+            .header("Expires", "0")
             .body(Body::from(file.data.into_owned()))
         {
             Ok(response) => response.into_response(),
@@ -183,6 +186,9 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
             return match Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", index_file.metadata.mimetype())
+                .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                .header("Pragma", "no-cache")
+                .header("Expires", "0")
                 .body(Body::from(index_file.data.into_owned()))
             {
                 Ok(response) => response.into_response(),

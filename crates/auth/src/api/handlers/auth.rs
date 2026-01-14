@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Extension, Query};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -56,11 +56,22 @@ pub async fn login_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse
         if let Some(file) = AuthUiStaticFiles::get("index.html") {
             let html_content = String::from_utf8_lossy(&file.data);
 
+            use axum::http::HeaderValue;
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", HeaderValue::from_static("text/html"));
+            headers.insert(
+                "Cache-Control",
+                HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+            );
+            headers.insert("Pragma", HeaderValue::from_static("no-cache"));
+            headers.insert("Expires", HeaderValue::from_static("0"));
+
             return (
                 StatusCode::OK,
-                [("Content-Type", "text/html")],
+                headers,
                 html_content.into_owned().into_bytes(),
-            );
+            )
+                .into_response();
         }
 
         error!("Failed to load authentication UI - index.html not found");
@@ -68,11 +79,15 @@ pub async fn login_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse
 
     warn!("No authentication providers available");
     let html = "<html><body><h1>No authentication provider is available</h1></body></html>";
-    (
-        StatusCode::OK,
-        [("Content-Type", "text/html")],
-        html.as_bytes().to_vec(),
-    )
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("text/html"));
+    headers.insert(
+        "Cache-Control",
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    headers.insert("Pragma", HeaderValue::from_static("no-cache"));
+    headers.insert("Expires", HeaderValue::from_static("0"));
+    (StatusCode::OK, headers, html.as_bytes().to_vec()).into_response()
 }
 
 /// Base token request with common fields
