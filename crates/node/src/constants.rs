@@ -17,4 +17,4 @@ pub const MAX_BLOB_CACHE_COUNT: usize = 100;
 /// Currently, equals to 500 MiB.
 pub const MAX_BLOB_CACHE_SIZE_BYTES: usize = 500 * 1024 * 1024;
 /// The period of eviction of old blobs (every 300 seconds) for the node (in seconds).
-pub const OLD_BLOBS_EVICTION_FREQUENCY_S: u64 = 60;
+pub const OLD_BLOBS_EVICTION_FREQUENCY_S: u64 = 300;
