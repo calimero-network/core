@@ -432,13 +432,88 @@ impl NodeClient {
             })
             .await??;
 
-            // Install application with bundle blob_id
-            // No metadata needed - bundle detection happens via is_bundle_blob()
+            // Extract metadata from bundle manifest and serialize it
+            // Bundle manifest contains metadata (name, description, author, links, etc.)
+            let bundle_metadata = {
+                let mut metadata_obj = serde_json::Map::new();
+                metadata_obj.insert(
+                    "package".to_string(),
+                    serde_json::Value::String(package.clone()),
+                );
+                metadata_obj.insert(
+                    "version".to_string(),
+                    serde_json::Value::String(version.clone()),
+                );
+
+                if let Some(ref metadata) = manifest.metadata {
+                    metadata_obj.insert(
+                        "name".to_string(),
+                        serde_json::Value::String(metadata.name.clone()),
+                    );
+                    if let Some(ref description) = metadata.description {
+                        metadata_obj.insert(
+                            "description".to_string(),
+                            serde_json::Value::String(description.clone()),
+                        );
+                    }
+                    if let Some(ref icon) = metadata.icon {
+                        metadata_obj
+                            .insert("icon".to_string(), serde_json::Value::String(icon.clone()));
+                    }
+                    if !metadata.tags.is_empty() {
+                        metadata_obj.insert(
+                            "tags".to_string(),
+                            serde_json::Value::Array(
+                                metadata
+                                    .tags
+                                    .iter()
+                                    .map(|t| serde_json::Value::String(t.clone()))
+                                    .collect(),
+                            ),
+                        );
+                    }
+                    if let Some(ref license) = metadata.license {
+                        metadata_obj.insert(
+                            "license".to_string(),
+                            serde_json::Value::String(license.clone()),
+                        );
+                    }
+                }
+
+                if let Some(ref links) = manifest.links {
+                    let mut links_obj = serde_json::Map::new();
+                    if let Some(ref frontend) = links.frontend {
+                        links_obj.insert(
+                            "frontend".to_string(),
+                            serde_json::Value::String(frontend.clone()),
+                        );
+                    }
+                    if let Some(ref github) = links.github {
+                        links_obj.insert(
+                            "github".to_string(),
+                            serde_json::Value::String(github.clone()),
+                        );
+                    }
+                    if let Some(ref docs) = links.docs {
+                        links_obj
+                            .insert("docs".to_string(), serde_json::Value::String(docs.clone()));
+                    }
+                    if !links_obj.is_empty() {
+                        metadata_obj
+                            .insert("links".to_string(), serde_json::Value::Object(links_obj));
+                    }
+                }
+
+                // Serialize metadata to JSON bytes
+                serde_json::to_vec(&serde_json::Value::Object(metadata_obj))?
+            };
+
+            // Install application with bundle blob_id and extracted metadata
             return self.install_application(
                 &bundle_blob_id,
                 stored_size,
                 &uri,
-                vec![], // Empty metadata - bundles don't need metadata
+                bundle_metadata, // Use metadata extracted from bundle manifest
                 package,
                 version,
                 true, // is_bundle: true for bundles
@@ -544,13 +619,85 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        // Install application with bundle blob_id
-        // No metadata needed - bundle detection happens via is_bundle_blob()
+        // Extract metadata from bundle manifest and serialize it
+        let bundle_metadata = {
+            let mut metadata_obj = serde_json::Map::new();
+            metadata_obj.insert(
+                "package".to_string(),
+                serde_json::Value::String(package.clone()),
+            );
+            metadata_obj.insert(
+                "version".to_string(),
+                serde_json::Value::String(version.clone()),
+            );
+
+            if let Some(ref metadata) = manifest.metadata {
+                metadata_obj.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(metadata.name.clone()),
+                );
+                if let Some(ref description) = metadata.description {
+                    metadata_obj.insert(
+                        "description".to_string(),
+                        serde_json::Value::String(description.clone()),
+                    );
+                }
+                if let Some(ref icon) = metadata.icon {
+                    metadata_obj
+                        .insert("icon".to_string(), serde_json::Value::String(icon.clone()));
+                }
+                if !metadata.tags.is_empty() {
+                    metadata_obj.insert(
+                        "tags".to_string(),
+                        serde_json::Value::Array(
+                            metadata
+                                .tags
+                                .iter()
+                                .map(|t| serde_json::Value::String(t.clone()))
+                                .collect(),
+                        ),
+                    );
+                }
+                if let Some(ref license) = metadata.license {
+                    metadata_obj.insert(
+                        "license".to_string(),
+                        serde_json::Value::String(license.clone()),
+                    );
+                }
+            }
+
+            if let Some(ref links) = manifest.links {
+                let mut links_obj = serde_json::Map::new();
+                if let Some(ref frontend) = links.frontend {
+                    links_obj.insert(
+                        "frontend".to_string(),
+                        serde_json::Value::String(frontend.clone()),
+                    );
+                }
+                if let Some(ref github) = links.github {
+                    links_obj.insert(
+                        "github".to_string(),
+                        serde_json::Value::String(github.clone()),
+                    );
+                }
+                if let Some(ref docs) = links.docs {
+                    links_obj.insert("docs".to_string(), serde_json::Value::String(docs.clone()));
+                }
+                if !links_obj.is_empty() {
+                    metadata_obj.insert("links".to_string(), serde_json::Value::Object(links_obj));
+                }
+            }
+
+            // Serialize metadata to JSON bytes
+            serde_json::to_vec(&serde_json::Value::Object(metadata_obj))?
+        };
+
+        // Install application with bundle blob_id and extracted metadata
         let application_id = self.install_application(
             &bundle_blob_id,
             stored_size,
             &uri.as_str().parse()?,
-            vec![], // Empty metadata - bundles don't need metadata
+            bundle_metadata, // Use metadata extracted from bundle manifest
             package,
             version,
             true, // is_bundle: true for bundles
@@ -725,9 +872,89 @@ impl NodeClient {
             "bundle extracted and ready for installation"
         );
 
-        // Install application
-        // No metadata needed - bundle detection happens via is_bundle_blob()
-        self.install_application(blob_id, size, source, vec![], package, version, true)
+        // Extract metadata from bundle manifest and serialize it
+        let bundle_metadata = {
+            let mut metadata_obj = serde_json::Map::new();
+            metadata_obj.insert(
+                "package".to_string(),
+                serde_json::Value::String(package.clone()),
+            );
+            metadata_obj.insert(
+                "version".to_string(),
+                serde_json::Value::String(version.clone()),
+            );
+
+            if let Some(ref metadata) = manifest.metadata {
+                metadata_obj.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(metadata.name.clone()),
+                );
+                if let Some(ref description) = metadata.description {
+                    metadata_obj.insert(
+                        "description".to_string(),
+                        serde_json::Value::String(description.clone()),
+                    );
+                }
+                if let Some(ref icon) = metadata.icon {
+                    metadata_obj
+                        .insert("icon".to_string(), serde_json::Value::String(icon.clone()));
+                }
+                if !metadata.tags.is_empty() {
+                    metadata_obj.insert(
+                        "tags".to_string(),
+                        serde_json::Value::Array(
+                            metadata
+                                .tags
+                                .iter()
+                                .map(|t| serde_json::Value::String(t.clone()))
+                                .collect(),
+                        ),
+                    );
+                }
+                if let Some(ref license) = metadata.license {
+                    metadata_obj.insert(
+                        "license".to_string(),
+                        serde_json::Value::String(license.clone()),
+                    );
+                }
+            }
+
+            if let Some(ref links) = manifest.links {
+                let mut links_obj = serde_json::Map::new();
+                if let Some(ref frontend) = links.frontend {
+                    links_obj.insert(
+                        "frontend".to_string(),
+                        serde_json::Value::String(frontend.clone()),
+                    );
+                }
+                if let Some(ref github) = links.github {
+                    links_obj.insert(
+                        "github".to_string(),
+                        serde_json::Value::String(github.clone()),
+                    );
+                }
+                if let Some(ref docs) = links.docs {
+                    links_obj.insert("docs".to_string(), serde_json::Value::String(docs.clone()));
+                }
+                if !links_obj.is_empty() {
+                    metadata_obj.insert("links".to_string(), serde_json::Value::Object(links_obj));
+                }
+            }
+
+            // Serialize metadata to JSON bytes
+            serde_json::to_vec(&serde_json::Value::Object(metadata_obj))?
+        };
+
+        // Install application with extracted metadata
+        self.install_application(
+            blob_id,
+            size,
+            source,
+            bundle_metadata,
+            package,
+            version,
+            true,
+        )
         // is_bundle: true for bundles
     }
 
