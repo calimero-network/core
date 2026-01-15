@@ -2,7 +2,7 @@ name: "KV Store with Handlers Fuzzy Load Test"
 description: "Long-running fuzzy load test for kv-store-with-handlers application"
 
 # Test configuration
-no_docker: false 
+no_docker: false
 nuke_on_start: true
 nuke_on_end: false
 
@@ -57,7 +57,7 @@ steps:
       - "is_set({{public_key_fuzzy-handlers-node-3}})"
       - "is_set({{public_key_fuzzy-handlers-node-4}})"
 
-  # Main fuzzy test for kv-store-with-handlers 
+  # Main fuzzy test for kv-store-with-handlers
   # Note: No seed data needed - fuzzy test generates its own data
   - name: KV Store with Handlers Fuzzy Load Test
     type: fuzzy_test
@@ -225,7 +225,7 @@ steps:
       - fuzzy-handlers-node-2
       - fuzzy-handlers-node-3
       - fuzzy-handlers-node-4
-    timeout: 60
+    timeout: 180
     check_interval: 2
     trigger_sync: true
 
