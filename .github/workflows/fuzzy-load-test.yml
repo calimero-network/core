@@ -252,6 +252,10 @@ jobs:
           UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
 
+          # Set image variable for merobox
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          echo "Using image: $IMAGE"
+
           # Run fuzzy test
           set +e
           set -o pipefail 
@@ -485,6 +489,10 @@ jobs:
           # Extract PIDs from GITHUB_OUTPUT
           UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+
+          # Set image variable for merobox
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          echo "Using image: $IMAGE"
 
           # Run the actual fuzzy test
           set +e
