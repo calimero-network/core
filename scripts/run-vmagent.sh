@@ -44,7 +44,7 @@ generate_scrape_config() {
     
     cat > "$config_file" <<EOF
 global:
-  scrape_interval: 15s
+  scrape_interval: 30s
   external_labels:
     execution_platform: "gha"
     execution_environment: "vm"
@@ -97,7 +97,7 @@ EOF
         if [ -n "$pid" ]; then
             cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
-    scrape_interval: "15s"
+    scrape_interval: "30s"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["localhost:${port}"]
@@ -108,7 +108,7 @@ EOF
         else
             cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
-    scrape_interval: "15s"
+    scrape_interval: "30s"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["localhost:${port}"]
@@ -184,7 +184,7 @@ update_scrape_config_background() {
     local port_increment="${11:-2}"
     
     while kill -0 "$pid" 2>/dev/null; do
-        sleep 30  # Update every 30 seconds to refresh process info
+        sleep 60  # Update every 60 seconds to refresh process info
         if ! generate_scrape_config "$config_file" "$test_name" "$instance_name" "$run_id" "$commit_hash" "$branch" "$node_pattern" "$node_count" "$base_port" "$port_increment"; then
             echo "ERROR: Failed to generate scrape config" >&2
         fi

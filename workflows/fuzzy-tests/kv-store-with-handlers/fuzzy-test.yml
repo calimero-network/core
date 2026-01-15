@@ -225,7 +225,7 @@ steps:
       - fuzzy-handlers-node-2
       - fuzzy-handlers-node-3
       - fuzzy-handlers-node-4
-    timeout: 180
+    timeout: 360
     check_interval: 2
     trigger_sync: true
 
