@@ -12,6 +12,7 @@ mod init;
 mod run;
 
 use config::ConfigCommand;
+pub use init::ConfigProtocol;
 use init::InitCommand;
 use run::RunCommand;
 

@@ -122,7 +122,7 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
     },
 ];
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ConfigProtocol {
     Near,
     Starknet,
@@ -369,7 +369,7 @@ impl InitCommand {
 
         let relayer = self
             .relayer_url
-            .unwrap_or_else(defaults::default_relayer_url);
+            .unwrap_or_else(|| defaults::default_relayer_url(self.protocol));
 
         let client_config = ClientConfig {
             signer: ClientSigner {

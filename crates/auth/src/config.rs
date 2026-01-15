@@ -329,6 +329,8 @@ fn default_csp_connect_src() -> Vec<String> {
         "http://host.docker.internal:*".to_string(),
         "http://*.nip.io:*".to_string(),  // Allow any port
         "https://*.nip.io:*".to_string(), // Allow any port
+        "https:".to_string(),             // Allow all HTTPS connections for configurable registries
+        "http:".to_string(),              // Allow HTTP for local development registries
     ]
 }
 

@@ -9,11 +9,15 @@ on:
       - Cargo.lock
       - "crates/**"
       - ".github/workflows/release.yml"
+      - ".github/workflows/deps/**"
+      - ".github/actions/**"
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
+      - ".github/workflows/deps/**"
+      - ".github/actions/**"
 
 permissions:
   contents: read
@@ -137,11 +141,39 @@ jobs:
             tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
           done
 
+      - name: Build profiling binaries (with frame pointers and debug symbols)
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          readarray -t binaries <<< "$BINARIES"
+          binaries=$(printf -- '-p %s ' "${binaries[@]}")
+
+          # Build with frame pointers and enable Wasmer PerfMap profiling feature
+          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }} --features calimero-context/profiling
+
+      - name: Compress profiling artifacts using gzip
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          mkdir -p artifacts-profiling
+
+          readarray -t binaries <<< "$BINARIES"
+
+          for binary in "${binaries[@]}"; do
+            tar -czf artifacts-profiling/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/profiling "$binary"
+          done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-${{ matrix.target }}
           path: artifacts/*
+          retention-days: 2
+
+      - name: Upload profiling artifacts
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-profiling-${{ matrix.target }}
+          path: artifacts-profiling/*
           retention-days: 2
 
   release-binaries:
@@ -206,8 +238,6 @@ jobs:
         with:
           shared-key: release
 
-      - name: Update dependencies
-        run: cargo update --workspace
       - name: Publish calimero-workspaces on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -215,21 +245,14 @@ jobs:
         run: |
           set -x
 
-          # Update BOTH version fields in Cargo.toml
-          sed -i '0,/^version = "0\.0\.0"$/s//version = "'${VERSION}'"/' Cargo.toml
           sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
 
-          # Verify the changes
-          grep -A2 "^\[workspace.package\]" Cargo.toml
-          grep "# crates_version" Cargo.toml
-
-          # Install the latest stable cargo-workspaces (better dependency resolution)
-          cargo install cargo-workspaces
-          
-          # Publish with proper dependency ordering (remove --force to respect dependencies)
-          cargo ws publish --yes --allow-dirty \
-              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-' \
-              --tag-msg $$'crates.io snapshot\n---%{\n- %n - https://crates.io/crates/%n/%v}'
+          # Install the specific version of cargo-workspaces that we know works
+          cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
+          # Publish all publishable crates from the workspace, skipping excluded packages
+          # Using --no-git flags to avoid git operations during publishing
+          cargo ws publish --yes --allow-dirty --force '*' \
+              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-'
 
   release-merod-container:
     name: Release Merod container
@@ -316,6 +339,35 @@ jobs:
           binaries: mero-relayer
           dockerfile: .github/workflows/deps/prebuilt.relayer.Dockerfile
           container_name: mero-relayer
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-merod-profiling-container:
+    name: Release Merod Profiling container
+    needs: [prepare, build-binaries]
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.job }}-merod-profiling-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Release
+        uses: ./.github/actions/container-release-profiling
+        with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: ${{ needs.prepare.outputs.docker_release }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          push: ${{ needs.prepare.outputs.docker_push }}
+          binaries: ${{ env.BINARIES }}
+          dockerfile: .github/workflows/deps/prebuilt.profiling.Dockerfile
+          container_name: merod
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   brew-update:

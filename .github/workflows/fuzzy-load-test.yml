@@ -37,6 +37,11 @@ on:
           - all
           - kv-store
           - kv-store-with-handlers
+      enable_profiling:
+        description: "Use profiling image (merod:edge-profiling) with CPU and memory profiling enabled"
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -49,7 +54,7 @@ env:
 
 jobs:
   build:
-    name: Build Binaries & Apps
+    name: Build Apps
     runs-on: ubuntu-24.04-8cpu
     outputs:
       cache-key: ${{ steps.cache-key.outputs.key }}
@@ -77,9 +82,6 @@ jobs:
         id: cache-key
         run: echo "key=${{ runner.os }}-fuzzy-${{ github.sha }}" >> $GITHUB_OUTPUT
 
-      - name: Build merod binary
-        run: cargo build --bin merod
-
       - name: Download NEAR contracts
         run: |
           ./scripts/download-contracts.sh
@@ -88,11 +90,15 @@ jobs:
         run: |
           cd apps/kv-store
           ./build.sh
+        env:
+          WASM_PROFILING: "true"
 
       - name: Build kv-store-with-handlers app
         run: |
           cd apps/kv-store-with-handlers
           ./build.sh
+        env:
+          WASM_PROFILING: "true"
 
       - name: Verify WASM files exist
         run: |
@@ -105,17 +111,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             contracts/near
           key: ${{ steps.cache-key.outputs.key }}
 
   fuzzy-test-kv-store:
-    name: Run KV Store Fuzzy Test
+    name: Run KV Store Fuzzy Test with Profiling
     needs: build
     runs-on: ubuntu-24.04-8cpu
-    timeout-minutes: 120 # Dynamic timeout calculated in step (test duration + 45min buffer)
+    timeout-minutes: 150
     outputs:
       test_passed: ${{ steps.set-result.outputs.passed }}
       exit_code: ${{ steps.kv-test.outputs.exit_code }}
@@ -128,15 +133,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             contracts/near
           key: ${{ needs.build.outputs.cache-key }}
-
-      - name: Set permissions
-        run: |
-          chmod +x target/debug/merod
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -159,9 +159,47 @@ jobs:
           echo "Updated test duration to $DURATION minutes"
           grep "duration_minutes:" fuzzy-test.yml
 
-      - name: Create logs directory
+      - name: Create directories
         run: |
           mkdir -p fuzzy-test-logs/kv-store
+          mkdir -p profiling-data/kv-store
+          mkdir -p profiling-reports/kv-store
+
+      - name: Determine image to use
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+            # Standard image without profiling
+            chmod +x scripts/determine-image-tag.sh
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}"
+            echo "profiling=false" >> $GITHUB_OUTPUT
+          else
+            # Profiling image - wait for release workflow to complete
+            chmod +x scripts/determine-image-tag.sh
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}" \
+              --profiling
+            echo "profiling=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pull Docker image
+        run: |
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          echo "Pulling image: $IMAGE"
+          docker pull "$IMAGE" || echo "Warning: Could not pre-pull image. Merobox will attempt to pull it."
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent
@@ -219,8 +257,7 @@ jobs:
           set -o pipefail 
           merobox bootstrap run \
               fuzzy-test.yml \
-              --no-docker \
-              --binary-path ../../../target/debug/merod \
+              --image "$IMAGE" \
               --e2e-mode \
               --near-devnet \
               --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
@@ -241,6 +278,16 @@ jobs:
             "/tmp/vmagent-${TEST_CASE}.log"
 
           exit $exit_code
+
+      - name: Collect profiling data from containers
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/collect-from-containers.sh
+          ./scripts/profiling/collect-from-containers.sh \
+            "kv-store" \
+            "fuzzy-test-logs/kv-store" \
+            "profiling-data/kv-store" \
+            "profiling-reports/kv-store"
 
       - name: Set test result
         id: set-result
@@ -285,11 +332,29 @@ jobs:
           retention-days: 30
           compression-level: 6
 
+      - name: Upload KV Store profiling data
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-data-kv-store-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-data/kv-store/
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload KV Store profiling reports
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-reports-kv-store-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-reports/kv-store/
+          retention-days: 30
+          compression-level: 6
+
   fuzzy-test-handlers:
-    name: Run KV Store with Handlers Fuzzy Test
+    name: Run KV Store with Handlers Fuzzy Test with Profiling
     needs: build
     runs-on: ubuntu-24.04-8cpu
-    timeout-minutes: 120 # Dynamic timeout calculated in step (test duration + 45min buffer)
+    timeout-minutes: 150 # Extended for profiling overhead
     outputs:
       test_passed: ${{ steps.set-result-handlers.outputs.passed }}
       exit_code: ${{ steps.handlers-test.outputs.exit_code }}
@@ -302,15 +367,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            target/debug/merod
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             contracts/near
           key: ${{ needs.build.outputs.cache-key }}
-
-      - name: Set permissions
-        run: |
-          chmod +x target/debug/merod
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -333,9 +393,47 @@ jobs:
           echo "Updated test duration to $DURATION minutes"
           grep "duration_minutes:" fuzzy-test.yml
 
-      - name: Create logs directory
+      - name: Create directories
         run: |
           mkdir -p fuzzy-test-logs/kv-store-with-handlers
+          mkdir -p profiling-data/kv-store-with-handlers
+          mkdir -p profiling-reports/kv-store-with-handlers
+
+      - name: Determine image to use
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+            # Standard image without profiling
+            chmod +x scripts/determine-image-tag.sh
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}"
+            echo "profiling=false" >> $GITHUB_OUTPUT
+          else
+            # Profiling image - wait for release workflow to complete
+            chmod +x scripts/determine-image-tag.sh
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}" \
+              --profiling
+            echo "profiling=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pull Docker image
+        run: |
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          echo "Pulling image: $IMAGE"
+          docker pull "$IMAGE" || echo "Warning: Could not pre-pull image. Merobox will attempt to pull it."
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-handlers
@@ -393,8 +491,7 @@ jobs:
           set -o pipefail 
           merobox bootstrap run \
               fuzzy-test.yml \
-              --no-docker \
-              --binary-path ../../../target/debug/merod \
+              --image "$IMAGE" \
               --e2e-mode \
               --near-devnet \
               --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
@@ -415,6 +512,16 @@ jobs:
             "/tmp/vmagent-${TEST_CASE}.log"
 
           exit $exit_code
+
+      - name: Collect profiling data from containers
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/collect-from-containers.sh
+          ./scripts/profiling/collect-from-containers.sh \
+            "kv-store-with-handlers" \
+            "fuzzy-test-logs/kv-store-with-handlers" \
+            "profiling-data/kv-store-with-handlers" \
+            "profiling-reports/kv-store-with-handlers"
 
       - name: Set test result
         id: set-result-handlers
@@ -459,6 +566,24 @@ jobs:
           retention-days: 30
           compression-level: 6
 
+      - name: Upload Handlers profiling data
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-data-handlers-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-data/kv-store-with-handlers/
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload Handlers profiling reports
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-reports-handlers-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-reports/kv-store-with-handlers/
+          retention-days: 30
+          compression-level: 6
+
   test-summary:
     name: Test Summary
     needs: [fuzzy-test-kv-store, fuzzy-test-handlers]
@@ -467,7 +592,10 @@ jobs:
     steps:
       - name: Generate summary
         run: |
-          echo "## Fuzzy Load Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "## Fuzzy Load Test Results with Profiling" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Profiling Enabled:** ${{ github.event.inputs.enable_profiling || 'true' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Sample Frequency:** 99 Hz (default)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store Test" >> $GITHUB_STEP_SUMMARY
@@ -492,4 +620,9 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "💡 Download artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
+          echo "### Profiling Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Download the following artifacts for profiling analysis:" >> $GITHUB_STEP_SUMMARY
+          echo "- **profiling-data-***: Raw profiling data (perf.data, jemalloc heaps)" >> $GITHUB_STEP_SUMMARY
+          echo "- **profiling-reports-***: Generated reports (flamegraphs, memory reports)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "💡 Use the SVG flamegraphs to identify CPU hotspots and memory reports for allocation analysis." >> $GITHUB_STEP_SUMMARY

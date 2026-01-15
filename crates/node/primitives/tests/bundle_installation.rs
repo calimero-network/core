@@ -2,13 +2,14 @@
 
 use std::fs;
 
+use std::sync::Arc;
+
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_store::config::StoreConfig;
+use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
-use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use flate2::write::GzEncoder;
@@ -40,6 +41,8 @@ fn create_test_bundle(
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
+        metadata: None,
+        interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: "app.wasm".to_string(),
             hash: None,
@@ -60,6 +63,8 @@ fn create_test_bundle(
                 },
             )
             .collect(),
+        links: None,
+        signature: None,
     };
 
     let manifest_json = serde_json::to_vec(&manifest).unwrap();
@@ -100,14 +105,15 @@ fn create_test_bundle(
 }
 
 /// Create a test NodeClient with temporary directories
-async fn create_test_node_client() -> (NodeClient, TempDir, TempDir) {
+///
+/// The `datastore` parameter allows injecting a custom Store implementation.
+/// If `None` is provided, defaults to `InMemoryDB` (no file I/O, faster tests).
+async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempDir, TempDir) {
     let data_dir = TempDir::new().unwrap();
     let blob_dir = TempDir::new().unwrap();
 
-    let datastore = Store::open::<RocksDB>(&StoreConfig::new(
-        data_dir.path().to_path_buf().try_into().unwrap(),
-    ))
-    .unwrap();
+    // Default to InMemoryDB if no store is provided (avoids dependency on calimero-store-rocksdb)
+    let datastore = datastore.unwrap_or_else(|| Store::new(Arc::new(InMemoryDB::owned())));
 
     let blobstore = BlobManager::new(
         datastore.clone(),
@@ -137,7 +143,7 @@ async fn create_test_node_client() -> (NodeClient, TempDir, TempDir) {
 #[tokio::test]
 async fn test_bundle_detection() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Test single WASM file (should not be detected as bundle)
     let wasm_path = temp_dir.path().join("app.wasm");
@@ -168,7 +174,7 @@ async fn test_bundle_detection() {
 #[tokio::test]
 async fn test_bundle_installation() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Create a test bundle
     let wasm_content = b"fake wasm bytecode";
@@ -246,7 +252,7 @@ async fn test_bundle_installation() {
 #[tokio::test]
 async fn test_bundle_get_application_bytes() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create a test bundle
     let wasm_content = b"fake wasm bytecode for runtime";
@@ -282,7 +288,7 @@ async fn test_bundle_get_application_bytes() {
 #[tokio::test]
 async fn test_bundle_deduplication() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Create first bundle with specific WASM content
     let wasm_content_v1 = b"shared wasm bytecode";
@@ -353,7 +359,7 @@ async fn test_bundle_deduplication() {
 #[tokio::test]
 async fn test_bundle_manifest_validation() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create bundle with mismatched package name
     let bundle_path = create_test_bundle(
@@ -381,7 +387,7 @@ async fn test_bundle_manifest_validation() {
 #[tokio::test]
 async fn test_bundle_validation_missing_fields() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create a bundle with missing package field in manifest
     let bundle_path = temp_dir.path().join("invalid-bundle.mpk");
@@ -445,7 +451,7 @@ async fn test_bundle_validation_missing_fields() {
 #[tokio::test]
 async fn test_bundle_backward_compatibility() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Test that single WASM files still work
     let wasm_path = temp_dir.path().join("app.wasm");
@@ -494,6 +500,8 @@ fn create_test_bundle_custom_wasm_path(
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
+        metadata: None,
+        interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: wasm_path.to_string(),
             hash: None,
@@ -501,6 +509,8 @@ fn create_test_bundle_custom_wasm_path(
         }),
         abi: None,
         migrations: vec![],
+        links: None,
+        signature: None,
     };
 
     let manifest_json = serde_json::to_vec(&manifest).unwrap();
@@ -525,7 +535,7 @@ fn create_test_bundle_custom_wasm_path(
 #[tokio::test]
 async fn test_bundle_custom_wasm_path() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Create bundle with WASM at custom path
     let wasm_content = b"custom path wasm bytecode";
@@ -573,7 +583,7 @@ async fn test_bundle_custom_wasm_path() {
 #[tokio::test]
 async fn test_bundle_no_metadata() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create bundle
     let bundle_path = create_test_bundle(
@@ -585,28 +595,41 @@ async fn test_bundle_no_metadata() {
         vec![],
     );
 
-    // Install bundle (no metadata needed - bundle detection happens via is_bundle_blob())
+    // Install bundle (metadata is extracted from manifest in Registry v2)
     let application_id = node_client
         .install_application_from_path(bundle_path, vec![])
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify metadata is empty (bundles don't need metadata)
+    // Verify metadata contains package and version extracted from manifest
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
+    // Metadata should contain at least package and version
     assert!(
-        application.metadata.is_empty(),
-        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
+        !application.metadata.is_empty(),
+        "Bundle metadata should contain package and version extracted from manifest"
+    );
+
+    // Verify package and version are present
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.metadata",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "1.0.0",
+        "Version should match manifest"
     );
 }
 
 #[tokio::test]
 async fn test_bundle_validation_empty_package() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create bundle with empty package field
     let bundle_path = temp_dir.path().join("empty-package.mpk");
@@ -660,7 +683,7 @@ async fn test_bundle_validation_empty_package() {
 #[tokio::test]
 async fn test_bundle_validation_empty_app_version() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create bundle with empty appVersion field
     let bundle_path = temp_dir.path().join("empty-version.mpk");
@@ -714,7 +737,7 @@ async fn test_bundle_validation_empty_app_version() {
 #[tokio::test]
 async fn test_bundle_validation_missing_app_version() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create bundle with missing appVersion field
     let bundle_path = temp_dir.path().join("missing-version.mpk");
@@ -770,7 +793,7 @@ async fn test_bundle_validation_missing_app_version() {
 #[tokio::test]
 async fn test_bundle_deduplication_different_paths() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Create first bundle with WASM at one path
     let wasm_content = b"shared wasm";
@@ -836,7 +859,7 @@ async fn test_bundle_deduplication_different_paths() {
 #[tokio::test]
 async fn test_bundle_extract_dir_derived_from_manifest() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Install bundle
     let bundle_path = create_test_bundle(
@@ -853,15 +876,28 @@ async fn test_bundle_extract_dir_derived_from_manifest() {
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify metadata is empty (bundles don't need metadata)
+    // Verify metadata contains package and version extracted from manifest
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
+    // Metadata should contain at least package and version
     assert!(
-        application.metadata.is_empty(),
-        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
+        !application.metadata.is_empty(),
+        "Bundle metadata should contain package and version extracted from manifest"
+    );
+
+    // Verify package and version are present
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.derived",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "2.5.0",
+        "Version should match manifest"
     );
 
     // Verify files were extracted to correct location derived from manifest
@@ -880,7 +916,7 @@ async fn test_bundle_extract_dir_derived_from_manifest() {
 #[tokio::test]
 async fn test_bundle_package_version_extracted_from_manifest() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create bundle with specific package/version
     let bundle_path = create_test_bundle(
@@ -924,7 +960,7 @@ async fn test_bundle_package_version_extracted_from_manifest() {
 #[tokio::test]
 async fn test_is_bundle_blob() {
     let temp_dir = TempDir::new().unwrap();
-    let (_node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (_node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create a bundle
     let bundle_path = create_test_bundle(
@@ -963,7 +999,7 @@ async fn test_is_bundle_blob() {
 #[tokio::test]
 async fn test_install_application_from_bundle_blob() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Create a bundle
     let wasm_content = b"bundle wasm bytecode";
@@ -1033,7 +1069,7 @@ async fn test_install_application_from_bundle_blob() {
 #[tokio::test]
 async fn test_install_application_from_bundle_blob_no_metadata() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create a bundle
     let bundle_path = create_test_bundle(
@@ -1059,21 +1095,35 @@ async fn test_install_application_from_bundle_blob_no_metadata() {
         .await
         .expect("Should install from bundle blob without metadata");
 
-    // Verify metadata is empty (bundles don't need metadata)
+    // Verify metadata contains package and version extracted from manifest
+    // (Registry v2: metadata is extracted from bundle manifest)
     let application = node_client
         .get_application(&application_id)
         .expect("Application should exist")
         .expect("Application should be found");
 
+    // Metadata should contain at least package and version
     assert!(
-        application.metadata.is_empty(),
-        "Bundle metadata should be empty - bundle detection happens via is_bundle_blob()"
+        !application.metadata.is_empty(),
+        "Bundle metadata should contain package and version extracted from manifest"
+    );
+
+    // Verify package and version are present
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.metadata",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "1.0.0",
+        "Version should match manifest"
     );
 }
 
 #[tokio::test]
 async fn test_install_application_from_bundle_blob_missing_blob() {
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create a non-existent blob ID
     use calimero_primitives::blobs::BlobId;
@@ -1096,7 +1146,7 @@ async fn test_install_application_from_bundle_blob_missing_blob() {
 #[tokio::test]
 async fn test_simple_wasm_installation_still_works() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Test that simple WASM installation still works (backward compatibility)
     let wasm_path = temp_dir.path().join("app.wasm");
@@ -1175,10 +1225,10 @@ async fn test_bundle_blob_sharing_integration() {
     let temp_dir = TempDir::new().unwrap();
 
     // Create User 1's node client
-    let (node_client_1, _data_dir_1, _blob_dir_1) = create_test_node_client().await;
+    let (node_client_1, _data_dir_1, _blob_dir_1) = create_test_node_client(None).await;
 
     // Create User 2's node client (separate instance)
-    let (node_client_2, _data_dir_2, blob_dir_2) = create_test_node_client().await;
+    let (node_client_2, _data_dir_2, blob_dir_2) = create_test_node_client(None).await;
 
     // Step 1: User 1 installs bundle
     let wasm_content = b"integration test wasm bytecode";
@@ -1249,10 +1299,10 @@ async fn test_bundle_blob_sharing_integration() {
         .expect("User 2 should install from bundle blob");
 
     // Step 5: Verify ApplicationId consistency
-    // Same blob_id + size + source + empty metadata = same ApplicationId
+    // Same blob_id + size + source + same metadata (extracted from manifest) = same ApplicationId
     assert_eq!(
         application_id_user1, application_id_user2,
-        "ApplicationId should be identical (same blob_id, size, source, empty metadata)"
+        "ApplicationId should be identical (same blob_id, size, source, and metadata from manifest)"
     );
 
     // Verify both can access their applications
@@ -1282,17 +1332,29 @@ async fn test_bundle_blob_sharing_integration() {
     );
     assert_eq!(
         app_user1_final.metadata, app_user2_final.metadata,
-        "Metadata should be identical (both empty for bundles)"
+        "Metadata should be identical (extracted from same bundle manifest)"
     );
 
-    // Both should have empty metadata (bundles don't need metadata)
+    // Both should have metadata extracted from bundle manifest (Registry v2)
     assert!(
-        app_user1_final.metadata.is_empty(),
-        "User 1 should have empty metadata (bundles don't need metadata)"
+        !app_user1_final.metadata.is_empty(),
+        "User 1 should have metadata extracted from bundle manifest"
     );
     assert!(
-        app_user2_final.metadata.is_empty(),
-        "User 2 should have empty metadata (bundles don't need metadata)"
+        !app_user2_final.metadata.is_empty(),
+        "User 2 should have metadata extracted from bundle manifest"
+    );
+
+    // Verify metadata contains package and version
+    let metadata_json: serde_json::Value =
+        serde_json::from_slice(&app_user1_final.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(
+        metadata_json["package"], "com.example.integration",
+        "Package should match manifest"
+    );
+    assert_eq!(
+        metadata_json["version"], "1.0.0",
+        "Version should match manifest"
     );
 
     // Step 6: Verify User 2 can get application bytes (WASM)
@@ -1337,7 +1399,7 @@ async fn test_bundle_blob_sharing_integration() {
 #[tokio::test]
 async fn test_bundle_get_application_bytes_fallback() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Create a test bundle
     let wasm_content = b"fallback test wasm bytecode";
@@ -1394,7 +1456,7 @@ async fn test_bundle_get_application_bytes_fallback() {
 #[tokio::test]
 async fn test_get_latest_version_semantic_ordering() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     let package = "com.example.versioning";
 
@@ -1437,7 +1499,7 @@ async fn test_get_latest_version_semantic_ordering() {
 #[tokio::test]
 async fn test_get_latest_version_mixed_semver_and_non_semver() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client().await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     let package = "com.example.mixed";
 

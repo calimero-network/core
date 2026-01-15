@@ -42,6 +42,5 @@ base64.workspace = true
 semver.workspace = true
 
 [dev-dependencies]
-calimero-store-rocksdb.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }

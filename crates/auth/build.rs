@@ -142,10 +142,13 @@ fn try_main() -> eyre::Result<()> {
 fn target_dir() -> eyre::Result<PathBuf> {
     let mut out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let profile = env::var("PROFILE")?;
+    let profile_names = ["profiling", "app-release", "release", "dev", &profile];
 
     while out_dir.pop() {
-        if out_dir.ends_with(&profile) {
-            return Ok(out_dir);
+        if let Some(name) = out_dir.file_name().and_then(|n| n.to_str()) {
+            if profile_names.iter().any(|&pn| pn == name) {
+                return Ok(out_dir);
+            }
         }
     }
 

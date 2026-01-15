@@ -1,5 +1,5 @@
-name: Container release
-description: "Release container based on prebuilt binaries"
+name: Profiling Container release
+description: "Release profiling container with binaries built with frame pointers enabled and debug symbols preserved"
 
 inputs:
   version:
@@ -30,32 +30,25 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Download built binaries
+    - name: Download built profiling binaries
       uses: actions/download-artifact@v4
       with:
-        pattern: artifacts-x86_64-unknown-linux-gnu
-        path: binaries/
+        pattern: artifacts-profiling-*
+        path: binaries-profiling/
         merge-multiple: true
 
-    - name: Download aarch64 binaries
-      uses: actions/download-artifact@v4
-      with:
-        pattern: artifacts-aarch64-unknown-linux-gnu
-        path: binaries/
-        merge-multiple: true
-
-    - name: Extract Linux binaries
+    - name: Extract Linux profiling binaries
       shell: bash
       run: |
-        mkdir -p ./bin/amd64 ./bin/arm64
+        mkdir -p ./bin-profiling/amd64 ./bin-profiling/arm64
 
         readarray -t binaries <<< "${{ inputs.binaries }}"
 
         for binary in ${binaries[@]}; do
-          echo "Extracting ${binary} binaries"
+          echo "Extracting ${binary} profiling binaries"
 
-          tar -xzf binaries/${binary}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
-          tar -xzf binaries/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
+          tar -xzf binaries-profiling/${binary}_x86_64-unknown-linux-gnu.tar.gz -C ./bin-profiling/amd64 --no-same-owner
+          tar -xzf binaries-profiling/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin-profiling/arm64 --no-same-owner
         done
 
     - name: Set up QEMU
@@ -75,8 +68,8 @@ runs:
       shell: bash
       id: prepare
       run: |
-        MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
-        DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
+        MASTER_SCOPE="${{ github.repository_owner }}-docker-master-profiling"
+        DEV_SCOPE="${{ github.repository_owner }}-docker-dev-profiling"
 
         if [ "${{ github.ref }}" == "refs/heads/master" ]; then
           echo "cache_from=type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
@@ -97,7 +90,7 @@ runs:
       uses: docker/metadata-action@v5
       env:
         LABELS: |
-          org.opencontainers.image.description=Calimero Node
+          org.opencontainers.image.description=Calimero Node with Profiling Tools
           org.opencontainers.image.source=${{ steps.prepare.outputs.docker_source }}
           org.opencontainers.image.licenses=MIT OR Apache-2.0
           org.opencontainers.image.authors=Calimero Limited <info@calimero.network>
@@ -106,12 +99,12 @@ runs:
         DOCKER_METADATA_PR_HEAD_SHA: true
       with:
         images: ghcr.io/${{ github.repository_owner }}/${{ inputs.container_name }}
+        # Use -profiling suffix for all tags to distinguish from regular images
         tags: |
-          type=edge
-          type=ref,prefix=pr-,event=pr
-          type=sha,prefix=,format=short
-          type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' }}
-          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'false' }}
+          type=raw,value=edge-profiling,enable=${{ github.ref == 'refs/heads/master' }}
+          type=ref,prefix=pr-,suffix=-profiling,event=pr
+          type=sha,prefix=,suffix=-profiling,format=short
+          type=raw,value=${{ inputs.version }}-profiling,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' }}
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 
