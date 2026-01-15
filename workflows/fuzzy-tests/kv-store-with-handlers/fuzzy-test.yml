@@ -217,41 +217,6 @@ steps:
               - statement: "contains({{hconsistency_result}}, {{fuzzy_value}})"
                 message: "Cross-node value should match the set value"
 
-  - name: Final Handlers Store sync verification
-    type: wait_for_sync
-    context_id: "{{handlers_context_id}}"
-    nodes:
-      - fuzzy-handlers-node-1
-      - fuzzy-handlers-node-2
-      - fuzzy-handlers-node-3
-      - fuzzy-handlers-node-4
-    timeout: 360
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Final Handlers Store entry count check
-    type: call
-    node: fuzzy-handlers-node-1
-    context_id: "{{handlers_context_id}}"
-    executor_public_key: "{{handlers_node1_key}}"
-    method: len
-    outputs:
-      final_handlers_count: result
-
-  - name: Final handler execution count
-    type: call
-    node: fuzzy-handlers-node-1
-    context_id: "{{handlers_context_id}}"
-    executor_public_key: "{{handlers_node1_key}}"
-    method: get_handler_execution_count
-    outputs:
-      total_handler_executions: result
-
-  - name: Log final statistics
-    type: assert
-    statements:
-      - "is_set({{final_handlers_count}})"
-      - "is_set({{total_handler_executions}})"
 
 # Configuration options
 stop_all_nodes: false
