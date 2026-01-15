@@ -24,8 +24,7 @@ use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::{blobs::BlobId, context::ContextId};
 use dashmap::DashMap;
 use futures_util::StreamExt;
 use tracing::{debug, error, warn};
@@ -33,6 +32,7 @@ use tracing::{debug, error, warn};
 use crate::delta_store::DeltaStore;
 
 mod arbiter_pool;
+mod constants;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
@@ -104,21 +104,19 @@ impl NodeState {
 
     /// Evict blobs from cache based on age, count, and memory limits
     fn evict_old_blobs(&self) {
-        const MAX_BLOB_AGE: Duration = Duration::from_secs(300); // 5 minutes
-        const MAX_CACHE_COUNT: usize = 100; // Max number of blobs
-        const MAX_CACHE_BYTES: usize = 500 * 1024 * 1024; // 500MB total memory
-
         let now = Instant::now();
         let before_count = self.blob_cache.len();
 
         // Phase 1: Remove blobs older than MAX_BLOB_AGE
-        self.blob_cache
-            .retain(|_, cached_blob| now.duration_since(cached_blob.last_accessed) < MAX_BLOB_AGE);
+        self.blob_cache.retain(|_, cached_blob| {
+            now.duration_since(cached_blob.last_accessed)
+                < Duration::from_secs(constants::MAX_BLOB_AGE_S)
+        });
 
         let after_time_eviction = self.blob_cache.len();
 
         // Phase 2: If still over count limit, remove least recently used
-        if self.blob_cache.len() > MAX_CACHE_COUNT {
+        if self.blob_cache.len() > constants::MAX_BLOB_CACHE_COUNT {
             let mut blobs: Vec<_> = self
                 .blob_cache
                 .iter()
@@ -129,7 +127,7 @@ impl NodeState {
             blobs.sort_by_key(|(_, accessed)| *accessed);
 
             // Remove oldest until under count limit
-            let to_remove = self.blob_cache.len() - MAX_CACHE_COUNT;
+            let to_remove = self.blob_cache.len() - constants::MAX_BLOB_CACHE_COUNT;
             for (blob_id, _) in blobs.iter().take(to_remove) {
                 let _removed = self.blob_cache.remove(&blob_id);
             }
@@ -144,7 +142,7 @@ impl NodeState {
             .map(|entry| entry.value().data.len())
             .sum();
 
-        if total_size > MAX_CACHE_BYTES {
+        if total_size > constants::MAX_BLOB_CACHE_SIZE_BYTES {
             let mut blobs: Vec<_> = self
                 .blob_cache
                 .iter()
@@ -164,7 +162,7 @@ impl NodeState {
             let mut removed_count = 0;
 
             for (blob_id, _, size) in blobs {
-                if current_size <= MAX_CACHE_BYTES {
+                if current_size <= constants::MAX_BLOB_CACHE_SIZE_BYTES {
                     break;
                 }
                 let _removed = self.blob_cache.remove(&blob_id);
@@ -268,13 +266,17 @@ impl Actor for NodeManager {
         );
 
         // Periodic blob cache eviction (every 5 minutes)
-        let _handle = ctx.run_interval(Duration::from_secs(300), |act, _ctx| {
-            act.state.evict_old_blobs();
-        });
+        let _handle = ctx.run_interval(
+            Duration::from_secs(constants::OLD_BLOBS_EVICTION_FREQUENCY_S),
+            |act, _ctx| {
+                act.state.evict_old_blobs();
+            },
+        );
 
         // Periodic cleanup of stale pending deltas (every 60 seconds)
-        let _handle = ctx.run_interval(Duration::from_secs(60), |act, ctx| {
-            let max_age = Duration::from_secs(300); // 5 minutes timeout
+        let _handle = ctx.run_interval(Duration::from_secs(constants::PENDING_DELTAS_CLEANUP_FREQUENCY_S), |act, ctx| {
+            // 5 minutes timeout for pending deltas
+            let max_age = Duration::from_secs(constants::PENDING_DELTA_MAX_AGE_S);
             let delta_stores = act.state.delta_stores.clone();
 
             let _ignored = ctx.spawn(
@@ -306,12 +308,11 @@ impl Actor for NodeManager {
                             );
 
                             // Trigger snapshot fallback if too many pending
-                            const SNAPSHOT_THRESHOLD: usize = 100;
-                            if stats.count > SNAPSHOT_THRESHOLD {
+                            if stats.count > constants::PENDING_DELTA_SNAPSHOT_THRESHOLD {
                                 warn!(
                                     %context_id,
                                     pending_count = stats.count,
-                                    threshold = SNAPSHOT_THRESHOLD,
+                                    threshold = constants::PENDING_DELTA_SNAPSHOT_THRESHOLD,
                                     "Too many pending deltas - state sync will recover on next periodic sync"
                                 );
                             }
@@ -324,11 +325,13 @@ impl Actor for NodeManager {
 
         // Periodic hash heartbeat broadcast (every 30 seconds)
         // Allows peers to detect silent divergence
-        let _handle = ctx.run_interval(Duration::from_secs(30), |act, ctx| {
-            let context_client = act.clients.context.clone();
-            let node_client = act.clients.node.clone();
+        let _handle = ctx.run_interval(
+            Duration::from_secs(constants::HASH_HEARTBEAT_FREQUENCY_S),
+            |act, ctx| {
+                let context_client = act.clients.context.clone();
+                let node_client = act.clients.node.clone();
 
-            let _ignored = ctx.spawn(
+                let _ignored = ctx.spawn(
                 async move {
                     // Get all context IDs
                     let contexts = context_client.get_context_ids(None);
@@ -343,6 +346,13 @@ impl Actor for NodeManager {
                         let Ok(Some(context)) = context_client.get_context(&context_id) else {
                             continue;
                         };
+
+                        // Do not broadcast heartbeat if the node is not initialized.
+                        // If the root hash is `[0; 32]` (represented as 1111...1111 in Base58), the node is uninitialized.
+                        if context.root_hash.is_zero() {
+                            debug!(%context_id, "Skipping heartbeat broadcast: Node uninitialized");
+                            continue;
+                        }
 
                         // Broadcast hash heartbeat
                         if let Err(e) = node_client
@@ -363,6 +373,7 @@ impl Actor for NodeManager {
                 }
                 .into_actor(act),
             );
-        });
+            },
+        );
     }
 }
