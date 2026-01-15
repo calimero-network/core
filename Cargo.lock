@@ -2214,6 +2214,7 @@ dependencies = [
  "calimero-server",
  "calimero-storage",
  "calimero-store",
+ "calimero-store-encryption",
  "calimero-store-rocksdb",
  "calimero-tee-attestation",
  "calimero-utils-actix",
@@ -2471,6 +2472,19 @@ dependencies = [
  "strum 0.26.3",
  "thiserror 1.0.69",
  "thunderdome",
+]
+
+[[package]]
+name = "calimero-store-encryption"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "calimero-store",
+ "eyre",
+ "hkdf",
+ "rand 0.8.5",
+ "sha2 0.10.9",
+ "zeroize",
 ]
 
 [[package]]

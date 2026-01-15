@@ -42,6 +42,7 @@ calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-server.workspace = true
 calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-store-encryption.workspace = true
 calimero-store-rocksdb.workspace = true
 calimero-tee-attestation.workspace = true
 calimero-utils-actix.workspace = true

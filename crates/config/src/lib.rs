@@ -12,6 +12,7 @@ use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read_to_string, write};
+use url::Url;
 
 use mero_auth::config::AuthConfig;
 
@@ -41,6 +42,26 @@ pub struct ConfigFile {
     pub blobstore: BlobStoreConfig,
 
     pub context: ContextConfig,
+
+    /// TEE-related configuration (KMS, attestation, etc.).
+    #[serde(default)]
+    pub tee: Option<TeeConfig>,
+}
+
+/// Configuration for TEE (Trusted Execution Environment) features.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct TeeConfig {
+    /// KMS configuration for fetching storage encryption keys.
+    pub kms: KmsConfig,
+}
+
+/// Configuration for the Key Management Service.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct KmsConfig {
+    /// URL of the KMS service (e.g., mero-kms-phala).
+    pub url: Url,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -250,6 +271,7 @@ impl ConfigFile {
             datastore,
             blobstore,
             context,
+            tee: None,
         }
     }
 
