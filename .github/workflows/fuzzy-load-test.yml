@@ -192,6 +192,7 @@ jobs:
       - name: Setup vmagent for metrics collection
         id: setup-vmagent
         run: |
+          chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
@@ -206,6 +207,7 @@ jobs:
       - name: Run KV Store Fuzzy Test with Metrics Collection
         id: kv-test
         run: |
+          chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           cd workflows/fuzzy-tests/kv-store
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
@@ -408,6 +410,7 @@ jobs:
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-handlers
         run: |
+          chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
@@ -422,6 +425,7 @@ jobs:
       - name: Run Handlers Fuzzy Test with Metrics Collection
         id: handlers-test
         run: |
+          chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           cd workflows/fuzzy-tests/kv-store-with-handlers
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
