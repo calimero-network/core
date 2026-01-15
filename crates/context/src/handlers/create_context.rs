@@ -13,6 +13,7 @@ use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::delta::{CausalDelta, StorageDelta};
 use calimero_store::{key, types, Store};
 use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
@@ -284,11 +285,9 @@ async fn create_context(
 
         // CRITICAL: Create delta and set dag_heads for init()
         // This ensures newly joined nodes can sync via delta protocol
-        if !outcome.artifact.is_empty() {
-            use calimero_storage::delta::{CausalDelta, StorageDelta};
-
+        let actions = if !outcome.artifact.is_empty() {
             // Extract actions from init artifact
-            let actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
+            match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
                 Ok(StorageDelta::Actions(actions)) => actions,
                 Ok(_) => {
                     warn!("Unexpected StorageDelta variant during init");
@@ -298,55 +297,42 @@ async fn create_context(
                     warn!(?e, "Failed to deserialize init artifact");
                     vec![]
                 }
-            };
-
-            if !actions.is_empty() {
-                // Create genesis delta (parent is zero hash)
-                let hlc = calimero_storage::env::hlc_timestamp();
-                let parents = vec![[0u8; 32]]; // Genesis parent
-                let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
-
-                // Set dag_heads to the init delta
-                context.dag_heads = vec![delta_id];
-
-                // Persist the init delta so peers can request it
-                let serialized_actions = borsh::to_vec(&actions)?;
-                let init_delta = types::ContextDagDelta {
-                    delta_id,
-                    parents,
-                    actions: serialized_actions,
-                    hlc,
-                    applied: true,
-                    expected_root_hash: root_hash,
-                    events: None, // Genesis delta has no events
-                };
-
-                debug!(
-                    context_id = %context.id,
-                    delta_id = ?delta_id,
-                    actions_count = actions.len(),
-                    "Created init delta with dag_heads"
-                );
-
-                Some(init_delta)
-            } else {
-                // Fallback: Use root_hash as dag_head if no actions
-                context.dag_heads = vec![root_hash];
-                warn!(
-                    context_id = %context.id,
-                    "Init generated artifact but no actions - using root_hash as dag_head"
-                );
-                None
             }
         } else {
-            // Fallback: Empty artifact, use root_hash as dag_head
-            context.dag_heads = vec![root_hash];
-            warn!(
-                context_id = %context.id,
-                "Init had empty artifact - using root_hash as dag_head"
-            );
-            None
-        }
+            vec![]
+        };
+
+        // Always create a genesis delta. The parent should be `[0; 32]` (genesis).
+        // This way, the DAG will have a head that is associated with a delta even if state is empty.
+        let hlc = calimero_storage::env::hlc_timestamp();
+        // Genesis parent
+        let parents = vec![[0u8; 32]];
+        let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+
+        context.dag_heads = vec![delta_id];
+
+        // Persist the init delta so peers can request it
+        let serialized_actions = borsh::to_vec(&actions)?;
+
+        let delta = types::ContextDagDelta {
+            delta_id,
+            parents,
+            actions: serialized_actions,
+            hlc,
+            applied: true,
+            expected_root_hash: root_hash,
+            // Genesis delta has no events
+            events: None,
+        };
+
+        debug!(
+            context_id = %context.id,
+            delta_id = ?delta_id,
+            actions_count = actions.len(),
+            "Created genesis delta with dag_heads"
+        );
+
+        Some(delta)
     } else {
         None
     };

@@ -44,6 +44,10 @@ impl Hash {
         hash_bytes.into()
     }
 
+    pub fn is_zero(&self) -> bool {
+        self.bytes.iter().all(|&byte| byte == 0)
+    }
+
     pub fn hash_json<T: Serialize>(data: &T) -> JsonResult<Self> {
         let mut hasher = Sha256::default();
 
