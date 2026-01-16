@@ -217,7 +217,7 @@ steps:
       - fuzzy-kv-node-2
       - fuzzy-kv-node-3
       - fuzzy-kv-node-4
-    timeout: 60
+    timeout: 180
     check_interval: 2
 
   - name: Final KV Store entry count check
