@@ -18,7 +18,7 @@ use super::tracking::Sequencer;
 /// Maximum number of deltas to fetch recursively in a single sync operation.
 /// This prevents OOM where a peer sends a delta with an deep chain with many deltas.
 /// TODO: adjust this number after the benchmarks.
-const MAX_DELTA_FETCH_LIMIT: usize = 3000;
+const MAX_DELTA_FETCH_LIMIT: usize = 1_000_000;
 const DELTA_WARN_LIMIT: usize = 1000;
 const GENESIS_DELTA_ID: [u8; 32] = [0u8; 32];
 

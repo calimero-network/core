@@ -21,7 +21,7 @@ use tracing::{info, warn};
 /// Maximum number of items returned by query methods to prevent resource exhaustion.
 /// Even if a caller requests more, the DAG will cap the result at this size.
 /// The value selected as ~96 KB.
-pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
+pub const MAX_DELTA_QUERY_LIMIT: usize = 1_000_000;
 
 /// A causal delta with parent references
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
