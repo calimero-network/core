@@ -351,20 +351,19 @@ mod tests {
 
         for (i, chunk) in test_cases.into_iter().enumerate() {
             let bytes = borsh::to_vec(&chunk)
-                .unwrap_or_else(|e| panic!("Failed to serialize chunk {}: {}", i, e));
+                .unwrap_or_else(|e| panic!("Failed to serialize chunk {i}: {e}"));
 
             let parsed = BlobChunk::try_from_slice(&bytes)
-                .unwrap_or_else(|e| panic!("Failed to deserialize chunk {}: {}", i, e));
+                .unwrap_or_else(|e| panic!("Failed to deserialize chunk {i}: {e}"));
 
-            assert_eq!(chunk.data, parsed.data, "Data should match for chunk {}", i);
+            assert_eq!(chunk.data, parsed.data, "Data should match for chunk {i}");
 
             // Verify the serialized size is correct
             assert_eq!(
                 bytes.len(),
                 // Borsh format: vec length (u32) + vec data
                 4 + chunk.data.len(),
-                "Serialized size should match expected for chunk {}",
-                i
+                "Serialized size should match expected for chunk {i}"
             );
         }
     }
