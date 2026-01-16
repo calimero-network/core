@@ -47,7 +47,8 @@ runs:
     - name: Extract Linux binaries
       shell: bash
       run: |
-        mkdir -p ./bin/amd64 ./bin/arm64
+        mkdir -p ./bin/amd64
+        mkdir -p ./bin/arm64
 
         readarray -t binaries <<< "${{ inputs.binaries }}"
 

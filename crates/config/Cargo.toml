@@ -19,6 +19,7 @@ multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["fs"] }
 toml.workspace = true
+url = { workspace = true, features = ["serde"] }
 
 calimero-context.workspace = true
 calimero-node-primitives.workspace = true

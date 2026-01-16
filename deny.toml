@@ -50,5 +50,4 @@ license-files = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/xJonathanLEI/starknet-rs"]
-
+allow-git = ["https://github.com/xJonathanLEI/starknet-rs", "https://github.com/Dstack-TEE/dstack"]

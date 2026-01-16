@@ -1,0 +1,21 @@
+[package]
+name = "calimero-store-encryption"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Application-level encryption for Calimero store"
+publish = false
+
+[dependencies]
+# Third-party
+aes-gcm.workspace = true
+eyre.workspace = true
+hkdf.workspace = true
+rand.workspace = true
+sha2.workspace = true
+zeroize = { workspace = true, features = ["zeroize_derive"] }
+
+# Internal
+calimero-store.workspace = true

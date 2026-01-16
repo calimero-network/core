@@ -19,7 +19,9 @@ use calimero_network_primitives::config::NetworkConfig;
 use calimero_node_primitives::client::NodeClient;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
+use calimero_store::db::Database;
 use calimero_store::Store;
+use calimero_store_encryption::EncryptedDatabase;
 use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
@@ -67,7 +69,15 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     info!("Peer ID: {}", peer_id);
 
-    let datastore = Store::open::<RocksDB>(&config.datastore)?;
+    // Open datastore with optional encryption
+    let datastore = if let Some(ref key) = config.datastore.encryption_key {
+        info!("Opening encrypted datastore");
+        let inner_db = RocksDB::open(&config.datastore)?;
+        let encrypted_db = EncryptedDatabase::wrap(inner_db, key.clone())?;
+        Store::new(std::sync::Arc::new(encrypted_db))
+    } else {
+        Store::open::<RocksDB>(&config.datastore)?
+    };
 
     let blobstore = BlobManager::new(datastore.clone(), FileSystem::new(&config.blobstore).await?);
 

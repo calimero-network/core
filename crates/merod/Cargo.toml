@@ -11,15 +11,16 @@ publish = false
 
 [dependencies]
 alloy.workspace = true
+base64.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 const_format.workspace = true
-ic-agent.workspace = true
 dirs.workspace = true
 ed25519-consensus.workspace = true
 eyre.workspace = true
 hex.workspace = true
+ic-agent.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 near-crypto.workspace = true
@@ -27,6 +28,8 @@ rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 starknet.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
 toml_edit.workspace = true
@@ -38,12 +41,13 @@ calimero-blobstore.workspace = true
 calimero-config.workspace = true
 calimero-context.workspace = true
 calimero-context-config = { workspace = true, features = ["client"] }
+calimero-network-primitives.workspace = true
 calimero-node.workspace = true
 calimero-node-primitives.workspace = true
-calimero-network-primitives.workspace = true
 calimero-server.workspace = true
 calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
+calimero-tee-attestation.workspace = true
 calimero-utils-actix.workspace = true
 calimero-version.workspace = true
 mero-auth = { path = "../auth" }
