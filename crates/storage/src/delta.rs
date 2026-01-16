@@ -138,6 +138,30 @@ pub enum StorageDelta {
     Comparisons(Vec<Comparison>),
 }
 
+impl StorageDelta {
+    /// Deserializes a raw artifact byte slice into a vector of `Action`s.
+    ///
+    /// This is a helper function to facilitate the creation of `Actions` variant
+    /// assuming the unencrypted `artifact` contains a list of actions.
+    ///
+    /// # Args
+    /// * `artifact` - a raw artifact byte slice conaining an unencrypted list of actions.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// * The artifact cannot be Borsh-deserialized.
+    /// * The artifact contains `Comparisons` instead of `Actions`.
+    pub fn extract_actions_from_artifact(artifact: &[u8]) -> eyre::Result<Vec<Action>> {
+        let delta: Self = borsh::from_slice(artifact)?;
+        match delta {
+            Self::Actions(actions) => Ok(actions),
+            Self::Comparisons(_) => {
+                eyre::bail!("Expected Actions variant in state delta, found Comparisons")
+            }
+        }
+    }
+}
+
 impl BorshDeserialize for StorageDelta {
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let Ok(tag) = u8::deserialize_reader(reader) else {

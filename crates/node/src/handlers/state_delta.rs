@@ -5,13 +5,14 @@
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::sync::StateDeltaPayload;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_storage::action::Action;
+use calimero_storage::{action::Action, delta::StorageDelta};
 use eyre::{bail, OptionExt, Result};
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
@@ -44,9 +45,9 @@ pub async fn handle_state_delta(
     parent_ids: Vec<[u8; 32]>,
     hlc: calimero_storage::logical_clock::HybridTimestamp,
     root_hash: Hash,
-    artifact: Vec<u8>,
     nonce: Nonce,
-    events: Option<Vec<u8>>,
+    // state delta artifact and execution events bundled together (see `StateDeltaPayload`)
+    delta_payload: Vec<u8>,
 ) -> Result<()> {
     let Some(context) = node_clients.context.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
@@ -73,7 +74,20 @@ pub async fn handle_state_delta(
     )
     .await?;
 
-    let actions = decrypt_delta_actions(artifact, nonce, sender_key)?;
+    // Decrypt the bundled state delta payload
+    let (artifact, events) = decrypt_delta_payload(sender_key, nonce, delta_payload)?;
+
+    info!(
+        %context_id,
+        %author_id,
+        delta_id = ?delta_id,
+        has_events = events.is_some(),
+        artifact_len = artifact.len(),
+        "Processing state delta"
+    );
+
+    // Extract actions using the new StorageDelta helper
+    let actions = StorageDelta::extract_actions_from_artifact(&artifact)?;
 
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
@@ -256,23 +270,17 @@ struct DeltaStoreSetup {
     is_uninitialized: bool,
 }
 
-fn decrypt_delta_actions(
-    artifact: Vec<u8>,
-    nonce: Nonce,
+/// Helper that decrypts the state delta payload and returns the artifact and events.
+fn decrypt_delta_payload(
     sender_key: PrivateKey,
-) -> Result<Vec<Action>> {
-    let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key);
-    let decrypted_artifact = shared_key
-        .decrypt(artifact, nonce)
-        .ok_or_eyre("failed to decrypt artifact")?;
+    nonce: Nonce,
+    encrypted_payload: Vec<u8>,
+) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key.into());
+    let StateDeltaPayload { artifact, events } =
+        StateDeltaPayload::decrypt(encrypted_payload, &shared_key, nonce)?;
 
-    let storage_delta: calimero_storage::delta::StorageDelta =
-        borsh::from_slice(&decrypted_artifact)?;
-
-    match storage_delta {
-        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(actions),
-        _ => bail!("Expected Actions variant in state delta"),
-    }
+    Ok((artifact, events))
 }
 
 async fn ensure_author_sender_key(

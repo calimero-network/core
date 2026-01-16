@@ -25,7 +25,7 @@ use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use crate::messages::{
     NodeMessage, RegisterPendingSpecializedNodeInvite, RemovePendingSpecializedNodeInvite,
 };
-use crate::sync::BroadcastMessage;
+use crate::sync::{BroadcastMessage, StateDeltaPayload};
 
 mod alias;
 mod application;
@@ -121,9 +121,9 @@ impl NodeClient {
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
-        let encrypted = shared_key
-            .encrypt(artifact, nonce)
-            .ok_or_eyre("failed to encrypt artifact")?;
+        // Bundle artifact and events together before encryption
+        let delta_payload = StateDeltaPayload::new(artifact, events);
+        let encrypted = delta_payload.encrypt(&shared_key, nonce)?;
 
         let payload = BroadcastMessage::StateDelta {
             context_id: context.id,
@@ -132,9 +132,8 @@ impl NodeClient {
             parent_ids,
             hlc,
             root_hash: context.root_hash,
-            artifact: encrypted.into(),
             nonce,
-            events: events.map(Cow::from),
+            payload: encrypted.into(),
         };
 
         let payload = borsh::to_vec(&payload)?;

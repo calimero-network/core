@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_crypto::Nonce;
+use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -28,12 +28,12 @@ pub enum BroadcastMessage<'a> {
         hlc: calimero_storage::logical_clock::HybridTimestamp,
 
         root_hash: Hash, // todo! shouldn't be cleartext
-        artifact: Cow<'a, [u8]>,
         nonce: Nonce,
 
-        /// Execution events that were emitted during the state change.
-        /// This field is encrypted along with the artifact.
-        events: Option<Cow<'a, [u8]>>,
+        /// Encrypted and borsh-serialized `StateDeltaPayload`.
+        /// The `StateDeltaPayload` contains state delta artifact and
+        /// execution events that were emitted during the state change.
+        payload: Cow<'a, [u8]>,
     },
 
     /// Hash heartbeat for divergence detection
@@ -134,4 +134,38 @@ pub enum MessagePayload<'a> {
     ChallengeResponse {
         signature: [u8; 64],
     },
+}
+
+// Encapsulated structure containing artifact and events for `StateDelta`.
+// This is required to ensure that both artifact and events are encrypted and tied together.
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct StateDeltaPayload {
+    /// The state delta artifact.
+    pub artifact: Vec<u8>,
+    /// Execution events associated with the delta and artifact.
+    pub events: Option<Vec<u8>>,
+}
+
+impl StateDeltaPayload {
+    /// Creates a new payload bundling together state delta artifact and events.
+    pub fn new(artifact: Vec<u8>, events: Option<Vec<u8>>) -> Self {
+        Self { artifact, events }
+    }
+
+    /// Serializes and encrypts the payload using the provided key and nonce.
+    pub fn encrypt(&self, key: &SharedKey, nonce: Nonce) -> eyre::Result<Vec<u8>> {
+        let plaintext = borsh::to_vec(self)?;
+        key.encrypt(plaintext, nonce)
+            .ok_or_else(|| eyre::eyre!("failed to encrypt StateDeltaPayload"))
+    }
+
+    /// Decrypts and deserializes the payload using the provided key and nonce.
+    pub fn decrypt(cipher_text: Vec<u8>, key: &SharedKey, nonce: Nonce) -> eyre::Result<Self> {
+        let plaintext = key
+            .decrypt(cipher_text, nonce)
+            .ok_or_else(|| eyre::eyre!("failed to decrypt StateDeltaPayload"))?;
+        let payload = borsh::from_slice(&plaintext)?;
+
+        Ok(payload)
+    }
 }
