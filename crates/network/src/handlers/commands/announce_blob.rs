@@ -2,7 +2,7 @@ use actix::{Context, Handler, Message, Response};
 use calimero_network_primitives::messages::AnnounceBlob;
 use eyre::eyre;
 use libp2p::kad::{Quorum, Record, RecordKey};
-use tracing::info;
+use tracing::{debug, warn};
 
 use crate::NetworkManager;
 
@@ -10,7 +10,7 @@ impl Handler<AnnounceBlob> for NetworkManager {
     type Result = Response<<AnnounceBlob as Message>::Result>;
 
     fn handle(&mut self, request: AnnounceBlob, _ctx: &mut Context<Self>) -> Self::Result {
-        info!(
+        debug!(
             blob_id = %request.blob_id,
             context_id = %request.context_id,
             size = request.size,
@@ -21,7 +21,7 @@ impl Handler<AnnounceBlob> for NetworkManager {
         let key =
             RecordKey::new(&[request.context_id.as_slice(), request.blob_id.as_slice()].concat());
 
-        info!(
+        debug!(
             "ANNOUNCE: blob_id={}, context_id={}, key_len={}",
             request.blob_id,
             request.context_id,
@@ -34,7 +34,7 @@ impl Handler<AnnounceBlob> for NetworkManager {
 
         let record = Record::new(key, value);
 
-        info!(
+        debug!(
             "Storing DHT record with key length {} and value length {}",
             record.key.as_ref().len(),
             record.value.len()
@@ -47,11 +47,11 @@ impl Handler<AnnounceBlob> for NetworkManager {
             .put_record(record, Quorum::One)
         {
             Ok(_) => {
-                info!("Successfully stored blob record in DHT");
+                debug!("Successfully stored blob record in DHT");
                 Response::reply(Ok(()))
             }
             Err(err) => {
-                info!("Failed to store blob record in DHT: {:?}", err);
+                warn!("Failed to store blob record in DHT: {:?}", err);
                 Response::reply(Err(eyre!("Failed to store record: {:?}", err)))
             }
         }
