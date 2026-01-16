@@ -33,13 +33,13 @@ impl EventHandler<Event> for NetworkManager {
                 data_amount,
                 ..
             } => {
-                info!("Served AutoNAT test for {} ({} bytes)", client, data_amount);
+                debug!("Served AutoNAT test for {} ({} bytes)", client, data_amount);
             }
             Event::ModeChanged { old_mode, new_mode } => {
-                info!("AutoNAT mode: {:?} → {:?}", old_mode, new_mode);
+                debug!("AutoNAT mode: {:?} → {:?}", old_mode, new_mode);
             }
             Event::PeerHasServerSupport { peer_id } => {
-                info!("Peer {} has AutoNAT server support", peer_id);
+                debug!("Peer {} has AutoNAT server support", peer_id);
                 self.discovery.state.add_autonat_server(&peer_id);
             }
         }

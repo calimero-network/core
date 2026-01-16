@@ -3,7 +3,7 @@ use calimero_network_primitives::messages::QueryBlob;
 use eyre::eyre;
 use libp2p::kad::RecordKey;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::debug;
 
 use crate::NetworkManager;
 
@@ -11,7 +11,7 @@ impl Handler<QueryBlob> for NetworkManager {
     type Result = ResponseFuture<<QueryBlob as Message>::Result>;
 
     fn handle(&mut self, request: QueryBlob, _ctx: &mut Context<Self>) -> Self::Result {
-        info!(
+        debug!(
             blob_id = %request.blob_id,
             context_id = ?request.context_id.as_ref().map(ToString::to_string),
             "Querying DHT for blob"
@@ -24,7 +24,7 @@ impl Handler<QueryBlob> for NetworkManager {
             // Search in specific context
             let key = RecordKey::new(&[context_id.as_slice(), request.blob_id.as_slice()].concat());
 
-            info!(
+            debug!(
                 blob_id = %request.blob_id,
                 context_id = context_id.as_str(),
                 key_len = key.as_ref().len(),

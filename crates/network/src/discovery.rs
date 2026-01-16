@@ -7,7 +7,7 @@ use eyre::{bail, ContextCompat, Result as EyreResult};
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use super::NetworkManager;
 use crate::discovery::state::{
@@ -177,7 +177,7 @@ impl NetworkManager {
         ) {
             match err {
                 RegisterError::NoExternalAddresses => {
-                    info!("No external addresses to register at rendezvous");
+                    debug!("No external addresses to register at rendezvous");
                     return Ok(());
                 }
                 err @ RegisterError::FailedToMakeRecord(_) => {

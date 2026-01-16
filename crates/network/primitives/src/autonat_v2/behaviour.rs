@@ -351,7 +351,7 @@ impl NetworkBehaviour for Behaviour {
                 tracing::debug!(%peer_id, "Client sent request, expecting dial-back");
 
                 if self.peers_with_server_support.insert(*peer_id) {
-                    tracing::info!(%peer_id, "Detected peer has AutoNAT server support");
+                    tracing::debug!(%peer_id, "Detected peer has AutoNAT server support");
                     self.events
                         .push_back(Event::PeerHasServerSupport { peer_id: *peer_id });
                 }
