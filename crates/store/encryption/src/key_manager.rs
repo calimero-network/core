@@ -239,7 +239,10 @@ mod tests {
         let ciphertext = manager.encrypt(plaintext).unwrap();
 
         // Check format: version(1) + nonce(12) + data(4) + tag(16) = 33
-        assert_eq!(ciphertext.len(), 1 + NONCE_SIZE + plaintext.len() + TAG_SIZE);
+        assert_eq!(
+            ciphertext.len(),
+            1 + NONCE_SIZE + plaintext.len() + TAG_SIZE
+        );
         assert_eq!(ciphertext[0], 1); // version 1
     }
 
