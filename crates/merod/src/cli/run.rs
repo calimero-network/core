@@ -9,7 +9,7 @@ use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
-use tracing::{info, warn};
+use tracing::info;
 
 use super::auth_mode::AuthModeArg;
 use crate::cli::RootArgs;
@@ -41,19 +41,21 @@ impl RunCommand {
                 peer_id
             );
 
-            match kms::fetch_storage_key(&tee_config.kms.url, &peer_id).await {
-                Ok(key) => {
-                    info!(
-                        "Storage encryption key fetched successfully (key_len={})",
-                        key.len()
-                    );
-                    Some(key)
-                }
-                Err(e) => {
-                    warn!("Failed to fetch storage key from KMS: {}", e);
-                    None
-                }
-            }
+            let key = kms::fetch_storage_key(&tee_config.kms.url, &peer_id)
+                .await
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "TEE storage encryption is configured but failed to fetch key from KMS: {}. \
+                         The node cannot start without the encryption key to prevent unencrypted data storage.",
+                        e
+                    )
+                })?;
+
+            info!(
+                "Storage encryption key fetched successfully (key_len={})",
+                key.len()
+            );
+            Some(key)
         } else {
             None
         };

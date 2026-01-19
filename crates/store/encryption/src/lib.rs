@@ -111,15 +111,17 @@ impl<D> EncryptedDatabase<D> {
 }
 
 impl<'a, D: Database<'a>> Database<'a> for EncryptedDatabase<D> {
-    fn open(config: &StoreConfig) -> Result<Self>
+    fn open(_config: &StoreConfig) -> Result<Self>
     where
         Self: Sized,
     {
-        // Cannot open without master key - use wrap() instead
-        let inner = D::open(config)?;
-        // Use empty key which will fail - this is intentional as open()
-        // should not be used directly for encrypted databases
-        Self::wrap(inner, vec![0; 32])
+        // EncryptedDatabase cannot be opened directly via the Database trait
+        // because it requires a master key that must be obtained from KMS.
+        // Use EncryptedDatabase::wrap(inner_db, master_key) instead.
+        eyre::bail!(
+            "EncryptedDatabase::open() is not supported. \
+             Use EncryptedDatabase::wrap(inner_db, master_key) to create an encrypted database."
+        )
     }
 
     fn has(&self, col: Column, key: Slice<'_>) -> Result<bool> {
