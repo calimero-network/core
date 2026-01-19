@@ -57,10 +57,20 @@ pub struct TeeConfig {
 }
 
 /// Configuration for the Key Management Service.
+///
+/// Supports multiple KMS implementations. Currently only Phala is supported.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct KmsConfig {
-    /// URL of the KMS service (e.g., mero-kms-phala).
+    /// Phala Cloud KMS configuration (mero-kms-phala).
+    pub phala: Option<PhalaKmsConfig>,
+}
+
+/// Configuration for Phala Cloud KMS (mero-kms-phala).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct PhalaKmsConfig {
+    /// URL of the mero-kms-phala service.
     pub url: Url,
 }
 

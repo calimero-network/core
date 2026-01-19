@@ -1,8 +1,9 @@
 //! KMS client for fetching storage encryption keys.
 //!
-//! This module handles communication with the mero-kms-phala service
-//! to obtain storage encryption keys using TDX attestation.
+//! This module handles communication with KMS services to obtain storage
+//! encryption keys using TDX attestation. Currently supports Phala Cloud KMS.
 
+use calimero_config::KmsConfig;
 use calimero_tee_attestation::generate_attestation;
 use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -10,18 +11,18 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 use url::Url;
 
-/// Request body for the KMS get-key endpoint.
+/// Request body for the Phala KMS get-key endpoint.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GetKeyRequest {
+struct PhalaGetKeyRequest {
     quote_b64: String,
     peer_id: String,
 }
 
-/// Response body from the KMS get-key endpoint.
+/// Response body from the Phala KMS get-key endpoint.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GetKeyResponse {
+struct PhalaGetKeyResponse {
     key: String,
 }
 
@@ -34,7 +35,26 @@ struct KmsErrorResponse {
     details: Option<String>,
 }
 
-/// Fetch the storage encryption key from the KMS service.
+/// Fetch the storage encryption key using the configured KMS provider.
+///
+/// Returns `None` if no KMS provider is configured.
+/// Returns an error if a provider is configured but key fetching fails.
+///
+/// # Arguments
+/// * `kms_config` - KMS configuration specifying which provider to use
+/// * `peer_id` - The peer ID string (base58 encoded)
+pub async fn fetch_storage_key(kms_config: &KmsConfig, peer_id: &str) -> Result<Option<Vec<u8>>> {
+    if let Some(ref phala_config) = kms_config.phala {
+        info!("Using Phala Cloud KMS");
+        let key = fetch_from_phala(&phala_config.url, peer_id).await?;
+        Ok(Some(key))
+    } else {
+        // No KMS provider configured
+        Ok(None)
+    }
+}
+
+/// Fetch the storage encryption key from Phala Cloud KMS (mero-kms-phala).
 ///
 /// This function:
 /// 1. Generates a TDX attestation with SHA256(peer_id) in report_data[0..32]
@@ -42,12 +62,12 @@ struct KmsErrorResponse {
 /// 3. Returns the encryption key bytes
 ///
 /// # Arguments
-/// * `kms_url` - Base URL of the KMS service
+/// * `kms_url` - Base URL of the mero-kms-phala service
 /// * `peer_id` - The peer ID string (base58 encoded)
 ///
 /// # Returns
 /// The storage encryption key bytes (hex-decoded from KMS response).
-pub async fn fetch_storage_key(kms_url: &Url, peer_id: &str) -> Result<Vec<u8>> {
+async fn fetch_from_phala(kms_url: &Url, peer_id: &str) -> Result<Vec<u8>> {
     info!(%peer_id, "Fetching storage key from KMS");
 
     // Create report_data with SHA256(peer_id) in first 32 bytes
@@ -77,14 +97,14 @@ pub async fn fetch_storage_key(kms_url: &Url, peer_id: &str) -> Result<Vec<u8>> 
     );
 
     // Build request
-    let request = GetKeyRequest {
+    let request = PhalaGetKeyRequest {
         quote_b64: attestation.quote_b64,
         peer_id: peer_id.to_string(),
     };
 
-    // Build endpoint URL
+    // Build endpoint URL (no leading slash to properly append to base path)
     let endpoint = kms_url
-        .join("/get-key")
+        .join("get-key")
         .context("Failed to build KMS endpoint URL")?;
 
     info!(%endpoint, "Sending key request to KMS");
@@ -118,7 +138,7 @@ pub async fn fetch_storage_key(kms_url: &Url, peer_id: &str) -> Result<Vec<u8>> 
     }
 
     // Parse response
-    let response: GetKeyResponse = response
+    let response: PhalaGetKeyResponse = response
         .json()
         .await
         .context("Failed to parse KMS response")?;

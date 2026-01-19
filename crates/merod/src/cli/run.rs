@@ -6,7 +6,7 @@ use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, Result as EyreResult, WrapErr};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
 use tracing::info;
@@ -36,26 +36,22 @@ impl RunCommand {
         // Fetch storage encryption key from KMS if configured
         let encryption_key = if let Some(ref tee_config) = config.tee {
             let peer_id = config.identity.public().to_peer_id().to_base58();
-            info!(
-                "TEE KMS configured, fetching storage key for peer {}",
-                peer_id
-            );
+            info!("TEE configured, fetching storage key for peer {}", peer_id);
 
-            let key = kms::fetch_storage_key(&tee_config.kms.url, &peer_id)
+            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id)
                 .await
-                .map_err(|e| {
-                    eyre::eyre!(
-                        "TEE storage encryption is configured but failed to fetch key from KMS: {}. \
-                         The node cannot start without the encryption key to prevent unencrypted data storage.",
-                        e
-                    )
-                })?;
+                .wrap_err(
+                    "TEE storage encryption is configured but failed to fetch key from KMS. \
+                     The node cannot start without the encryption key to prevent unencrypted data storage.",
+                )?;
 
-            info!(
-                "Storage encryption key fetched successfully (key_len={})",
-                key.len()
-            );
-            Some(key)
+            if let Some(ref k) = key {
+                info!(
+                    "Storage encryption key fetched successfully (key_len={})",
+                    k.len()
+                );
+            }
+            key
         } else {
             None
         };
