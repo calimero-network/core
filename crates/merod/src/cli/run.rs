@@ -6,13 +6,14 @@ use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, Result as EyreResult, WrapErr};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
 use tracing::info;
 
 use super::auth_mode::AuthModeArg;
 use crate::cli::RootArgs;
+use crate::kms;
 
 /// Run a node
 #[derive(Debug, Parser)]
@@ -31,6 +32,27 @@ impl RunCommand {
         }
 
         let mut config = ConfigFile::load(&path).await?;
+
+        // Fetch storage encryption key from KMS if configured
+        let encryption_key = if let Some(ref tee_config) = config.tee {
+            let peer_id = config.identity.public().to_peer_id().to_base58();
+            info!("TEE configured, fetching storage key for peer {}", peer_id);
+
+            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id)
+                .await
+                .wrap_err(
+                    "TEE storage encryption is configured but failed to fetch key from KMS. \
+                     The node cannot start without the encryption key to prevent unencrypted data storage.",
+                )?;
+
+            info!(
+                "Storage encryption key fetched successfully (key_len={})",
+                key.len()
+            );
+            Some(key)
+        } else {
+            None
+        };
 
         if let Some(mode) = self.auth_mode {
             config.network.server.auth_mode = mode.into();
@@ -84,6 +106,16 @@ impl RunCommand {
             server_source.embedded_auth,
         );
 
+        // Create store config with optional encryption
+        let datastore_path = path.join(config.datastore.path);
+        let datastore_config = match encryption_key {
+            Some(key) => {
+                info!("Storage encryption enabled");
+                StoreConfig::with_encryption(datastore_path, key)
+            }
+            None => StoreConfig::new(datastore_path),
+        };
+
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.clone(),
@@ -99,7 +131,7 @@ impl RunCommand {
                 frequency: config.sync.frequency,
                 ..Default::default() // Use defaults for new fields
             },
-            datastore: StoreConfig::new(path.join(config.datastore.path)),
+            datastore: datastore_config,
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
             server: server_config,

@@ -49,6 +49,32 @@ impl<'a> Transaction<'a> {
         );
     }
 
+    /// Insert a raw key-value pair into the transaction.
+    ///
+    /// Used by wrapper databases (like EncryptedDatabase) that need to build
+    /// transactions from raw column/key data.
+    pub fn raw_put(&mut self, column: Column, key: Slice<'a>, value: Slice<'a>) {
+        drop(
+            self.cols
+                .entry(column)
+                .or_default()
+                .insert(key, Operation::Put { value }),
+        );
+    }
+
+    /// Delete a raw key from the transaction.
+    ///
+    /// Used by wrapper databases (like EncryptedDatabase) that need to build
+    /// transactions from raw column/key data.
+    pub fn raw_delete(&mut self, column: Column, key: Slice<'a>) {
+        drop(
+            self.cols
+                .entry(column)
+                .or_default()
+                .insert(key, Operation::Delete),
+        );
+    }
+
     #[expect(clippy::use_self, reason = "Needed in order to specify a lifetime")]
     pub fn merge(&mut self, other: &Transaction<'a>) {
         for (entry, op) in other.iter() {
