@@ -102,8 +102,9 @@ async fn fetch_from_phala(kms_url: &Url, peer_id: &str) -> Result<Vec<u8>> {
         peer_id: peer_id.to_string(),
     };
 
-    // Build endpoint URL (no leading slash to properly append to base path)
-    let endpoint = kms_url
+    // Build endpoint URL - ensure trailing slash to prevent Url::join from replacing last segment
+    let base_url = ensure_trailing_slash(kms_url);
+    let endpoint = base_url
         .join("get-key")
         .context("Failed to build KMS endpoint URL")?;
 
@@ -166,6 +167,20 @@ fn hash_peer_id(peer_id: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Ensure URL has a trailing slash to prevent `Url::join` from replacing the last path segment.
+///
+/// `Url::join` has counter-intuitive behavior: if the base URL lacks a trailing slash,
+/// it replaces the last path segment. For example:
+/// - `http://host/api/v1`.join("get-key") => `http://host/api/get-key` (wrong!)
+/// - `http://host/api/v1/`.join("get-key") => `http://host/api/v1/get-key` (correct)
+fn ensure_trailing_slash(url: &Url) -> Url {
+    let mut url = url.clone();
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    url
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +198,34 @@ mod tests {
         // Different peer_id should produce different hash
         let hash3 = hash_peer_id("12D3KooWDifferentPeerId");
         assert_ne!(hash, hash3);
+    }
+
+    #[test]
+    fn test_ensure_trailing_slash() {
+        // URL without trailing slash should get one added
+        let url = Url::parse("http://host/api/v1").unwrap();
+        let fixed = ensure_trailing_slash(&url);
+        assert_eq!(fixed.as_str(), "http://host/api/v1/");
+
+        // URL with trailing slash should remain unchanged
+        let url = Url::parse("http://host/api/v1/").unwrap();
+        let fixed = ensure_trailing_slash(&url);
+        assert_eq!(fixed.as_str(), "http://host/api/v1/");
+
+        // Root URL should work
+        let url = Url::parse("http://host").unwrap();
+        let fixed = ensure_trailing_slash(&url);
+        assert_eq!(fixed.as_str(), "http://host/");
+    }
+
+    #[test]
+    fn test_url_join_with_trailing_slash() {
+        // This test verifies that our fix works correctly
+        let url_without_slash = Url::parse("http://host/api/v1").unwrap();
+        let url_with_slash = ensure_trailing_slash(&url_without_slash);
+
+        // Without the fix, this would produce http://host/api/get-key
+        let endpoint = url_with_slash.join("get-key").unwrap();
+        assert_eq!(endpoint.as_str(), "http://host/api/v1/get-key");
     }
 }
