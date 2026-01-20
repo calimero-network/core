@@ -1,0 +1,9 @@
+services:
+  mero-kms:
+    image: ghcr.io/calimero-network/mero-kms-phala:c075d83c
+    ports:
+      - 8080:8080
+    environment:
+      ACCEPT_MOCK_ATTESTATION: "true"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock

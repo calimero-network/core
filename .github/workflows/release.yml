@@ -28,6 +28,7 @@ env:
     meroctl
     mero-relayer
     mero-abi
+    mero-kms-phala
   AUTH_BINARIES: |-
     mero-auth
 
@@ -310,6 +311,35 @@ jobs:
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-mero-kms-phala-container:
+    name: Release Mero KMS Phala container
+    needs: [prepare, build-binaries]
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.job }}-mero-kms-phala-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Release
+        uses: ./.github/actions/container-release
+        with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: ${{ needs.prepare.outputs.docker_release }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          push: ${{ needs.prepare.outputs.docker_push }}
+          binaries: ${{ env.BINARIES }}
+          dockerfile: .github/workflows/deps/prebuilt.mero-kms-phala.Dockerfile
+          container_name: mero-kms-phala
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-mero-relayer-container:
