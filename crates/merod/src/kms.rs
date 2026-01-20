@@ -37,20 +37,23 @@ struct KmsErrorResponse {
 
 /// Fetch the storage encryption key using the configured KMS provider.
 ///
-/// Returns `None` if no KMS provider is configured.
-/// Returns an error if a provider is configured but key fetching fails.
+/// Returns an error if no KMS provider is configured (incomplete TEE configuration)
+/// or if key fetching fails.
 ///
 /// # Arguments
 /// * `kms_config` - KMS configuration specifying which provider to use
 /// * `peer_id` - The peer ID string (base58 encoded)
-pub async fn fetch_storage_key(kms_config: &KmsConfig, peer_id: &str) -> Result<Option<Vec<u8>>> {
+pub async fn fetch_storage_key(kms_config: &KmsConfig, peer_id: &str) -> Result<Vec<u8>> {
     if let Some(ref phala_config) = kms_config.phala {
         info!("Using Phala Cloud KMS");
         let key = fetch_from_phala(&phala_config.url, peer_id).await?;
-        Ok(Some(key))
+        Ok(key)
     } else {
-        // No KMS provider configured
-        Ok(None)
+        bail!(
+            "TEE is enabled but no KMS provider is configured. \
+             Please configure [tee.kms.phala] in your config.toml to enable storage encryption. \
+             Running a TEE node without storage encryption is not supported."
+        );
     }
 }
 

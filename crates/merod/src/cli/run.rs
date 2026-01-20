@@ -45,13 +45,11 @@ impl RunCommand {
                      The node cannot start without the encryption key to prevent unencrypted data storage.",
                 )?;
 
-            if let Some(ref k) = key {
-                info!(
-                    "Storage encryption key fetched successfully (key_len={})",
-                    k.len()
-                );
-            }
-            key
+            info!(
+                "Storage encryption key fetched successfully (key_len={})",
+                key.len()
+            );
+            Some(key)
         } else {
             None
         };
