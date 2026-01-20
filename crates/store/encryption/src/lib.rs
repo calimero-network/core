@@ -168,32 +168,38 @@ impl<'a, D: Database<'a>> Database<'a> for EncryptedDatabase<D> {
     }
 
     fn apply(&self, tx: &Transaction<'a>) -> Result<()> {
-        // Process each operation individually with encryption
-        // Note: This loses atomicity compared to the inner DB's apply.
-        // A proper implementation would require Transaction modifications.
+        // Build a new transaction with encrypted values
+        let mut encrypted_tx = Transaction::default();
+
+        // Acquire lock once for all encryptions
+        let mut key_manager = self
+            .key_manager
+            .write()
+            .map_err(|e| eyre::eyre!("Lock poisoned: {e}"))?;
+
         for (entry, op) in tx.iter() {
             let key = Slice::from(entry.key().to_vec().into_boxed_slice());
 
             match op {
                 Operation::Put { value } => {
-                    let encrypted = self
-                        .key_manager
-                        .write()
-                        .map_err(|e| eyre::eyre!("Lock poisoned: {e}"))?
-                        .encrypt(value.as_ref())?;
-                    self.inner.put(
+                    let encrypted = key_manager.encrypt(value.as_ref())?;
+                    encrypted_tx.raw_put(
                         entry.column(),
                         key,
                         Slice::from(encrypted.into_boxed_slice()),
-                    )?;
+                    );
                 }
                 Operation::Delete => {
-                    self.inner.delete(entry.column(), key)?;
+                    encrypted_tx.raw_delete(entry.column(), key);
                 }
             }
         }
 
-        Ok(())
+        // Release lock before calling inner apply
+        drop(key_manager);
+
+        // Delegate to inner DB - this is atomic (e.g., RocksDB uses WriteBatch)
+        self.inner.apply(&encrypted_tx)
     }
 }
 
