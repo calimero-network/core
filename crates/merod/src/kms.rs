@@ -109,8 +109,11 @@ async fn fetch_from_phala(kms_url: &Url, peer_id: &str) -> Result<Vec<u8>> {
 
     info!(%endpoint, "Sending key request to KMS");
 
-    // Send request
-    let client = reqwest::Client::new();
+    // Send request with 30s timeout to prevent indefinite hangs
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
     let response = client
         .post(endpoint.as_str())
         .json(&request)
