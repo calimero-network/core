@@ -1,4 +1,4 @@
-name: Fuzzy Load Test - Long Running Performance with Profiling
+name: Fuzzy Load Test - Long Running Performance
 
 permissions:
   contents: read
@@ -12,11 +12,9 @@ on:
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
   pull_request:
-    branches: [master]
     paths:
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-
   workflow_dispatch:
     inputs:
       duration_override:
@@ -41,7 +39,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false # Don't cancel long-running tests
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -149,13 +147,9 @@ jobs:
 
       - name: Override test duration
         run: |
-          # TODO: REVERT BEFORE PR MERGE - Change default back to '45' after testing is complete
-          # This 5-minute duration is only for testing purposes
           DURATION="${{ github.event.inputs.duration_override || '45' }}"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
-          echo "Updated test duration to $DURATION minutes"
-          grep "duration_minutes:" fuzzy-test.yml
 
       - name: Create directories
         run: |
@@ -168,9 +162,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          chmod +x scripts/determine-image-tag.sh
           if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
-            # Standard image without profiling
-            chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
               "${{ github.event.pull_request.number || '0' }}" \
@@ -180,8 +173,6 @@ jobs:
               "${{ github.token }}"
             echo "profiling=false" >> $GITHUB_OUTPUT
           else
-            # Profiling image - wait for release workflow to complete
-            chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
               "${{ github.event.pull_request.number || '0' }}" \
@@ -196,23 +187,54 @@ jobs:
       - name: Pull Docker image
         run: |
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
-          echo "Pulling image: $IMAGE"
-          docker pull "$IMAGE" || echo "Warning: Could not pre-pull image. Merobox will attempt to pull it."
+          docker pull "$IMAGE" || true
 
-      - name: Run KV Store Fuzzy Test
-        id: kv-test
-        continue-on-error: true
+      - name: Setup vmagent for metrics collection
+        id: setup-vmagent
         run: |
+          chmod +x scripts/setup-vmagent.sh
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          ./scripts/setup-vmagent.sh \
+            "kv-store" \
+            "kv-store-${SHORT_COMMIT}" \
+            "${{ github.run_id }}" \
+            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
+            "8429" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}"
+
+      - name: Run KV Store Fuzzy Test with Metrics Collection
+        id: kv-test
+        run: |
+          chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           cd workflows/fuzzy-tests/kv-store
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
-          # Note: The profiling image (merod:edge-profiling) has profiling enabled by default.
-          # The standard image (merod:edge) runs without profiling.
-
+          TEST_CASE="kv-store"
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
-          echo "Using image: $IMAGE"
 
+          VMAGENT_STARTED="false"
+          if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
+            "${{ steps.setup-vmagent.outputs.vmagent_dir }}" \
+            "${{ steps.setup-vmagent.outputs.victoria_url }}" \
+            "${{ steps.setup-vmagent.outputs.auth_enabled }}" \
+            "${{ steps.setup-vmagent.outputs.bearer_token_file }}" \
+            "8429" "fuzzy-kv-node" "4" "3001" "2"; then
+            VMAGENT_STARTED="true"
+          fi
+
+          UPDATE_PID=""
+          VMAGENT_PID=""
+          if [ "$VMAGENT_STARTED" = "true" ]; then
+            UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+            VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+          fi
           set +e
           set -o pipefail 
           merobox bootstrap run \
@@ -224,10 +246,18 @@ jobs:
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store/merobox-output.log
 
           exit_code=$?
-          set +o pipefail  
+          set +o pipefail
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          # Cleanup vmagent
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
+            "$TEST_CASE" \
+            "$UPDATE_PID" \
+            "$VMAGENT_PID" \
+            "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
+            "/tmp/vmagent-${TEST_CASE}.log"
 
           exit $exit_code
 
@@ -261,14 +291,15 @@ jobs:
             cp -r "$logdir"/* "fuzzy-test-logs/kv-store/$relpath/" 2>/dev/null || true
           done
 
-      - name: Generate profiling summary
-        if: always() && steps.image.outputs.profiling == 'true'
+      - name: Collect and upload vmagent logs
+        if: always()
         run: |
-          chmod +x scripts/profiling/generate-summary.sh
-          ./scripts/profiling/generate-summary.sh \
-            "KV Store" \
-            "profiling-data/kv-store" \
-            "profiling-reports/kv-store"
+          if [ -f /tmp/vmagent-kv-store.log ]; then
+            mkdir -p fuzzy-test-logs/kv-store
+            cp /tmp/vmagent-kv-store.log fuzzy-test-logs/kv-store/vmagent.log
+            [ -f /tmp/vmagent_scrape_kv-store.yml ] && \
+              cp /tmp/vmagent_scrape_kv-store.yml fuzzy-test-logs/kv-store/vmagent_config.yml
+          fi
 
       - name: Upload KV Store test artifacts
         if: always()
@@ -301,7 +332,7 @@ jobs:
     name: Run KV Store with Handlers Fuzzy Test with Profiling
     needs: build
     runs-on: ubuntu-24.04-8cpu
-    timeout-minutes: 150 # Extended for profiling overhead
+    timeout-minutes: 150
     outputs:
       test_passed: ${{ steps.set-result-handlers.outputs.passed }}
       exit_code: ${{ steps.handlers-test.outputs.exit_code }}
@@ -334,13 +365,9 @@ jobs:
 
       - name: Override test duration
         run: |
-          # TODO: REVERT BEFORE PR MERGE - Change default back to '45' after testing is complete
-          # This 5-minute duration is only for testing purposes
           DURATION="${{ github.event.inputs.duration_override || '45' }}"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
-          echo "Updated test duration to $DURATION minutes"
-          grep "duration_minutes:" fuzzy-test.yml
 
       - name: Create directories
         run: |
@@ -353,9 +380,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          chmod +x scripts/determine-image-tag.sh
           if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
-            # Standard image without profiling
-            chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
               "${{ github.event.pull_request.number || '0' }}" \
@@ -365,8 +391,6 @@ jobs:
               "${{ github.token }}"
             echo "profiling=false" >> $GITHUB_OUTPUT
           else
-            # Profiling image - wait for release workflow to complete
-            chmod +x scripts/determine-image-tag.sh
             ./scripts/determine-image-tag.sh \
               "${{ github.event_name }}" \
               "${{ github.event.pull_request.number || '0' }}" \
@@ -381,25 +405,56 @@ jobs:
       - name: Pull Docker image
         run: |
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
-          echo "Pulling image: $IMAGE"
-          docker pull "$IMAGE" || echo "Warning: Could not pre-pull image. Merobox will attempt to pull it."
+          docker pull "$IMAGE" || true
 
-      - name: Run Handlers Fuzzy Test
-        id: handlers-test
-        continue-on-error: true
+      - name: Setup vmagent for metrics collection
+        id: setup-vmagent-handlers
         run: |
+          chmod +x scripts/setup-vmagent.sh
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          ./scripts/setup-vmagent.sh \
+            "kv-store-with-handlers" \
+            "kv-store-with-handlers-${SHORT_COMMIT}" \
+            "${{ github.run_id }}" \
+            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
+            "8430" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}"
+
+      - name: Run Handlers Fuzzy Test with Metrics Collection
+        id: handlers-test
+        run: |
+          chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           cd workflows/fuzzy-tests/kv-store-with-handlers
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
-          # Note: The profiling image (merod:edge-profiling) has profiling enabled by default.
-          # The standard image (merod:edge) runs without profiling.
-
+          TEST_CASE="kv-store-with-handlers"
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
-          echo "Using image: $IMAGE"
 
+          VMAGENT_STARTED="false"
+          if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.vmagent_dir }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.victoria_url }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}" \
+            "${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}" \
+            "8430" "fuzzy-handlers-node" "4" "3001" "2"; then
+            VMAGENT_STARTED="true"
+          fi
+
+          UPDATE_PID=""
+          VMAGENT_PID=""
+          if [ "$VMAGENT_STARTED" = "true" ]; then
+            UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+            VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+          fi
           set +e
-          set -o pipefail  
+          set -o pipefail 
           merobox bootstrap run \
               fuzzy-test.yml \
               --image "$IMAGE" \
@@ -409,10 +464,18 @@ jobs:
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
 
           exit_code=$?
-          set +o pipefail 
+          set +o pipefail
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          # Cleanup vmagent
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
+            "$TEST_CASE" \
+            "$UPDATE_PID" \
+            "$VMAGENT_PID" \
+            "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
+            "/tmp/vmagent-${TEST_CASE}.log"
 
           exit $exit_code
 
@@ -446,14 +509,15 @@ jobs:
             cp -r "$logdir"/* "fuzzy-test-logs/kv-store-with-handlers/$relpath/" 2>/dev/null || true
           done
 
-      - name: Generate profiling summary
-        if: always() && steps.image.outputs.profiling == 'true'
+      - name: Collect and upload vmagent logs
+        if: always()
         run: |
-          chmod +x scripts/profiling/generate-summary.sh
-          ./scripts/profiling/generate-summary.sh \
-            "KV Store with Handlers" \
-            "profiling-data/kv-store-with-handlers" \
-            "profiling-reports/kv-store-with-handlers"
+          if [ -f /tmp/vmagent-kv-store-with-handlers.log ]; then
+            mkdir -p fuzzy-test-logs/kv-store-with-handlers
+            cp /tmp/vmagent-kv-store-with-handlers.log fuzzy-test-logs/kv-store-with-handlers/vmagent.log
+            [ -f /tmp/vmagent_scrape_kv-store-with-handlers.yml ] && \
+              cp /tmp/vmagent_scrape_kv-store-with-handlers.yml fuzzy-test-logs/kv-store-with-handlers/vmagent_config.yml
+          fi
 
       - name: Upload Handlers test artifacts
         if: always()
@@ -490,37 +554,31 @@ jobs:
     steps:
       - name: Generate summary
         run: |
-          echo "## Fuzzy Load Test Results with Profiling" >> $GITHUB_STEP_SUMMARY
+          echo "## Fuzzy Load Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Profiling Enabled:** ${{ github.event.inputs.enable_profiling || 'true' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Sample Frequency:** 99 Hz (default)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store Test" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.fuzzy-test-kv-store.result }}" = "skipped" ]; then
-            echo "⏭️ **SKIPPED**" >> $GITHUB_STEP_SUMMARY
+            echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.fuzzy-test-kv-store.outputs.test_passed }}" = "true" ]; then
-            echo "✅ **PASSED**" >> $GITHUB_STEP_SUMMARY
+            echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **FAILED** (exit code: ${{ needs.fuzzy-test-kv-store.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
-            echo "Check artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
+            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-kv-store.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store with Handlers Test" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.fuzzy-test-handlers.result }}" = "skipped" ]; then
-            echo "⏭️ **SKIPPED**" >> $GITHUB_STEP_SUMMARY
+            echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.fuzzy-test-handlers.outputs.test_passed }}" = "true" ]; then
-            echo "✅ **PASSED**" >> $GITHUB_STEP_SUMMARY
+            echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **FAILED** (exit code: ${{ needs.fuzzy-test-handlers.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
-            echo "Check artifacts for detailed logs and analysis." >> $GITHUB_STEP_SUMMARY
+            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-handlers.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Profiling Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "Download the following artifacts for profiling analysis:" >> $GITHUB_STEP_SUMMARY
-          echo "- **profiling-data-***: Raw profiling data (perf.data, jemalloc heaps)" >> $GITHUB_STEP_SUMMARY
-          echo "- **profiling-reports-***: Generated reports (flamegraphs, memory reports)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "💡 Use the SVG flamegraphs to identify CPU hotspots and memory reports for allocation analysis." >> $GITHUB_STEP_SUMMARY
+          echo "- profiling-data-*: Raw profiling data" >> $GITHUB_STEP_SUMMARY
+          echo "- profiling-reports-*: Generated reports (flamegraphs, memory reports)" >> $GITHUB_STEP_SUMMARY
