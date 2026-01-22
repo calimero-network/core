@@ -11,21 +11,16 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 // =============================================================================
-// Snapshot Sync Types (Phase 1)
+// Snapshot Sync Types
 // =============================================================================
 
 /// Request to negotiate a snapshot boundary for sync.
-///
-/// The responder will choose a boundary (typically current state) and return
-/// metadata needed for the requester to decide whether to proceed with
-/// snapshot sync or use an alternative sync method.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SnapshotBoundaryRequest {
     /// Context being synchronized.
     pub context_id: ContextId,
 
     /// Optional hint for boundary timestamp (nanoseconds since epoch).
-    /// Responder may ignore this in Phase 1 and always use current state.
     pub requested_cutoff_timestamp: Option<u64>,
 }
 
@@ -43,72 +38,46 @@ pub struct SnapshotBoundaryResponse {
 
     /// Peer's DAG heads at the boundary; used for fine-sync after snapshot.
     pub dag_heads: Vec<[u8; 32]>,
-
-    /// Optional uncompressed size estimate for progress reporting.
-    pub total_estimate: Option<u64>,
-
-    /// Optional Merkle tree parameters; presence enables Phase 2.
-    /// None in Phase 1.
-    pub tree_params: Option<TreeParams>,
-
-    /// Optional total leaf count for progress/UI.
-    pub leaf_count: Option<u64>,
-
-    /// Optional Merkle root for the boundary (Phase 2).
-    pub merkle_root_hash: Option<Hash>,
 }
 
 /// Request to stream snapshot pages.
-///
-/// The requester must first negotiate a boundary via `SnapshotBoundaryRequest`,
-/// then use this request to stream the actual snapshot data.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SnapshotStreamRequest {
     /// Context being synchronized.
     pub context_id: ContextId,
 
     /// Boundary root hash from the negotiated boundary.
-    /// Must match what the responder returned.
     pub boundary_root_hash: Hash,
 
     /// Maximum number of pages to send in a burst.
     pub page_limit: u16,
 
-    /// Maximum uncompressed bytes per page (plus framing/overhead).
+    /// Maximum uncompressed bytes per page.
     pub byte_limit: u32,
 
-    /// Optional cursor to resume paging from a previous session.
+    /// Optional cursor to resume paging.
     pub resume_cursor: Option<Vec<u8>>,
 }
 
 /// A page of snapshot data.
-///
-/// Contains a compressed chunk of the canonical snapshot stream.
-/// Pages are sent in order until `cursor` is `None` (completion).
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SnapshotPage {
-    /// Compressed payload (lz4_flex with size prefix).
+    /// Compressed payload (lz4).
     pub payload: Vec<u8>,
-
     /// Expected size after decompression.
     pub uncompressed_len: u32,
-
-    /// Next cursor for pagination; `None` or empty indicates completion.
+    /// Next cursor; `None` indicates completion.
     pub cursor: Option<Vec<u8>>,
-
-    /// Total number of pages in this stream session (best effort estimate).
+    /// Total pages in this stream (estimate).
     pub page_count: u64,
-
-    /// Cumulative pages sent so far.
+    /// Pages sent so far.
     pub sent_count: u64,
 }
 
 /// Cursor for resuming snapshot pagination.
-///
-/// Serialized with Borsh and passed opaquely between requests.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SnapshotCursor {
-    /// Last key hash sent in canonical order.
+    /// Last key sent in canonical order.
     pub last_key: [u8; 32],
 }
 
@@ -116,74 +85,11 @@ pub struct SnapshotCursor {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum SnapshotError {
     /// Peer's delta history is pruned; full snapshot required.
-    /// Used by the delta sync path to signal fallback.
     SnapshotRequired,
-
     /// The requested boundary is invalid or no longer available.
     InvalidBoundary,
-
-    /// Requested page size exceeds maximum allowed.
-    PageTooLarge,
-
-    /// Snapshot sync not supported by this peer.
-    Unsupported,
-
     /// Resume cursor is invalid or expired.
     ResumeCursorInvalid,
-}
-
-// =============================================================================
-// Merkle Sync Types (Phase 2 - Placeholder)
-// =============================================================================
-
-/// Merkle tree parameters for Phase 2 sync.
-///
-/// These parameters must match between peers for Merkle sync to work.
-/// If they don't match, fall back to snapshot sync.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct TreeParams {
-    /// Protocol schema version for tree params.
-    pub version: u8,
-
-    /// Hash algorithm used for leaf/internal nodes.
-    pub hash_alg: HashAlg,
-
-    /// Number of children per internal node.
-    pub fanout: u16,
-
-    /// Target uncompressed chunk size for leaves.
-    pub leaf_target_bytes: u32,
-
-    /// Snapshot encoding version to ensure deterministic bytes.
-    pub encoding_version: u16,
-
-    /// Defines canonical ordering and chunk split rules.
-    pub chunking: ChunkingSpec,
-}
-
-/// Hash algorithm for Merkle tree nodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-#[borsh(use_discriminant = true)]
-#[repr(u8)]
-pub enum HashAlg {
-    /// SHA-256 truncated to 256 bits (full hash).
-    Sha256_256 = 1,
-}
-
-/// Specification for how snapshot data is chunked.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub enum ChunkingSpec {
-    /// Sort entries by canonical key ordering before chunking.
-    BySortedKeys {
-        /// Encoding version for keys.
-        key_encoding: u16,
-        /// Encoding version for values.
-        value_encoding: u16,
-        /// Whether to include index entries.
-        include_indexes: bool,
-        /// Whether to include entity entries.
-        include_entries: bool,
-    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -281,24 +187,17 @@ pub enum InitPayload {
     DagHeadsRequest {
         context_id: ContextId,
     },
-    /// Request snapshot boundary negotiation (Phase 1)
+    /// Request snapshot boundary negotiation.
     SnapshotBoundaryRequest {
-        /// Context being synchronized.
         context_id: ContextId,
-        /// Optional hint for boundary timestamp (nanoseconds since epoch).
         requested_cutoff_timestamp: Option<u64>,
     },
-    /// Request to stream snapshot pages (Phase 1)
+    /// Request to stream snapshot pages.
     SnapshotStreamRequest {
-        /// Context being synchronized.
         context_id: ContextId,
-        /// Boundary root hash from negotiated boundary.
         boundary_root_hash: Hash,
-        /// Maximum number of pages to send in a burst.
         page_limit: u16,
-        /// Maximum uncompressed bytes per page.
         byte_limit: u32,
-        /// Optional cursor to resume paging.
         resume_cursor: Option<Vec<u8>>,
     },
 }
@@ -330,7 +229,7 @@ pub enum MessagePayload<'a> {
     ChallengeResponse {
         signature: [u8; 64],
     },
-    /// Response to SnapshotBoundaryRequest (Phase 1)
+    /// Response to SnapshotBoundaryRequest
     SnapshotBoundaryResponse {
         /// Authoritative boundary timestamp (nanoseconds since epoch).
         boundary_timestamp: u64,
@@ -338,29 +237,16 @@ pub enum MessagePayload<'a> {
         boundary_root_hash: Hash,
         /// Peer's DAG heads at the boundary.
         dag_heads: Vec<[u8; 32]>,
-        /// Optional uncompressed size estimate for progress.
-        total_estimate: Option<u64>,
-        /// Optional Merkle parameters (Phase 2).
-        tree_params: Option<TreeParams>,
-        /// Optional total leaf count.
-        leaf_count: Option<u64>,
-        /// Optional Merkle root (Phase 2).
-        merkle_root_hash: Option<Hash>,
     },
-    /// A page of snapshot data (Phase 1)
+    /// A page of snapshot data.
     SnapshotPage {
-        /// Compressed payload (lz4_flex with size prefix).
         payload: Cow<'a, [u8]>,
-        /// Expected size after decompression.
         uncompressed_len: u32,
-        /// Next cursor; None indicates completion.
         cursor: Option<Vec<u8>>,
-        /// Total pages estimate.
         page_count: u64,
-        /// Cumulative pages sent.
         sent_count: u64,
     },
-    /// Snapshot sync error (Phase 1)
+    /// Snapshot sync error.
     SnapshotError {
         error: SnapshotError,
     },

@@ -1145,9 +1145,11 @@ impl SyncManager {
                             }
                         }
                         Some(StreamMessage::Message {
-                            payload: MessagePayload::SnapshotError {
-                                error: calimero_node_primitives::sync::SnapshotError::SnapshotRequired,
-                            },
+                            payload:
+                                MessagePayload::SnapshotError {
+                                    error:
+                                        calimero_node_primitives::sync::SnapshotError::SnapshotRequired,
+                                },
                             ..
                         }) => {
                             info!(
@@ -1156,12 +1158,14 @@ impl SyncManager {
                                 "Peer's delta history is pruned, falling back to snapshot sync"
                             );
                             // Fall back to snapshot sync
-                            return self.fallback_to_snapshot_sync(
-                                context_id,
-                                our_identity,
-                                peer_id,
-                                stream,
-                            ).await;
+                            return self
+                                .fallback_to_snapshot_sync(
+                                    context_id,
+                                    our_identity,
+                                    peer_id,
+                                    stream,
+                                )
+                                .await;
                         }
                         Some(StreamMessage::Message {
                             payload: MessagePayload::DeltaNotFound,
@@ -1229,11 +1233,6 @@ impl SyncManager {
     }
 
     /// Fall back to full snapshot sync when delta sync is not possible.
-    ///
-    /// This is triggered when:
-    /// - Peer returns SnapshotRequired error (delta history pruned)
-    /// - Delta sync fails repeatedly
-    /// - Node is bootstrapping without any state
     async fn fallback_to_snapshot_sync(
         &self,
         context_id: ContextId,
@@ -1241,81 +1240,33 @@ impl SyncManager {
         peer_id: PeerId,
         _stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
-        info!(
-            %context_id,
-            %peer_id,
-            "Initiating snapshot sync (full state transfer)"
-        );
+        info!(%context_id, %peer_id, "Initiating snapshot sync");
 
-        // Request snapshot sync using the dedicated snapshot sync method
-        // Note: This opens a new stream since the existing one may be in inconsistent state
-        match self.request_snapshot_sync(context_id, peer_id).await {
-            Ok(result) => {
-                info!(
-                    %context_id,
-                    applied_records = result.applied_records,
-                    boundary_root_hash = %result.boundary_root_hash,
-                    "Snapshot sync completed successfully"
-                );
+        let result = self.request_snapshot_sync(context_id, peer_id).await?;
+        info!(%context_id, records = result.applied_records, "Snapshot sync completed");
 
-                // Now perform fine-sync to catch any deltas since the snapshot boundary
-                // Use the dag_heads from the boundary to sync forward
-                if !result.dag_heads.is_empty() {
-                    info!(
-                        %context_id,
-                        dag_heads_count = result.dag_heads.len(),
-                        "Starting fine-sync from snapshot boundary"
-                    );
-
-                    // Open a new stream for fine-sync
-                    let mut fine_sync_stream = self.network_client.open_stream(peer_id).await?;
-
-                    // Request deltas starting from the boundary DAG heads
-                    // This uses the existing delta sync flow
-                    if let Err(e) = self
-                        .fine_sync_from_boundary(
-                            context_id,
-                            peer_id,
-                            our_identity,
-                            &result.dag_heads,
-                            &mut fine_sync_stream,
-                        )
-                        .await
-                    {
-                        warn!(
-                            ?e,
-                            %context_id,
-                            "Fine-sync after snapshot failed, state may be slightly behind"
-                        );
-                    }
-                }
-
-                Ok(SyncProtocol::SnapshotSync)
-            }
-            Err(e) => {
-                error!(
-                    ?e,
-                    %context_id,
-                    "Snapshot sync failed"
-                );
-                Err(e)
+        // Fine-sync to catch any deltas since the snapshot boundary
+        if !result.dag_heads.is_empty() {
+            let mut stream = self.network_client.open_stream(peer_id).await?;
+            if let Err(e) = self
+                .fine_sync_from_boundary(context_id, peer_id, our_identity, &mut stream)
+                .await
+            {
+                warn!(?e, %context_id, "Fine-sync failed, state may be slightly behind");
             }
         }
+
+        Ok(SyncProtocol::SnapshotSync)
     }
 
-    /// Perform fine-sync from snapshot boundary to catch up to latest state.
-    ///
-    /// Uses the existing DagHeadsRequest flow to fetch any deltas that
-    /// occurred after the snapshot boundary.
+    /// Fine-sync from snapshot boundary to catch up to latest state.
     async fn fine_sync_from_boundary(
         &self,
         context_id: ContextId,
         peer_id: PeerId,
         our_identity: PublicKey,
-        boundary_dag_heads: &[[u8; 32]],
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        // Get or create DeltaStore for this context
         let delta_store = self
             .node_state
             .delta_stores
@@ -1330,85 +1281,43 @@ impl SyncManager {
             })
             .clone();
 
-        // Load persisted deltas if this is a fresh store
-        if let Err(e) = delta_store.load_persisted_deltas().await {
-            warn!(
-                ?e,
-                %context_id,
-                "Failed to load persisted deltas during fine-sync"
-            );
-        }
+        let _ = delta_store.load_persisted_deltas().await;
 
-        // Request current DAG heads from peer (may be different from boundary)
         let request_msg = StreamMessage::Init {
             context_id,
             party_id: our_identity,
             payload: InitPayload::DagHeadsRequest { context_id },
-            next_nonce: {
-                use rand::Rng;
-                rand::thread_rng().gen()
-            },
+            next_nonce: rand::random(),
         };
-
         self.send(stream, &request_msg, None).await?;
 
         let response = self.recv(stream, None).await?;
 
-        match response {
-            Some(StreamMessage::Message {
-                payload:
-                    MessagePayload::DagHeadsResponse {
-                        dag_heads: current_heads,
-                        root_hash,
-                    },
-                ..
-            }) => {
-                info!(
-                    %context_id,
-                    current_heads_count = current_heads.len(),
-                    boundary_heads_count = boundary_dag_heads.len(),
-                    %root_hash,
-                    "Received current DAG heads for fine-sync"
-                );
-
-                // Find heads we don't have
-                let mut missing_heads: Vec<[u8; 32]> = Vec::new();
-                for head in &current_heads {
-                    // Check if we already have this delta
-                    if !delta_store.has_delta(head).await {
-                        missing_heads.push(*head);
-                    }
+        if let Some(StreamMessage::Message {
+            payload: MessagePayload::DagHeadsResponse { dag_heads, .. },
+            ..
+        }) = response
+        {
+            let mut missing = Vec::new();
+            for head in &dag_heads {
+                if !delta_store.has_delta(head).await {
+                    missing.push(*head);
                 }
+            }
 
-                if missing_heads.is_empty() {
-                    info!(%context_id, "Fine-sync: no missing heads, already up to date");
-                    return Ok(());
-                }
-
-                info!(
-                    %context_id,
-                    missing_heads_count = missing_heads.len(),
-                    "Fine-sync: requesting missing heads"
-                );
-
-                // Request missing deltas recursively
+            if !missing.is_empty() {
                 self.request_missing_deltas(
                     context_id,
-                    missing_heads,
+                    missing,
                     peer_id,
                     delta_store,
                     our_identity,
                 )
                 .await?;
-
-                info!(%context_id, "Fine-sync completed successfully");
-                Ok(())
-            }
-            _ => {
-                warn!(%context_id, "Unexpected response during fine-sync DAG heads request");
-                Ok(())
             }
         }
+
+        Ok(())
     }
 
     pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
