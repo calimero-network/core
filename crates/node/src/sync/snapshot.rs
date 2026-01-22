@@ -331,54 +331,79 @@ impl SyncManager {
             };
             super::stream::send(stream, &msg, None).await?;
 
-            let response = super::stream::recv(stream, None, self.sync_config.timeout).await?;
+            // Receive all pages in the burst (server sends up to page_limit pages per request)
+            let mut pages_in_burst = 0;
+            loop {
+                let response = super::stream::recv(stream, None, self.sync_config.timeout).await?;
 
-            let Some(StreamMessage::Message { payload, .. }) = response else {
-                eyre::bail!("Unexpected response during snapshot streaming");
-            };
+                let Some(StreamMessage::Message { payload, .. }) = response else {
+                    eyre::bail!("Unexpected response during snapshot streaming");
+                };
 
-            match payload {
-                MessagePayload::SnapshotPage {
-                    payload,
-                    uncompressed_len,
-                    cursor,
-                    ..
-                } => {
-                    // Handle empty snapshot (no entries)
-                    if payload.is_empty() && uncompressed_len == 0 {
-                        return Ok(total_applied);
-                    }
+                match payload {
+                    MessagePayload::SnapshotPage {
+                        payload,
+                        uncompressed_len,
+                        cursor,
+                        page_count,
+                        sent_count,
+                    } => {
+                        // Handle empty snapshot (no entries)
+                        if payload.is_empty() && uncompressed_len == 0 {
+                            return Ok(total_applied);
+                        }
 
-                    let decompressed = lz4_flex::decompress_size_prepended(&payload)
-                        .map_err(|e| eyre::eyre!("Decompress failed: {}", e))?;
+                        let decompressed = lz4_flex::decompress_size_prepended(&payload)
+                            .map_err(|e| eyre::eyre!("Decompress failed: {}", e))?;
 
-                    if decompressed.len() != uncompressed_len as usize {
-                        eyre::bail!(
-                            "Size mismatch: {} vs {}",
-                            uncompressed_len,
-                            decompressed.len()
+                        if decompressed.len() != uncompressed_len as usize {
+                            eyre::bail!(
+                                "Size mismatch: {} vs {}",
+                                uncompressed_len,
+                                decompressed.len()
+                            );
+                        }
+
+                        let records = decode_snapshot_records(&decompressed)?;
+                        let mut handle = self.context_client.datastore_handle();
+                        for (state_key, value) in &records {
+                            let key = ContextStateKey::new(context_id, *state_key);
+                            let slice: Slice<'_> = value.clone().into();
+                            handle.put(&key, &ContextStateValue::from(slice))?;
+                        }
+
+                        total_applied += records.len();
+                        pages_in_burst += 1;
+
+                        debug!(
+                            %context_id,
+                            pages_in_burst,
+                            page_count,
+                            sent_count,
+                            total_applied,
+                            "Applied snapshot page"
                         );
-                    }
 
-                    let records = decode_snapshot_records(&decompressed)?;
-                    let mut handle = self.context_client.datastore_handle();
-                    for (state_key, value) in &records {
-                        let key = ContextStateKey::new(context_id, *state_key);
-                        let slice: Slice<'_> = value.clone().into();
-                        handle.put(&key, &ContextStateValue::from(slice))?;
-                    }
+                        // Check if this is the last page in this burst
+                        let is_last_in_burst = sent_count == page_count;
 
-                    total_applied += records.len();
-
-                    match cursor {
-                        None => return Ok(total_applied),
-                        Some(c) => resume_cursor = Some(c),
+                        if is_last_in_burst {
+                            // Check if there are more pages to fetch
+                            match cursor {
+                                None => return Ok(total_applied),
+                                Some(c) => {
+                                    resume_cursor = Some(c);
+                                    break; // Exit inner loop, request more pages
+                                }
+                            }
+                        }
+                        // Continue receiving more pages in this burst
                     }
+                    MessagePayload::SnapshotError { error } => {
+                        eyre::bail!("Snapshot streaming failed: {:?}", error);
+                    }
+                    _ => eyre::bail!("Unexpected payload during snapshot streaming"),
                 }
-                MessagePayload::SnapshotError { error } => {
-                    eyre::bail!("Snapshot streaming failed: {:?}", error);
-                }
-                _ => eyre::bail!("Unexpected payload during snapshot streaming"),
             }
         }
     }
