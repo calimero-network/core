@@ -7,7 +7,9 @@ use calimero_store::iter::{DBIter, Iter};
 use calimero_store::slice::Slice;
 use calimero_store::tx::{Operation, Transaction};
 use eyre::{bail, Result as EyreResult};
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Options, ReadOptions, Snapshot, WriteBatch, DB};
+use rocksdb::{
+    ColumnFamily, DBRawIteratorWithThreadMode, Options, ReadOptions, Snapshot, WriteBatch, DB,
+};
 use strum::IntoEnumIterator;
 
 #[derive(Debug)]

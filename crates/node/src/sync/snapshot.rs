@@ -9,8 +9,8 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_storage::env::time_now;
-use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
 use calimero_store::key::ContextState as ContextStateKey;
+use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
 use calimero_store::slice::Slice;
 use calimero_store::types::ContextState as ContextStateValue;
 use eyre::Result;
@@ -543,7 +543,6 @@ impl SyncManager {
             None => Ok(None),
         }
     }
-
 }
 
 /// Result of a successful snapshot sync.
