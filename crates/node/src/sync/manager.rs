@@ -79,25 +79,6 @@ impl SyncManager {
     }
 
     pub async fn start(mut self) {
-        // Check for incomplete syncs from previous runs (crash recovery)
-        match self.get_incomplete_sync_contexts().await {
-            Ok(incomplete) if !incomplete.is_empty() => {
-                warn!(
-                    count = incomplete.len(),
-                    contexts = ?incomplete,
-                    "Found contexts with incomplete snapshot syncs, marking for re-sync"
-                );
-                // These contexts will be picked up by the normal sync loop
-                // and re-synced since they have inconsistent state
-            }
-            Ok(_) => {
-                debug!("No incomplete snapshot syncs found");
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to check for incomplete syncs");
-            }
-        }
-
         let mut next_sync = time::interval(self.sync_config.frequency);
 
         next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);

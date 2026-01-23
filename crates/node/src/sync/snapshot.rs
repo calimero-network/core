@@ -407,8 +407,7 @@ impl SyncManager {
                         // Handle empty snapshot (no entries)
                         if payload.is_empty() && uncompressed_len == 0 {
                             // Empty snapshot - delete all existing keys and clear marker
-                            self.cleanup_stale_keys(context_id, &existing_keys, &received_keys)
-                                .await?;
+                            self.cleanup_stale_keys(context_id, &existing_keys, &received_keys)?;
                             self.clear_sync_in_progress_marker(context_id)?;
                             return Ok(total_applied);
                         }
@@ -457,8 +456,7 @@ impl SyncManager {
                                         context_id,
                                         &existing_keys,
                                         &received_keys,
-                                    )
-                                    .await?;
+                                    )?;
                                     self.clear_sync_in_progress_marker(context_id)?;
                                     return Ok(total_applied);
                                 }
@@ -479,40 +477,24 @@ impl SyncManager {
         }
     }
 
-    /// Clean up keys that existed before sync but weren't in the snapshot.
-    ///
-    /// This is called after all snapshot pages have been successfully received
-    /// and applied. It removes any stale keys that were in the old state but
-    /// not in the new snapshot, completing the atomic state replacement.
-    async fn cleanup_stale_keys(
+    /// Delete keys that existed before sync but weren't in the snapshot.
+    fn cleanup_stale_keys(
         &self,
         context_id: ContextId,
         existing_keys: &std::collections::HashSet<[u8; 32]>,
         received_keys: &std::collections::HashSet<[u8; 32]>,
     ) -> Result<()> {
-        // Find keys that exist locally but weren't in the snapshot
-        let stale_keys: Vec<[u8; 32]> = existing_keys
-            .difference(received_keys)
-            .copied()
-            .collect();
-
-        if stale_keys.is_empty() {
-            debug!(%context_id, "No stale keys to clean up");
-            return Ok(());
-        }
-
-        debug!(
-            %context_id,
-            stale_count = stale_keys.len(),
-            "Cleaning up stale keys after snapshot sync"
-        );
-
-        // Delete stale keys
         let mut handle = self.context_client.datastore_handle();
-        for state_key in stale_keys {
-            handle.delete(&ContextStateKey::new(context_id, state_key))?;
+        let mut deleted = 0;
+
+        for state_key in existing_keys.difference(received_keys) {
+            handle.delete(&ContextStateKey::new(context_id, *state_key))?;
+            deleted += 1;
         }
 
+        if deleted > 0 {
+            debug!(%context_id, deleted, "Cleaned up stale keys");
+        }
         Ok(())
     }
 
@@ -562,29 +544,6 @@ impl SyncManager {
         }
     }
 
-    /// Get all contexts with incomplete snapshot syncs.
-    ///
-    /// Used on startup to detect contexts that need re-sync due to
-    /// interrupted sync operations (e.g., crash, timeout).
-    pub async fn get_incomplete_sync_contexts(&self) -> Result<Vec<ContextId>> {
-        use futures_util::StreamExt;
-
-        let mut incomplete = Vec::new();
-
-        // Iterate through all context IDs and check for sync markers
-        let context_ids = self.context_client.get_context_ids(None);
-        futures_util::pin_mut!(context_ids);
-
-        while let Some(result) = context_ids.next().await {
-            if let Ok(context_id) = result {
-                if self.check_sync_in_progress(context_id)?.is_some() {
-                    incomplete.push(context_id);
-                }
-            }
-        }
-
-        Ok(incomplete)
-    }
 }
 
 /// Result of a successful snapshot sync.
