@@ -25,6 +25,17 @@ pub trait ReadLayer: Layer {
         reason = "TODO: This should be implemented"
     )]
     fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>>;
+
+    /// Returns an iterator with a consistent snapshot view.
+    ///
+    /// The iterator sees a frozen point-in-time view of the database,
+    /// unaffected by concurrent writes. Essential for operations that
+    /// need to iterate over consistent state (e.g., snapshot generation).
+    #[expect(
+        clippy::iter_not_returning_iterator,
+        reason = "TODO: This should be implemented"
+    )]
+    fn iter_snapshot<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>>;
 }
 
 pub trait WriteLayer<'a>: Layer {
@@ -72,6 +83,10 @@ impl ReadLayer for Store {
 
     fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
         Ok(self.db.iter(K::column())?.structured_key())
+    }
+
+    fn iter_snapshot<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
+        Ok(self.db.iter_snapshot(K::column())?.structured_key())
     }
 }
 

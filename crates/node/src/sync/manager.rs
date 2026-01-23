@@ -79,6 +79,25 @@ impl SyncManager {
     }
 
     pub async fn start(mut self) {
+        // Check for incomplete syncs from previous runs (crash recovery)
+        match self.get_incomplete_sync_contexts().await {
+            Ok(incomplete) if !incomplete.is_empty() => {
+                warn!(
+                    count = incomplete.len(),
+                    contexts = ?incomplete,
+                    "Found contexts with incomplete snapshot syncs, marking for re-sync"
+                );
+                // These contexts will be picked up by the normal sync loop
+                // and re-synced since they have inconsistent state
+            }
+            Ok(_) => {
+                debug!("No incomplete snapshot syncs found");
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to check for incomplete syncs");
+            }
+        }
+
         let mut next_sync = time::interval(self.sync_config.frequency);
 
         next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -702,11 +721,22 @@ impl SyncManager {
     ) -> eyre::Result<Option<SyncProtocol>> {
         let is_uninitialized = *context.root_hash == [0; 32];
 
-        if is_uninitialized {
+        // Check for incomplete sync from a previous run (crash recovery)
+        let has_incomplete_sync = self.check_sync_in_progress(context_id)?.is_some();
+        if has_incomplete_sync {
+            warn!(
+                %context_id,
+                "Detected incomplete snapshot sync from previous run, forcing re-sync"
+            );
+        }
+
+        if is_uninitialized || has_incomplete_sync {
             info!(
                 %context_id,
                 %chosen_peer,
-                "Node is uninitialized, checking if peer has state for snapshot sync"
+                is_uninitialized,
+                has_incomplete_sync,
+                "Node needs snapshot sync, checking if peer has state"
             );
 
             // Query peer's state to decide sync strategy

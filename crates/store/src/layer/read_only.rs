@@ -36,4 +36,8 @@ where
     fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
         self.inner.iter()
     }
+
+    fn iter_snapshot<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
+        self.inner.iter_snapshot()
+    }
 }

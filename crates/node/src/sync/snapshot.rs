@@ -9,6 +9,7 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_storage::env::time_now;
+use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::slice::Slice;
 use calimero_store::types::ContextState as ContextStateValue;
@@ -23,6 +24,10 @@ pub const DEFAULT_PAGE_BYTE_LIMIT: u32 = 64 * 1024;
 
 /// Maximum pages to send in a single burst.
 pub const DEFAULT_PAGE_LIMIT: u16 = 16;
+
+/// Scope for sync-in-progress markers in the Generic column.
+/// Exactly 16 bytes to match SCOPE_SIZE.
+const SYNC_IN_PROGRESS_SCOPE: [u8; SCOPE_SIZE] = *b"sync-in-progres\0";
 
 impl SyncManager {
     /// Handle incoming snapshot boundary request from a peer.
@@ -108,14 +113,22 @@ impl SyncManager {
             None => None,
         };
 
-        self.stream_snapshot_pages(context_id, start_cursor, page_limit, byte_limit, stream)
-            .await
+        self.stream_snapshot_pages(
+            context_id,
+            boundary_root_hash,
+            start_cursor,
+            page_limit,
+            byte_limit,
+            stream,
+        )
+        .await
     }
 
     /// Stream snapshot pages to a peer.
     async fn stream_snapshot_pages(
         &self,
         context_id: ContextId,
+        boundary_root_hash: Hash,
         start_cursor: Option<SnapshotCursor>,
         page_limit: u16,
         byte_limit: u32,
@@ -129,6 +142,23 @@ impl SyncManager {
             page_limit,
             byte_limit,
         )?;
+
+        // Post-iteration recheck: verify root hash hasn't changed during page generation.
+        // This is a safety guardrail in addition to the RocksDB snapshot iterator.
+        let current_context = self.context_client.get_context(&context_id)?;
+        if let Some(ctx) = current_context {
+            if ctx.root_hash != boundary_root_hash {
+                warn!(
+                    %context_id,
+                    expected = %boundary_root_hash,
+                    actual = %ctx.root_hash,
+                    "Root hash changed during snapshot generation"
+                );
+                return self
+                    .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
+                    .await;
+            }
+        }
 
         info!(%context_id, pages = pages.len(), total_entries, "Streaming snapshot");
 
@@ -281,6 +311,28 @@ impl SyncManager {
     }
 
     /// Request and apply snapshot pages from a peer.
+    ///
+    /// This method uses an atomic approach to avoid leaving the node in a
+    /// partially cleared state if the stream fails:
+    /// 1. Set a sync-in-progress marker for crash recovery detection
+    /// 2. Receive all pages and write new keys (overwriting existing ones)
+    /// 3. Track which keys we received from the snapshot
+    /// 4. After completion, delete any old keys not in the new snapshot
+    /// 5. Remove the sync-in-progress marker
+    ///
+    /// # Concurrency Assumptions
+    ///
+    /// This method assumes no concurrent writes occur to the context's state during
+    /// snapshot sync. This is safe because snapshot sync is only used in two cases:
+    ///
+    /// 1. **Bootstrap**: The node is uninitialized and has no delta store processing
+    ///    transactions yet.
+    /// 2. **Crash recovery**: The sync-in-progress marker forces re-sync before normal
+    ///    operation resumes, and the sync manager initiates this before the context
+    ///    is ready for transaction processing.
+    ///
+    /// If concurrent writes were to occur, keys written during sync would not be
+    /// cleaned up and could cause state divergence.
     async fn request_and_apply_snapshot_pages(
         &self,
         context_id: ContextId,
@@ -288,6 +340,7 @@ impl SyncManager {
         stream: &mut Stream,
     ) -> Result<usize> {
         use calimero_node_primitives::sync::InitPayload;
+        use std::collections::HashSet;
 
         let identities = self
             .context_client
@@ -301,18 +354,21 @@ impl SyncManager {
             eyre::bail!("No owned identity found for context: {}", context_id);
         };
 
-        // Clear existing state before applying snapshot
-        {
+        // Set sync-in-progress marker for crash recovery detection
+        self.set_sync_in_progress_marker(context_id, &boundary.boundary_root_hash)?;
+
+        // Collect existing keys BEFORE receiving any pages
+        // We'll use this to determine which keys to delete after sync completes
+        let existing_keys: HashSet<[u8; 32]> = {
             let handle = self.context_client.datastore_handle();
-            let keys = collect_context_state_keys(&handle, context_id)?;
-            debug!(%context_id, count = keys.len(), "Clearing existing state");
+            collect_context_state_keys(&handle, context_id)?
+                .into_iter()
+                .collect()
+        };
+        debug!(%context_id, existing_count = existing_keys.len(), "Collected existing state keys");
 
-            let mut tx = self.context_client.datastore_handle();
-            for state_key in keys {
-                tx.delete(&ContextStateKey::new(context_id, state_key))?;
-            }
-        }
-
+        // Track keys received from the snapshot (to know what to keep)
+        let mut received_keys: HashSet<[u8; 32]> = HashSet::new();
         let mut total_applied = 0;
         let mut resume_cursor: Option<Vec<u8>> = None;
 
@@ -350,6 +406,10 @@ impl SyncManager {
                     } => {
                         // Handle empty snapshot (no entries)
                         if payload.is_empty() && uncompressed_len == 0 {
+                            // Empty snapshot - delete all existing keys and clear marker
+                            self.cleanup_stale_keys(context_id, &existing_keys, &received_keys)
+                                .await?;
+                            self.clear_sync_in_progress_marker(context_id)?;
                             return Ok(total_applied);
                         }
 
@@ -370,6 +430,7 @@ impl SyncManager {
                             let key = ContextStateKey::new(context_id, *state_key);
                             let slice: Slice<'_> = value.clone().into();
                             handle.put(&key, &ContextStateValue::from(slice))?;
+                            received_keys.insert(*state_key);
                         }
 
                         total_applied += records.len();
@@ -390,7 +451,17 @@ impl SyncManager {
                         if is_last_in_burst {
                             // Check if there are more pages to fetch
                             match cursor {
-                                None => return Ok(total_applied),
+                                None => {
+                                    // All pages received - cleanup stale keys and clear marker
+                                    self.cleanup_stale_keys(
+                                        context_id,
+                                        &existing_keys,
+                                        &received_keys,
+                                    )
+                                    .await?;
+                                    self.clear_sync_in_progress_marker(context_id)?;
+                                    return Ok(total_applied);
+                                }
                                 Some(c) => {
                                     resume_cursor = Some(c);
                                     break; // Exit inner loop, request more pages
@@ -406,6 +477,113 @@ impl SyncManager {
                 }
             }
         }
+    }
+
+    /// Clean up keys that existed before sync but weren't in the snapshot.
+    ///
+    /// This is called after all snapshot pages have been successfully received
+    /// and applied. It removes any stale keys that were in the old state but
+    /// not in the new snapshot, completing the atomic state replacement.
+    async fn cleanup_stale_keys(
+        &self,
+        context_id: ContextId,
+        existing_keys: &std::collections::HashSet<[u8; 32]>,
+        received_keys: &std::collections::HashSet<[u8; 32]>,
+    ) -> Result<()> {
+        // Find keys that exist locally but weren't in the snapshot
+        let stale_keys: Vec<[u8; 32]> = existing_keys
+            .difference(received_keys)
+            .copied()
+            .collect();
+
+        if stale_keys.is_empty() {
+            debug!(%context_id, "No stale keys to clean up");
+            return Ok(());
+        }
+
+        debug!(
+            %context_id,
+            stale_count = stale_keys.len(),
+            "Cleaning up stale keys after snapshot sync"
+        );
+
+        // Delete stale keys
+        let mut handle = self.context_client.datastore_handle();
+        for state_key in stale_keys {
+            handle.delete(&ContextStateKey::new(context_id, state_key))?;
+        }
+
+        Ok(())
+    }
+
+    /// Set a marker indicating snapshot sync is in progress for this context.
+    ///
+    /// This marker is used for crash recovery - if present on startup, the
+    /// context's state may be inconsistent and needs to be re-synced.
+    fn set_sync_in_progress_marker(
+        &self,
+        context_id: ContextId,
+        boundary_root_hash: &Hash,
+    ) -> Result<()> {
+        use calimero_store::types::GenericData;
+
+        let key = GenericKey::new(SYNC_IN_PROGRESS_SCOPE, *context_id);
+        let value_bytes = borsh::to_vec(boundary_root_hash)?;
+        let value: GenericData<'_> = Slice::from(value_bytes).into();
+        let mut handle = self.context_client.datastore_handle();
+        handle.put(&key, &value)?;
+        debug!(%context_id, "Set sync-in-progress marker");
+        Ok(())
+    }
+
+    /// Clear the sync-in-progress marker after successful sync completion.
+    fn clear_sync_in_progress_marker(&self, context_id: ContextId) -> Result<()> {
+        let key = GenericKey::new(SYNC_IN_PROGRESS_SCOPE, *context_id);
+        let mut handle = self.context_client.datastore_handle();
+        handle.delete(&key)?;
+        debug!(%context_id, "Cleared sync-in-progress marker");
+        Ok(())
+    }
+
+    /// Check if a context has an incomplete snapshot sync (marker present).
+    ///
+    /// Returns the boundary root hash that was being synced, if a marker exists.
+    pub fn check_sync_in_progress(&self, context_id: ContextId) -> Result<Option<Hash>> {
+        let key = GenericKey::new(SYNC_IN_PROGRESS_SCOPE, *context_id);
+        let handle = self.context_client.datastore_handle();
+        let value_opt = handle.get(&key)?;
+        match value_opt {
+            Some(value) => {
+                let bytes: Vec<u8> = value.as_ref().to_vec();
+                let hash: Hash = borsh::from_slice(&bytes)?;
+                Ok(Some(hash))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get all contexts with incomplete snapshot syncs.
+    ///
+    /// Used on startup to detect contexts that need re-sync due to
+    /// interrupted sync operations (e.g., crash, timeout).
+    pub async fn get_incomplete_sync_contexts(&self) -> Result<Vec<ContextId>> {
+        use futures_util::StreamExt;
+
+        let mut incomplete = Vec::new();
+
+        // Iterate through all context IDs and check for sync markers
+        let context_ids = self.context_client.get_context_ids(None);
+        futures_util::pin_mut!(context_ids);
+
+        while let Some(result) = context_ids.next().await {
+            if let Ok(context_id) = result {
+                if self.check_sync_in_progress(context_id)?.is_some() {
+                    incomplete.push(context_id);
+                }
+            }
+        }
+
+        Ok(incomplete)
     }
 }
 
@@ -426,6 +604,9 @@ struct SnapshotBoundary {
 }
 
 /// Generate snapshot pages. Returns (pages, next_cursor, total_entries).
+///
+/// Uses a snapshot iterator to ensure consistent reads even if writes occur
+/// during iteration. The snapshot provides a frozen point-in-time view.
 fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     handle: &calimero_store::Handle<L>,
     context_id: ContextId,
@@ -433,7 +614,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     page_limit: u16,
     byte_limit: u32,
 ) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64)> {
-    let mut iter = handle.iter::<ContextStateKey>()?;
+    // Use snapshot iterator for consistent reads during iteration
+    let mut iter = handle.iter_snapshot::<ContextStateKey>()?;
 
     // Collect entries for this context
     let mut entries: Vec<([u8; 32], Vec<u8>)> = Vec::new();

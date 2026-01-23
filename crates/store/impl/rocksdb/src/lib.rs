@@ -7,7 +7,7 @@ use calimero_store::iter::{DBIter, Iter};
 use calimero_store::slice::Slice;
 use calimero_store::tx::{Operation, Transaction};
 use eyre::{bail, Result as EyreResult};
-use rocksdb::{ColumnFamily, DBRawIterator, Options, WriteBatch, DB};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Options, ReadOptions, Snapshot, WriteBatch, DB};
 use strum::IntoEnumIterator;
 
 #[derive(Debug)]
@@ -119,14 +119,77 @@ impl Database<'_> for RocksDB {
 
         Ok(())
     }
+
+    fn iter_snapshot(&self, col: Column) -> EyreResult<Iter<'_>> {
+        let cf_handle = self.try_cf_handle(col)?;
+        let snapshot = self.db.snapshot();
+
+        // Create read options with the snapshot pinned
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_snapshot(&snapshot);
+
+        // Create iterator with snapshot-pinned read options
+        let mut iter = self.db.raw_iterator_cf_opt(cf_handle, read_opts);
+        iter.seek_to_first();
+
+        Ok(Iter::new(SnapshotIterator {
+            ready: true,
+            iter,
+            _snapshot: snapshot,
+        }))
+    }
 }
 
 struct DBIterator<'a> {
     ready: bool,
-    iter: DBRawIterator<'a>,
+    iter: DBRawIteratorWithThreadMode<'a, DB>,
+}
+
+/// Iterator that holds a RocksDB snapshot for consistent reads.
+///
+/// The snapshot is stored alongside the iterator to ensure it outlives
+/// the iterator. The iterator sees a frozen point-in-time view of the DB.
+struct SnapshotIterator<'a> {
+    ready: bool,
+    /// The raw iterator over the snapshot.
+    /// SAFETY: `iter` must be declared before `_snapshot` because Rust drops
+    /// struct fields in declaration order (top-to-bottom). The iterator holds
+    /// references into the snapshot's data, so it must be dropped first.
+    iter: DBRawIteratorWithThreadMode<'a, DB>,
+    /// Snapshot must outlive the iterator. Declared after `iter` to ensure
+    /// correct drop order.
+    _snapshot: Snapshot<'a>,
 }
 
 impl DBIter for DBIterator<'_> {
+    fn seek(&mut self, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>> {
+        self.iter.seek(key);
+
+        self.ready = false;
+
+        Ok(self.iter.key().map(Into::into))
+    }
+
+    fn next(&mut self) -> EyreResult<Option<Slice<'_>>> {
+        if self.ready {
+            self.ready = false;
+        } else {
+            self.iter.next();
+        }
+
+        Ok(self.iter.key().map(Into::into))
+    }
+
+    fn read(&self) -> EyreResult<Slice<'_>> {
+        let Some(value) = self.iter.value() else {
+            bail!("missing value for iterator entry {:?}", self.iter.key());
+        };
+
+        Ok(value.into())
+    }
+}
+
+impl DBIter for SnapshotIterator<'_> {
     fn seek(&mut self, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>> {
         self.iter.seek(key);
 
