@@ -6,14 +6,14 @@ Build distributed applications with automatic CRDT synchronization and conflict-
 
 ```rust
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshSerialize, BorshDeserialize};
-use calimero_storage::collections::UnorderedMap;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 #[app::state]
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct MyApp {
-    items: UnorderedMap<String, String>,
+    items: UnorderedMap<String, LwwRegister<String>>,
 }
 
 #[app::logic]
@@ -24,14 +24,15 @@ impl MyApp {
             items: UnorderedMap::new(),
         }
     }
-    
+
     pub fn add_item(&mut self, key: String, value: String) -> app::Result<()> {
-        self.items.insert(key, value)?;
+        self.items.insert(key, value.into())?;
+
         Ok(())
     }
-    
+
     pub fn get_item(&self, key: &str) -> app::Result<Option<String>> {
-        self.items.get(key).map_err(Into::into)
+        Ok(self.items.get(key)?.map(|v| v.get().clone()))
     }
 }
 ```
