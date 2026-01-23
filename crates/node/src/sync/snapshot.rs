@@ -189,7 +189,15 @@ impl SyncManager {
             let cursor = if is_last {
                 None
             } else if i == (page_count as usize - 1) {
-                next_cursor.as_ref().map(|c| borsh::to_vec(c).unwrap())
+                match next_cursor.as_ref().map(borsh::to_vec).transpose() {
+                    Ok(value) => value,
+                    Err(e) => {
+                        warn!(%context_id, error = %e, "Failed to encode snapshot cursor");
+                        return self
+                            .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
+                            .await;
+                    }
+                }
             } else {
                 None
             };
@@ -246,6 +254,7 @@ impl SyncManager {
             .force_root_hash(&context_id, boundary.boundary_root_hash)?;
         self.context_client
             .update_dag_heads(&context_id, boundary.dag_heads.clone())?;
+        self.clear_sync_in_progress_marker(context_id)?;
 
         info!(%context_id, applied_records, "Snapshot sync completed");
 
@@ -318,7 +327,7 @@ impl SyncManager {
     /// 2. Receive all pages and write new keys (overwriting existing ones)
     /// 3. Track which keys we received from the snapshot
     /// 4. After completion, delete any old keys not in the new snapshot
-    /// 5. Remove the sync-in-progress marker
+    /// 5. Remove the sync-in-progress marker (after metadata update)
     ///
     /// # Concurrency Assumptions
     ///
@@ -406,9 +415,8 @@ impl SyncManager {
                     } => {
                         // Handle empty snapshot (no entries)
                         if payload.is_empty() && uncompressed_len == 0 {
-                            // Empty snapshot - delete all existing keys and clear marker
+                            // Empty snapshot - delete all existing keys
                             self.cleanup_stale_keys(context_id, &existing_keys, &received_keys)?;
-                            self.clear_sync_in_progress_marker(context_id)?;
                             return Ok(total_applied);
                         }
 
@@ -451,13 +459,12 @@ impl SyncManager {
                             // Check if there are more pages to fetch
                             match cursor {
                                 None => {
-                                    // All pages received - cleanup stale keys and clear marker
+                                    // All pages received - cleanup stale keys
                                     self.cleanup_stale_keys(
                                         context_id,
                                         &existing_keys,
                                         &received_keys,
                                     )?;
-                                    self.clear_sync_in_progress_marker(context_id)?;
                                     return Ok(total_applied);
                                 }
                                 Some(c) => {
