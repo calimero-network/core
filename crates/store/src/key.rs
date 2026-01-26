@@ -24,7 +24,7 @@ pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
 use component::KeyComponents;
 pub use context::{ContextConfig, ContextDagDelta, ContextIdentity, ContextMeta, ContextState};
-pub use generic::Generic;
+pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 

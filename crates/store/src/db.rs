@@ -46,4 +46,16 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     // todo! redesign this, each DB should return a transaction
     // todo! modelled similar to Iter - {put, delete, clear}
     fn apply(&self, tx: &Transaction<'a>) -> EyreResult<()>;
+
+    /// Returns an iterator over a column with a consistent snapshot view.
+    ///
+    /// The iterator sees a frozen point-in-time view of the database,
+    /// unaffected by concurrent writes. This is essential for operations
+    /// that need to iterate over a consistent state (e.g., snapshot generation).
+    ///
+    /// The default implementation falls back to `iter()` for databases that
+    /// don't support snapshots natively.
+    fn iter_snapshot(&self, col: Column) -> EyreResult<Iter<'_>> {
+        self.iter(col)
+    }
 }

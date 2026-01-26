@@ -10,6 +10,88 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 
+// =============================================================================
+// Snapshot Sync Types
+// =============================================================================
+
+/// Request to negotiate a snapshot boundary for sync.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotBoundaryRequest {
+    /// Context being synchronized.
+    pub context_id: ContextId,
+
+    /// Optional hint for boundary timestamp (nanoseconds since epoch).
+    pub requested_cutoff_timestamp: Option<u64>,
+}
+
+/// Response to snapshot boundary negotiation.
+///
+/// Contains the authoritative boundary state that the responder will serve
+/// for the duration of this sync session.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotBoundaryResponse {
+    /// Authoritative boundary timestamp (nanoseconds since epoch).
+    pub boundary_timestamp: u64,
+
+    /// Root hash for the boundary state; must be verified after apply.
+    pub boundary_root_hash: Hash,
+
+    /// Peer's DAG heads at the boundary; used for fine-sync after snapshot.
+    pub dag_heads: Vec<[u8; 32]>,
+}
+
+/// Request to stream snapshot pages.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotStreamRequest {
+    /// Context being synchronized.
+    pub context_id: ContextId,
+
+    /// Boundary root hash from the negotiated boundary.
+    pub boundary_root_hash: Hash,
+
+    /// Maximum number of pages to send in a burst.
+    pub page_limit: u16,
+
+    /// Maximum uncompressed bytes per page.
+    pub byte_limit: u32,
+
+    /// Optional cursor to resume paging.
+    pub resume_cursor: Option<Vec<u8>>,
+}
+
+/// A page of snapshot data.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotPage {
+    /// Compressed payload (lz4).
+    pub payload: Vec<u8>,
+    /// Expected size after decompression.
+    pub uncompressed_len: u32,
+    /// Next cursor; `None` indicates completion.
+    pub cursor: Option<Vec<u8>>,
+    /// Total pages in this stream (estimate).
+    pub page_count: u64,
+    /// Pages sent so far.
+    pub sent_count: u64,
+}
+
+/// Cursor for resuming snapshot pagination.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotCursor {
+    /// Last key sent in canonical order.
+    pub last_key: [u8; 32],
+}
+
+/// Errors that can occur during snapshot sync.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub enum SnapshotError {
+    /// Peer's delta history is pruned; full snapshot required.
+    SnapshotRequired,
+    /// The requested boundary is invalid or no longer available.
+    InvalidBoundary,
+    /// Resume cursor is invalid or expired.
+    ResumeCursorInvalid,
+}
+
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 #[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
@@ -90,7 +172,7 @@ pub enum StreamMessage<'a> {
     OpaqueError,
 }
 
-#[derive(Copy, Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum InitPayload {
     BlobShare {
         blob_id: BlobId,
@@ -104,6 +186,19 @@ pub enum InitPayload {
     /// Request peer's current DAG heads for catchup
     DagHeadsRequest {
         context_id: ContextId,
+    },
+    /// Request snapshot boundary negotiation.
+    SnapshotBoundaryRequest {
+        context_id: ContextId,
+        requested_cutoff_timestamp: Option<u64>,
+    },
+    /// Request to stream snapshot pages.
+    SnapshotStreamRequest {
+        context_id: ContextId,
+        boundary_root_hash: Hash,
+        page_limit: u16,
+        byte_limit: u32,
+        resume_cursor: Option<Vec<u8>>,
     },
 }
 
@@ -133,5 +228,26 @@ pub enum MessagePayload<'a> {
     /// Response to challenge with signature (Ed25519 signature is 64 bytes)
     ChallengeResponse {
         signature: [u8; 64],
+    },
+    /// Response to SnapshotBoundaryRequest
+    SnapshotBoundaryResponse {
+        /// Authoritative boundary timestamp (nanoseconds since epoch).
+        boundary_timestamp: u64,
+        /// Root hash for the boundary state.
+        boundary_root_hash: Hash,
+        /// Peer's DAG heads at the boundary.
+        dag_heads: Vec<[u8; 32]>,
+    },
+    /// A page of snapshot data.
+    SnapshotPage {
+        payload: Cow<'a, [u8]>,
+        uncompressed_len: u32,
+        cursor: Option<Vec<u8>>,
+        page_count: u64,
+        sent_count: u64,
+    },
+    /// Snapshot sync error.
+    SnapshotError {
+        error: SnapshotError,
     },
 }

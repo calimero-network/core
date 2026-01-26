@@ -61,6 +61,18 @@ where
             value: None,
         }))
     }
+
+    fn iter_snapshot<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
+        // For temporal layer, snapshot iteration still needs to consider
+        // the shadow transaction, so we use the same logic as iter()
+        // but with a snapshot iterator for the underlying layer
+        Ok(Iter::new(TemporalIterator {
+            inner: self.inner.iter_snapshot::<K>()?,
+            shadow: &self.shadow,
+            shadow_iter: None,
+            value: None,
+        }))
+    }
 }
 
 impl<'entry, L> WriteLayer<'entry> for Temporal<'_, 'entry, L>

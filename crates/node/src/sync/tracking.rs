@@ -17,6 +17,8 @@ pub(crate) enum SyncProtocol {
     None,
     /// DAG catchup via heads request (for newly joined nodes)
     DagCatchup,
+    /// Full snapshot sync (used when delta sync is not possible)
+    SnapshotSync,
 }
 
 /// Tracks sync state and history for a context.
