@@ -167,6 +167,15 @@ impl<'a, D: Database<'a>> Database<'a> for EncryptedDatabase<D> {
         )))
     }
 
+    fn iter_snapshot(&self, col: Column) -> Result<Iter<'_>> {
+        let inner_iter = self.inner.iter_snapshot(col)?;
+        // Wrap snapshot iterator with decryption
+        Ok(Iter::new(DecryptingIter::new(
+            Box::new(inner_iter),
+            self.key_manager.clone(),
+        )))
+    }
+
     fn apply(&self, tx: &Transaction<'a>) -> Result<()> {
         // Build a new transaction with encrypted values
         let mut encrypted_tx = Transaction::default();

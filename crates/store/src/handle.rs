@@ -61,6 +61,25 @@ impl<L: ReadLayer> Handle<L> {
     > {
         Ok(self.inner.iter()?.structured_value())
     }
+
+    /// Returns an iterator with a consistent snapshot view.
+    ///
+    /// The iterator sees a frozen point-in-time view of the database,
+    /// unaffected by concurrent writes. Essential for operations that
+    /// need to iterate over consistent state (e.g., snapshot generation).
+    #[expect(
+        clippy::iter_not_returning_iterator,
+        reason = "TODO: This should be implemented"
+    )]
+    #[expect(clippy::type_complexity, reason = "Acceptable here")]
+    pub fn iter_snapshot<E: Entry<Key: FromKeyParts>>(
+        &self,
+    ) -> Result<
+        Iter<'_, Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>,
+        EntryError<'_, E>,
+    > {
+        Ok(self.inner.iter_snapshot()?.structured_value())
+    }
 }
 
 impl<'a, L: WriteLayer<'a>> Handle<L> {
