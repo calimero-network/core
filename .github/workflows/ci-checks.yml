@@ -13,6 +13,8 @@ on:
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 permissions:
   contents: read
@@ -27,11 +29,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Setup rust cache
-        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          key: ci-checks
-          cache-on-failure: true
+          toolchain: stable
+          components: rustfmt, clippy
+          shared-key: ci-checks
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build
         run: |
@@ -39,10 +43,7 @@ jobs:
           cargo build --workspace --all-targets --tests
 
       - name: Cargo format
-        run: |
-          rustup component add rustfmt
-
-          cargo fmt --check
+        run: cargo fmt --check
 
       - name: Cargo clippy
         if: ${{ !cancelled() }}
@@ -64,5 +65,3 @@ jobs:
           # Pin cargo-deny to 0.16.3 for compatibility with Rust 1.88.0 (from rust-toolchain.toml)
           cargo install cargo-deny --version 0.16.3 --locked
           cargo deny check licenses sources
-
-

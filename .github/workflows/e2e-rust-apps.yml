@@ -1,0 +1,231 @@
+name: E2E - Rust Apps
+
+# Tests all Rust SDK apps using locally-built Docker image.
+# Fast PR testing (~10 min) - builds amd64 binary + container locally.
+# Self-contained: doesn't depend on release.yml
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - ".github/workflows/e2e-rust-apps.yml"
+
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - ".github/workflows/e2e-rust-apps.yml"
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CALIMERO_CONTRACTS_VERSION: "latest"
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  build-and-test:
+    name: Build & Test (amd64)
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-rust-apps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Build merod binary and local Docker image (amd64 only)
+      - name: Build local merod image
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build all apps (needed for workflow tests)
+      - name: Build apps
+        run: ./scripts/build-all-apps.sh
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox-pypi
+
+      - name: Download Contracts
+        uses: ./.github/actions/download-contracts
+
+      # Run merobox workflows using the local image
+      - name: Run All Workflows
+        id: run_workflows
+        run: |
+          mkdir -p docker-logs
+          cd apps
+          failed_workflows=()
+          for workflow in */workflows/*.yml */workflows/*.yaml; do
+              if [ -f "$workflow" ]; then
+                  app_dir=$(dirname "$(dirname "$workflow")")
+                  workflow_file=$(basename "$workflow")
+                  max_attempts=2
+                  attempt=1
+                  success=false
+                  
+                  while [ $attempt -le $max_attempts ]; do
+                      if [ $attempt -gt 1 ]; then
+                          merobox stop --all || true
+                          merobox nuke --force || true
+                          sleep 2
+                      fi
+                      
+                      # Use local image instead of GHCR
+                      if (
+                          cd "$app_dir"
+                          merobox bootstrap run \
+                              "workflows/$workflow_file" \
+                              --image merod:local \
+                              --e2e-mode \
+                              --near-devnet \
+                              --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
+                      ); then
+                          success=true
+                          break
+                      else
+                          attempt=$((attempt + 1))
+                      fi
+                  done
+                  
+                  # Collect logs
+                  workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
+                  echo "Collecting Docker logs for workflow: $workflow (id: $workflow_id)"
+                  for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          echo "Collecting logs from container: $container"
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
+                      fi
+                  done
+                  
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  if [ "$success" = false ]; then
+                      failed_workflows+=("$workflow")
+                  fi
+                  sleep 2
+              fi
+          done
+
+          if [ ${#failed_workflows[@]} -gt 0 ]; then
+              echo "has_failures=true" >> $GITHUB_OUTPUT
+              printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
+          else
+              echo "has_failures=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Failed Workflows
+        if: steps.run_workflows.outputs.has_failures == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-failed-workflows
+          path: apps/failed_workflows.txt
+          retention-days: 1
+
+      - name: Upload Workflow Data Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-data-${{ github.sha }}
+          path: |
+            apps/*/res/*.wasm
+            apps/*/res/abi.json
+            apps/*/res/*.mpk
+            apps/*/res/state-schema.json
+            apps/*/data/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-docker-logs-${{ github.sha }}
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Fail if workflows failed
+        if: steps.run_workflows.outputs.has_failures == 'true'
+        run: exit 1
+
+  comment:
+    name: Report Failed Workflows
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: Check if main job failed or was cancelled
+        id: check_status
+        run: |
+          if [ "${{ needs.build-and-test.result }}" != "success" ]; then
+            echo "job_failed=true" >> $GITHUB_OUTPUT
+            if [ "${{ needs.build-and-test.result }}" == "cancelled" ]; then
+              echo "was_cancelled=true" >> $GITHUB_OUTPUT
+            else
+              echo "was_cancelled=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "job_failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download Failed Workflows
+        id: download
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: e2e-rust-apps-failed-workflows
+
+      - name: Prepare Failure Comment
+        if: steps.download.outcome == 'success'
+        run: |
+          failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+          message="## E2E Rust Apps Failed
+
+          The following workflow(s) failed after retries:
+          $failed_list
+
+          Please check the workflow logs for more details."
+
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag e2e-rust-apps-report \
+            --arg mode recreate \
+            --arg message "$message" \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        if: steps.download.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload-rust-apps
+          path: payload.json
+
+      - name: Fail if main job failed or was cancelled
+        if: steps.check_status.outputs.job_failed == 'true'
+        run: |
+          if [ "${{ steps.check_status.outputs.was_cancelled }}" == "true" ]; then
+            echo "Workflow was cancelled"
+          else
+            echo "Workflow failed"
+          fi
+          exit 1
