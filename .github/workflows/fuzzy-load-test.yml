@@ -45,40 +45,26 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUST_LOG: info,calimero_=debug
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
   build:
     name: Build Apps
-    runs-on: big-machine
-    outputs:
-      cache-key: ${{ steps.cache-key.outputs.key }}
+    runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: stable
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Generate cache key
-        id: cache-key
-        run: echo "key=${{ runner.os }}-fuzzy-${{ github.sha }}" >> $GITHUB_OUTPUT
+          shared-key: fuzzy-load-test
+          # Scheduled runs always save cache to keep it fresh
+          save-if: "true"
 
       - name: Download NEAR contracts
-        run: |
-          ./scripts/download-contracts.sh
+        uses: ./.github/actions/download-contracts
 
       - name: Build kv-store app
         run: |
@@ -101,14 +87,16 @@ jobs:
           test -f apps/kv-store/res/kv_store.wasm
           test -f apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
 
-      - name: Cache build artifacts
-        uses: actions/cache@v4
+      # Use artifacts for same-run handoff between jobs (faster than cache for this use case)
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
+          name: fuzzy-test-build-artifacts
           path: |
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             contracts/near
-          key: ${{ steps.cache-key.outputs.key }}
+          retention-days: 1
 
   fuzzy-test-kv-store:
     name: Run KV Store Fuzzy Test with Profiling
@@ -123,27 +111,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
-        uses: actions/cache@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            apps/kv-store/res/*.wasm
-            apps/kv-store-with-handlers/res/*.wasm
-            contracts/near
-          key: ${{ needs.build.outputs.cache-key }}
+          name: fuzzy-test-build-artifacts
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Clone merobox
-        run: |
-          git clone https://github.com/calimero-network/merobox.git
-
-      - name: Install merobox
-        run: |
-          pip install -e ./merobox
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox-pypi
 
       - name: Override test duration
         run: |
@@ -341,27 +315,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifacts
-        uses: actions/cache@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            apps/kv-store/res/*.wasm
-            apps/kv-store-with-handlers/res/*.wasm
-            contracts/near
-          key: ${{ needs.build.outputs.cache-key }}
+          name: fuzzy-test-build-artifacts
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Clone merobox
-        run: |
-          git clone https://github.com/calimero-network/merobox.git
-
-      - name: Install merobox
-        run: |
-          pip install -e ./merobox
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox-pypi
 
       - name: Override test duration
         run: |

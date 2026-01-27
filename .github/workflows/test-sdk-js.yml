@@ -59,25 +59,13 @@ jobs:
               with:
                   node-version: ${{ env.NODE_VERSION }}
 
-            - name: Setup Python
-              uses: actions/setup-python@v4
+            - name: Setup merobox
+              uses: ./.github/actions/setup-merobox-pypi
               with:
                   python-version: ${{ env.PYTHON_VERSION }}
 
-            - name: Clone merobox
-              run: |
-                  git clone https://github.com/calimero-network/merobox.git
-
-            - name: Install merobox
-              run: |
-                  pip install -e ./merobox
-
-            - name: Verify merobox installation
-              run: |
-                  merobox --version
-
             - name: Download Contracts
-              run: ./scripts/download-contracts.sh
+              uses: ./.github/actions/download-contracts
 
             - name: Clone SDK JS repository
               run: |

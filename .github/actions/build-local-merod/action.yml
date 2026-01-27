@@ -1,0 +1,45 @@
+name: Build Local Merod
+description: "Build merod/meroctl binaries and create a local Docker image (amd64 only)"
+
+inputs:
+  image-tag:
+    description: "Tag for the local Docker image"
+    required: false
+    default: "merod:local"
+
+outputs:
+  image:
+    description: "The local Docker image name:tag"
+    value: ${{ inputs.image-tag }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Build merod binary
+      shell: bash
+      env:
+        CALIMERO_WEBUI_FETCH_TOKEN: ${{ env.CALIMERO_WEBUI_FETCH_TOKEN }}
+        CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ env.CALIMERO_AUTH_FRONTEND_FETCH_TOKEN }}
+      run: |
+        echo "Building merod and meroctl binaries for x86_64-linux..."
+        cargo build -p merod -p meroctl --release --target x86_64-unknown-linux-gnu
+
+    - name: Build local Docker image
+      shell: bash
+      run: |
+        echo "Creating local Docker image: ${{ inputs.image-tag }}"
+        
+        mkdir -p bin/amd64
+        cp target/x86_64-unknown-linux-gnu/release/merod bin/amd64/
+        cp target/x86_64-unknown-linux-gnu/release/meroctl bin/amd64/
+        
+        # Build local image using prebuilt Dockerfile
+        docker build \
+          -f .github/workflows/deps/prebuilt.Dockerfile \
+          -t ${{ inputs.image-tag }} \
+          --build-arg TARGETARCH=amd64 \
+          .
+        
+        # Verify image was built
+        echo "Built image:"
+        docker images ${{ inputs.image-tag }}

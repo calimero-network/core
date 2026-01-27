@@ -1,0 +1,25 @@
+name: Setup Merobox from PyPI
+description: "Setup Python and install merobox from PyPI"
+
+inputs:
+  python-version:
+    description: "Python version to install"
+    required: false
+    default: "3.11"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+
+    - name: Install merobox from PyPI
+      shell: bash
+      run: pip install merobox
+
+    - name: Verify merobox installation
+      shell: bash
+      run: merobox --version
