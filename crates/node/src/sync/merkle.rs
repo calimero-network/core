@@ -23,6 +23,11 @@ use tracing::debug;
 
 use super::snapshot::CanonicalRecord;
 
+/// Check if a hash represents an empty Merkle tree (all zeros).
+fn is_empty_tree_hash(hash: &Hash) -> bool {
+    hash.is_zero()
+}
+
 /// A computed Merkle tree over snapshot chunks.
 #[derive(Clone, Debug)]
 pub struct MerkleTree {
@@ -140,6 +145,40 @@ impl MerkleTree {
     /// Get total number of leaves.
     pub fn leaf_count(&self) -> u64 {
         self.chunks.len() as u64
+    }
+
+    /// Get the range of leaf indices covered by a node (inclusive).
+    ///
+    /// For a leaf node (level 0), returns (index, index).
+    /// For an internal node, computes the first and last leaf indices in its subtree.
+    pub fn get_leaf_index_range(&self, id: &NodeId) -> (u64, u64) {
+        if id.level == 0 {
+            return (id.index, id.index);
+        }
+
+        let fanout = self.params.fanout as u64;
+        // First leaf index: traverse down to the leftmost leaf
+        let first_leaf = id.index * fanout.pow(id.level as u32);
+        // Last leaf index: rightmost leaf in subtree, clamped to actual leaf count
+        let last_leaf = ((id.index + 1) * fanout.pow(id.level as u32) - 1)
+            .min(self.leaf_count().saturating_sub(1));
+
+        (first_leaf, last_leaf)
+    }
+
+    /// Get the key range covered by a node's subtree.
+    ///
+    /// Returns None if the node covers no valid leaves.
+    pub fn get_subtree_key_range(&self, id: &NodeId) -> Option<([u8; 32], [u8; 32])> {
+        let (first_leaf, last_leaf) = self.get_leaf_index_range(id);
+
+        let first_chunk = self.get_chunk(first_leaf)?;
+        let last_chunk = self.get_chunk(last_leaf)?;
+
+        let start: [u8; 32] = first_chunk.start_key.as_slice().try_into().ok()?;
+        let end: [u8; 32] = last_chunk.end_key.as_slice().try_into().ok()?;
+
+        Some((start, end))
     }
 }
 
@@ -549,6 +588,28 @@ impl SyncManager {
             });
         }
 
+        // Handle empty remote tree: delete all local state
+        if is_empty_tree_hash(&boundary.merkle_root_hash) {
+            info!(%context_id, "Remote tree is empty, deleting all local state");
+            let deleted = self.delete_all_context_state(context_id)?;
+            return Ok(MerkleSyncResult {
+                chunks_transferred: 0,
+                records_applied: deleted,
+            });
+        }
+
+        // Handle empty local tree: need to fetch all from remote
+        // When local is empty, the traversal approach doesn't work correctly because
+        // local_tree.root_id() won't match the remote tree's structure.
+        // Fall back to snapshot sync for this case.
+        if is_empty_tree_hash(&local_tree.root_hash) {
+            info!(
+                %context_id,
+                "Local tree is empty, falling back to snapshot sync for full state transfer"
+            );
+            eyre::bail!("Local tree is empty - use snapshot sync instead of Merkle sync");
+        }
+
         // Send MerkleSyncRequest
         let init_msg = StreamMessage::Init {
             context_id,
@@ -567,7 +628,7 @@ impl SyncManager {
         super::stream::send(stream, &init_msg, None).await?;
 
         // Perform BFS traversal to find and fetch mismatched leaves
-        let result = self
+        let (mut result, covered_ranges) = self
             .perform_merkle_traversal(context_id, stream, &local_tree, &boundary.tree_params)
             .await?;
 
@@ -581,29 +642,57 @@ impl SyncManager {
         };
         super::stream::send(stream, &done_msg, None).await?;
 
+        // Delete any local keys that fall outside the remote tree's key ranges.
+        // This handles the case where local state has keys the remote doesn't have.
+        let orphaned_deleted = self.delete_orphaned_keys(context_id, &covered_ranges)?;
+        result.records_applied += orphaned_deleted;
+
+        // Verify final state matches expected root hash
+        let final_tree = MerkleTree::build(&handle, context_id, &boundary.tree_params)?;
+        if final_tree.root_hash != boundary.merkle_root_hash {
+            warn!(
+                %context_id,
+                expected = %boundary.merkle_root_hash,
+                actual = %final_tree.root_hash,
+                "Post-sync Merkle root verification failed"
+            );
+            eyre::bail!(
+                "Merkle sync verification failed: expected root {}, got {}",
+                boundary.merkle_root_hash,
+                final_tree.root_hash
+            );
+        }
+
         info!(
             %context_id,
             chunks_transferred = result.chunks_transferred,
             records_applied = result.records_applied,
-            "Merkle sync completed"
+            orphaned_deleted,
+            verified_root = %final_tree.root_hash,
+            "Merkle sync completed and verified"
         );
 
         Ok(result)
     }
 
     /// Perform BFS traversal to find mismatched nodes and fetch leaf chunks.
+    ///
+    /// Returns the sync result and all key ranges covered by the remote tree.
+    /// The key ranges include both fetched chunks and matching local chunks.
     async fn perform_merkle_traversal(
         &self,
         context_id: ContextId,
         stream: &mut Stream,
         local_tree: &MerkleTree,
         tree_params: &TreeParams,
-    ) -> Result<MerkleSyncResult> {
+    ) -> Result<(MerkleSyncResult, Vec<([u8; 32], [u8; 32])>)> {
         let mut pending_nodes: Vec<NodeId> = vec![local_tree.root_id()];
         let mut pending_leaves: Vec<u64> = Vec::new();
         let mut chunks_transferred = 0usize;
         let mut records_applied = 0usize;
         let mut sqx = Sequencer::default();
+        // Track all key ranges covered by the remote tree
+        let mut covered_ranges: Vec<([u8; 32], [u8; 32])> = Vec::new();
 
         // BFS: process nodes level by level
         while !pending_nodes.is_empty() || !pending_leaves.is_empty() {
@@ -647,7 +736,13 @@ impl SyncManager {
 
                             match local_hash {
                                 Some(lh) if lh == remote_digest.hash => {
-                                    // Match - skip this subtree
+                                    // Match - skip this subtree, but track its key range
+                                    // This works for both leaf nodes and internal nodes
+                                    if let Some(range) =
+                                        local_tree.get_subtree_key_range(&remote_digest.id)
+                                    {
+                                        covered_ranges.push(range);
+                                    }
                                 }
                                 _ => {
                                     // Mismatch - drill down
@@ -708,6 +803,13 @@ impl SyncManager {
                         frame: MerkleSyncFrame::LeafReply { leaves: chunks },
                     } => {
                         for chunk in chunks {
+                            // Track the key range covered by this chunk
+                            if let (Ok(start), Ok(end)) = (
+                                chunk.start_key.as_slice().try_into(),
+                                chunk.end_key.as_slice().try_into(),
+                            ) {
+                                covered_ranges.push((start, end));
+                            }
                             let applied = self.apply_merkle_chunk(context_id, &chunk)?;
                             records_applied += applied;
                             chunks_transferred += 1;
@@ -725,10 +827,13 @@ impl SyncManager {
             }
         }
 
-        Ok(MerkleSyncResult {
-            chunks_transferred,
-            records_applied,
-        })
+        Ok((
+            MerkleSyncResult {
+                chunks_transferred,
+                records_applied,
+            },
+            covered_ranges,
+        ))
     }
 
     /// Apply a Merkle chunk by replacing the key range.
@@ -792,6 +897,83 @@ impl SyncManager {
         );
 
         Ok(records.len())
+    }
+
+    /// Delete all state entries for a context.
+    ///
+    /// Used when the remote tree is empty or when cleaning up orphaned keys.
+    fn delete_all_context_state(&self, context_id: ContextId) -> Result<usize> {
+        use calimero_store::key::ContextState as ContextStateKey;
+
+        let mut handle = self.context_client.datastore_handle();
+
+        let keys_to_delete: Vec<[u8; 32]> = {
+            let mut iter = handle.iter::<ContextStateKey>()?;
+            let mut keys = Vec::new();
+            for (key_result, _) in iter.entries() {
+                let key = key_result?;
+                if key.context_id() == context_id {
+                    keys.push(key.state_key());
+                }
+            }
+            keys
+        };
+
+        let count = keys_to_delete.len();
+        for state_key in keys_to_delete {
+            handle.delete(&ContextStateKey::new(context_id, state_key))?;
+        }
+
+        info!(%context_id, deleted = count, "Deleted all context state");
+        Ok(count)
+    }
+
+    /// Delete context state keys that fall outside any of the given chunk ranges.
+    ///
+    /// This handles the case where local keys exist outside the key ranges
+    /// covered by the remote tree's chunks.
+    fn delete_orphaned_keys(
+        &self,
+        context_id: ContextId,
+        chunk_ranges: &[([u8; 32], [u8; 32])],
+    ) -> Result<usize> {
+        use calimero_store::key::ContextState as ContextStateKey;
+
+        if chunk_ranges.is_empty() {
+            // No chunks received means remote tree was empty - handled elsewhere
+            return Ok(0);
+        }
+
+        let mut handle = self.context_client.datastore_handle();
+
+        let keys_to_delete: Vec<[u8; 32]> = {
+            let mut iter = handle.iter::<ContextStateKey>()?;
+            let mut keys = Vec::new();
+            for (key_result, _) in iter.entries() {
+                let key = key_result?;
+                if key.context_id() == context_id {
+                    let state_key = key.state_key();
+                    // Check if key falls within any chunk range
+                    let in_range = chunk_ranges
+                        .iter()
+                        .any(|(start, end)| state_key >= *start && state_key <= *end);
+                    if !in_range {
+                        keys.push(state_key);
+                    }
+                }
+            }
+            keys
+        };
+
+        let count = keys_to_delete.len();
+        for state_key in keys_to_delete {
+            handle.delete(&ContextStateKey::new(context_id, state_key))?;
+        }
+
+        if count > 0 {
+            info!(%context_id, deleted = count, "Deleted orphaned keys outside chunk ranges");
+        }
+        Ok(count)
     }
 }
 
