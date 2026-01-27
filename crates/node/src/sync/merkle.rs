@@ -1067,6 +1067,8 @@ impl SyncManager {
     /// Apply a compressed Merkle chunk by replacing the key range.
     ///
     /// This deletes all local keys in [start_key, end_key] and writes the chunk records.
+    /// Merkle sync is reconciliatory, not additive: any local-only data in mismatched
+    /// ranges is discarded to match the responder's boundary snapshot.
     fn apply_merkle_chunk(
         &self,
         context_id: ContextId,

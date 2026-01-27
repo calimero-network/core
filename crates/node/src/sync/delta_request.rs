@@ -316,6 +316,8 @@ impl SyncManager {
                     delta_id = ?delta_id,
                     "Requested delta not found in RocksDB or DeltaStore"
                 );
+                // TODO(pruning): if we can determine this delta is pruned/outside retention,
+                // return SnapshotError::SnapshotRequired to trigger Merkle/snapshot fallback.
                 MessagePayload::DeltaNotFound
             }
         } else {
