@@ -48,10 +48,28 @@ impl SyncManager {
             }
         };
 
+        // Build Merkle tree to get Phase 2 parameters
+        let tree_params = calimero_node_primitives::sync::TreeParams::default();
+        let handle = self.context_client.datastore_handle();
+        let merkle_info = match super::merkle::MerkleTree::build(&handle, context_id, &tree_params)
+        {
+            Ok(tree) => Some((tree.root_hash, tree.leaf_count())),
+            Err(e) => {
+                debug!(%context_id, error = %e, "Failed to build Merkle tree for boundary response");
+                None
+            }
+        };
+
+        let (merkle_root_hash, leaf_count) = match merkle_info {
+            Some((root, count)) => (Some(root), Some(count)),
+            None => (None, None),
+        };
+
         info!(
             %context_id,
             root_hash = %context.root_hash,
             heads_count = context.dag_heads.len(),
+            merkle_enabled = merkle_root_hash.is_some(),
             "Sending snapshot boundary response"
         );
 
@@ -62,6 +80,9 @@ impl SyncManager {
                 boundary_timestamp: time_now(),
                 boundary_root_hash: context.root_hash,
                 dag_heads: context.dag_heads.clone(),
+                tree_params: merkle_root_hash.map(|_| tree_params),
+                leaf_count,
+                merkle_root_hash,
             },
             next_nonce: super::helpers::generate_nonce(),
         };
@@ -307,10 +328,16 @@ impl SyncManager {
                 boundary_timestamp,
                 boundary_root_hash,
                 dag_heads,
+                tree_params,
+                leaf_count,
+                merkle_root_hash,
             } => Ok(SnapshotBoundary {
                 boundary_timestamp,
                 boundary_root_hash,
                 dag_heads,
+                tree_params,
+                leaf_count,
+                merkle_root_hash,
             }),
             MessagePayload::SnapshotError { error } => {
                 eyre::bail!("Snapshot boundary request failed: {:?}", error);
@@ -566,6 +593,15 @@ struct SnapshotBoundary {
     boundary_timestamp: u64,
     boundary_root_hash: Hash,
     dag_heads: Vec<[u8; 32]>,
+    /// Phase 2: Merkle tree parameters (if supported by peer).
+    #[allow(dead_code)]
+    tree_params: Option<calimero_node_primitives::sync::TreeParams>,
+    /// Phase 2: Total leaf count for progress tracking.
+    #[allow(dead_code)]
+    leaf_count: Option<u64>,
+    /// Phase 2: Merkle root hash for verification.
+    #[allow(dead_code)]
+    merkle_root_hash: Option<Hash>,
 }
 
 /// Generate snapshot pages. Returns (pages, next_cursor, total_entries).
@@ -638,14 +674,17 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
 }
 
 /// A record in the snapshot stream (key + value).
+///
+/// Used for canonical encoding of snapshot data in both Phase 1 (full snapshot)
+/// and Phase 2 (Merkle sync) protocols.
 #[derive(BorshSerialize, BorshDeserialize)]
-struct CanonicalRecord {
-    key: [u8; 32],
-    value: Vec<u8>,
+pub struct CanonicalRecord {
+    pub key: [u8; 32],
+    pub value: Vec<u8>,
 }
 
 /// Decode snapshot records from page payload.
-fn decode_snapshot_records(payload: &[u8]) -> Result<Vec<([u8; 32], Vec<u8>)>> {
+pub fn decode_snapshot_records(payload: &[u8]) -> Result<Vec<([u8; 32], Vec<u8>)>> {
     let mut records = Vec::new();
     let mut offset = 0;
 

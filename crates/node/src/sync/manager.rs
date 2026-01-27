@@ -1251,6 +1251,56 @@ impl SyncManager {
         peer_id: PeerId,
         _stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
+        // Check if we have local state (Merkle sync requires non-zero local state)
+        let context = self.context_client.get_context(&context_id)?;
+        let has_local_state = context
+            .as_ref()
+            .map(|c| *c.root_hash != [0u8; 32])
+            .unwrap_or(false);
+
+        // Check for incomplete sync marker (force snapshot if present)
+        let has_incomplete_sync = self.check_sync_in_progress(context_id)?.is_some();
+
+        // Try Merkle sync if we have local state and no incomplete sync marker
+        if has_local_state && !has_incomplete_sync {
+            info!(%context_id, %peer_id, "Attempting Merkle sync (have local state)");
+
+            // Request boundary to check if peer supports Merkle sync
+            let mut stream = self.network_client.open_stream(peer_id).await?;
+            match self
+                .try_merkle_sync(context_id, peer_id, our_identity, &mut stream)
+                .await
+            {
+                Ok(result) => {
+                    info!(
+                        %context_id,
+                        chunks = result.chunks_transferred,
+                        records = result.records_applied,
+                        "Merkle sync completed"
+                    );
+
+                    // Fine-sync to catch any deltas since the boundary
+                    let mut stream = self.network_client.open_stream(peer_id).await?;
+                    if let Err(e) = self
+                        .fine_sync_from_boundary(context_id, peer_id, our_identity, &mut stream)
+                        .await
+                    {
+                        warn!(?e, %context_id, "Fine-sync after Merkle sync failed");
+                    }
+
+                    return Ok(SyncProtocol::MerkleSync);
+                }
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        error = %e,
+                        "Merkle sync failed, falling back to snapshot sync"
+                    );
+                }
+            }
+        }
+
+        // Fall back to full snapshot sync
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 
         let result = self.request_snapshot_sync(context_id, peer_id).await?;
@@ -1268,6 +1318,78 @@ impl SyncManager {
         }
 
         Ok(SyncProtocol::SnapshotSync)
+    }
+
+    /// Attempt Merkle sync with a peer.
+    ///
+    /// Returns Ok if Merkle sync succeeded, Err if we should fall back to snapshot.
+    async fn try_merkle_sync(
+        &self,
+        context_id: ContextId,
+        _peer_id: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<super::merkle::MerkleSyncResult> {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+        // Request snapshot boundary to check for Merkle support
+        let msg = StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::SnapshotBoundaryRequest {
+                context_id,
+                requested_cutoff_timestamp: None,
+            },
+            next_nonce: super::helpers::generate_nonce(),
+        };
+        super::stream::send(stream, &msg, None).await?;
+
+        let response = super::stream::recv(stream, None, self.sync_config.timeout).await?;
+
+        let Some(StreamMessage::Message { payload, .. }) = response else {
+            eyre::bail!("Unexpected response to snapshot boundary request");
+        };
+
+        match payload {
+            MessagePayload::SnapshotBoundaryResponse {
+                boundary_root_hash,
+                dag_heads,
+                tree_params: Some(tree_params),
+                merkle_root_hash: Some(merkle_root_hash),
+                ..
+            } => {
+                // Peer supports Merkle sync - verify params are compatible
+                let our_params = calimero_node_primitives::sync::TreeParams::default();
+                if !our_params.is_compatible(&tree_params) {
+                    eyre::bail!("Incompatible tree params");
+                }
+
+                let boundary = super::merkle::MerkleSyncBoundary {
+                    boundary_root_hash,
+                    tree_params,
+                    merkle_root_hash,
+                    dag_heads,
+                };
+
+                self.request_merkle_sync(context_id, our_identity, &boundary, stream)
+                    .await
+            }
+            MessagePayload::SnapshotBoundaryResponse {
+                tree_params: None, ..
+            } => {
+                eyre::bail!("Peer does not support Merkle sync (no tree_params)");
+            }
+            MessagePayload::SnapshotBoundaryResponse {
+                merkle_root_hash: None,
+                ..
+            } => {
+                eyre::bail!("Peer does not support Merkle sync (no merkle_root_hash)");
+            }
+            MessagePayload::SnapshotError { error } => {
+                eyre::bail!("Snapshot boundary request failed: {:?}", error);
+            }
+            _ => eyre::bail!("Unexpected payload in snapshot boundary response"),
+        }
     }
 
     /// Fine-sync from snapshot boundary to catch up to latest state.
@@ -1470,6 +1592,29 @@ impl SyncManager {
                     page_limit,
                     byte_limit,
                     resume_cursor,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::MerkleSyncRequest {
+                context_id: requested_context_id,
+                boundary_root_hash,
+                tree_params,
+                page_limit,
+                byte_limit,
+                resume_cursor,
+                requester_root_hash,
+            } => {
+                // Handle Merkle sync request from peer
+                self.handle_merkle_sync_request(
+                    requested_context_id,
+                    boundary_root_hash,
+                    tree_params,
+                    page_limit,
+                    byte_limit,
+                    resume_cursor,
+                    requester_root_hash,
                     stream,
                     nonce,
                 )
