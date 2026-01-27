@@ -13,7 +13,9 @@
 
 use std::collections::HashMap;
 
-use calimero_node_primitives::sync::{NodeDigest, NodeId, SnapshotChunk, TreeParams};
+use calimero_node_primitives::sync::{
+    CompressedChunk, NodeDigest, NodeId, SnapshotChunk, TreeParams,
+};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
@@ -418,7 +420,7 @@ impl SyncManager {
                 .await;
         }
 
-        // Validate and handle resume cursor
+        // Validate resume cursor if provided
         if let Some(ref cursor_bytes) = resume_cursor {
             // Enforce 64 KiB size limit
             if cursor_bytes.len() > calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE {
@@ -437,20 +439,31 @@ impl SyncManager {
                     .await;
             }
 
-            // TODO: Implement resume cursor deserialization and traversal resume.
-            // For now, reject resume requests - requester should restart from scratch.
-            // Use ResumeCursorInvalid so callers can distinguish this from "Merkle unsupported".
-            warn!(
-                %context_id,
-                "Resume cursor provided but resume not yet implemented"
-            );
-            return self
-                .send_merkle_error(
-                    stream,
-                    MerkleErrorCode::ResumeCursorInvalid,
-                    "Resume not yet implemented; restart sync from beginning",
-                )
-                .await;
+            // Validate cursor can be deserialized
+            match borsh::from_slice::<calimero_node_primitives::sync::MerkleCursor>(cursor_bytes) {
+                Ok(cursor) => {
+                    info!(
+                        %context_id,
+                        pending_nodes = cursor.pending_nodes.len(),
+                        pending_leaves = cursor.pending_leaves.len(),
+                        "Resuming Merkle sync from cursor"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        error = %e,
+                        "Failed to deserialize resume cursor"
+                    );
+                    return self
+                        .send_merkle_error(
+                            stream,
+                            MerkleErrorCode::ResumeCursorInvalid,
+                            "Malformed resume cursor",
+                        )
+                        .await;
+                }
+            }
         }
 
         info!(
@@ -462,12 +475,86 @@ impl SyncManager {
         );
 
         // Build or retrieve cached Merkle tree
-        let handle = self.context_client.datastore_handle();
-        let tree = MerkleTree::build(&handle, context_id, &tree_params)?;
+        let cache_key = (context_id, boundary_root_hash);
+        let tree = self.get_or_build_merkle_tree(cache_key, &tree_params)?;
 
         // Process frames until Done or error
         self.process_merkle_frames(stream, &tree, page_limit, byte_limit)
             .await
+    }
+
+    /// Get a Merkle tree from cache or build and cache it.
+    ///
+    /// The cache key is (context_id, boundary_root_hash) so trees are invalidated
+    /// when the boundary changes. Uses LRU eviction when cache is full.
+    fn get_or_build_merkle_tree(
+        &self,
+        cache_key: super::manager::MerkleTreeCacheKey,
+        tree_params: &TreeParams,
+    ) -> Result<MerkleTree> {
+        use tokio::time::Instant;
+
+        // Try to get from cache first, updating last_access time
+        {
+            let mut cache = self
+                .merkle_tree_cache
+                .write()
+                .map_err(|e| eyre::eyre!("Merkle tree cache lock poisoned: {}", e))?;
+            if let Some(entry) = cache.get_mut(&cache_key) {
+                entry.last_access = Instant::now();
+                debug!(
+                    context_id = %cache_key.0,
+                    boundary_root_hash = %cache_key.1,
+                    "Using cached Merkle tree"
+                );
+                return Ok(entry.tree.clone());
+            }
+        }
+
+        // Build the tree
+        let handle = self.context_client.datastore_handle();
+        let tree = MerkleTree::build(&handle, cache_key.0, tree_params)?;
+
+        // Insert into cache (write lock)
+        {
+            let mut cache = self
+                .merkle_tree_cache
+                .write()
+                .map_err(|e| eyre::eyre!("Merkle tree cache lock poisoned: {}", e))?;
+
+            // Limit cache size to prevent unbounded growth - use LRU eviction
+            const MAX_CACHE_ENTRIES: usize = 16;
+            if cache.len() >= MAX_CACHE_ENTRIES {
+                // Find and remove least recently used entry
+                if let Some(lru_key) = cache
+                    .iter()
+                    .min_by_key(|(_, v)| v.last_access)
+                    .map(|(k, _)| *k)
+                {
+                    debug!(
+                        context_id = %lru_key.0,
+                        boundary_root_hash = %lru_key.1,
+                        "Evicting LRU Merkle tree from cache"
+                    );
+                    cache.remove(&lru_key);
+                }
+            }
+
+            debug!(
+                context_id = %cache_key.0,
+                boundary_root_hash = %cache_key.1,
+                "Caching newly built Merkle tree"
+            );
+            cache.insert(
+                cache_key,
+                super::manager::CachedMerkleTree {
+                    tree: tree.clone(),
+                    last_access: Instant::now(),
+                },
+            );
+        }
+
+        Ok(tree)
     }
 
     /// Process Merkle sync frames from the requester.
@@ -501,7 +588,7 @@ impl SyncManager {
                         super::stream::send(stream, &reply, None).await?;
                     }
                     MerkleSyncFrame::LeafRequest { leaves } => {
-                        let chunks = self.handle_leaf_request(tree, &leaves, byte_limit);
+                        let chunks = self.handle_leaf_request(tree, &leaves, page_limit, byte_limit);
                         let reply = StreamMessage::Message {
                             sequence_id: sqx.next(),
                             payload: MessagePayload::MerkleSyncFrame {
@@ -551,20 +638,21 @@ impl SyncManager {
             .collect()
     }
 
-    /// Handle a LeafRequest by returning snapshot chunks with compressed payloads.
+    /// Handle a LeafRequest by returning compressed chunks for wire transmission.
     ///
-    /// Payloads are compressed with lz4_flex to match the spec and snapshot sync behavior.
-    /// The byte_limit is enforced against uncompressed sizes per the spec.
+    /// Payloads are compressed with lz4_flex. Both `page_limit` (max leaves per reply)
+    /// and `byte_limit` (max uncompressed bytes) are enforced per the spec.
     fn handle_leaf_request(
         &self,
         tree: &MerkleTree,
         leaves: &[u64],
+        page_limit: u16,
         byte_limit: u32,
-    ) -> Vec<SnapshotChunk> {
+    ) -> Vec<CompressedChunk> {
         let mut chunks = Vec::new();
         let mut total_uncompressed = 0u32;
 
-        for &idx in leaves {
+        for &idx in leaves.iter().take(page_limit as usize) {
             if let Some(chunk) = tree.get_chunk(idx) {
                 // byte_limit is on uncompressed bytes per spec
                 if total_uncompressed + chunk.uncompressed_len > byte_limit && !chunks.is_empty() {
@@ -574,12 +662,12 @@ impl SyncManager {
                 // Compress the payload before sending
                 let compressed = lz4_flex::compress_prepend_size(&chunk.payload);
 
-                chunks.push(SnapshotChunk {
+                chunks.push(CompressedChunk {
                     index: chunk.index,
                     start_key: chunk.start_key.clone(),
                     end_key: chunk.end_key.clone(),
                     uncompressed_len: chunk.uncompressed_len,
-                    payload: compressed,
+                    compressed_payload: compressed,
                 });
                 total_uncompressed += chunk.uncompressed_len;
             }
@@ -618,6 +706,9 @@ impl SyncManager {
     /// 1. Delta sync returned `SnapshotRequired` (pruned history)
     /// 2. We have local state (not uninitialized)
     /// 3. Peer supports Merkle sync (`tree_params` present in boundary response)
+    ///
+    /// If `resume_cursor` is provided, the sync resumes from the given traversal state
+    /// instead of starting fresh from the root.
     pub async fn request_merkle_sync(
         &self,
         context_id: ContextId,
@@ -625,9 +716,27 @@ impl SyncManager {
         boundary: &MerkleSyncBoundary,
         stream: &mut Stream,
     ) -> Result<MerkleSyncResult> {
+        self.request_merkle_sync_with_cursor(context_id, our_identity, boundary, stream, None)
+            .await
+    }
+
+    /// Request and apply Merkle sync from a peer, optionally resuming from a cursor.
+    ///
+    /// If `resume_cursor` is `Some`, the sync resumes from the given traversal state.
+    /// This is useful for resuming interrupted syncs without starting over.
+    pub async fn request_merkle_sync_with_cursor(
+        &self,
+        context_id: ContextId,
+        our_identity: calimero_primitives::identity::PublicKey,
+        boundary: &MerkleSyncBoundary,
+        stream: &mut Stream,
+        resume_cursor: Option<calimero_node_primitives::sync::MerkleCursor>,
+    ) -> Result<MerkleSyncResult> {
+        let is_resume = resume_cursor.is_some();
         info!(
             %context_id,
             boundary_root_hash = %boundary.boundary_root_hash,
+            is_resume,
             "Starting Merkle sync"
         );
 
@@ -674,6 +783,41 @@ impl SyncManager {
             eyre::bail!("Local tree is empty - use snapshot sync instead of Merkle sync");
         }
 
+        // Serialize resume cursor if provided, with size limit validation
+        let cursor_bytes = match resume_cursor.as_ref() {
+            Some(cursor) => {
+                // Check size limit before serializing to avoid wasted work
+                if cursor.exceeds_size_limit() {
+                    warn!(
+                        %context_id,
+                        pending_nodes = cursor.pending_nodes.len(),
+                        pending_leaves = cursor.pending_leaves.len(),
+                        covered_ranges = cursor.covered_ranges.len(),
+                        "Resume cursor exceeds 64 KiB limit, falling back to snapshot sync"
+                    );
+                    eyre::bail!(
+                        "Resume cursor exceeds 64 KiB limit - use snapshot sync instead"
+                    );
+                }
+                let bytes = borsh::to_vec(cursor)?;
+                // Double-check actual serialized size
+                if bytes.len() > calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE {
+                    warn!(
+                        %context_id,
+                        cursor_size = bytes.len(),
+                        max_size = calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE,
+                        "Serialized resume cursor exceeds 64 KiB limit"
+                    );
+                    eyre::bail!(
+                        "Serialized resume cursor ({} bytes) exceeds 64 KiB limit",
+                        bytes.len()
+                    );
+                }
+                Some(bytes)
+            }
+            None => None,
+        };
+
         // Send MerkleSyncRequest
         let init_msg = StreamMessage::Init {
             context_id,
@@ -684,7 +828,7 @@ impl SyncManager {
                 tree_params: boundary.tree_params.clone(),
                 page_limit: super::snapshot::DEFAULT_PAGE_LIMIT,
                 byte_limit: super::snapshot::DEFAULT_PAGE_BYTE_LIMIT,
-                resume_cursor: None,
+                resume_cursor: cursor_bytes,
                 requester_root_hash: Some(local_tree.root_hash),
             },
             next_nonce: super::helpers::generate_nonce(),
@@ -693,7 +837,13 @@ impl SyncManager {
 
         // Perform BFS traversal to find and fetch mismatched leaves
         let (mut result, covered_ranges) = self
-            .perform_merkle_traversal(context_id, stream, &local_tree, &boundary.tree_params)
+            .perform_merkle_traversal(
+                context_id,
+                stream,
+                &local_tree,
+                &boundary.tree_params,
+                resume_cursor,
+            )
             .await?;
 
         // Send Done frame
@@ -743,20 +893,34 @@ impl SyncManager {
     ///
     /// Returns the sync result and all key ranges covered by the remote tree.
     /// The key ranges include both fetched chunks and matching local chunks.
+    ///
+    /// If `resume_cursor` is provided, the traversal starts from that state instead
+    /// of the tree root.
     async fn perform_merkle_traversal(
         &self,
         context_id: ContextId,
         stream: &mut Stream,
         local_tree: &MerkleTree,
         tree_params: &TreeParams,
+        resume_cursor: Option<calimero_node_primitives::sync::MerkleCursor>,
     ) -> Result<(MerkleSyncResult, Vec<([u8; 32], [u8; 32])>)> {
-        let mut pending_nodes: Vec<NodeId> = vec![local_tree.root_id()];
-        let mut pending_leaves: Vec<u64> = Vec::new();
+        // Initialize from cursor or start fresh from root
+        let (mut pending_nodes, mut pending_leaves, mut covered_ranges) = match resume_cursor {
+            Some(cursor) => {
+                info!(
+                    %context_id,
+                    pending_nodes = cursor.pending_nodes.len(),
+                    pending_leaves = cursor.pending_leaves.len(),
+                    covered_ranges = cursor.covered_ranges.len(),
+                    "Resuming Merkle traversal from cursor"
+                );
+                (cursor.pending_nodes, cursor.pending_leaves, cursor.covered_ranges)
+            }
+            None => (vec![local_tree.root_id()], Vec::new(), Vec::new()),
+        };
         let mut chunks_transferred = 0usize;
         let mut records_applied = 0usize;
         let mut sqx = Sequencer::default();
-        // Track all key ranges covered by the remote tree
-        let mut covered_ranges: Vec<([u8; 32], [u8; 32])> = Vec::new();
 
         // BFS: process nodes level by level
         while !pending_nodes.is_empty() || !pending_leaves.is_empty() {
@@ -900,10 +1064,14 @@ impl SyncManager {
         ))
     }
 
-    /// Apply a Merkle chunk by replacing the key range.
+    /// Apply a compressed Merkle chunk by replacing the key range.
     ///
     /// This deletes all local keys in [start_key, end_key] and writes the chunk records.
-    fn apply_merkle_chunk(&self, context_id: ContextId, chunk: &SnapshotChunk) -> Result<usize> {
+    fn apply_merkle_chunk(
+        &self,
+        context_id: ContextId,
+        chunk: &CompressedChunk,
+    ) -> Result<usize> {
         use calimero_store::key::ContextState as ContextStateKey;
         use calimero_store::slice::Slice;
         use calimero_store::types::ContextState as ContextStateValue;
@@ -944,32 +1112,19 @@ impl SyncManager {
             handle.delete(&ContextStateKey::new(context_id, *state_key))?;
         }
 
-        // Decompress and decode chunk records.
-        // For backward compatibility, try decompression first; if it fails or size
-        // mismatches, check if raw payload matches uncompressed_len (older peers).
-        let payload_bytes: std::borrow::Cow<'_, [u8]> =
-            match lz4_flex::decompress_size_prepended(&chunk.payload) {
-                Ok(decompressed) if decompressed.len() == chunk.uncompressed_len as usize => {
-                    std::borrow::Cow::Owned(decompressed)
-                }
-                Ok(_) | Err(_) => {
-                    // Decompression failed or size mismatch - try treating as uncompressed.
-                    // Validate that raw payload length matches expected uncompressed_len
-                    // to avoid accepting corrupted data.
-                    if chunk.payload.len() == chunk.uncompressed_len as usize {
-                        debug!("Treating payload as uncompressed (backward compat)");
-                        std::borrow::Cow::Borrowed(&chunk.payload)
-                    } else {
-                        eyre::bail!(
-                            "Chunk payload invalid: decompression failed and raw length {} != expected {}",
-                            chunk.payload.len(),
-                            chunk.uncompressed_len
-                        );
-                    }
-                }
-            };
+        // Decompress the payload (CompressedChunk always has compressed data)
+        let decompressed = lz4_flex::decompress_size_prepended(&chunk.compressed_payload)
+            .map_err(|e| eyre::eyre!("Failed to decompress chunk payload: {}", e))?;
 
-        let records = super::snapshot::decode_snapshot_records(&payload_bytes)?;
+        if decompressed.len() != chunk.uncompressed_len as usize {
+            eyre::bail!(
+                "Decompressed size {} doesn't match expected {}",
+                decompressed.len(),
+                chunk.uncompressed_len
+            );
+        }
+
+        let records = super::snapshot::decode_snapshot_records(&decompressed)?;
         for (state_key, value) in &records {
             let key = ContextStateKey::new(context_id, *state_key);
             let slice: Slice<'_> = value.clone().into();
@@ -1111,6 +1266,35 @@ pub struct MerkleSyncBoundary {
 pub struct MerkleSyncResult {
     pub chunks_transferred: usize,
     pub records_applied: usize,
+}
+
+/// Create a resume cursor from current traversal state.
+///
+/// This can be used to persist the traversal state for later resumption
+/// if the sync is interrupted (e.g., connection drop, timeout).
+///
+/// The `covered_ranges` parameter is critical for correct orphan key deletion
+/// on resume - without it, keys processed in a previous run could be incorrectly deleted.
+///
+/// Returns `None` if the cursor would exceed the size limit (64 KiB),
+/// in which case the caller should fall back to snapshot sync.
+#[allow(dead_code)] // Public API for resumable sync - will be used by persistence layer
+pub fn create_resume_cursor(
+    pending_nodes: &[NodeId],
+    pending_leaves: &[u64],
+    covered_ranges: &[([u8; 32], [u8; 32])],
+) -> Option<calimero_node_primitives::sync::MerkleCursor> {
+    let cursor = calimero_node_primitives::sync::MerkleCursor {
+        pending_nodes: pending_nodes.to_vec(),
+        pending_leaves: pending_leaves.to_vec(),
+        covered_ranges: covered_ranges.to_vec(),
+    };
+
+    if cursor.exceeds_size_limit() {
+        None
+    } else {
+        Some(cursor)
+    }
 }
 
 #[cfg(test)]

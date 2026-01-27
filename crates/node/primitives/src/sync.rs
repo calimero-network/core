@@ -169,6 +169,13 @@ impl TreeParams {
 }
 
 /// A chunk of snapshot data for Merkle sync.
+///
+/// **Important**: The `payload` field has different semantics depending on context:
+/// - **In `MerkleTree.chunks`** (local storage): Contains raw, uncompressed canonical bytes.
+/// - **In `LeafReply` frames** (wire protocol): Contains lz4-compressed bytes with prepended size.
+///
+/// The receiver must decompress payloads from `LeafReply` before use. The `uncompressed_len`
+/// field can be used to verify decompression succeeded.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SnapshotChunk {
     /// Deterministic leaf index in the ordered stream.
@@ -179,7 +186,11 @@ pub struct SnapshotChunk {
     pub end_key: Vec<u8>,
     /// Expected payload size after decompression.
     pub uncompressed_len: u32,
-    /// Raw (uncompressed) canonical bytes.
+    /// Chunk payload bytes.
+    ///
+    /// **Context-dependent**:
+    /// - When stored locally in `MerkleTree`: Raw uncompressed canonical bytes.
+    /// - When transmitted in `LeafReply`: lz4-compressed with prepended size header.
     pub payload: Vec<u8>,
 }
 
@@ -213,6 +224,9 @@ pub struct MerkleCursor {
     pub pending_nodes: Vec<NodeId>,
     /// Pending leaf indices to request chunks for.
     pub pending_leaves: Vec<u64>,
+    /// Key ranges already covered by matching subtrees or fetched chunks.
+    /// Required for correct orphan deletion on resume.
+    pub covered_ranges: Vec<([u8; 32], [u8; 32])>,
 }
 
 /// Maximum serialized size for MerkleCursor (64 KiB).
@@ -221,8 +235,11 @@ pub const MERKLE_CURSOR_MAX_SIZE: usize = 64 * 1024;
 impl MerkleCursor {
     /// Check if the cursor would exceed the size limit when serialized.
     pub fn exceeds_size_limit(&self) -> bool {
-        // Estimate: NodeId is ~10 bytes, u64 is 8 bytes
-        let estimated_size = self.pending_nodes.len() * 10 + self.pending_leaves.len() * 8 + 16;
+        // Estimate: NodeId is ~10 bytes, u64 is 8 bytes, key range is 64 bytes
+        let estimated_size = self.pending_nodes.len() * 10
+            + self.pending_leaves.len() * 8
+            + self.covered_ranges.len() * 64
+            + 24; // overhead for vec lengths
         estimated_size > MERKLE_CURSOR_MAX_SIZE
     }
 }
@@ -246,6 +263,25 @@ pub struct MerkleSyncRequest {
     pub requester_root_hash: Option<Hash>,
 }
 
+/// A compressed chunk for wire transmission in `LeafReply`.
+///
+/// Unlike `SnapshotChunk` (which stores raw bytes locally), this type
+/// explicitly carries lz4-compressed payload for network transmission.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct CompressedChunk {
+    /// Deterministic leaf index in the ordered stream.
+    pub index: u64,
+    /// First key in this chunk (inclusive).
+    pub start_key: Vec<u8>,
+    /// Last key in this chunk (inclusive).
+    pub end_key: Vec<u8>,
+    /// Expected payload size after decompression.
+    pub uncompressed_len: u32,
+    /// lz4-compressed payload with prepended size header.
+    /// Use `lz4_flex::decompress_size_prepended` to decompress.
+    pub compressed_payload: Vec<u8>,
+}
+
 /// Frame types for Merkle sync protocol.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum MerkleSyncFrame {
@@ -255,8 +291,8 @@ pub enum MerkleSyncFrame {
     NodeReply { nodes: Vec<NodeDigest> },
     /// Requester asks for leaf payloads by index.
     LeafRequest { leaves: Vec<u64> },
-    /// Responder returns leaf chunks.
-    LeafReply { leaves: Vec<SnapshotChunk> },
+    /// Responder returns compressed leaf chunks.
+    LeafReply { leaves: Vec<CompressedChunk> },
     /// Requester signals traversal complete.
     Done,
     /// Protocol error with code and message.

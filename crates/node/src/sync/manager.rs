@@ -5,6 +5,7 @@
 
 use std::collections::{hash_map, HashMap};
 use std::pin::pin;
+use std::sync::Arc;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
@@ -31,6 +32,16 @@ use crate::utils::choose_stream;
 use super::config::SyncConfig;
 use super::tracking::{SyncProtocol, SyncState};
 
+/// Cache key for Merkle trees: (context_id, boundary_root_hash).
+pub(super) type MerkleTreeCacheKey = (ContextId, calimero_primitives::hash::Hash);
+
+/// Cached Merkle tree with LRU tracking.
+#[derive(Debug, Clone)]
+pub(super) struct CachedMerkleTree {
+    pub tree: super::merkle::MerkleTree,
+    pub last_access: Instant,
+}
+
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
@@ -44,6 +55,11 @@ pub struct SyncManager {
     pub(super) node_state: crate::NodeState,
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+
+    /// LRU cache of Merkle trees keyed by (context_id, boundary_root_hash).
+    /// Trees are cached to avoid rebuilding for the same boundary during a sync session.
+    pub(super) merkle_tree_cache:
+        Arc<std::sync::RwLock<HashMap<MerkleTreeCacheKey, CachedMerkleTree>>>,
 }
 
 impl Clone for SyncManager {
@@ -55,6 +71,7 @@ impl Clone for SyncManager {
             network_client: self.network_client.clone(),
             node_state: self.node_state.clone(),
             ctx_sync_rx: None, // Receiver can't be cloned
+            merkle_tree_cache: Arc::clone(&self.merkle_tree_cache),
         }
     }
 }
@@ -75,6 +92,7 @@ impl SyncManager {
             network_client,
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
+            merkle_tree_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
