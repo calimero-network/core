@@ -151,17 +151,34 @@ impl MerkleTree {
     ///
     /// For a leaf node (level 0), returns (index, index).
     /// For an internal node, computes the first and last leaf indices in its subtree.
+    /// Returns indices clamped to actual leaf count to handle overflow safely.
     pub fn get_leaf_index_range(&self, id: &NodeId) -> (u64, u64) {
         if id.level == 0 {
             return (id.index, id.index);
         }
 
+        let leaf_count = self.leaf_count();
+        if leaf_count == 0 {
+            return (0, 0);
+        }
+
         let fanout = self.params.fanout as u64;
+
+        // Use checked math to prevent overflow on very large trees
         // First leaf index: traverse down to the leftmost leaf
-        let first_leaf = id.index * fanout.pow(id.level as u32);
+        let first_leaf = fanout
+            .checked_pow(id.level as u32)
+            .and_then(|scale| id.index.checked_mul(scale))
+            .unwrap_or(leaf_count) // On overflow, clamp to leaf_count
+            .min(leaf_count.saturating_sub(1));
+
         // Last leaf index: rightmost leaf in subtree, clamped to actual leaf count
-        let last_leaf = ((id.index + 1) * fanout.pow(id.level as u32) - 1)
-            .min(self.leaf_count().saturating_sub(1));
+        let last_leaf = fanout
+            .checked_pow(id.level as u32)
+            .and_then(|scale| (id.index + 1).checked_mul(scale))
+            .and_then(|v| v.checked_sub(1))
+            .unwrap_or(leaf_count.saturating_sub(1)) // On overflow, use max leaf
+            .min(leaf_count.saturating_sub(1));
 
         (first_leaf, last_leaf)
     }
@@ -401,12 +418,46 @@ impl SyncManager {
                 .await;
         }
 
+        // Validate and handle resume cursor
+        if let Some(ref cursor_bytes) = resume_cursor {
+            // Enforce 64 KiB size limit
+            if cursor_bytes.len() > calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE {
+                warn!(
+                    %context_id,
+                    cursor_size = cursor_bytes.len(),
+                    max_size = calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE,
+                    "Rejecting oversized resume cursor"
+                );
+                return self
+                    .send_merkle_error(
+                        stream,
+                        MerkleErrorCode::ResumeCursorInvalid,
+                        "Resume cursor exceeds 64 KiB limit",
+                    )
+                    .await;
+            }
+
+            // TODO: Implement resume cursor deserialization and traversal resume.
+            // For now, reject resume requests - requester should restart from scratch.
+            // Use ResumeCursorInvalid so callers can distinguish this from "Merkle unsupported".
+            warn!(
+                %context_id,
+                "Resume cursor provided but resume not yet implemented"
+            );
+            return self
+                .send_merkle_error(
+                    stream,
+                    MerkleErrorCode::ResumeCursorInvalid,
+                    "Resume not yet implemented; restart sync from beginning",
+                )
+                .await;
+        }
+
         info!(
             %context_id,
             %boundary_root_hash,
             page_limit,
             byte_limit,
-            has_cursor = resume_cursor.is_some(),
             "Handling Merkle sync request"
         );
 
@@ -500,7 +551,10 @@ impl SyncManager {
             .collect()
     }
 
-    /// Handle a LeafRequest by returning snapshot chunks.
+    /// Handle a LeafRequest by returning snapshot chunks with compressed payloads.
+    ///
+    /// Payloads are compressed with lz4_flex to match the spec and snapshot sync behavior.
+    /// The byte_limit is enforced against uncompressed sizes per the spec.
     fn handle_leaf_request(
         &self,
         tree: &MerkleTree,
@@ -508,16 +562,26 @@ impl SyncManager {
         byte_limit: u32,
     ) -> Vec<SnapshotChunk> {
         let mut chunks = Vec::new();
-        let mut total_bytes = 0u32;
+        let mut total_uncompressed = 0u32;
 
         for &idx in leaves {
             if let Some(chunk) = tree.get_chunk(idx) {
-                let chunk_size = chunk.payload.len() as u32;
-                if total_bytes + chunk_size > byte_limit && !chunks.is_empty() {
+                // byte_limit is on uncompressed bytes per spec
+                if total_uncompressed + chunk.uncompressed_len > byte_limit && !chunks.is_empty() {
                     break;
                 }
-                chunks.push(chunk.clone());
-                total_bytes += chunk_size;
+
+                // Compress the payload before sending
+                let compressed = lz4_flex::compress_prepend_size(&chunk.payload);
+
+                chunks.push(SnapshotChunk {
+                    index: chunk.index,
+                    start_key: chunk.start_key.clone(),
+                    end_key: chunk.end_key.clone(),
+                    uncompressed_len: chunk.uncompressed_len,
+                    payload: compressed,
+                });
+                total_uncompressed += chunk.uncompressed_len;
             }
         }
 
@@ -880,8 +944,32 @@ impl SyncManager {
             handle.delete(&ContextStateKey::new(context_id, *state_key))?;
         }
 
-        // Decode and write chunk records
-        let records = super::snapshot::decode_snapshot_records(&chunk.payload)?;
+        // Decompress and decode chunk records.
+        // For backward compatibility, try decompression first; if it fails or size
+        // mismatches, check if raw payload matches uncompressed_len (older peers).
+        let payload_bytes: std::borrow::Cow<'_, [u8]> =
+            match lz4_flex::decompress_size_prepended(&chunk.payload) {
+                Ok(decompressed) if decompressed.len() == chunk.uncompressed_len as usize => {
+                    std::borrow::Cow::Owned(decompressed)
+                }
+                Ok(_) | Err(_) => {
+                    // Decompression failed or size mismatch - try treating as uncompressed.
+                    // Validate that raw payload length matches expected uncompressed_len
+                    // to avoid accepting corrupted data.
+                    if chunk.payload.len() == chunk.uncompressed_len as usize {
+                        debug!("Treating payload as uncompressed (backward compat)");
+                        std::borrow::Cow::Borrowed(&chunk.payload)
+                    } else {
+                        eyre::bail!(
+                            "Chunk payload invalid: decompression failed and raw length {} != expected {}",
+                            chunk.payload.len(),
+                            chunk.uncompressed_len
+                        );
+                    }
+                }
+            };
+
+        let records = super::snapshot::decode_snapshot_records(&payload_bytes)?;
         for (state_key, value) in &records {
             let key = ContextStateKey::new(context_id, *state_key);
             let slice: Slice<'_> = value.clone().into();
@@ -932,6 +1020,9 @@ impl SyncManager {
     ///
     /// This handles the case where local keys exist outside the key ranges
     /// covered by the remote tree's chunks.
+    ///
+    /// Optimized to O(N log M) where N is number of context keys and M is number of ranges,
+    /// by sorting ranges and using binary search.
     fn delete_orphaned_keys(
         &self,
         context_id: ContextId,
@@ -944,6 +1035,10 @@ impl SyncManager {
             return Ok(0);
         }
 
+        // Sort ranges by start key for binary search
+        let mut sorted_ranges: Vec<_> = chunk_ranges.to_vec();
+        sorted_ranges.sort_by(|a, b| a.0.cmp(&b.0));
+
         let mut handle = self.context_client.datastore_handle();
 
         let keys_to_delete: Vec<[u8; 32]> = {
@@ -953,10 +1048,22 @@ impl SyncManager {
                 let key = key_result?;
                 if key.context_id() == context_id {
                     let state_key = key.state_key();
-                    // Check if key falls within any chunk range
-                    let in_range = chunk_ranges
-                        .iter()
-                        .any(|(start, end)| state_key >= *start && state_key <= *end);
+                    // Binary search for potential containing range
+                    // Find the last range whose start_key <= state_key
+                    let in_range = match sorted_ranges
+                        .binary_search_by(|(start, _)| start.cmp(&state_key))
+                    {
+                        Ok(idx) => {
+                            // Exact match on start_key - check if within this range
+                            state_key <= sorted_ranges[idx].1
+                        }
+                        Err(0) => false, // state_key is before all ranges
+                        Err(idx) => {
+                            // Check the range just before where state_key would be inserted
+                            let (start, end) = &sorted_ranges[idx - 1];
+                            state_key >= *start && state_key <= *end
+                        }
+                    };
                     if !in_range {
                         keys.push(state_key);
                     }
