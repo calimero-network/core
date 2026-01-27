@@ -1,4 +1,7 @@
-name: Test SDK JS Compatibility
+name: E2E - SDK JS Release
+
+# Tests JavaScript SDK examples using released Docker images.
+# Validates that SDK JS works with released merod images from GHCR.
 
 permissions:
     contents: read
@@ -8,12 +11,12 @@ on:
         branches: [master]
         paths:
             - "crates/**"
-            - ".github/workflows/test-sdk-js.yml"
+            - ".github/workflows/e2e-sdk-js-release.yml"
     push:
         branches: [master]
         paths:
             - "crates/**"
-            - ".github/workflows/test-sdk-js.yml"
+            - ".github/workflows/e2e-sdk-js-release.yml"
     workflow_dispatch:
 
 concurrency:
@@ -239,7 +242,7 @@ jobs:
 
                   jq -n \
                     --arg pr '${{ github.event.number }}' \
-                    --arg tag test-sdk-js-report \
+                    --arg tag e2e-sdk-js-release-report \
                     --arg mode recreate \
                     --arg message "$message" \
                     '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
