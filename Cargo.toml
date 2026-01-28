@@ -26,6 +26,7 @@ exclude = [
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
+    "./apps/e2e-kv-store",
     "./crates/merod",
     "./crates/version",
     "./crates/meroctl",
@@ -87,6 +88,7 @@ members = [
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
+    "./apps/e2e-kv-store",
 
     "./tools/calimero-abi",
     "./tools/merodb",

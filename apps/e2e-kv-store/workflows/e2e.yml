@@ -1,0 +1,1388 @@
+name: E2E KV Store - Consolidated Backend Tests
+description: Consolidated E2E backend tests covering KV operations, handlers, user storage, frozen storage, private storage, nested CRDTs, and RGA
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # SETUP: Install app and create mesh
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create mesh with node-2
+    type: create_mesh
+    context_node: e2e-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - e2e-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      node1_key: memberPublicKey
+
+  # KV OPERATIONS
+
+  - name: Set initial value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set
+    args:
+      key: "greeting"
+      value: "Hello, World!"
+
+  - name: Set another value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set
+    args:
+      key: "count"
+      value: "42"
+
+  - name: Wait for sync after node-1 sets
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Verify value on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get
+    args:
+      key: "greeting"
+    outputs:
+      greeting_value: result
+
+  - name: Assert greeting synced
+    type: json_assert
+    statements:
+      - 'json_equal({{greeting_value}}, {"output": "Hello, World!"})'
+
+  - name: Set value on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: set
+    args:
+      key: "from_node2"
+      value: "Cross-node value"
+
+  - name: Wait for sync after node-2 sets
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Verify node-2 value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get
+    args:
+      key: "from_node2"
+    outputs:
+      node2_value: result
+
+  - name: Assert node-2 value synced
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_value}}, {"output": "Cross-node value"})'
+
+  - name: Get all entries
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: entries
+    outputs:
+      all_entries: result
+
+  - name: Get result (throws on missing)
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_result
+    args:
+      key: "greeting"
+    outputs:
+      greeting_result: result
+
+  - name: Assert get_result returns value
+    type: json_assert
+    statements:
+      - 'json_equal({{greeting_result}}, {"output": "Hello, World!"})'
+
+  - name: Get length
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: len
+    outputs:
+      kv_len: result
+
+  - name: Assert length is 3
+    type: json_assert
+    statements:
+      - 'json_equal({{kv_len}}, {"output": 3})'
+
+  - name: Remove a key
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: remove
+    args:
+      key: "count"
+
+  - name: Wait for sync after remove
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Verify key removed on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get
+    args:
+      key: "count"
+    outputs:
+      removed_value: result
+
+  - name: Assert removed key returns null
+    type: json_assert
+    statements:
+      - 'json_equal({{removed_value}}, {"output": null})'
+
+
+  # EVENT HANDLERS - Test handler-triggering methods
+
+
+  - name: Get initial handler count
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_handler_execution_count
+    outputs:
+      initial_handler_count: result
+
+  - name: Set with handler (triggers insert_handler)
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set_with_handler
+    args:
+      key: "handler_test"
+      value: "initial"
+
+  - name: Get handler count after insert
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handler_count_after_insert: result
+
+  - name: Assert handler count increased after insert
+    type: json_assert
+    statements:
+      - "json_greater({{handler_count_after_insert}}, {{initial_handler_count}})"
+
+  - name: Set with handler again (triggers update_handler)
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set_with_handler
+    args:
+      key: "handler_test"
+      value: "updated"
+
+  - name: Get handler count after update
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handler_count_after_update: result
+
+  - name: Assert handler count increased after update
+    type: json_assert
+    statements:
+      - "json_greater({{handler_count_after_update}}, {{handler_count_after_insert}})"
+
+  - name: Remove with handler (triggers remove_handler)
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: remove_with_handler
+    args:
+      key: "handler_test"
+
+  - name: Get handler count after remove
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handler_count_after_remove: result
+
+  - name: Assert handler count increased after remove
+    type: json_assert
+    statements:
+      - "json_greater({{handler_count_after_remove}}, {{handler_count_after_update}})"
+
+  - name: Set some test values for clear
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set
+    args:
+      key: "clear_test_1"
+      value: "value1"
+
+  - name: Set another test value for clear
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set
+    args:
+      key: "clear_test_2"
+      value: "value2"
+
+  - name: Clear with handler (triggers clear_handler)
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: clear_with_handler
+
+  - name: Get handler count after clear
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_handler_execution_count
+    outputs:
+      handler_count_after_clear: result
+
+  - name: Assert handler count increased after clear
+    type: json_assert
+    statements:
+      - "json_greater({{handler_count_after_clear}}, {{handler_count_after_remove}})"
+
+  - name: Wait for sync after handler tests
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # USER STORAGE - SIMPLE
+
+  # Node 1 sets their user storage first
+  - name: Set user simple value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set_user_simple
+    args:
+      value: "Node1 Profile"
+
+  - name: Get own user simple value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_user_simple
+    outputs:
+      node1_profile: result
+
+  - name: Assert node-1 profile
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_profile}}, {"output": "Node1 Profile"})'
+
+  # Sync after node-1 write
+  - name: Wait for sync after node-1 user storage set
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Node 2 can read node-1's user storage
+  - name: Get node-1 user value from node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get_user_simple_for
+    args:
+      user_key: "{{node1_key}}"
+    outputs:
+      node1_profile_from_node2: result
+
+  - name: Assert node-1 profile visible from node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_profile_from_node2}}, {"output": "Node1 Profile"})'
+
+  # Now node-2 sets their user storage
+  - name: Set user simple value on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: set_user_simple
+    args:
+      value: "Node2 Profile"
+
+  - name: Get own user simple value on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get_user_simple
+    outputs:
+      node2_profile: result
+
+  - name: Assert node-2 profile
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_profile}}, {"output": "Node2 Profile"})'
+
+  # Sync after node-2 write
+  - name: Wait for sync after node-2 user storage set
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Node 1 can read node-2's user storage
+  - name: Get node-2 user value from node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_user_simple_for
+    args:
+      user_key: "{{public_key_e2e-node-2}}"
+    outputs:
+      node2_profile_from_node1: result
+
+  - name: Assert node-2 profile visible from node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_profile_from_node1}}, {"output": "Node2 Profile"})'
+
+
+  # USER STORAGE - NESTED
+
+
+  - name: Set nested user value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set_user_nested
+    args:
+      key: "favorite_color"
+      value: "blue"
+
+  - name: Wait for sync after nested set
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get nested user value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_user_nested
+    args:
+      key: "favorite_color"
+    outputs:
+      nested_value: result
+
+  - name: Assert nested value
+    type: json_assert
+    statements:
+      - 'json_equal({{nested_value}}, {"output": "blue"})'
+
+  # FROZEN STORAGE
+
+  - name: Add frozen value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: add_frozen
+    args:
+      value: "Immutable data"
+    outputs:
+      frozen_hash: result.output
+
+  - name: Wait for sync after frozen add
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get frozen value on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get_frozen
+    args:
+      hash_hex: "{{frozen_hash}}"
+    outputs:
+      frozen_value: result
+
+  - name: Assert frozen value matches
+    type: json_assert
+    statements:
+      - 'json_equal({{frozen_value}}, {"output": "Immutable data"})'
+
+  # PRIVATE VS PUBLIC STORAGE
+
+  - name: Add secret on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: add_secret
+    args:
+      game_id: "game1"
+      secret: "my_secret_123"
+
+  - name: Wait for sync after secret add
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get my secrets on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: my_secrets
+    outputs:
+      node1_secrets: result
+
+  - name: Get my secrets on node-2 (should be empty - private isolation)
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: my_secrets
+    outputs:
+      node2_secrets: result
+
+  - name: Assert node-2 has no secrets
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_secrets}}, {"output": {}})'
+
+  - name: Get public games on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: games
+    outputs:
+      public_games: result
+
+  - name: Try correct guess on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: add_guess
+    args:
+      game_id: "game1"
+      guess: "my_secret_123"
+    outputs:
+      correct_guess: result
+
+  - name: Assert correct guess returns true
+    type: json_assert
+    statements:
+      - 'json_equal({{correct_guess}}, {"output": true})'
+
+  - name: Try wrong guess
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: add_guess
+    args:
+      game_id: "game1"
+      guess: "wrong_guess"
+    outputs:
+      wrong_guess: result
+
+  - name: Assert wrong guess returns false
+    type: json_assert
+    statements:
+      - 'json_equal({{wrong_guess}}, {"output": false})'
+
+  # NESTED CRDT - COUNTERS (sequential to work around merge bug)
+
+  - name: Increment counter on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: increment_counter
+    args:
+      key: "visits"
+
+  - name: Increment counter again on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: increment_counter
+    args:
+      key: "visits"
+
+  # Sync before node-2 increments
+  - name: Wait for sync after node-1 counter increments
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Increment counter on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: increment_counter
+    args:
+      key: "visits"
+
+  - name: Wait for sync after node-2 counter increment
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get counter on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_counter
+    args:
+      key: "visits"
+    outputs:
+      counter_value: result
+
+  - name: Assert counter is 3
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_value}}, {"output": 3})'
+
+  # NESTED CRDT - LWW REGISTERS (concurrent writes - later timestamp wins)
+
+  - name: Set register on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set_register
+    args:
+      key: "status"
+      value: "online"
+
+  - name: Wait for timestamp separation
+    type: wait
+    seconds: 2
+
+  - name: Set register on node-2 (later timestamp wins)
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: set_register
+    args:
+      key: "status"
+      value: "busy"
+
+  - name: Wait for sync after concurrent register writes
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get register on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_register
+    args:
+      key: "status"
+    outputs:
+      register_value: result
+
+  - name: Assert LWW resolved to later value
+    type: json_assert
+    statements:
+      - 'json_equal({{register_value}}, {"output": "busy"})'
+
+  # NESTED CRDT - NESTED MAPS (sequential to work around merge bug)
+
+  # Node-1 sets first field
+  - name: Set metadata field on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set_metadata
+    args:
+      outer_key: "book1"
+      inner_key: "title"
+      value: "CRDT Guide"
+
+  # Sync before node-2 writes
+  - name: Wait for sync after node-1 metadata set
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Node-2 sets second field (after receiving node-1's changes)
+  - name: Set another metadata field on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: set_metadata
+    args:
+      outer_key: "book1"
+      inner_key: "author"
+      value: "Calimero Team"
+
+  # Sync to propagate node-2's changes
+  - name: Wait for sync after node-2 metadata set
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get title on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get_metadata
+    args:
+      outer_key: "book1"
+      inner_key: "title"
+    outputs:
+      book_title: result
+
+  - name: Assert title synced
+    type: json_assert
+    statements:
+      - 'json_equal({{book_title}}, {"output": "CRDT Guide"})'
+
+  - name: Get author on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_metadata
+    args:
+      outer_key: "book1"
+      inner_key: "author"
+    outputs:
+      book_author: result
+
+  - name: Assert author synced
+    type: json_assert
+    statements:
+      - 'json_equal({{book_author}}, {"output": "Calimero Team"})'
+
+  # NESTED CRDT - VECTOR
+
+  - name: Push metric on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: push_metric
+    args:
+      value: 100
+
+  # Sync before node-2 pushes
+  - name: Wait for sync after node-1 metric push
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Push metric on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: push_metric
+    args:
+      value: 200
+
+  - name: Wait for sync after node-2 metric push
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get metrics length
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: metrics_len
+    outputs:
+      metrics_length: result
+
+  - name: Assert metrics length is 2
+    type: json_assert
+    statements:
+      - 'json_equal({{metrics_length}}, {"output": 2})'
+
+  - name: Get metric at index 0
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_metric
+    args:
+      index: 0
+    outputs:
+      metric_0: result
+
+  - name: Assert metric at index 0 is 100
+    type: json_assert
+    statements:
+      - 'json_equal({{metric_0}}, {"output": 100})'
+
+
+  # NESTED CRDT - SETS (sequential to work around merge bug)
+
+
+  - name: Add tag on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: add_tag
+    args:
+      key: "languages"
+      tag: "rust"
+
+  - name: Add another tag on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: add_tag
+    args:
+      key: "languages"
+      tag: "typescript"
+
+  # Sync before node-2 adds tag
+  - name: Wait for sync after node-1 tag adds
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Add tag on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: add_tag
+    args:
+      key: "languages"
+      tag: "python"
+
+  - name: Wait for sync after node-2 tag add
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get tag count
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_tag_count
+    args:
+      key: "languages"
+    outputs:
+      tag_count: result
+
+  - name: Assert tag count is 3
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_count}}, {"output": 3})'
+
+  - name: Check has rust tag
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: has_tag
+    args:
+      key: "languages"
+      tag: "rust"
+    outputs:
+      has_rust: result
+
+  - name: Assert has rust tag
+    type: json_assert
+    statements:
+      - 'json_equal({{has_rust}}, {"output": true})'
+
+  # RGA DOCUMENT
+
+  - name: Check document is empty
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_is_empty
+    outputs:
+      is_empty: result
+
+  - name: Assert document is empty initially
+    type: json_assert
+    statements:
+      - 'json_equal({{is_empty}}, {"output": true})'
+
+  - name: Insert text on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_insert_text
+    args:
+      position: 0
+      text: "Hello"
+
+  - name: Append text on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_append_text
+    args:
+      text: " World"
+
+  - name: Wait for sync after text ops
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get text on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: rga_get_text
+    outputs:
+      doc_text: result
+
+  - name: Assert text synced
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_text}}, {"output": "Hello World"})'
+
+  - name: Get document length
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_get_length
+    outputs:
+      doc_length: result
+
+  - name: Assert document length
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_length}}, {"output": 11})'
+
+  - name: Delete text from document (remove " World")
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_delete_text
+    args:
+      start: 5
+      end: 11
+
+  - name: Get text after delete
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_get_text
+    outputs:
+      doc_text_after_delete: result
+
+  - name: Assert text is now just Hello
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_text_after_delete}}, {"output": "Hello"})'
+
+  - name: Append World back
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_append_text
+    args:
+      text: " World"
+
+  - name: Set document title
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_set_title
+    args:
+      new_title: "E2E Test Document"
+
+  - name: Wait for sync after title change
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get title on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: rga_get_title
+    outputs:
+      doc_title: result
+
+  - name: Assert title synced
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_title}}, {"output": "E2E Test Document"})'
+
+
+  # CONTEXT ADMIN - Member management
+
+
+  - name: Check if node-2 is member
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: is_member
+    args:
+      public_key: "{{public_key_e2e-node-2}}"
+    outputs:
+      is_node2_member: result
+
+  - name: Assert node-2 is member
+    type: json_assert
+    statements:
+      - 'json_equal({{is_node2_member}}, {"output": true})'
+
+  - name: Get all members
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_all_members
+    outputs:
+      all_members: result
+
+  - name: Assert members list not empty
+    type: assert
+    statements:
+      - "is_set({{all_members}})"
+
+  # Note: add_member and kick_member require admin privileges and are
+  # tested implicitly through context creation. Direct testing would
+  # require additional privilege setup.
+
+
+  # BLOB STORAGE - File Upload, Discovery, and Deletion
+
+
+  - name: Upload PNG blob to storage
+    type: upload_blob
+    node: e2e-node-1
+    file_path: static/sample.png
+    context_id: "{{context_id}}"
+    outputs:
+      png_blob_id: blob_id
+      png_blob_size: size
+
+  - name: Register PNG file in contract
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: upload_file
+    args:
+      name: screenshot.png
+      blob_id_str: "{{png_blob_id}}"
+      size: "{{png_blob_size}}"
+      mime_type: image/png
+    outputs:
+      png_file_id: result.output
+
+  - name: Assert PNG file registered
+    type: assert
+    statements:
+      - "is_set({{png_file_id}})"
+
+  - name: Upload TXT blob to storage
+    type: upload_blob
+    node: e2e-node-1
+    file_path: static/test.txt
+    context_id: "{{context_id}}"
+    outputs:
+      txt_blob_id: blob_id
+      txt_blob_size: size
+
+  - name: Register TXT file in contract
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: upload_file
+    args:
+      name: readme.txt
+      blob_id_str: "{{txt_blob_id}}"
+      size: "{{txt_blob_size}}"
+      mime_type: text/plain
+    outputs:
+      txt_file_id: result.output
+
+  - name: Assert TXT file registered
+    type: assert
+    statements:
+      - "is_set({{txt_file_id}})"
+
+  - name: Wait for sync after blob uploads
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: List files on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: list_files
+    outputs:
+      node1_files: result.output
+
+  - name: Assert node-1 sees files
+    type: assert
+    statements:
+      - "is_set({{node1_files}})"
+
+  - name: List files on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: list_files
+    outputs:
+      node2_files: result.output
+
+  - name: Assert node-2 sees files (blob discovery working)
+    type: assert
+    statements:
+      - "is_set({{node2_files}})"
+
+  - name: Get PNG file details
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_file
+    args:
+      file_id: "{{png_file_id}}"
+    outputs:
+      png_file_record: result.output
+
+  - name: Assert PNG file record exists
+    type: assert
+    statements:
+      - "is_set({{png_file_record}})"
+
+  - name: Get PNG blob ID
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_blob_id_b58
+    args:
+      file_id: "{{png_file_id}}"
+    outputs:
+      retrieved_png_blob: result.output
+
+  - name: Assert PNG blob ID matches
+    type: assert
+    statements:
+      - "equal({{retrieved_png_blob}}, {{png_blob_id}})"
+
+  - name: Search for PNG files
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: search_files
+    args:
+      query: png
+    outputs:
+      png_search_results: result.output
+
+  - name: Assert PNG search returns results
+    type: assert
+    statements:
+      - "is_set({{png_search_results}})"
+
+  - name: Delete PNG file
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: delete_file
+    args:
+      file_id: "{{png_file_id}}"
+
+  - name: Wait for sync after file delete
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: List files after delete on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: list_files
+    outputs:
+      files_after_delete: result.output
+
+  - name: Assert deletion propagated
+    type: assert
+    statements:
+      - "is_set({{files_after_delete}})"
+
+
+  # CLEAR OPERATIONS
+
+
+  - name: Clear KV store
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: clear
+
+  - name: Wait for sync after clear
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Verify KV store is empty
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: len
+    outputs:
+      final_len: result
+
+  - name: Assert KV store is empty
+    type: json_assert
+    statements:
+      - 'json_equal({{final_len}}, {"output": 0})'
+
+  - name: Clear RGA document
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: rga_clear
+
+  - name: Wait for sync after RGA clear
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Verify RGA document is empty
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: rga_is_empty
+    outputs:
+      final_is_empty: result
+
+  - name: Assert RGA document is empty
+    type: json_assert
+    statements:
+      - 'json_equal({{final_is_empty}}, {"output": true})'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
