@@ -115,7 +115,7 @@ jobs:
           docker images merod:local
 
       - name: Setup merobox
-        uses: ./.github/actions/setup-merobox-pypi
+        uses: ./.github/actions/setup-merobox
 
       - name: Run NEAR Proposals Workflow
         run: |
@@ -195,7 +195,7 @@ jobs:
           ./scripts/icp/deploy-devnet.sh
 
       - name: Setup merobox
-        uses: ./.github/actions/setup-merobox-pypi
+        uses: ./.github/actions/setup-merobox
 
       - name: Run ICP Proposals Workflow
         run: |
@@ -271,7 +271,7 @@ jobs:
           ./scripts/ethereum/deploy-devnet.sh
 
       - name: Setup merobox
-        uses: ./.github/actions/setup-merobox-pypi
+        uses: ./.github/actions/setup-merobox
 
       - name: Run Ethereum Proposals Workflow
         run: |

@@ -72,7 +72,7 @@ jobs:
           ./build.sh
 
       - name: Setup merobox
-        uses: ./.github/actions/setup-merobox-pypi
+        uses: ./.github/actions/setup-merobox
 
       - name: Download Contracts
         uses: ./.github/actions/download-contracts
