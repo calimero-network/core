@@ -117,7 +117,7 @@ jobs:
           name: fuzzy-test-build-artifacts
 
       - name: Setup merobox
-        uses: ./.github/actions/setup-merobox-pypi
+        uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
         run: |
@@ -321,7 +321,7 @@ jobs:
           name: fuzzy-test-build-artifacts
 
       - name: Setup merobox
-        uses: ./.github/actions/setup-merobox-pypi
+        uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
         run: |
