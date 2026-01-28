@@ -1,6 +1,6 @@
 name: E2E - Rust Apps (Released Image)
 
-# Tests all Rust SDK apps using the released Docker image from GHCR.
+# Tests e2e-kv-store and xcall-example apps using the released Docker image from GHCR.
 # Validates that released images work correctly on master merges.
 # For fast PR testing with locally-built images, see e2e-rust-apps.yml
 
@@ -12,7 +12,8 @@ on:
     branches: [master]
     paths:
       - "crates/**"
-      - "apps/**"
+      - "apps/e2e-kv-store/**"
+      - "apps/xcall-example/**"
       - ".github/workflows/e2e-rust-apps-release.yml"
 
   workflow_dispatch:
@@ -42,21 +43,30 @@ jobs:
           shared-key: e2e-rust-apps-release
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Build all apps
-        run: ./scripts/build-all-apps.sh
+      - name: Build e2e-kv-store app
+        run: |
+          cd apps/e2e-kv-store
+          ./build.sh
+
+      - name: Build xcall-example app
+        run: |
+          cd apps/xcall-example
+          ./build.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: e2e-rust-apps-release-build-artifacts
           path: |
-            target/app-release
-            apps/*/res/*.wasm
-            apps/*/res/*.mpk
+            apps/e2e-kv-store/res/*.wasm
+            apps/e2e-kv-store/res/*.mpk
+            apps/e2e-kv-store/res/abi.json
+            apps/xcall-example/res/*.wasm
+            apps/xcall-example/res/abi.json
           retention-days: 1
 
   test:
-    name: Run All Merobox Workflows
+    name: Run Workflows
     needs: build-apps
     runs-on: ubuntu-24.04-8cpu
     steps:
@@ -87,74 +97,94 @@ jobs:
       - name: Download Contracts
         uses: ./.github/actions/download-contracts
 
-      - name: Run All Workflows
-        id: run_workflows
+      - name: Run e2e-kv-store Workflow
+        id: run_e2e_kv_store
         run: |
           mkdir -p docker-logs
-          cd apps
-          failed_workflows=()
-          for workflow in */workflows/*.yml */workflows/*.yaml; do
-              if [ -f "$workflow" ]; then
-                  app_dir=$(dirname "$(dirname "$workflow")")
-                  workflow_file=$(basename "$workflow")
-                  max_attempts=2
-                  attempt=1
-                  success=false
-                  
-                  while [ $attempt -le $max_attempts ]; do
-                      if [ $attempt -gt 1 ]; then
-                          merobox stop --all || true
-                          merobox nuke --force || true
-                          sleep 2
-                      fi
-                      
-                      if (
-                          cd "$app_dir"
-                          merobox bootstrap run \
-                              "workflows/$workflow_file" \
-                              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                              --e2e-mode \
-                              --near-devnet \
-                              --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
-                      ); then
-                          success=true
-                          break
-                      else
-                          attempt=$((attempt + 1))
-                      fi
-                  done
-                  
-                  # Collect logs
-                  workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
-                  for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
                   merobox stop --all || true
                   merobox nuke --force || true
-                  if [ "$success" = false ]; then
-                      failed_workflows+=("$workflow")
-                  fi
                   sleep 2
+              fi
+              
+              if merobox bootstrap run \
+                  "workflows/e2e.yml" \
+                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
               fi
           done
 
-          if [ ${#failed_workflows[@]} -gt 0 ]; then
-              echo "has_failures=true" >> $GITHUB_OUTPUT
-              printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
+          # Collect logs
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
           else
-              echo "has_failures=false" >> $GITHUB_OUTPUT
+              echo "failed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload Failed Workflows
-        if: steps.run_workflows.outputs.has_failures == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-rust-apps-release-failed-workflows
-          path: apps/failed_workflows.txt
-          retention-days: 1
+      - name: Run xcall-example Workflow
+        id: run_xcall
+        run: |
+          cd apps/xcall-example
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+              
+              if merobox bootstrap run \
+                  "workflows/xcall.yml" \
+                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          # Collect logs
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload Workflow Data Artifacts
         if: ${{ !cancelled() }}
@@ -162,11 +192,13 @@ jobs:
         with:
           name: e2e-rust-apps-release-data-${{ github.sha }}
           path: |
-            apps/*/res/*.wasm
-            apps/*/res/abi.json
-            apps/*/res/*.mpk
-            apps/*/res/state-schema.json
-            apps/*/data/
+            apps/e2e-kv-store/res/*.wasm
+            apps/e2e-kv-store/res/abi.json
+            apps/e2e-kv-store/res/*.mpk
+            apps/e2e-kv-store/res/state-schema.json
+            apps/e2e-kv-store/data/
+            apps/xcall-example/res/*.wasm
+            apps/xcall-example/res/abi.json
           retention-days: 7
           if-no-files-found: warn
 
@@ -179,6 +211,14 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      - name: Fail if workflows failed
-        if: steps.run_workflows.outputs.has_failures == 'true'
-        run: exit 1
+      - name: Check workflow results
+        if: steps.run_e2e_kv_store.outputs.failed == 'true' || steps.run_xcall.outputs.failed == 'true'
+        run: |
+          echo "Workflow failures detected:"
+          if [ "${{ steps.run_e2e_kv_store.outputs.failed }}" == "true" ]; then
+            echo "  - e2e-kv-store workflow failed"
+          fi
+          if [ "${{ steps.run_xcall.outputs.failed }}" == "true" ]; then
+            echo "  - xcall-example workflow failed"
+          fi
+          exit 1
