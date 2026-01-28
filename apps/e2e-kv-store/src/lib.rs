@@ -29,16 +29,12 @@ use calimero_storage::collections::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-
 // CONSTANTS
-
 
 const BLOB_ID_SIZE: usize = 32;
 const BASE58_ENCODED_MAX_SIZE: usize = 44;
 
-
 // HELPER TYPES
-
 
 /// Nested map type for user storage
 #[derive(Debug, BorshSerialize, BorshDeserialize, Default)]
@@ -83,9 +79,7 @@ impl Mergeable for FileRecord {
     }
 }
 
-
 // PRIVATE STATE (Node-local, NOT synchronized)
-
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -102,9 +96,7 @@ impl Default for PrivateSecrets {
     }
 }
 
-
 // MAIN STATE
-
 
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -161,9 +153,7 @@ pub struct E2eKvStore {
     rga_metadata: UnorderedMap<String, LwwRegister<String>>,
 }
 
-
 // EVENTS
-
 
 #[app::event]
 pub enum Event<'a> {
@@ -264,9 +254,7 @@ pub enum Event<'a> {
     },
 }
 
-
 // ERRORS
-
 
 #[derive(Debug, Error, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
@@ -282,9 +270,7 @@ pub enum Error<'a> {
     NoHash,
 }
 
-
 // HELPER FUNCTIONS
-
 
 fn encode_identity(identity: &[u8; 32]) -> String {
     bs58::encode(identity).into_string()
@@ -325,15 +311,11 @@ where
     serializer.serialize_str(&safe_string)
 }
 
-
 // APPLICATION LOGIC
-
 
 #[app::logic]
 impl E2eKvStore {
-
     // INITIALIZATION
-
 
     #[app::init]
     pub fn init() -> E2eKvStore {
@@ -368,9 +350,7 @@ impl E2eKvStore {
         }
     }
 
-
     // KV OPERATIONS
-
 
     /// Basic KV set without handlers
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
@@ -471,9 +451,7 @@ impl E2eKvStore {
         self.kv_items.clear().map_err(Into::into)
     }
 
-
     // EVENT HANDLERS
-
 
     pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         app::log!(
@@ -511,9 +489,7 @@ impl E2eKvStore {
         Ok(self.handler_counter.value()?)
     }
 
-
-    // USER STORAGE - SIMPLE 
-
+    // USER STORAGE - SIMPLE
 
     pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
         let executor_id = env::executor_id();
@@ -544,9 +520,7 @@ impl E2eKvStore {
             .map(|v| v.get().clone()))
     }
 
-
-    // USER STORAGE - NESTED 
-
+    // USER STORAGE - NESTED
 
     pub fn set_user_nested(&mut self, key: String, value: String) -> app::Result<()> {
         let executor_id = env::executor_id();
@@ -580,9 +554,7 @@ impl E2eKvStore {
         }
     }
 
-
-    // FROZEN STORAGE 
-
+    // FROZEN STORAGE
 
     pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
         app::log!("Adding frozen value: {:?}", value);
@@ -611,9 +583,7 @@ impl E2eKvStore {
             .ok_or_else(|| Error::FrozenNotFound("Frozen value is not found"))?)
     }
 
-
-    // PRIVATE STORAGE 
-
+    // PRIVATE STORAGE
 
     pub fn add_secret(&mut self, game_id: String, secret: String) -> app::Result<()> {
         // Save private secret using private storage
@@ -662,9 +632,7 @@ impl E2eKvStore {
             .collect())
     }
 
-
-    // BLOB API 
-
+    // BLOB API
 
     pub fn upload_file(
         &mut self,
@@ -778,9 +746,7 @@ impl E2eKvStore {
         Ok(results)
     }
 
-
     // CONTEXT ADMIN
-
 
     pub fn add_member(&self, public_key: PublicKey) -> app::Result<()> {
         app::log!("Adding member: {:?}", public_key);
@@ -805,9 +771,7 @@ impl E2eKvStore {
         Ok(members.into_iter().map(PublicKey::from).collect())
     }
 
-
     // NESTED CRDT - COUNTERS
-
 
     pub fn increment_counter(&mut self, key: String) -> Result<u64, String> {
         let mut counter = self
@@ -842,9 +806,7 @@ impl E2eKvStore {
             .ok_or_else(|| "Counter not found".to_owned())
     }
 
-
     // NESTED CRDT - REGISTERS
-
 
     pub fn set_register(&mut self, key: String, value: String) -> Result<(), String> {
         let register = LwwRegister::new(value.clone());
@@ -867,9 +829,7 @@ impl E2eKvStore {
             .ok_or_else(|| "Register not found".to_owned())
     }
 
-
     // NESTED CRDT - METADATA
-
 
     pub fn set_metadata(
         &mut self,
@@ -914,9 +874,7 @@ impl E2eKvStore {
             .map(|v| v.get().clone())
     }
 
-
     // NESTED CRDT - METRICS VECTOR
-
 
     pub fn push_metric(&mut self, value: u64) -> Result<usize, String> {
         let mut counter = Counter::new();
@@ -954,9 +912,7 @@ impl E2eKvStore {
             .map_err(|e| format!("Len failed: {:?}", e))
     }
 
-
     // NESTED CRDT - TAGS SET
-
 
     pub fn add_tag(&mut self, key: String, tag: String) -> Result<(), String> {
         let mut set = self
@@ -1000,9 +956,7 @@ impl E2eKvStore {
         Ok(count as u64)
     }
 
-
     // RGA DOCUMENT (from collaborative-editor)
-
 
     pub fn rga_insert_text(&mut self, position: usize, text: String) -> Result<(), String> {
         let editor_id = env::executor_id();
