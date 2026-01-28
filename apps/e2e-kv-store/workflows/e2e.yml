@@ -1,7 +1,7 @@
 name: E2E KV Store - Consolidated Backend Tests
 description: Consolidated E2E backend tests covering KV operations, handlers, user storage, frozen storage, private storage, nested CRDTs, and RGA
 
-force_pull_image: true
+force_pull_image: false
 
 nodes:
   chain_id: testnet-1
@@ -194,20 +194,25 @@ steps:
     statements:
       - 'json_equal({{removed_value}}, {"output": null})'
 
-
   # EVENT HANDLERS - Test handler-triggering methods
+  # Note: Handlers are executed on RECEIVING nodes when they sync state,
+  # so we check the count on Node 2 after sync (following kv-store-with-handlers pattern)
 
-
-  - name: Get initial handler count
+  - name: Get initial handler count on Node 2
     type: call
-    node: e2e-node-1
+    node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       initial_handler_count: result
 
-  - name: Set with handler (triggers insert_handler)
+  - name: Assert initial handler count is 0
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_handler_count}}, {"output": 0})'
+
+  - name: Set with handler (triggers insert_handler on receivers)
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
@@ -217,21 +222,31 @@ steps:
       key: "handler_test"
       value: "initial"
 
-  - name: Get handler count after insert
-    type: call
-    node: e2e-node-1
+  - name: Wait for handler sync after insert
+    type: wait_for_sync
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get handler count after insert on Node 2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_insert: result
 
-  - name: Assert handler count increased after insert
+  - name: Assert handler count is 1 after insert
     type: json_assert
     statements:
-      - "json_greater({{handler_count_after_insert}}, {{initial_handler_count}})"
+      - 'json_equal({{handler_count_after_insert}}, {"output": 1})'
 
-  - name: Set with handler again (triggers update_handler)
+  - name: Set with handler again (triggers update_handler on receivers)
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
@@ -241,21 +256,31 @@ steps:
       key: "handler_test"
       value: "updated"
 
-  - name: Get handler count after update
-    type: call
-    node: e2e-node-1
+  - name: Wait for handler sync after update
+    type: wait_for_sync
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get handler count after update on Node 2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_update: result
 
-  - name: Assert handler count increased after update
+  - name: Assert handler count is 2 after update
     type: json_assert
     statements:
-      - "json_greater({{handler_count_after_update}}, {{handler_count_after_insert}})"
+      - 'json_equal({{handler_count_after_update}}, {"output": 2})'
 
-  - name: Remove with handler (triggers remove_handler)
+  - name: Remove with handler (triggers remove_handler on receivers)
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
@@ -264,19 +289,29 @@ steps:
     args:
       key: "handler_test"
 
-  - name: Get handler count after remove
-    type: call
-    node: e2e-node-1
+  - name: Wait for handler sync after remove
+    type: wait_for_sync
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get handler count after remove on Node 2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_remove: result
 
-  - name: Assert handler count increased after remove
+  - name: Assert handler count is 3 after remove
     type: json_assert
     statements:
-      - "json_greater({{handler_count_after_remove}}, {{handler_count_after_update}})"
+      - 'json_equal({{handler_count_after_remove}}, {"output": 3})'
 
   - name: Set some test values for clear
     type: call
@@ -298,28 +333,7 @@ steps:
       key: "clear_test_2"
       value: "value2"
 
-  - name: Clear with handler (triggers clear_handler)
-    type: call
-    node: e2e-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
-    method: clear_with_handler
-
-  - name: Get handler count after clear
-    type: call
-    node: e2e-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
-    method: get_handler_execution_count
-    outputs:
-      handler_count_after_clear: result
-
-  - name: Assert handler count increased after clear
-    type: json_assert
-    statements:
-      - "json_greater({{handler_count_after_clear}}, {{handler_count_after_remove}})"
-
-  - name: Wait for sync after handler tests
+  - name: Wait for clear setup sync
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -328,6 +342,37 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
+
+  - name: Clear with handler (triggers clear_handler on receivers)
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: clear_with_handler
+
+  - name: Wait for handler sync after clear
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get handler count after clear on Node 2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get_handler_execution_count
+    outputs:
+      handler_count_after_clear: result
+
+  - name: Assert handler count is 4 after clear
+    type: json_assert
+    statements:
+      - 'json_equal({{handler_count_after_clear}}, {"output": 4})'
 
   # USER STORAGE - SIMPLE
 
@@ -435,9 +480,7 @@ steps:
     statements:
       - 'json_equal({{node2_profile_from_node1}}, {"output": "Node2 Profile"})'
 
-
   # USER STORAGE - NESTED
-
 
   - name: Set nested user value on node-1
     type: call
@@ -873,9 +916,7 @@ steps:
     statements:
       - 'json_equal({{metric_0}}, {"output": 100})'
 
-
   # NESTED CRDT - SETS (sequential to work around merge bug)
-
 
   - name: Add tag on node-1
     type: call
@@ -1100,9 +1141,7 @@ steps:
     statements:
       - 'json_equal({{doc_title}}, {"output": "E2E Test Document"})'
 
-
   # CONTEXT ADMIN - Member management
-
 
   - name: Check if node-2 is member
     type: call
@@ -1138,9 +1177,7 @@ steps:
   # tested implicitly through context creation. Direct testing would
   # require additional privilege setup.
 
-
   # BLOB STORAGE - File Upload, Discovery, and Deletion
-
 
   - name: Upload PNG blob to storage
     type: upload_blob
@@ -1317,9 +1354,7 @@ steps:
     statements:
       - "is_set({{files_after_delete}})"
 
-
   # CLEAR OPERATIONS
-
 
   - name: Clear KV store
     type: call
