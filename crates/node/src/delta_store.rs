@@ -5,8 +5,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use std::collections::HashMap;
-
 use calimero_context_primitives::client::ContextClient;
 use calimero_dag::{
     ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats,
@@ -45,6 +43,52 @@ struct ContextStorageApplier {
     context_client: ContextClient,
     context_id: ContextId,
     our_identity: PublicKey,
+    /// State for conditional root hash validation.
+    /// Set before each add_delta call to detect linear-base scenarios.
+    validation_state: RwLock<ValidationState>,
+}
+
+/// State used to determine if a delta should be validated for root hash mismatch.
+#[derive(Debug, Default)]
+struct ValidationState {
+    /// DAG heads captured before delta application begins.
+    pre_apply_heads: Vec<[u8; 32]>,
+    /// ID of the last successfully applied delta (for cascaded validation).
+    last_applied_id: Option<[u8; 32]>,
+}
+
+impl ValidationState {
+    /// Check if this delta should be validated for root hash mismatch.
+    fn should_validate(&self, delta_parents: &[[u8; 32]]) -> bool {
+        // Cascaded linear: single parent matches the just-applied delta
+        if delta_parents.len() == 1 {
+            if let Some(last) = self.last_applied_id {
+                if delta_parents[0] == last {
+                    return true;
+                }
+            }
+        }
+
+        // Linear base: single head matches single parent
+        if let ([head], [parent]) = (self.pre_apply_heads.as_slice(), delta_parents) {
+            if head == parent {
+                return true;
+            }
+        }
+
+        // Clean merge: heads exactly equals parents (order-independent)
+        if !self.pre_apply_heads.is_empty() && self.pre_apply_heads.len() == delta_parents.len() {
+            let mut heads = self.pre_apply_heads.clone();
+            let mut parents = delta_parents.to_vec();
+            heads.sort();
+            parents.sort();
+            if heads == parents {
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 #[async_trait::async_trait]
@@ -92,23 +136,32 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // Ensure deterministic root hash across all nodes.
-        // WASM execution may produce different hashes due to non-deterministic factors;
-        // use the delta author's expected_root_hash to maintain DAG consistency.
+        // Validate root hash only on deterministic bases (linear, cascaded, clean merge).
+        // For concurrent-head cases, mismatches are expected and not validated.
         let computed_hash = outcome.root_hash;
         if *computed_hash != delta.expected_root_hash {
-            warn!(
-                context_id = %self.context_id,
-                delta_id = ?delta.id,
-                computed_hash = ?computed_hash,
-                expected_hash = ?Hash::from(delta.expected_root_hash),
-                "Root hash mismatch - using expected hash for consistency"
-            );
-
-            self.context_client
-                .force_root_hash(&self.context_id, delta.expected_root_hash.into())
-                .map_err(|e| ApplyError::Application(format!("Failed to set root hash: {}", e)))?;
+            let state = self.validation_state.read().await;
+            if state.should_validate(&delta.parents) {
+                warn!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    computed_hash = ?computed_hash,
+                    expected_hash = ?Hash::from(delta.expected_root_hash),
+                    "Root hash mismatch - possible non-determinism or state divergence"
+                );
+            } else {
+                debug!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    computed_hash = ?computed_hash,
+                    expected_hash = ?Hash::from(delta.expected_root_hash),
+                    "Root hash differs (concurrent heads - not validating)"
+                );
+            }
         }
+
+        // Track last applied for cascaded validation
+        self.validation_state.write().await.last_applied_id = Some(delta.id);
 
         debug!(
             context_id = %self.context_id,
@@ -130,10 +183,6 @@ pub struct DeltaStore {
 
     /// Applier for applying deltas to WASM storage
     applier: Arc<ContextStorageApplier>,
-
-    /// Maps delta_id -> expected_root_hash for deterministic selection
-    /// when multiple DAG heads exist (concurrent branches)
-    head_root_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
 impl DeltaStore {
@@ -148,12 +197,12 @@ impl DeltaStore {
             context_client,
             context_id,
             our_identity,
+            validation_state: RwLock::new(ValidationState::default()),
         });
 
         Self {
             dag: Arc::new(RwLock::new(CoreDagStore::new(root))),
             applier,
-            head_root_hashes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -205,12 +254,6 @@ impl DeltaStore {
                 hlc: stored_delta.hlc,
                 expected_root_hash: stored_delta.expected_root_hash,
             };
-
-            // Store root hash mapping
-            {
-                let mut head_hashes = self.head_root_hashes.write().await;
-                let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-            }
 
             drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
         }
@@ -322,12 +365,6 @@ impl DeltaStore {
         let actions_for_db = delta.payload.clone();
         let hlc = delta.hlc;
 
-        // Store the mapping before applying
-        {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            let _previous = head_hashes.insert(delta_id, expected_root_hash);
-        }
-
         // CRITICAL: If this delta has events, persist it BEFORE adding to DAG
         // This ensures events are available if the delta cascades during add_delta()
         if events.is_some() {
@@ -358,6 +395,13 @@ impl DeltaStore {
         }
 
         let mut dag = self.dag.write().await;
+
+        // Snapshot DAG heads before applying for conditional root hash validation.
+        {
+            let mut state = self.applier.validation_state.write().await;
+            state.pre_apply_heads = dag.get_heads();
+            state.last_applied_id = None;
+        }
 
         // Track which deltas are currently pending BEFORE we add the new delta
         // This lets us detect which pending deltas got applied during the cascade
@@ -542,39 +586,8 @@ impl DeltaStore {
 
         self.applier
             .context_client
-            .update_dag_heads(&self.applier.context_id, heads.clone())
+            .update_dag_heads(&self.applier.context_id, heads)
             .map_err(|e| eyre::eyre!("Failed to update dag_heads: {}", e))?;
-
-        // Deterministic root hash selection for concurrent branches.
-        // When multiple DAG heads exist, use the lexicographically smallest head's root_hash
-        // to ensure all nodes converge to the same root regardless of delta arrival order.
-        if heads.len() > 1 {
-            let head_hashes = self.head_root_hashes.read().await;
-            let mut sorted_heads = heads.clone();
-            sorted_heads.sort();
-            let canonical_head = sorted_heads[0];
-
-            if let Some(&canonical_root_hash) = head_hashes.get(&canonical_head) {
-                debug!(
-                    context_id = %self.applier.context_id,
-                    heads_count = heads.len(),
-                    canonical_head = ?canonical_head,
-                    canonical_root = ?canonical_root_hash,
-                    "Multiple DAG heads - using deterministic root hash selection"
-                );
-
-                self.applier
-                    .context_client
-                    .force_root_hash(&self.applier.context_id, canonical_root_hash.into())
-                    .map_err(|e| eyre::eyre!("Failed to set canonical root hash: {}", e))?;
-            }
-        }
-
-        // Cleanup old head hashes that are no longer active
-        {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            head_hashes.retain(|head_id, _| heads.contains(head_id));
-        }
 
         Ok(AddDeltaResult {
             applied: result,
@@ -636,6 +649,13 @@ impl DeltaStore {
 
                     // Add to DAG and track any cascaded deltas
                     let mut dag = self.dag.write().await;
+
+                    // Snapshot heads for validation
+                    {
+                        let mut state = self.applier.validation_state.write().await;
+                        state.pre_apply_heads = dag.get_heads();
+                        state.last_applied_id = None;
+                    }
 
                     let pending_before: std::collections::HashSet<[u8; 32]> =
                         dag.get_pending_delta_ids().into_iter().collect();

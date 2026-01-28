@@ -50,10 +50,16 @@ pub struct CausalDelta {
 
     /// Expected root hash after applying this delta.
     ///
-    /// This ensures deterministic DAG structure across nodes even when
-    /// WASM execution produces different root hashes due to non-determinism.
-    /// During sync, receiving nodes MUST use this hash rather than their
-    /// computed hash to maintain DAG consistency.
+    /// This is the root hash the delta author observed after applying the
+    /// delta on their node. It is authoritative for the author's base state.
+    ///
+    /// Receiving nodes validate this hash only when applying on the same
+    /// linear base (single DAG head matching the delta's parents). A mismatch
+    /// in that scenario indicates non-determinism or state divergence and is
+    /// logged as a warning. For concurrent-head cases the mismatch is expected
+    /// and no validation is performed.
+    ///
+    /// This hash is **not** used to override the receiver's actual state root.
     pub expected_root_hash: [u8; 32],
 }
 
