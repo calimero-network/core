@@ -92,7 +92,7 @@ jobs:
               "$GH_TOKEN"
 
       - name: Setup merobox
-        uses: ./.github/actions/setup-merobox
+        uses: ./.github/actions/setup-merobox-pypi
 
       - name: Download Contracts
         uses: ./.github/actions/download-contracts
