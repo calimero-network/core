@@ -14,8 +14,7 @@ use tracing::{debug, info, warn};
 use super::traversal::{MerkleTraversalState, TraversalAction};
 use super::tree::{is_empty_tree_hash, MerkleTree};
 use super::validation::{
-    validate_merkle_sync_request, MerkleSyncBoundary, MerkleSyncRequestValidation,
-    MerkleSyncResult,
+    validate_merkle_sync_request, MerkleSyncBoundary, MerkleSyncRequestValidation, MerkleSyncResult,
 };
 use crate::sync::manager::SyncManager;
 use crate::sync::tracking::Sequencer;

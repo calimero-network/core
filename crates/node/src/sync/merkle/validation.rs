@@ -275,32 +275,85 @@ mod tests {
     #[test]
     fn test_key_in_sorted_ranges_multiple_ranges() {
         let ranges = vec![
-            ([0u8; 32], { let mut e = [0u8; 32]; e[0] = 10; e }),
-            ({ let mut s = [0u8; 32]; s[0] = 20; s }, { let mut e = [0u8; 32]; e[0] = 30; e }),
-            ({ let mut s = [0u8; 32]; s[0] = 50; s }, { let mut e = [0u8; 32]; e[0] = 60; e }),
+            ([0u8; 32], {
+                let mut e = [0u8; 32];
+                e[0] = 10;
+                e
+            }),
+            (
+                {
+                    let mut s = [0u8; 32];
+                    s[0] = 20;
+                    s
+                },
+                {
+                    let mut e = [0u8; 32];
+                    e[0] = 30;
+                    e
+                },
+            ),
+            (
+                {
+                    let mut s = [0u8; 32];
+                    s[0] = 50;
+                    s
+                },
+                {
+                    let mut e = [0u8; 32];
+                    e[0] = 60;
+                    e
+                },
+            ),
         ];
 
-        let mut key1 = [0u8; 32]; key1[0] = 5;
+        let mut key1 = [0u8; 32];
+        key1[0] = 5;
         assert!(key_in_sorted_ranges(&key1, &ranges));
 
-        let mut key2 = [0u8; 32]; key2[0] = 25;
+        let mut key2 = [0u8; 32];
+        key2[0] = 25;
         assert!(key_in_sorted_ranges(&key2, &ranges));
 
-        let mut key3 = [0u8; 32]; key3[0] = 55;
+        let mut key3 = [0u8; 32];
+        key3[0] = 55;
         assert!(key_in_sorted_ranges(&key3, &ranges));
 
-        let mut key4 = [0u8; 32]; key4[0] = 15;
+        let mut key4 = [0u8; 32];
+        key4[0] = 15;
         assert!(!key_in_sorted_ranges(&key4, &ranges));
 
-        let mut key5 = [0u8; 32]; key5[0] = 70;
+        let mut key5 = [0u8; 32];
+        key5[0] = 70;
         assert!(!key_in_sorted_ranges(&key5, &ranges));
     }
 
     #[test]
     fn test_sort_ranges() {
         let ranges = vec![
-            ({ let mut s = [0u8; 32]; s[0] = 30; s }, { let mut e = [0u8; 32]; e[0] = 40; e }),
-            ({ let mut s = [0u8; 32]; s[0] = 10; s }, { let mut e = [0u8; 32]; e[0] = 20; e }),
+            (
+                {
+                    let mut s = [0u8; 32];
+                    s[0] = 30;
+                    s
+                },
+                {
+                    let mut e = [0u8; 32];
+                    e[0] = 40;
+                    e
+                },
+            ),
+            (
+                {
+                    let mut s = [0u8; 32];
+                    s[0] = 10;
+                    s
+                },
+                {
+                    let mut e = [0u8; 32];
+                    e[0] = 20;
+                    e
+                },
+            ),
         ];
 
         let sorted = sort_ranges(&ranges);
@@ -320,7 +373,10 @@ mod tests {
 
         let result = validate_merkle_sync_request(Some(root_hash), root_hash, &params, None);
 
-        assert!(matches!(result, MerkleSyncRequestValidation::Valid { cursor: None }));
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::Valid { cursor: None }
+        ));
     }
 
     #[test]
@@ -330,7 +386,10 @@ mod tests {
 
         let result = validate_merkle_sync_request(None, root_hash, &params, None);
 
-        assert!(matches!(result, MerkleSyncRequestValidation::ContextNotFound));
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::ContextNotFound
+        ));
     }
 
     #[test]
@@ -341,7 +400,10 @@ mod tests {
 
         let result = validate_merkle_sync_request(Some(current), boundary, &params, None);
 
-        assert!(matches!(result, MerkleSyncRequestValidation::BoundaryMismatch));
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::BoundaryMismatch
+        ));
     }
 
     #[test]
@@ -351,9 +413,13 @@ mod tests {
 
         let large_cursor = vec![0u8; calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE + 1];
 
-        let result = validate_merkle_sync_request(Some(root_hash), root_hash, &params, Some(&large_cursor));
+        let result =
+            validate_merkle_sync_request(Some(root_hash), root_hash, &params, Some(&large_cursor));
 
-        assert!(matches!(result, MerkleSyncRequestValidation::CursorTooLarge { .. }));
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::CursorTooLarge { .. }
+        ));
     }
 
     #[test]
@@ -363,9 +429,17 @@ mod tests {
 
         let malformed_cursor = vec![0xFF, 0xFF, 0xFF, 0xFF];
 
-        let result = validate_merkle_sync_request(Some(root_hash), root_hash, &params, Some(&malformed_cursor));
+        let result = validate_merkle_sync_request(
+            Some(root_hash),
+            root_hash,
+            &params,
+            Some(&malformed_cursor),
+        );
 
-        assert!(matches!(result, MerkleSyncRequestValidation::CursorMalformed { .. }));
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::CursorMalformed { .. }
+        ));
     }
 
     #[test]
@@ -377,9 +451,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = validate_merkle_sync_request(Some(root_hash), root_hash, &incompatible_params, None);
+        let result =
+            validate_merkle_sync_request(Some(root_hash), root_hash, &incompatible_params, None);
 
-        assert!(matches!(result, MerkleSyncRequestValidation::IncompatibleParams));
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::IncompatibleParams
+        ));
     }
 
     #[test]
@@ -394,10 +472,13 @@ mod tests {
         };
         let cursor_bytes = borsh::to_vec(&cursor).unwrap();
 
-        let result = validate_merkle_sync_request(Some(root_hash), root_hash, &params, Some(&cursor_bytes));
+        let result =
+            validate_merkle_sync_request(Some(root_hash), root_hash, &params, Some(&cursor_bytes));
 
         match result {
-            MerkleSyncRequestValidation::Valid { cursor: Some(parsed) } => {
+            MerkleSyncRequestValidation::Valid {
+                cursor: Some(parsed),
+            } => {
                 assert_eq!(parsed.pending_nodes.len(), 1);
                 assert_eq!(parsed.pending_leaves, vec![1, 2, 3]);
             }
@@ -416,7 +497,12 @@ mod tests {
         let params = TreeParams::default();
         let dag_heads = vec![[3u8; 32]];
 
-        let result = parse_boundary_for_merkle(boundary_root, dag_heads.clone(), Some(params), Some(merkle_root));
+        let result = parse_boundary_for_merkle(
+            boundary_root,
+            dag_heads.clone(),
+            Some(params),
+            Some(merkle_root),
+        );
 
         match result {
             BoundaryParseResult::MerkleSupported(boundary) => {
