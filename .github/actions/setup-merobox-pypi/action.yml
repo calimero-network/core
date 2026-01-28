@@ -1,16 +1,23 @@
-name: Setup Merobox
-description: "Install merobox from APT repository (Linux only)"
+name: Setup Merobox from PyPI
+description: "Setup Python and install merobox from PyPI"
+
+inputs:
+  python-version:
+    description: "Python version to install"
+    required: false
+    default: "3.11"
 
 runs:
   using: "composite"
   steps:
-    - name: Install merobox from APT
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install merobox from PyPI
       shell: bash
-      run: |
-        curl -fsSL https://calimero-network.github.io/merobox/gpg.key | sudo tee /usr/share/keyrings/merobox.gpg > /dev/null
-        echo "deb [signed-by=/usr/share/keyrings/merobox.gpg] https://calimero-network.github.io/merobox stable main" | sudo tee /etc/apt/sources.list.d/merobox.list
-        sudo apt update
-        sudo apt install -y merobox
+      run: pip install merobox
 
     - name: Verify merobox installation
       shell: bash
