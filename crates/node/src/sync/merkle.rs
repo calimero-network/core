@@ -380,10 +380,34 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: Nonce,
     ) -> Result<()> {
-        // Verify context exists
-        let context = match self.context_client.get_context(&context_id)? {
-            Some(ctx) => ctx,
-            None => {
+        // Get context root hash for validation
+        let context_root_hash = self
+            .context_client
+            .get_context(&context_id)?
+            .map(|ctx| ctx.root_hash);
+
+        // Use pure validation function
+        let validation = validate_merkle_sync_request(
+            context_root_hash,
+            boundary_root_hash,
+            &tree_params,
+            resume_cursor.as_deref(),
+        );
+
+        match validation {
+            MerkleSyncRequestValidation::Valid { cursor } => {
+                // Log cursor info if resuming
+                if let Some(ref c) = cursor {
+                    info!(
+                        %context_id,
+                        pending_nodes = c.pending_nodes.len(),
+                        pending_leaves = c.pending_leaves.len(),
+                        "Resuming Merkle sync from cursor"
+                    );
+                }
+                drop(cursor); // cursor not needed further in this handler
+            }
+            MerkleSyncRequestValidation::ContextNotFound => {
                 warn!(%context_id, "Context not found for Merkle sync request");
                 return self
                     .send_merkle_error(
@@ -393,41 +417,31 @@ impl SyncManager {
                     )
                     .await;
             }
-        };
-
-        // Verify boundary is still valid
-        if context.root_hash != boundary_root_hash {
-            warn!(%context_id, "Boundary mismatch for Merkle sync");
-            return self
-                .send_merkle_error(
-                    stream,
-                    MerkleErrorCode::InvalidBoundary,
-                    "Boundary root hash mismatch",
-                )
-                .await;
-        }
-
-        // Verify tree params are compatible
-        let our_params = TreeParams::default();
-        if !our_params.is_compatible(&tree_params) {
-            warn!(%context_id, "Incompatible tree params for Merkle sync");
-            return self
-                .send_merkle_error(
-                    stream,
-                    MerkleErrorCode::IncompatibleParams,
-                    "Tree parameters mismatch",
-                )
-                .await;
-        }
-
-        // Validate resume cursor if provided
-        if let Some(ref cursor_bytes) = resume_cursor {
-            // Enforce 64 KiB size limit
-            if cursor_bytes.len() > calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE {
+            MerkleSyncRequestValidation::BoundaryMismatch => {
+                warn!(%context_id, "Boundary mismatch for Merkle sync");
+                return self
+                    .send_merkle_error(
+                        stream,
+                        MerkleErrorCode::InvalidBoundary,
+                        "Boundary root hash mismatch",
+                    )
+                    .await;
+            }
+            MerkleSyncRequestValidation::IncompatibleParams => {
+                warn!(%context_id, "Incompatible tree params for Merkle sync");
+                return self
+                    .send_merkle_error(
+                        stream,
+                        MerkleErrorCode::IncompatibleParams,
+                        "Tree parameters mismatch",
+                    )
+                    .await;
+            }
+            MerkleSyncRequestValidation::CursorTooLarge { size, max } => {
                 warn!(
                     %context_id,
-                    cursor_size = cursor_bytes.len(),
-                    max_size = calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE,
+                    cursor_size = size,
+                    max_size = max,
                     "Rejecting oversized resume cursor"
                 );
                 return self
@@ -438,31 +452,19 @@ impl SyncManager {
                     )
                     .await;
             }
-
-            // Validate cursor can be deserialized
-            match borsh::from_slice::<calimero_node_primitives::sync::MerkleCursor>(cursor_bytes) {
-                Ok(cursor) => {
-                    info!(
-                        %context_id,
-                        pending_nodes = cursor.pending_nodes.len(),
-                        pending_leaves = cursor.pending_leaves.len(),
-                        "Resuming Merkle sync from cursor"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        %context_id,
-                        error = %e,
-                        "Failed to deserialize resume cursor"
-                    );
-                    return self
-                        .send_merkle_error(
-                            stream,
-                            MerkleErrorCode::ResumeCursorInvalid,
-                            "Malformed resume cursor",
-                        )
-                        .await;
-                }
+            MerkleSyncRequestValidation::CursorMalformed { error } => {
+                warn!(
+                    %context_id,
+                    error = %error,
+                    "Failed to deserialize resume cursor"
+                );
+                return self
+                    .send_merkle_error(
+                        stream,
+                        MerkleErrorCode::ResumeCursorInvalid,
+                        "Malformed resume cursor",
+                    )
+                    .await;
             }
         }
 
@@ -896,6 +898,9 @@ impl SyncManager {
     ///
     /// If `resume_cursor` is provided, the traversal starts from that state instead
     /// of the tree root.
+    ///
+    /// This is a thin async orchestrator that delegates traversal decisions to
+    /// the pure `MerkleTraversalState` state machine.
     async fn perform_merkle_traversal(
         &self,
         context_id: ContextId,
@@ -904,8 +909,8 @@ impl SyncManager {
         tree_params: &TreeParams,
         resume_cursor: Option<calimero_node_primitives::sync::MerkleCursor>,
     ) -> Result<(MerkleSyncResult, Vec<([u8; 32], [u8; 32])>)> {
-        // Initialize from cursor or start fresh from root
-        let (mut pending_nodes, mut pending_leaves, mut covered_ranges) = match resume_cursor {
+        // Initialize state machine from cursor or fresh start
+        let mut state = match resume_cursor {
             Some(cursor) => {
                 info!(
                     %context_id,
@@ -914,154 +919,105 @@ impl SyncManager {
                     covered_ranges = cursor.covered_ranges.len(),
                     "Resuming Merkle traversal from cursor"
                 );
-                (cursor.pending_nodes, cursor.pending_leaves, cursor.covered_ranges)
+                MerkleTraversalState::from_cursor(
+                    cursor,
+                    tree_params.clone(),
+                    super::snapshot::DEFAULT_PAGE_LIMIT as usize,
+                )
             }
-            None => (vec![local_tree.root_id()], Vec::new(), Vec::new()),
+            None => MerkleTraversalState::new(
+                local_tree.root_id(),
+                tree_params.clone(),
+                super::snapshot::DEFAULT_PAGE_LIMIT as usize,
+            ),
         };
-        let mut chunks_transferred = 0usize;
-        let mut records_applied = 0usize;
+
         let mut sqx = Sequencer::default();
 
-        // BFS: process nodes level by level
-        while !pending_nodes.is_empty() || !pending_leaves.is_empty() {
-            // First, request node hashes for pending internal nodes
-            if !pending_nodes.is_empty() {
-                let batch: Vec<NodeId> = pending_nodes
-                    .drain(
-                        ..pending_nodes
-                            .len()
-                            .min(super::snapshot::DEFAULT_PAGE_LIMIT as usize),
-                    )
-                    .collect();
-
-                let request = StreamMessage::Message {
-                    sequence_id: sqx.next(),
-                    payload: MessagePayload::MerkleSyncFrame {
-                        frame: MerkleSyncFrame::NodeRequest {
-                            nodes: batch.clone(),
+        // Main traversal loop - orchestrates I/O based on state machine actions
+        loop {
+            match state.next_action() {
+                TraversalAction::RequestNodes(batch) => {
+                    let request = StreamMessage::Message {
+                        sequence_id: sqx.next(),
+                        payload: MessagePayload::MerkleSyncFrame {
+                            frame: MerkleSyncFrame::NodeRequest { nodes: batch },
                         },
-                    },
-                    next_nonce: super::helpers::generate_nonce(),
-                };
-                super::stream::send(stream, &request, None).await?;
+                        next_nonce: super::helpers::generate_nonce(),
+                    };
+                    super::stream::send(stream, &request, None).await?;
 
-                // Wait for NodeReply
-                let response = super::stream::recv(stream, None, self.sync_config.timeout).await?;
-                let Some(StreamMessage::Message { payload, .. }) = response else {
-                    eyre::bail!("Unexpected response during Merkle node request");
-                };
+                    // Wait for NodeReply
+                    let response =
+                        super::stream::recv(stream, None, self.sync_config.timeout).await?;
+                    let Some(StreamMessage::Message { payload, .. }) = response else {
+                        eyre::bail!("Unexpected response during Merkle node request");
+                    };
 
-                match payload {
-                    MessagePayload::MerkleSyncFrame {
-                        frame:
-                            MerkleSyncFrame::NodeReply {
-                                nodes: remote_digests,
-                            },
-                    } => {
-                        // Compare with local and find mismatches
-                        for remote_digest in &remote_digests {
-                            let local_hash = local_tree.get_node_hash(&remote_digest.id);
-
-                            match local_hash {
-                                Some(lh) if lh == remote_digest.hash => {
-                                    // Match - skip this subtree, but track its key range
-                                    // This works for both leaf nodes and internal nodes
-                                    if let Some(range) =
-                                        local_tree.get_subtree_key_range(&remote_digest.id)
-                                    {
-                                        covered_ranges.push(range);
-                                    }
-                                }
-                                _ => {
-                                    // Mismatch - drill down
-                                    if remote_digest.id.level == 0 {
-                                        // Leaf node - queue for fetch
-                                        pending_leaves.push(remote_digest.id.index);
-                                    } else {
-                                        // Internal node - queue children
-                                        let children = get_children_ids(
-                                            &remote_digest.id,
-                                            remote_digest.child_count,
-                                            tree_params.fanout,
-                                        );
-                                        pending_nodes.extend(children);
-                                    }
-                                }
-                            }
+                    match payload {
+                        MessagePayload::MerkleSyncFrame {
+                            frame: MerkleSyncFrame::NodeReply { nodes: digests },
+                        } => {
+                            // Delegate comparison logic to pure state machine
+                            state.handle_node_reply(local_tree, &digests);
+                        }
+                        MessagePayload::MerkleSyncFrame {
+                            frame: MerkleSyncFrame::Error { code, message },
+                        } => {
+                            eyre::bail!("Merkle sync error (code {}): {}", code, message);
+                        }
+                        _ => {
+                            eyre::bail!("Unexpected payload during Merkle node request");
                         }
                     }
-                    MessagePayload::MerkleSyncFrame {
-                        frame: MerkleSyncFrame::Error { code, message },
-                    } => {
-                        eyre::bail!("Merkle sync error (code {}): {}", code, message);
-                    }
-                    _ => {
-                        eyre::bail!("Unexpected payload during Merkle node request");
-                    }
                 }
-            }
 
-            // Then, fetch any pending leaf chunks
-            if !pending_leaves.is_empty() && pending_nodes.is_empty() {
-                let batch: Vec<u64> = pending_leaves
-                    .drain(
-                        ..pending_leaves
-                            .len()
-                            .min(super::snapshot::DEFAULT_PAGE_LIMIT as usize),
-                    )
-                    .collect();
+                TraversalAction::RequestLeaves(batch) => {
+                    let request = StreamMessage::Message {
+                        sequence_id: sqx.next(),
+                        payload: MessagePayload::MerkleSyncFrame {
+                            frame: MerkleSyncFrame::LeafRequest { leaves: batch },
+                        },
+                        next_nonce: super::helpers::generate_nonce(),
+                    };
+                    super::stream::send(stream, &request, None).await?;
 
-                let request = StreamMessage::Message {
-                    sequence_id: sqx.next(),
-                    payload: MessagePayload::MerkleSyncFrame {
-                        frame: MerkleSyncFrame::LeafRequest { leaves: batch },
-                    },
-                    next_nonce: super::helpers::generate_nonce(),
-                };
-                super::stream::send(stream, &request, None).await?;
+                    // Wait for LeafReply
+                    let response =
+                        super::stream::recv(stream, None, self.sync_config.timeout).await?;
+                    let Some(StreamMessage::Message { payload, .. }) = response else {
+                        eyre::bail!("Unexpected response during Merkle leaf request");
+                    };
 
-                // Wait for LeafReply
-                let response = super::stream::recv(stream, None, self.sync_config.timeout).await?;
-                let Some(StreamMessage::Message { payload, .. }) = response else {
-                    eyre::bail!("Unexpected response during Merkle leaf request");
-                };
+                    match payload {
+                        MessagePayload::MerkleSyncFrame {
+                            frame: MerkleSyncFrame::LeafReply { leaves: chunks },
+                        } => {
+                            // Delegate chunk processing to pure state machine
+                            let reply_result = state.handle_leaf_reply(chunks);
 
-                match payload {
-                    MessagePayload::MerkleSyncFrame {
-                        frame: MerkleSyncFrame::LeafReply { leaves: chunks },
-                    } => {
-                        for chunk in chunks {
-                            // Track the key range covered by this chunk
-                            if let (Ok(start), Ok(end)) = (
-                                chunk.start_key.as_slice().try_into(),
-                                chunk.end_key.as_slice().try_into(),
-                            ) {
-                                covered_ranges.push((start, end));
+                            // Apply chunks (side effect) - only increment counter on success
+                            for chunk in reply_result.chunks_to_apply {
+                                let applied = self.apply_merkle_chunk(context_id, &chunk)?;
+                                state.record_chunk_applied(applied);
                             }
-                            let applied = self.apply_merkle_chunk(context_id, &chunk)?;
-                            records_applied += applied;
-                            chunks_transferred += 1;
+                        }
+                        MessagePayload::MerkleSyncFrame {
+                            frame: MerkleSyncFrame::Error { code, message },
+                        } => {
+                            eyre::bail!("Merkle sync error (code {}): {}", code, message);
+                        }
+                        _ => {
+                            eyre::bail!("Unexpected payload during Merkle leaf request");
                         }
                     }
-                    MessagePayload::MerkleSyncFrame {
-                        frame: MerkleSyncFrame::Error { code, message },
-                    } => {
-                        eyre::bail!("Merkle sync error (code {}): {}", code, message);
-                    }
-                    _ => {
-                        eyre::bail!("Unexpected payload during Merkle leaf request");
-                    }
                 }
+
+                TraversalAction::Done => break,
             }
         }
 
-        Ok((
-            MerkleSyncResult {
-                chunks_transferred,
-                records_applied,
-            },
-            covered_ranges,
-        ))
+        Ok((state.result(), state.covered_ranges().to_vec()))
     }
 
     /// Apply a compressed Merkle chunk by replacing the key range.
@@ -1178,8 +1134,8 @@ impl SyncManager {
     /// This handles the case where local keys exist outside the key ranges
     /// covered by the remote tree's chunks.
     ///
-    /// Optimized to O(N log M) where N is number of context keys and M is number of ranges,
-    /// by sorting ranges and using binary search.
+    /// Uses the pure `key_in_sorted_ranges` helper for O(N log M) complexity
+    /// where N is number of context keys and M is number of ranges.
     fn delete_orphaned_keys(
         &self,
         context_id: ContextId,
@@ -1192,9 +1148,8 @@ impl SyncManager {
             return Ok(0);
         }
 
-        // Sort ranges by start key for binary search
-        let mut sorted_ranges: Vec<_> = chunk_ranges.to_vec();
-        sorted_ranges.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort ranges using pure helper
+        let sorted_ranges = sort_ranges(chunk_ranges);
 
         let mut handle = self.context_client.datastore_handle();
 
@@ -1205,23 +1160,8 @@ impl SyncManager {
                 let key = key_result?;
                 if key.context_id() == context_id {
                     let state_key = key.state_key();
-                    // Binary search for potential containing range
-                    // Find the last range whose start_key <= state_key
-                    let in_range = match sorted_ranges
-                        .binary_search_by(|(start, _)| start.cmp(&state_key))
-                    {
-                        Ok(idx) => {
-                            // Exact match on start_key - check if within this range
-                            state_key <= sorted_ranges[idx].1
-                        }
-                        Err(0) => false, // state_key is before all ranges
-                        Err(idx) => {
-                            // Check the range just before where state_key would be inserted
-                            let (start, end) = &sorted_ranges[idx - 1];
-                            state_key >= *start && state_key <= *end
-                        }
-                    };
-                    if !in_range {
+                    // Use pure helper for range check
+                    if !key_in_sorted_ranges(&state_key, &sorted_ranges) {
                         keys.push(state_key);
                     }
                 }
@@ -1252,6 +1192,361 @@ fn get_children_ids(parent: &NodeId, child_count: u16, fanout: u16) -> Vec<NodeI
             index: first_child_idx + i,
         })
         .collect()
+}
+
+// =============================================================================
+// Pure Traversal State Machine
+// =============================================================================
+
+/// Pure state machine for Merkle tree traversal.
+///
+/// This struct holds all traversal state and provides pure methods for
+/// computing the next action and processing responses. It contains no I/O
+/// or side effects, making it fully unit-testable with synthetic inputs.
+#[derive(Debug, Clone)]
+pub struct MerkleTraversalState {
+    /// Pending internal nodes to request hashes for.
+    pub pending_nodes: Vec<NodeId>,
+    /// Pending leaf indices to fetch chunks for.
+    pub pending_leaves: Vec<u64>,
+    /// Key ranges covered by the remote tree (for orphan deletion).
+    pub covered_ranges: Vec<([u8; 32], [u8; 32])>,
+    /// Number of chunks transferred so far.
+    pub chunks_transferred: usize,
+    /// Number of records applied so far.
+    pub records_applied: usize,
+    /// Tree parameters for computing children.
+    tree_params: TreeParams,
+    /// Page limit for batching requests.
+    page_limit: usize,
+}
+
+/// Actions that the traversal state machine can request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraversalAction {
+    /// Request node digests for the given node IDs.
+    RequestNodes(Vec<NodeId>),
+    /// Request leaf chunks for the given leaf indices.
+    RequestLeaves(Vec<u64>),
+    /// Traversal is complete.
+    Done,
+}
+
+/// Result of processing a leaf reply - chunks to apply.
+#[derive(Debug)]
+#[allow(dead_code)] // Public API - fields accessed by callers
+pub struct LeafReplyResult {
+    /// Chunks that need to be applied to the store.
+    pub chunks_to_apply: Vec<CompressedChunk>,
+    /// Key ranges covered by these chunks (for tracking).
+    pub covered_ranges: Vec<([u8; 32], [u8; 32])>,
+}
+
+impl MerkleTraversalState {
+    /// Create a new traversal state starting from the tree root.
+    pub fn new(root_id: NodeId, tree_params: TreeParams, page_limit: usize) -> Self {
+        Self {
+            pending_nodes: vec![root_id],
+            pending_leaves: Vec::new(),
+            covered_ranges: Vec::new(),
+            chunks_transferred: 0,
+            records_applied: 0,
+            tree_params,
+            page_limit,
+        }
+    }
+
+    /// Create a traversal state from a resume cursor.
+    pub fn from_cursor(
+        cursor: calimero_node_primitives::sync::MerkleCursor,
+        tree_params: TreeParams,
+        page_limit: usize,
+    ) -> Self {
+        Self {
+            pending_nodes: cursor.pending_nodes,
+            pending_leaves: cursor.pending_leaves,
+            covered_ranges: cursor.covered_ranges,
+            chunks_transferred: 0,
+            records_applied: 0,
+            tree_params,
+            page_limit,
+        }
+    }
+
+    /// Get the next action to perform.
+    ///
+    /// Returns `Done` when traversal is complete.
+    pub fn next_action(&mut self) -> TraversalAction {
+        // Prioritize node requests over leaf requests (BFS)
+        if !self.pending_nodes.is_empty() {
+            let batch: Vec<NodeId> = self
+                .pending_nodes
+                .drain(..self.pending_nodes.len().min(self.page_limit))
+                .collect();
+            return TraversalAction::RequestNodes(batch);
+        }
+
+        if !self.pending_leaves.is_empty() {
+            let batch: Vec<u64> = self
+                .pending_leaves
+                .drain(..self.pending_leaves.len().min(self.page_limit))
+                .collect();
+            return TraversalAction::RequestLeaves(batch);
+        }
+
+        TraversalAction::Done
+    }
+
+    /// Process a node reply by comparing remote digests with local tree.
+    ///
+    /// Updates internal state based on which nodes match vs mismatch.
+    /// Returns the number of matching subtrees found.
+    pub fn handle_node_reply(
+        &mut self,
+        local_tree: &MerkleTree,
+        remote_digests: &[NodeDigest],
+    ) -> usize {
+        let mut matches = 0;
+
+        for remote_digest in remote_digests {
+            let local_hash = local_tree.get_node_hash(&remote_digest.id);
+
+            match local_hash {
+                Some(lh) if lh == remote_digest.hash => {
+                    // Match - skip this subtree, but track its key range
+                    if let Some(range) = local_tree.get_subtree_key_range(&remote_digest.id) {
+                        self.covered_ranges.push(range);
+                    }
+                    matches += 1;
+                }
+                _ => {
+                    // Mismatch - drill down
+                    if remote_digest.id.level == 0 {
+                        // Leaf node - queue for fetch
+                        self.pending_leaves.push(remote_digest.id.index);
+                    } else {
+                        // Internal node - queue children
+                        let children = get_children_ids(
+                            &remote_digest.id,
+                            remote_digest.child_count,
+                            self.tree_params.fanout,
+                        );
+                        self.pending_nodes.extend(children);
+                    }
+                }
+            }
+        }
+
+        matches
+    }
+
+    /// Process a leaf reply by extracting chunks to apply.
+    ///
+    /// Returns the chunks that need to be applied to the store.
+    /// The caller is responsible for actually applying them and calling
+    /// `record_chunk_applied` for each successful apply.
+    pub fn handle_leaf_reply(&mut self, chunks: Vec<CompressedChunk>) -> LeafReplyResult {
+        let mut chunks_to_apply = Vec::with_capacity(chunks.len());
+        let mut covered_ranges = Vec::with_capacity(chunks.len());
+
+        for chunk in chunks {
+            // Track the key range covered by this chunk
+            if let (Ok(start), Ok(end)) = (
+                chunk.start_key.as_slice().try_into(),
+                chunk.end_key.as_slice().try_into(),
+            ) {
+                covered_ranges.push((start, end));
+                self.covered_ranges.push((start, end));
+            }
+            chunks_to_apply.push(chunk);
+        }
+
+        LeafReplyResult {
+            chunks_to_apply,
+            covered_ranges,
+        }
+    }
+
+    /// Record that a chunk was successfully applied with the given record count.
+    ///
+    /// Call this after each successful `apply_merkle_chunk` to accurately track
+    /// chunks_transferred (only counting successfully applied chunks).
+    pub fn record_chunk_applied(&mut self, records_applied: usize) {
+        self.chunks_transferred += 1;
+        self.records_applied += records_applied;
+    }
+
+    /// Check if traversal is complete.
+    #[allow(dead_code)] // Public API for resumable sync
+    pub fn is_done(&self) -> bool {
+        self.pending_nodes.is_empty() && self.pending_leaves.is_empty()
+    }
+
+    /// Get the current result.
+    pub fn result(&self) -> MerkleSyncResult {
+        MerkleSyncResult {
+            chunks_transferred: self.chunks_transferred,
+            records_applied: self.records_applied,
+        }
+    }
+
+    /// Get the covered ranges for orphan key deletion.
+    pub fn covered_ranges(&self) -> &[([u8; 32], [u8; 32])] {
+        &self.covered_ranges
+    }
+
+    /// Convert to a resume cursor for persistence.
+    #[allow(dead_code)] // Public API for resumable sync
+    pub fn to_cursor(&self) -> Option<calimero_node_primitives::sync::MerkleCursor> {
+        create_resume_cursor(&self.pending_nodes, &self.pending_leaves, &self.covered_ranges)
+    }
+}
+
+// =============================================================================
+// Pure Validation Helpers
+// =============================================================================
+
+/// Result of validating a Merkle sync request.
+#[derive(Debug)]
+pub enum MerkleSyncRequestValidation {
+    /// Request is valid, proceed with sync. Contains parsed cursor if provided.
+    Valid {
+        cursor: Option<calimero_node_primitives::sync::MerkleCursor>,
+    },
+    /// Context not found.
+    ContextNotFound,
+    /// Boundary root hash doesn't match current context state.
+    BoundaryMismatch,
+    /// Tree parameters are incompatible.
+    IncompatibleParams,
+    /// Resume cursor is too large.
+    CursorTooLarge { size: usize, max: usize },
+    /// Resume cursor failed to deserialize.
+    CursorMalformed { error: String },
+}
+
+/// Validate a Merkle sync request (pure function).
+///
+/// This validates all request parameters without performing I/O.
+/// On success, returns the parsed cursor (if provided) to avoid double deserialization.
+pub fn validate_merkle_sync_request(
+    context_root_hash: Option<Hash>,
+    boundary_root_hash: Hash,
+    tree_params: &TreeParams,
+    resume_cursor: Option<&[u8]>,
+) -> MerkleSyncRequestValidation {
+    // Check context exists
+    let Some(current_root) = context_root_hash else {
+        return MerkleSyncRequestValidation::ContextNotFound;
+    };
+
+    // Check boundary matches
+    if current_root != boundary_root_hash {
+        return MerkleSyncRequestValidation::BoundaryMismatch;
+    }
+
+    // Check tree params compatibility
+    let our_params = TreeParams::default();
+    if !our_params.is_compatible(tree_params) {
+        return MerkleSyncRequestValidation::IncompatibleParams;
+    }
+
+    // Validate and parse resume cursor if provided
+    let parsed_cursor = if let Some(cursor_bytes) = resume_cursor {
+        if cursor_bytes.len() > calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE {
+            return MerkleSyncRequestValidation::CursorTooLarge {
+                size: cursor_bytes.len(),
+                max: calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE,
+            };
+        }
+
+        match borsh::from_slice::<calimero_node_primitives::sync::MerkleCursor>(cursor_bytes) {
+            Ok(cursor) => Some(cursor),
+            Err(e) => {
+                return MerkleSyncRequestValidation::CursorMalformed {
+                    error: e.to_string(),
+                };
+            }
+        }
+    } else {
+        None
+    };
+
+    MerkleSyncRequestValidation::Valid {
+        cursor: parsed_cursor,
+    }
+}
+
+/// Result of parsing a snapshot boundary response for Merkle sync.
+#[derive(Debug)]
+pub enum BoundaryParseResult {
+    /// Successfully parsed, Merkle sync is supported.
+    MerkleSupported(MerkleSyncBoundary),
+    /// Peer doesn't support Merkle sync (no tree_params).
+    NoTreeParams,
+    /// Peer doesn't support Merkle sync (no merkle_root_hash).
+    NoMerkleRootHash,
+    /// Tree params are incompatible.
+    IncompatibleParams,
+}
+
+/// Parse a snapshot boundary response to check for Merkle sync support (pure function).
+pub fn parse_boundary_for_merkle(
+    boundary_root_hash: Hash,
+    dag_heads: Vec<[u8; 32]>,
+    tree_params: Option<TreeParams>,
+    merkle_root_hash: Option<Hash>,
+) -> BoundaryParseResult {
+    let Some(tree_params) = tree_params else {
+        return BoundaryParseResult::NoTreeParams;
+    };
+
+    let Some(merkle_root_hash) = merkle_root_hash else {
+        return BoundaryParseResult::NoMerkleRootHash;
+    };
+
+    // Verify params are compatible
+    let our_params = TreeParams::default();
+    if !our_params.is_compatible(&tree_params) {
+        return BoundaryParseResult::IncompatibleParams;
+    }
+
+    BoundaryParseResult::MerkleSupported(MerkleSyncBoundary {
+        boundary_root_hash,
+        tree_params,
+        merkle_root_hash,
+        dag_heads,
+    })
+}
+
+/// Check if a key falls within any of the given sorted ranges (pure function).
+///
+/// Ranges must be sorted by start key for binary search to work correctly.
+/// This is O(log M) where M is the number of ranges.
+pub fn key_in_sorted_ranges(key: &[u8; 32], sorted_ranges: &[([u8; 32], [u8; 32])]) -> bool {
+    if sorted_ranges.is_empty() {
+        return false;
+    }
+
+    match sorted_ranges.binary_search_by(|(start, _)| start.cmp(key)) {
+        Ok(idx) => {
+            // Exact match on start_key - check if within this range
+            *key <= sorted_ranges[idx].1
+        }
+        Err(0) => false, // key is before all ranges
+        Err(idx) => {
+            // Check the range just before where key would be inserted
+            let (start, end) = &sorted_ranges[idx - 1];
+            *key >= *start && *key <= *end
+        }
+    }
+}
+
+/// Sort ranges by start key for use with `key_in_sorted_ranges`.
+pub fn sort_ranges(ranges: &[([u8; 32], [u8; 32])]) -> Vec<([u8; 32], [u8; 32])> {
+    let mut sorted = ranges.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted
 }
 
 /// Boundary information for Merkle sync.
@@ -1387,5 +1682,625 @@ mod tests {
         for chunk in &chunks {
             assert!(chunk.uncompressed_len <= params.leaf_target_bytes + 2000); // Allow some overhead
         }
+    }
+
+    // =========================================================================
+    // Tests for MerkleTraversalState (pure state machine)
+    // =========================================================================
+
+    #[test]
+    fn test_traversal_state_new() {
+        let root_id = NodeId { level: 2, index: 0 };
+        let params = TreeParams::default();
+        let state = MerkleTraversalState::new(root_id, params, 100);
+
+        assert_eq!(state.pending_nodes, vec![root_id]);
+        assert!(state.pending_leaves.is_empty());
+        assert!(state.covered_ranges.is_empty());
+        assert_eq!(state.chunks_transferred, 0);
+        assert_eq!(state.records_applied, 0);
+        assert!(!state.is_done());
+    }
+
+    #[test]
+    fn test_traversal_state_next_action_nodes_first() {
+        let root_id = NodeId { level: 2, index: 0 };
+        let params = TreeParams::default();
+        let mut state = MerkleTraversalState::new(root_id, params, 100);
+
+        // Add some pending leaves
+        state.pending_leaves.push(0);
+        state.pending_leaves.push(1);
+
+        // Nodes should be processed before leaves
+        match state.next_action() {
+            TraversalAction::RequestNodes(nodes) => {
+                assert_eq!(nodes, vec![root_id]);
+            }
+            _ => panic!("Expected RequestNodes"),
+        }
+
+        // Now pending_nodes is empty, should request leaves
+        match state.next_action() {
+            TraversalAction::RequestLeaves(leaves) => {
+                assert_eq!(leaves, vec![0, 1]);
+            }
+            _ => panic!("Expected RequestLeaves"),
+        }
+
+        // Now both are empty
+        assert_eq!(state.next_action(), TraversalAction::Done);
+        assert!(state.is_done());
+    }
+
+    #[test]
+    fn test_traversal_state_batching() {
+        let params = TreeParams::default();
+        let mut state = MerkleTraversalState::new(NodeId { level: 0, index: 0 }, params, 2);
+
+        // Add more nodes than page_limit
+        state.pending_nodes = vec![
+            NodeId { level: 1, index: 0 },
+            NodeId { level: 1, index: 1 },
+            NodeId { level: 1, index: 2 },
+        ];
+
+        // Should only get page_limit (2) nodes
+        match state.next_action() {
+            TraversalAction::RequestNodes(nodes) => {
+                assert_eq!(nodes.len(), 2);
+            }
+            _ => panic!("Expected RequestNodes"),
+        }
+
+        // Remaining node
+        match state.next_action() {
+            TraversalAction::RequestNodes(nodes) => {
+                assert_eq!(nodes.len(), 1);
+            }
+            _ => panic!("Expected RequestNodes"),
+        }
+    }
+
+    #[test]
+    fn test_traversal_state_handle_node_reply_match() {
+        let params = TreeParams::default();
+
+        // Create a minimal "mock" tree structure for testing
+        // We'll create leaf hashes and build internal nodes
+        let leaf_hashes: Vec<Hash> = (0..4).map(|i| [i as u8; 32].into()).collect();
+        let chunks: Vec<SnapshotChunk> = (0..4)
+            .map(|i| {
+                let mut key = [0u8; 32];
+                key[0] = i;
+                SnapshotChunk {
+                    index: i as u64,
+                    start_key: key.to_vec(),
+                    end_key: key.to_vec(),
+                    uncompressed_len: 100,
+                    payload: vec![i; 100],
+                }
+            })
+            .collect();
+
+        let (node_hashes, root_hash, height) = build_internal_nodes(&leaf_hashes, 4);
+
+        let local_tree = MerkleTree {
+            params: params.clone(),
+            chunks,
+            leaf_hashes,
+            node_hashes,
+            root_hash,
+            height,
+        };
+
+        // Create state and clear the initial pending node for this test
+        let mut state = MerkleTraversalState::new(local_tree.root_id(), params.clone(), 100);
+        state.pending_nodes.clear();
+
+        // Simulate receiving a matching node digest
+        let remote_digests = vec![NodeDigest {
+            id: local_tree.root_id(),
+            hash: local_tree.root_hash,
+            child_count: 4,
+        }];
+
+        let matches = state.handle_node_reply(&local_tree, &remote_digests);
+
+        // Should match and add covered range
+        assert_eq!(matches, 1);
+        assert_eq!(state.covered_ranges.len(), 1);
+        assert!(state.pending_nodes.is_empty()); // No children added
+        assert!(state.pending_leaves.is_empty());
+    }
+
+    #[test]
+    fn test_traversal_state_handle_node_reply_mismatch_internal() {
+        let params = TreeParams::default();
+        let mut state = MerkleTraversalState::new(NodeId { level: 1, index: 0 }, params.clone(), 100);
+
+        // Create a local tree
+        let leaf_hashes: Vec<Hash> = (0..4).map(|i| [i as u8; 32].into()).collect();
+        let chunks: Vec<SnapshotChunk> = (0..4)
+            .map(|i| {
+                let mut key = [0u8; 32];
+                key[0] = i;
+                SnapshotChunk {
+                    index: i as u64,
+                    start_key: key.to_vec(),
+                    end_key: key.to_vec(),
+                    uncompressed_len: 100,
+                    payload: vec![i; 100],
+                }
+            })
+            .collect();
+
+        let (node_hashes, root_hash, height) = build_internal_nodes(&leaf_hashes, 4);
+
+        let local_tree = MerkleTree {
+            params: params.clone(),
+            chunks,
+            leaf_hashes,
+            node_hashes,
+            root_hash,
+            height,
+        };
+
+        // Clear pending_nodes to test mismatch behavior
+        state.pending_nodes.clear();
+
+        // Simulate receiving a mismatched internal node digest
+        let remote_digests = vec![NodeDigest {
+            id: NodeId { level: 1, index: 0 },
+            hash: [99u8; 32].into(), // Different hash
+            child_count: 4,
+        }];
+
+        let matches = state.handle_node_reply(&local_tree, &remote_digests);
+
+        // Should not match, should add children to pending_nodes
+        assert_eq!(matches, 0);
+        assert!(state.covered_ranges.is_empty());
+        assert_eq!(state.pending_nodes.len(), 4); // Children added
+    }
+
+    #[test]
+    fn test_traversal_state_handle_node_reply_mismatch_leaf() {
+        let params = TreeParams::default();
+        let mut state = MerkleTraversalState::new(NodeId { level: 0, index: 0 }, params.clone(), 100);
+        state.pending_nodes.clear();
+
+        // Create a local tree
+        let leaf_hashes: Vec<Hash> = (0..4).map(|i| [i as u8; 32].into()).collect();
+        let chunks: Vec<SnapshotChunk> = (0..4)
+            .map(|i| {
+                let mut key = [0u8; 32];
+                key[0] = i;
+                SnapshotChunk {
+                    index: i as u64,
+                    start_key: key.to_vec(),
+                    end_key: key.to_vec(),
+                    uncompressed_len: 100,
+                    payload: vec![i; 100],
+                }
+            })
+            .collect();
+
+        let (node_hashes, root_hash, height) = build_internal_nodes(&leaf_hashes, 4);
+
+        let local_tree = MerkleTree {
+            params: params.clone(),
+            chunks,
+            leaf_hashes,
+            node_hashes,
+            root_hash,
+            height,
+        };
+
+        // Simulate receiving a mismatched leaf node digest
+        let remote_digests = vec![NodeDigest {
+            id: NodeId { level: 0, index: 2 },
+            hash: [99u8; 32].into(), // Different hash
+            child_count: 0,
+        }];
+
+        let matches = state.handle_node_reply(&local_tree, &remote_digests);
+
+        // Should not match, should add leaf index to pending_leaves
+        assert_eq!(matches, 0);
+        assert!(state.pending_nodes.is_empty());
+        assert_eq!(state.pending_leaves, vec![2]);
+    }
+
+    #[test]
+    fn test_traversal_state_handle_leaf_reply() {
+        let params = TreeParams::default();
+        let mut state = MerkleTraversalState::new(NodeId { level: 0, index: 0 }, params, 100);
+        state.pending_nodes.clear();
+
+        let chunks = vec![
+            CompressedChunk {
+                index: 0,
+                start_key: vec![0; 32],
+                end_key: vec![10; 32],
+                uncompressed_len: 100,
+                compressed_payload: vec![1, 2, 3],
+            },
+            CompressedChunk {
+                index: 1,
+                start_key: vec![11; 32],
+                end_key: vec![20; 32],
+                uncompressed_len: 200,
+                compressed_payload: vec![4, 5, 6],
+            },
+        ];
+
+        let result = state.handle_leaf_reply(chunks);
+
+        assert_eq!(result.chunks_to_apply.len(), 2);
+        assert_eq!(result.covered_ranges.len(), 2);
+        // chunks_transferred not incremented until record_chunk_applied is called
+        assert_eq!(state.chunks_transferred, 0);
+        assert_eq!(state.covered_ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_traversal_state_record_chunk_applied() {
+        let params = TreeParams::default();
+        let mut state = MerkleTraversalState::new(NodeId { level: 0, index: 0 }, params, 100);
+
+        assert_eq!(state.chunks_transferred, 0);
+        assert_eq!(state.records_applied, 0);
+
+        state.record_chunk_applied(10);
+        assert_eq!(state.chunks_transferred, 1);
+        assert_eq!(state.records_applied, 10);
+
+        state.record_chunk_applied(5);
+        assert_eq!(state.chunks_transferred, 2);
+        assert_eq!(state.records_applied, 15);
+    }
+
+    // =========================================================================
+    // Tests for key_in_sorted_ranges (pure helper)
+    // =========================================================================
+
+    #[test]
+    fn test_key_in_sorted_ranges_empty() {
+        let key = [5u8; 32];
+        let ranges: Vec<([u8; 32], [u8; 32])> = vec![];
+        assert!(!key_in_sorted_ranges(&key, &ranges));
+    }
+
+    #[test]
+    fn test_key_in_sorted_ranges_exact_start() {
+        let mut start = [0u8; 32];
+        start[0] = 10;
+        let mut end = [0u8; 32];
+        end[0] = 20;
+
+        let ranges = vec![(start, end)];
+
+        // Key exactly at start
+        assert!(key_in_sorted_ranges(&start, &ranges));
+    }
+
+    #[test]
+    fn test_key_in_sorted_ranges_exact_end() {
+        let mut start = [0u8; 32];
+        start[0] = 10;
+        let mut end = [0u8; 32];
+        end[0] = 20;
+
+        let ranges = vec![(start, end)];
+
+        // Key exactly at end
+        assert!(key_in_sorted_ranges(&end, &ranges));
+    }
+
+    #[test]
+    fn test_key_in_sorted_ranges_middle() {
+        let mut start = [0u8; 32];
+        start[0] = 10;
+        let mut end = [0u8; 32];
+        end[0] = 20;
+
+        let ranges = vec![(start, end)];
+
+        // Key in middle
+        let mut key = [0u8; 32];
+        key[0] = 15;
+        assert!(key_in_sorted_ranges(&key, &ranges));
+    }
+
+    #[test]
+    fn test_key_in_sorted_ranges_before() {
+        let mut start = [0u8; 32];
+        start[0] = 10;
+        let mut end = [0u8; 32];
+        end[0] = 20;
+
+        let ranges = vec![(start, end)];
+
+        // Key before range
+        let mut key = [0u8; 32];
+        key[0] = 5;
+        assert!(!key_in_sorted_ranges(&key, &ranges));
+    }
+
+    #[test]
+    fn test_key_in_sorted_ranges_after() {
+        let mut start = [0u8; 32];
+        start[0] = 10;
+        let mut end = [0u8; 32];
+        end[0] = 20;
+
+        let ranges = vec![(start, end)];
+
+        // Key after range
+        let mut key = [0u8; 32];
+        key[0] = 25;
+        assert!(!key_in_sorted_ranges(&key, &ranges));
+    }
+
+    #[test]
+    fn test_key_in_sorted_ranges_multiple_ranges() {
+        let ranges = vec![
+            ([0u8; 32], {
+                let mut e = [0u8; 32];
+                e[0] = 10;
+                e
+            }),
+            ({
+                let mut s = [0u8; 32];
+                s[0] = 20;
+                s
+            }, {
+                let mut e = [0u8; 32];
+                e[0] = 30;
+                e
+            }),
+            ({
+                let mut s = [0u8; 32];
+                s[0] = 50;
+                s
+            }, {
+                let mut e = [0u8; 32];
+                e[0] = 60;
+                e
+            }),
+        ];
+
+        // In first range
+        let mut key1 = [0u8; 32];
+        key1[0] = 5;
+        assert!(key_in_sorted_ranges(&key1, &ranges));
+
+        // In second range
+        let mut key2 = [0u8; 32];
+        key2[0] = 25;
+        assert!(key_in_sorted_ranges(&key2, &ranges));
+
+        // In third range
+        let mut key3 = [0u8; 32];
+        key3[0] = 55;
+        assert!(key_in_sorted_ranges(&key3, &ranges));
+
+        // In gap between ranges
+        let mut key4 = [0u8; 32];
+        key4[0] = 15;
+        assert!(!key_in_sorted_ranges(&key4, &ranges));
+
+        // After all ranges
+        let mut key5 = [0u8; 32];
+        key5[0] = 70;
+        assert!(!key_in_sorted_ranges(&key5, &ranges));
+    }
+
+    #[test]
+    fn test_sort_ranges() {
+        let ranges = vec![
+            ({
+                let mut s = [0u8; 32];
+                s[0] = 30;
+                s
+            }, {
+                let mut e = [0u8; 32];
+                e[0] = 40;
+                e
+            }),
+            ({
+                let mut s = [0u8; 32];
+                s[0] = 10;
+                s
+            }, {
+                let mut e = [0u8; 32];
+                e[0] = 20;
+                e
+            }),
+        ];
+
+        let sorted = sort_ranges(&ranges);
+
+        assert_eq!(sorted[0].0[0], 10);
+        assert_eq!(sorted[1].0[0], 30);
+    }
+
+    // =========================================================================
+    // Tests for validate_merkle_sync_request (pure validation)
+    // =========================================================================
+
+    #[test]
+    fn test_validate_request_valid() {
+        let root_hash: Hash = [1u8; 32].into();
+        let params = TreeParams::default();
+
+        let result = validate_merkle_sync_request(Some(root_hash), root_hash, &params, None);
+
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::Valid { cursor: None }
+        ));
+    }
+
+    #[test]
+    fn test_validate_request_context_not_found() {
+        let root_hash: Hash = [1u8; 32].into();
+        let params = TreeParams::default();
+
+        let result = validate_merkle_sync_request(None, root_hash, &params, None);
+
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::ContextNotFound
+        ));
+    }
+
+    #[test]
+    fn test_validate_request_boundary_mismatch() {
+        let current: Hash = [1u8; 32].into();
+        let boundary: Hash = [2u8; 32].into();
+        let params = TreeParams::default();
+
+        let result = validate_merkle_sync_request(Some(current), boundary, &params, None);
+
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::BoundaryMismatch
+        ));
+    }
+
+    #[test]
+    fn test_validate_request_cursor_too_large() {
+        let root_hash: Hash = [1u8; 32].into();
+        let params = TreeParams::default();
+
+        // Create a cursor that's too large
+        let large_cursor = vec![0u8; calimero_node_primitives::sync::MERKLE_CURSOR_MAX_SIZE + 1];
+
+        let result =
+            validate_merkle_sync_request(Some(root_hash), root_hash, &params, Some(&large_cursor));
+
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::CursorTooLarge { .. }
+        ));
+    }
+
+    #[test]
+    fn test_validate_request_cursor_malformed() {
+        let root_hash: Hash = [1u8; 32].into();
+        let params = TreeParams::default();
+
+        // Create invalid cursor bytes (not valid borsh)
+        let malformed_cursor = vec![0xFF, 0xFF, 0xFF, 0xFF];
+
+        let result = validate_merkle_sync_request(
+            Some(root_hash),
+            root_hash,
+            &params,
+            Some(&malformed_cursor),
+        );
+
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::CursorMalformed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_validate_request_incompatible_params() {
+        let root_hash: Hash = [1u8; 32].into();
+
+        // Create incompatible params (different fanout)
+        let incompatible_params = TreeParams {
+            fanout: 999, // Very different from default
+            ..Default::default()
+        };
+
+        let result =
+            validate_merkle_sync_request(Some(root_hash), root_hash, &incompatible_params, None);
+
+        assert!(matches!(
+            result,
+            MerkleSyncRequestValidation::IncompatibleParams
+        ));
+    }
+
+    #[test]
+    fn test_validate_request_returns_parsed_cursor() {
+        let root_hash: Hash = [1u8; 32].into();
+        let params = TreeParams::default();
+
+        // Create a valid cursor
+        let cursor = calimero_node_primitives::sync::MerkleCursor {
+            pending_nodes: vec![NodeId { level: 1, index: 0 }],
+            pending_leaves: vec![1, 2, 3],
+            covered_ranges: vec![],
+        };
+        let cursor_bytes = borsh::to_vec(&cursor).unwrap();
+
+        let result =
+            validate_merkle_sync_request(Some(root_hash), root_hash, &params, Some(&cursor_bytes));
+
+        match result {
+            MerkleSyncRequestValidation::Valid {
+                cursor: Some(parsed),
+            } => {
+                assert_eq!(parsed.pending_nodes.len(), 1);
+                assert_eq!(parsed.pending_leaves, vec![1, 2, 3]);
+            }
+            _ => panic!("Expected Valid with parsed cursor"),
+        }
+    }
+
+    // =========================================================================
+    // Tests for parse_boundary_for_merkle (pure parsing)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_boundary_merkle_supported() {
+        let boundary_root: Hash = [1u8; 32].into();
+        let merkle_root: Hash = [2u8; 32].into();
+        let params = TreeParams::default();
+        let dag_heads = vec![[3u8; 32]];
+
+        let result = parse_boundary_for_merkle(
+            boundary_root,
+            dag_heads.clone(),
+            Some(params),
+            Some(merkle_root),
+        );
+
+        match result {
+            BoundaryParseResult::MerkleSupported(boundary) => {
+                assert_eq!(boundary.boundary_root_hash, boundary_root);
+                assert_eq!(boundary.merkle_root_hash, merkle_root);
+                assert_eq!(boundary.dag_heads, dag_heads);
+            }
+            _ => panic!("Expected MerkleSupported"),
+        }
+    }
+
+    #[test]
+    fn test_parse_boundary_no_tree_params() {
+        let boundary_root: Hash = [1u8; 32].into();
+        let merkle_root: Hash = [2u8; 32].into();
+
+        let result =
+            parse_boundary_for_merkle(boundary_root, vec![], None, Some(merkle_root));
+
+        assert!(matches!(result, BoundaryParseResult::NoTreeParams));
+    }
+
+    #[test]
+    fn test_parse_boundary_no_merkle_root() {
+        let boundary_root: Hash = [1u8; 32].into();
+        let params = TreeParams::default();
+
+        let result =
+            parse_boundary_for_merkle(boundary_root, vec![], Some(params), None);
+
+        assert!(matches!(result, BoundaryParseResult::NoMerkleRootHash));
     }
 }

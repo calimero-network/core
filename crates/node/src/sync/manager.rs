@@ -1372,36 +1372,33 @@ impl SyncManager {
             MessagePayload::SnapshotBoundaryResponse {
                 boundary_root_hash,
                 dag_heads,
-                tree_params: Some(tree_params),
-                merkle_root_hash: Some(merkle_root_hash),
+                tree_params,
+                merkle_root_hash,
                 ..
             } => {
-                // Peer supports Merkle sync - verify params are compatible
-                let our_params = calimero_node_primitives::sync::TreeParams::default();
-                if !our_params.is_compatible(&tree_params) {
-                    eyre::bail!("Incompatible tree params");
-                }
+                // Use pure helper to parse and validate boundary response
+                use super::merkle::{parse_boundary_for_merkle, BoundaryParseResult};
 
-                let boundary = super::merkle::MerkleSyncBoundary {
+                match parse_boundary_for_merkle(
                     boundary_root_hash,
+                    dag_heads,
                     tree_params,
                     merkle_root_hash,
-                    dag_heads,
-                };
-
-                self.request_merkle_sync(context_id, our_identity, &boundary, stream)
-                    .await
-            }
-            MessagePayload::SnapshotBoundaryResponse {
-                tree_params: None, ..
-            } => {
-                eyre::bail!("Peer does not support Merkle sync (no tree_params)");
-            }
-            MessagePayload::SnapshotBoundaryResponse {
-                merkle_root_hash: None,
-                ..
-            } => {
-                eyre::bail!("Peer does not support Merkle sync (no merkle_root_hash)");
+                ) {
+                    BoundaryParseResult::MerkleSupported(boundary) => {
+                        self.request_merkle_sync(context_id, our_identity, &boundary, stream)
+                            .await
+                    }
+                    BoundaryParseResult::NoTreeParams => {
+                        eyre::bail!("Peer does not support Merkle sync (no tree_params)");
+                    }
+                    BoundaryParseResult::NoMerkleRootHash => {
+                        eyre::bail!("Peer does not support Merkle sync (no merkle_root_hash)");
+                    }
+                    BoundaryParseResult::IncompatibleParams => {
+                        eyre::bail!("Incompatible tree params");
+                    }
+                }
             }
             MessagePayload::SnapshotError { error } => {
                 eyre::bail!("Snapshot boundary request failed: {:?}", error);
