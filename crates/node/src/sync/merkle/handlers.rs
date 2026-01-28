@@ -3,11 +3,14 @@
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{
-    CompressedChunk, MerkleErrorCode, MerkleSyncFrame, MessagePayload, NodeDigest, NodeId,
-    StreamMessage, TreeParams,
+    CompressedChunk, MerkleCursor, MerkleErrorCode, MerkleSyncFrame, MessagePayload, NodeDigest,
+    NodeId, StreamMessage, TreeParams,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
+use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
+use calimero_store::slice::Slice;
+use calimero_store::types::GenericData;
 use eyre::Result;
 use tracing::{debug, info, warn};
 
@@ -18,6 +21,13 @@ use super::validation::{
 };
 use crate::sync::manager::SyncManager;
 use crate::sync::tracking::Sequencer;
+
+/// Scope for Merkle cursor persistence in the Generic column.
+/// Exactly 16 bytes to match SCOPE_SIZE.
+const MERKLE_CURSOR_SCOPE: [u8; SCOPE_SIZE] = *b"merkle-cursor\0\0\0";
+
+/// How often to checkpoint the cursor during traversal (in chunks applied).
+const CURSOR_CHECKPOINT_INTERVAL: usize = 10;
 
 impl SyncManager {
     /// Handle incoming Merkle sync request from a peer.
@@ -358,30 +368,28 @@ impl SyncManager {
     // Merkle Sync Requester Path
     // =========================================================================
 
-    /// Request and apply Merkle sync from a peer.
+    /// Request and apply Merkle sync from a peer, optionally resuming from a cursor.
     ///
     /// This is called when:
     /// 1. Delta sync returned `SnapshotRequired` (pruned history)
     /// 2. We have local state (not uninitialized)
     /// 3. Peer supports Merkle sync (`tree_params` present in boundary response)
     ///
-    /// If `resume_cursor` is provided, the sync resumes from the given traversal state
-    /// instead of starting fresh from the root.
-    pub(in crate::sync) async fn request_merkle_sync(
-        &self,
-        context_id: ContextId,
-        our_identity: calimero_primitives::identity::PublicKey,
-        boundary: &MerkleSyncBoundary,
-        stream: &mut Stream,
-    ) -> Result<MerkleSyncResult> {
-        self.request_merkle_sync_with_cursor(context_id, our_identity, boundary, stream, None)
-            .await
-    }
-
-    /// Request and apply Merkle sync from a peer, optionally resuming from a cursor.
-    ///
     /// If `resume_cursor` is `Some`, the sync resumes from the given traversal state.
     /// This is useful for resuming interrupted syncs without starting over.
+    ///
+    /// ## Resumable Sync
+    ///
+    /// The cursor is periodically checkpointed to storage during traversal. If the sync
+    /// is interrupted (connection drop, timeout, crash), it can be resumed by loading
+    /// the persisted cursor and passing it to this method.
+    ///
+    /// ## Cursor Lifecycle
+    ///
+    /// 1. If `resume_cursor` is provided, it's persisted before sending the request
+    /// 2. During traversal, the cursor is checkpointed every N chunks
+    /// 3. On successful completion, the cursor is cleared from storage
+    /// 4. On failure, the cursor remains for later resume attempts
     pub(in crate::sync) async fn request_merkle_sync_with_cursor(
         &self,
         context_id: ContextId,
@@ -474,6 +482,11 @@ impl SyncManager {
             None => None,
         };
 
+        // Persist initial cursor before starting (for crash recovery)
+        if let Some(ref cursor) = resume_cursor {
+            self.set_merkle_cursor(context_id, cursor, &boundary.boundary_root_hash)?;
+        }
+
         // Send MerkleSyncRequest
         let init_msg = StreamMessage::Init {
             context_id,
@@ -495,6 +508,7 @@ impl SyncManager {
         let (mut result, covered_ranges) = self
             .perform_merkle_traversal(
                 context_id,
+                &boundary.boundary_root_hash,
                 stream,
                 &local_tree,
                 &boundary.tree_params,
@@ -533,6 +547,9 @@ impl SyncManager {
             );
         }
 
+        // Clear the persisted cursor on successful completion
+        self.clear_merkle_cursor(context_id)?;
+
         info!(
             %context_id,
             chunks_transferred = result.chunks_transferred,
@@ -553,15 +570,19 @@ impl SyncManager {
     /// If `resume_cursor` is provided, the traversal starts from that state instead
     /// of the tree root.
     ///
+    /// The cursor is periodically checkpointed to storage, allowing the sync to
+    /// resume from where it left off if interrupted.
+    ///
     /// This is a thin async orchestrator that delegates traversal decisions to
     /// the pure `MerkleTraversalState` state machine.
     async fn perform_merkle_traversal(
         &self,
         context_id: ContextId,
+        boundary_root_hash: &Hash,
         stream: &mut Stream,
         local_tree: &MerkleTree,
         tree_params: &TreeParams,
-        resume_cursor: Option<calimero_node_primitives::sync::MerkleCursor>,
+        resume_cursor: Option<MerkleCursor>,
     ) -> Result<(MerkleSyncResult, Vec<([u8; 32], [u8; 32])>)> {
         // Initialize state machine from cursor or fresh start
         let mut state = match resume_cursor {
@@ -587,6 +608,7 @@ impl SyncManager {
         };
 
         let mut sqx = Sequencer::default();
+        let mut last_checkpoint_chunks = 0;
 
         // Main traversal loop - orchestrates I/O based on state machine actions
         loop {
@@ -654,6 +676,26 @@ impl SyncManager {
                             for chunk in reply_result.chunks_to_apply {
                                 let applied = self.apply_merkle_chunk(context_id, &chunk)?;
                                 state.record_chunk_applied(applied);
+                            }
+
+                            // Checkpoint cursor periodically after applying chunks
+                            let chunks_since_checkpoint =
+                                state.chunks_transferred - last_checkpoint_chunks;
+                            if chunks_since_checkpoint >= CURSOR_CHECKPOINT_INTERVAL {
+                                if let Some(cursor) = state.to_cursor() {
+                                    if let Err(e) = self.set_merkle_cursor(
+                                        context_id,
+                                        &cursor,
+                                        boundary_root_hash,
+                                    ) {
+                                        warn!(
+                                            %context_id,
+                                            error = %e,
+                                            "Failed to checkpoint Merkle cursor"
+                                        );
+                                    }
+                                    last_checkpoint_chunks = state.chunks_transferred;
+                                }
                             }
                         }
                         MessagePayload::MerkleSyncFrame {
@@ -829,4 +871,110 @@ impl SyncManager {
         }
         Ok(count)
     }
+
+    // =========================================================================
+    // Merkle Cursor Persistence
+    // =========================================================================
+
+    /// Persist a Merkle cursor for later resumption.
+    ///
+    /// The cursor is stored in the Generic column keyed by context_id.
+    /// This allows resuming an interrupted Merkle sync without starting over.
+    pub(in crate::sync) fn set_merkle_cursor(
+        &self,
+        context_id: ContextId,
+        cursor: &MerkleCursor,
+        boundary_root_hash: &Hash,
+    ) -> Result<()> {
+        let key = GenericKey::new(MERKLE_CURSOR_SCOPE, *context_id);
+
+        // Store cursor + boundary together for validation on resume
+        let persisted = PersistedMerkleCursor {
+            cursor: cursor.clone(),
+            boundary_root_hash: *boundary_root_hash,
+        };
+        let value_bytes = borsh::to_vec(&persisted)?;
+        let value: GenericData<'_> = Slice::from(value_bytes).into();
+
+        let mut handle = self.context_client.datastore_handle();
+        handle.put(&key, &value)?;
+
+        debug!(
+            %context_id,
+            pending_nodes = cursor.pending_nodes.len(),
+            pending_leaves = cursor.pending_leaves.len(),
+            covered_ranges = cursor.covered_ranges.len(),
+            "Persisted Merkle cursor"
+        );
+        Ok(())
+    }
+
+    /// Load a persisted Merkle cursor if one exists.
+    ///
+    /// Returns the cursor and the boundary root hash it was created for.
+    /// The boundary must match for the cursor to be valid.
+    ///
+    /// If the cursor is corrupted or fails to deserialize, it is treated as stale:
+    /// the corrupted entry is cleared and `None` is returned. This prevents a
+    /// corrupted cursor from permanently blocking sync.
+    pub(in crate::sync) fn get_merkle_cursor(
+        &self,
+        context_id: ContextId,
+    ) -> Result<Option<(MerkleCursor, Hash)>> {
+        let key = GenericKey::new(MERKLE_CURSOR_SCOPE, *context_id);
+        let handle = self.context_client.datastore_handle();
+
+        // Extract bytes before handle goes out of scope to avoid lifetime issues
+        let bytes_opt: Option<Vec<u8>> = handle.get(&key)?.map(|v| v.as_ref().to_vec());
+
+        match bytes_opt {
+            Some(bytes) => {
+                match borsh::from_slice::<PersistedMerkleCursor>(&bytes) {
+                    Ok(persisted) => {
+                        debug!(
+                            %context_id,
+                            pending_nodes = persisted.cursor.pending_nodes.len(),
+                            pending_leaves = persisted.cursor.pending_leaves.len(),
+                            "Loaded persisted Merkle cursor"
+                        );
+                        Ok(Some((persisted.cursor, persisted.boundary_root_hash)))
+                    }
+                    Err(e) => {
+                        // Corrupted cursor - treat as stale, clear it, and continue without resume
+                        warn!(
+                            %context_id,
+                            error = %e,
+                            "Failed to deserialize persisted Merkle cursor, clearing stale entry"
+                        );
+                        // Best-effort clear - if this fails, we'll try again next time
+                        if let Err(clear_err) = self.clear_merkle_cursor(context_id) {
+                            warn!(
+                                %context_id,
+                                error = %clear_err,
+                                "Failed to clear corrupted Merkle cursor"
+                            );
+                        }
+                        Ok(None)
+                    }
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Clear the persisted Merkle cursor after successful sync completion.
+    pub(in crate::sync) fn clear_merkle_cursor(&self, context_id: ContextId) -> Result<()> {
+        let key = GenericKey::new(MERKLE_CURSOR_SCOPE, *context_id);
+        let mut handle = self.context_client.datastore_handle();
+        handle.delete(&key)?;
+        debug!(%context_id, "Cleared persisted Merkle cursor");
+        Ok(())
+    }
+}
+
+/// Persisted cursor with boundary hash for validation.
+#[derive(Debug, Clone, borsh::BorshSerialize, borsh::BorshDeserialize)]
+struct PersistedMerkleCursor {
+    cursor: MerkleCursor,
+    boundary_root_hash: Hash,
 }
