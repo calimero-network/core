@@ -19,6 +19,8 @@ pub(crate) enum SyncProtocol {
     DagCatchup,
     /// Full snapshot sync (used when delta sync is not possible)
     SnapshotSync,
+    /// Merkle tree sync (efficient partial sync when peer supports it)
+    MerkleSync,
 }
 
 /// Tracks sync state and history for a context.

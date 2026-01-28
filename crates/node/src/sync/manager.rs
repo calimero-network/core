@@ -5,6 +5,7 @@
 
 use std::collections::{hash_map, HashMap};
 use std::pin::pin;
+use std::sync::Arc;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
@@ -31,6 +32,16 @@ use crate::utils::choose_stream;
 use super::config::SyncConfig;
 use super::tracking::{SyncProtocol, SyncState};
 
+/// Cache key for Merkle trees: (context_id, boundary_root_hash).
+pub(super) type MerkleTreeCacheKey = (ContextId, calimero_primitives::hash::Hash);
+
+/// Cached Merkle tree with LRU tracking.
+#[derive(Debug, Clone)]
+pub(super) struct CachedMerkleTree {
+    pub tree: super::merkle::MerkleTree,
+    pub last_access: Instant,
+}
+
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
@@ -44,6 +55,11 @@ pub struct SyncManager {
     pub(super) node_state: crate::NodeState,
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+
+    /// LRU cache of Merkle trees keyed by (context_id, boundary_root_hash).
+    /// Trees are cached to avoid rebuilding for the same boundary during a sync session.
+    pub(super) merkle_tree_cache:
+        Arc<std::sync::RwLock<HashMap<MerkleTreeCacheKey, CachedMerkleTree>>>,
 }
 
 impl Clone for SyncManager {
@@ -55,6 +71,7 @@ impl Clone for SyncManager {
             network_client: self.network_client.clone(),
             node_state: self.node_state.clone(),
             ctx_sync_rx: None, // Receiver can't be cloned
+            merkle_tree_cache: Arc::clone(&self.merkle_tree_cache),
         }
     }
 }
@@ -75,6 +92,7 @@ impl SyncManager {
             network_client,
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
+            merkle_tree_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -1251,10 +1269,95 @@ impl SyncManager {
         peer_id: PeerId,
         _stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
+        // Check if we have local state (Merkle sync requires non-zero local state)
+        let context = self.context_client.get_context(&context_id)?;
+        let has_local_state = context
+            .as_ref()
+            .map(|c| *c.root_hash != [0u8; 32])
+            .unwrap_or(false);
+
+        // Check for incomplete snapshot sync marker (force snapshot if present)
+        let has_incomplete_snapshot_sync = self.check_sync_in_progress(context_id)?.is_some();
+
+        // Check for persisted Merkle cursor (can resume interrupted Merkle sync)
+        let persisted_cursor = self.get_merkle_cursor(context_id)?;
+
+        // Try Merkle sync if we have local state and no incomplete snapshot sync marker
+        if has_local_state && !has_incomplete_snapshot_sync {
+            let is_resume = persisted_cursor.is_some();
+            if is_resume {
+                info!(
+                    %context_id,
+                    %peer_id,
+                    "Attempting to resume interrupted Merkle sync"
+                );
+            } else {
+                info!(%context_id, %peer_id, "Attempting Merkle sync (have local state)");
+            }
+
+            // Request boundary to check if peer supports Merkle sync
+            let mut stream = self.network_client.open_stream(peer_id).await?;
+            match self
+                .try_merkle_sync_with_cursor(
+                    context_id,
+                    peer_id,
+                    our_identity,
+                    &mut stream,
+                    persisted_cursor,
+                )
+                .await
+            {
+                Ok(result) => {
+                    info!(
+                        %context_id,
+                        chunks = result.chunks_transferred,
+                        records = result.records_applied,
+                        resumed = is_resume,
+                        "Merkle sync completed"
+                    );
+
+                    // Fine-sync to catch any deltas since the boundary
+                    let mut stream = self.network_client.open_stream(peer_id).await?;
+                    if let Err(e) = self
+                        .fine_sync_from_boundary(context_id, peer_id, our_identity, &mut stream)
+                        .await
+                    {
+                        warn!(?e, %context_id, "Fine-sync after Merkle sync failed");
+                    }
+
+                    return Ok(SyncProtocol::MerkleSync);
+                }
+                Err(e) => {
+                    // Don't clear cursor here - transient failures (timeout, disconnect)
+                    // should allow retry from the checkpointed cursor on next sync attempt.
+                    // Cursor is only cleared on:
+                    // 1. Successful Merkle sync completion (in request_merkle_sync_with_cursor)
+                    // 2. Boundary mismatch (in try_merkle_sync_with_cursor)
+                    // 3. Successful snapshot sync (below)
+                    warn!(
+                        %context_id,
+                        error = %e,
+                        "Merkle sync failed, falling back to snapshot sync"
+                    );
+                }
+            }
+        }
+
+        // Fall back to full snapshot sync
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 
         let result = self.request_snapshot_sync(context_id, peer_id).await?;
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
+
+        // Clear any stale Merkle cursor after successful snapshot sync
+        // (the cursor is now invalid since we have fresh state)
+        if let Err(clear_err) = self.clear_merkle_cursor(context_id) {
+            warn!(
+                %context_id,
+                error = %clear_err,
+                "Failed to clear stale Merkle cursor after snapshot sync"
+            );
+        }
 
         // Fine-sync to catch any deltas since the snapshot boundary
         if !result.dag_heads.is_empty() {
@@ -1268,6 +1371,120 @@ impl SyncManager {
         }
 
         Ok(SyncProtocol::SnapshotSync)
+    }
+
+    /// Attempt Merkle sync with a peer, optionally resuming from a persisted cursor.
+    ///
+    /// Returns Ok if Merkle sync succeeded, Err if we should fall back to snapshot.
+    ///
+    /// If a persisted cursor is provided, the sync will attempt to resume from where it
+    /// left off, provided the peer's boundary root hash matches the cursor's boundary.
+    /// If the boundaries don't match (peer state changed), the cursor is discarded and
+    /// sync starts fresh.
+    async fn try_merkle_sync_with_cursor(
+        &self,
+        context_id: ContextId,
+        _peer_id: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+        persisted_cursor: Option<(
+            calimero_node_primitives::sync::MerkleCursor,
+            calimero_primitives::hash::Hash,
+        )>,
+    ) -> eyre::Result<super::merkle::MerkleSyncResult> {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+        // Request snapshot boundary to check for Merkle support
+        let msg = StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::SnapshotBoundaryRequest {
+                context_id,
+                requested_cutoff_timestamp: None,
+            },
+            next_nonce: super::helpers::generate_nonce(),
+        };
+        super::stream::send(stream, &msg, None).await?;
+
+        let response = super::stream::recv(stream, None, self.sync_config.timeout).await?;
+
+        let Some(StreamMessage::Message { payload, .. }) = response else {
+            eyre::bail!("Unexpected response to snapshot boundary request");
+        };
+
+        match payload {
+            MessagePayload::SnapshotBoundaryResponse {
+                boundary_root_hash,
+                dag_heads,
+                tree_params,
+                merkle_root_hash,
+                ..
+            } => {
+                // Use pure helper to parse and validate boundary response
+                use super::merkle::{parse_boundary_for_merkle, BoundaryParseResult};
+
+                match parse_boundary_for_merkle(
+                    boundary_root_hash,
+                    dag_heads,
+                    tree_params,
+                    merkle_root_hash,
+                ) {
+                    BoundaryParseResult::MerkleSupported(boundary) => {
+                        // Check if we can use the persisted cursor
+                        let resume_cursor = match persisted_cursor {
+                            Some((cursor, cursor_boundary))
+                                if cursor_boundary == boundary.boundary_root_hash =>
+                            {
+                                info!(
+                                    %context_id,
+                                    %cursor_boundary,
+                                    pending_nodes = cursor.pending_nodes.len(),
+                                    pending_leaves = cursor.pending_leaves.len(),
+                                    "Resuming Merkle sync with matching boundary"
+                                );
+                                Some(cursor)
+                            }
+                            Some((_, cursor_boundary)) => {
+                                warn!(
+                                    %context_id,
+                                    cursor_boundary = %cursor_boundary,
+                                    peer_boundary = %boundary.boundary_root_hash,
+                                    "Persisted cursor boundary mismatch, starting fresh"
+                                );
+                                // Clear the stale cursor
+                                if let Err(e) = self.clear_merkle_cursor(context_id) {
+                                    warn!(%context_id, error = %e, "Failed to clear stale cursor");
+                                }
+                                None
+                            }
+                            None => None,
+                        };
+
+                        self.request_merkle_sync_with_cursor(
+                            context_id,
+                            our_identity,
+                            &boundary,
+                            stream,
+                            resume_cursor,
+                        )
+                        .await
+                    }
+                    BoundaryParseResult::NoTreeParams => {
+                        eyre::bail!("Peer does not support Merkle sync (no tree_params)");
+                    }
+                    BoundaryParseResult::NoMerkleRootHash => {
+                        eyre::bail!("Peer does not support Merkle sync (no merkle_root_hash)");
+                    }
+                    BoundaryParseResult::IncompatibleParams => {
+                        eyre::bail!("Incompatible tree params");
+                    }
+                }
+            }
+            MessagePayload::SnapshotError { error } => {
+                eyre::bail!("Snapshot boundary request failed: {:?}", error);
+            }
+            _ => eyre::bail!("Unexpected payload in snapshot boundary response"),
+        }
     }
 
     /// Fine-sync from snapshot boundary to catch up to latest state.
@@ -1470,6 +1687,29 @@ impl SyncManager {
                     page_limit,
                     byte_limit,
                     resume_cursor,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::MerkleSyncRequest {
+                context_id: requested_context_id,
+                boundary_root_hash,
+                tree_params,
+                page_limit,
+                byte_limit,
+                resume_cursor,
+                requester_root_hash,
+            } => {
+                // Handle Merkle sync request from peer
+                self.handle_merkle_sync_request(
+                    requested_context_id,
+                    boundary_root_hash,
+                    tree_params,
+                    page_limit,
+                    byte_limit,
+                    resume_cursor,
+                    requester_root_hash,
                     stream,
                     nonce,
                 )

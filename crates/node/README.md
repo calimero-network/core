@@ -159,6 +159,54 @@ pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;    // 30s timeout
 - `timeout`: Max time for a sync operation
   - Should be > RTT + state transfer time
 
+### Full Sync (Snapshot + Merkle)
+
+When per-delta catch-up is not possible (e.g., peer history is pruned), the node falls back to **full sync**:
+
+- **Snapshot sync**: full state transfer, replaces local state for the context.
+- **Merkle sync**: differential sync using a Merkle tree over canonical snapshot chunks.
+
+**Trigger and selection**
+- Per-delta sync is always attempted first.
+- If the peer signals `SnapshotRequired` (pruned history), the requester decides:
+  - **Merkle** if `tree_params` + `merkle_root_hash` are present and compatible.
+  - **Snapshot** otherwise, or if local state is empty/incomplete.
+  - **Note:** pruning/retention signaling is not yet implemented; today peers may still return `DeltaNotFound` instead of `SnapshotRequired`.
+
+**Requester flow (Merkle)**
+1. Request snapshot boundary, receive `tree_params` + `merkle_root_hash`.
+2. Build local Merkle tree and compare root hash.
+3. BFS traversal: request node hashes, then mismatched leaf chunks.
+4. Apply chunks by replacing key ranges; delete orphaned local keys.
+5. Verify final Merkle root; on failure, fall back to snapshot.
+6. Fine-sync deltas from boundary to latest.
+
+**Responder flow (Merkle)**
+1. Validate boundary + params, load tree (cached by `(context_id, boundary_root_hash)`).
+2. Answer `NodeRequest` and `LeafRequest` batches with limits.
+
+**Key invariants**
+- Canonical snapshot encoding is shared by snapshot and Merkle.
+- Leaf payloads on the wire are lz4-compressed; hashing uses uncompressed bytes.
+- Resume cursors are capped at 64 KiB and include `covered_ranges` to avoid orphan deletion errors.
+- Final root verification is required after Merkle apply.
+- Merkle sync is **reconciliatory**, not additive: it **replaces** mismatched key ranges and deletes orphaned keys to match the responder’s boundary. Local-only changes can be discarded, just like snapshot sync.
+
+```mermaid
+flowchart TD
+    A[Start sync] --> B{Local state?}
+    B -- no --> S[Snapshot sync]
+    B -- yes --> D[Per-delta sync]
+    D --> E{SnapshotRequired?}
+    E -- no --> Done[Delta catch-up done]
+    E -- yes --> M{Merkle supported?}
+    M -- yes --> MS[Merkle sync]
+    M -- no --> S
+    MS --> V{Root verified?}
+    V -- yes --> Done
+    V -- no --> S
+```
+
 ## Event Handler Execution
 
 ### Handler Execution Flow

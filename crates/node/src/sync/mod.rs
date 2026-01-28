@@ -28,6 +28,7 @@ mod delta_request;
 mod helpers;
 mod key;
 mod manager;
+mod merkle;
 mod snapshot;
 pub(crate) mod stream;
 mod tracking;
