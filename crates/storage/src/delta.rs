@@ -53,10 +53,15 @@ pub struct CausalDelta {
     /// This is the root hash the delta author observed after applying the
     /// delta on their node. It is authoritative for the author's base state.
     ///
-    /// Receiving nodes validate this hash only when applying on the same
-    /// linear base (single DAG head matching the delta's parents). A mismatch
-    /// in that scenario indicates non-determinism or state divergence and is
-    /// logged as a warning. For concurrent-head cases the mismatch is expected
+    /// Receiving nodes validate this hash only on deterministic bases:
+    /// - **Linear**: single DAG head matching the delta's single parent
+    /// - **Clean merge**: delta parents exactly match all DAG heads
+    /// - **Cascaded linear**: delta's single parent matches the just-applied
+    ///   delta, provided the original base was deterministic
+    ///
+    /// A mismatch in these scenarios indicates non-determinism or state
+    /// divergence and is logged as a warning. For concurrent-head cases (where
+    /// the base has heads that aren't being merged) the mismatch is expected
     /// and no validation is performed.
     ///
     /// This hash is **not** used to override the receiver's actual state root.

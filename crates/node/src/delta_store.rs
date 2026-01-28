@@ -55,15 +55,20 @@ struct ValidationState {
     pre_apply_heads: Vec<[u8; 32]>,
     /// ID of the last successfully applied delta (for cascaded validation).
     last_applied_id: Option<[u8; 32]>,
+    /// Whether the original base (pre_apply_heads) was deterministic.
+    /// Only set true for linear (single head) or clean merge bases.
+    /// Cascaded validation only allowed when this is true.
+    base_is_deterministic: bool,
 }
 
 impl ValidationState {
     /// Check if this delta should be validated for root hash mismatch.
     fn should_validate(&self, delta_parents: &[[u8; 32]]) -> bool {
-        // Cascaded linear: single parent matches the just-applied delta
+        // Cascaded linear: single parent matches the just-applied delta.
+        // Only validate if the original base was deterministic (linear or clean merge).
         if delta_parents.len() == 1 {
             if let Some(last) = self.last_applied_id {
-                if delta_parents[0] == last {
+                if delta_parents[0] == last && self.base_is_deterministic {
                     return true;
                 }
             }
@@ -399,8 +404,25 @@ impl DeltaStore {
         // Snapshot DAG heads before applying for conditional root hash validation.
         {
             let mut state = self.applier.validation_state.write().await;
-            state.pre_apply_heads = dag.get_heads();
+            let heads = dag.get_heads();
+
+            // Check if this delta's application is on a deterministic base:
+            // - Linear: single head that matches the delta's single parent
+            // - Clean merge: delta parents exactly match all current heads
+            let is_linear = heads.len() == 1 && delta.parents.len() == 1 && heads[0] == delta.parents[0];
+            let is_clean_merge = if !heads.is_empty() && heads.len() == delta.parents.len() {
+                let mut sorted_heads = heads.clone();
+                let mut sorted_parents = delta.parents.clone();
+                sorted_heads.sort();
+                sorted_parents.sort();
+                sorted_heads == sorted_parents
+            } else {
+                false
+            };
+
+            state.pre_apply_heads = heads;
             state.last_applied_id = None;
+            state.base_is_deterministic = is_linear || is_clean_merge;
         }
 
         // Track which deltas are currently pending BEFORE we add the new delta
@@ -653,14 +675,32 @@ impl DeltaStore {
                     // Snapshot heads for validation
                     {
                         let mut state = self.applier.validation_state.write().await;
-                        state.pre_apply_heads = dag.get_heads();
+                        let heads = dag.get_heads();
+
+                        // Check if this delta's application is on a deterministic base
+                        let is_linear = heads.len() == 1
+                            && dag_delta.parents.len() == 1
+                            && heads[0] == dag_delta.parents[0];
+                        let is_clean_merge =
+                            if !heads.is_empty() && heads.len() == dag_delta.parents.len() {
+                                let mut sorted_heads = heads.clone();
+                                let mut sorted_parents = dag_delta.parents.clone();
+                                sorted_heads.sort();
+                                sorted_parents.sort();
+                                sorted_heads == sorted_parents
+                            } else {
+                                false
+                            };
+
+                        state.pre_apply_heads = heads;
                         state.last_applied_id = None;
+                        state.base_is_deterministic = is_linear || is_clean_merge;
                     }
 
                     let pending_before: std::collections::HashSet<[u8; 32]> =
                         dag.get_pending_delta_ids().into_iter().collect();
 
-                    if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
+                    if let Err(e) = dag.add_delta(dag_delta.clone(), &*self.applier).await {
                         tracing::warn!(
                             ?e,
                             context_id = %self.applier.context_id,
