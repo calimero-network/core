@@ -41,7 +41,7 @@ runs:
         path: ${{ inputs.output-dir }}
         key: contracts-${{ steps.version.outputs.version }}
         restore-keys: |
-          contracts-${{ steps.version.outputs.version }}
+          contracts-
 
     - name: Download contracts
       if: steps.cache-contracts.outputs.cache-hit != 'true'
