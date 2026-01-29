@@ -7,8 +7,6 @@ on:
         "PR Description",
         "PR Title",
         "Merobox Proposals - Blockchain Integration Tests",
-        "Merobox Workflows - All Apps",
-        "Test SDK JS Compatibility",
         "E2E - Rust Apps",
         "E2E - Blockchain Proposals",
       ]
