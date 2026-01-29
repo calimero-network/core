@@ -409,7 +409,8 @@ impl DeltaStore {
             // Check if this delta's application is on a deterministic base:
             // - Linear: single head that matches the delta's single parent
             // - Clean merge: delta parents exactly match all current heads
-            let is_linear = heads.len() == 1 && delta.parents.len() == 1 && heads[0] == delta.parents[0];
+            let is_linear =
+                heads.len() == 1 && delta.parents.len() == 1 && heads[0] == delta.parents[0];
             let is_clean_merge = if !heads.is_empty() && heads.len() == delta.parents.len() {
                 let mut sorted_heads = heads.clone();
                 let mut sorted_parents = delta.parents.clone();

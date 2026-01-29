@@ -285,7 +285,9 @@ async fn test_partial_merge_is_not_validatable() {
 
     // Create partial merge (only merges 2 of 3 heads)
     let delta_partial_merge = create_delta([0x04; 32], vec![[0x01; 32], [0x02; 32]], [0xDD; 32]);
-    applier.prepare(dag.get_heads(), &delta_partial_merge.parents).await;
+    applier
+        .prepare(dag.get_heads(), &delta_partial_merge.parents)
+        .await;
     dag.add_delta(delta_partial_merge, &applier).await.unwrap();
 
     let applied = applier.applied.lock().await;
