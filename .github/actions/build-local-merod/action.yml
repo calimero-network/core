@@ -1,5 +1,5 @@
 name: Build Local Merod
-description: "Build merod/meroctl binaries and create a local Docker image (amd64 only)"
+description: "Build merod/meroctl binaries and create a local Docker image (amd64 only). Caches the image when core (Cargo.lock, crates/, Dockerfile) is unchanged."
 
 inputs:
   image-tag:
@@ -15,7 +15,38 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Compute merod image cache key
+      id: cache-key
+      shell: bash
+      run: |
+        # Key changes only when core (Cargo.lock, crates, prebuilt Dockerfile) changes
+        KEY="merod-image-$( (tar cf - Cargo.lock crates .github/workflows/deps/prebuilt.Dockerfile 2>/dev/null || true) | sha256sum | cut -c1-16)"
+        echo "key=${KEY}" >> "$GITHUB_OUTPUT"
+        echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
+
+    - name: Restore merod Docker image from cache
+      id: restore-image
+      uses: actions/cache/restore@v4
+      with:
+        path: merod-image-cache
+        key: ${{ steps.cache-key.outputs.key }}
+
+    - name: Load cached Docker image
+      id: load-cached
+      if: steps.restore-image.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        if [ -f merod-image-cache/merod-local.tar.gz ]; then
+          echo "Loading cached merod image..."
+          gunzip -c merod-image-cache/merod-local.tar.gz | docker load
+          docker tag merod:local ${{ inputs.image-tag }} 2>/dev/null || true
+          echo "cached=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "cached=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Build merod binary
+      if: steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true'
       shell: bash
       env:
         CALIMERO_WEBUI_FETCH_TOKEN: ${{ env.CALIMERO_WEBUI_FETCH_TOKEN }}
@@ -25,6 +56,7 @@ runs:
         cargo build -p merod -p meroctl --release --target x86_64-unknown-linux-gnu
 
     - name: Build local Docker image
+      if: steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true'
       shell: bash
       run: |
         echo "Creating local Docker image: ${{ inputs.image-tag }}"
@@ -42,4 +74,25 @@ runs:
         
         # Verify image was built
         echo "Built image:"
+        docker images ${{ inputs.image-tag }}
+
+    - name: Save merod Docker image to cache
+      if: (steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true') && success()
+      shell: bash
+      run: |
+        mkdir -p merod-image-cache
+        docker save ${{ inputs.image-tag }} | gzip -n > merod-image-cache/merod-local.tar.gz
+        echo "Image saved for cache (key: ${{ steps.cache-key.outputs.key }})"
+
+    - name: Persist merod image cache
+      if: (steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true') && success()
+      uses: actions/cache/save@v4
+      with:
+        path: merod-image-cache
+        key: ${{ steps.cache-key.outputs.key }}
+
+    - name: Verify merod image
+      shell: bash
+      run: |
+        echo "Final image:"
         docker images ${{ inputs.image-tag }}
