@@ -9,6 +9,8 @@ on:
         "Merobox Proposals - Blockchain Integration Tests",
         "Merobox Workflows - All Apps",
         "Test SDK JS Compatibility",
+        "E2E - Rust Apps",
+        "E2E - Blockchain Proposals",
       ]
     types:
       - completed
@@ -20,12 +22,21 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
 
     steps:
+      - name: Set artifact name
+        id: artifact
+        run: |
+          case "${{ github.event.workflow_run.name }}" in
+            "E2E - Rust Apps") echo "name=pr-comment-payload-rust-apps" >> $GITHUB_OUTPUT ;;
+            "E2E - Blockchain Proposals") echo "name=pr-comment-payload-blockchain" >> $GITHUB_OUTPUT ;;
+            *) echo "name=pr-comment-payload" >> $GITHUB_OUTPUT ;;
+          esac
+
       - name: Download artifact
         id: download
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: pr-comment-payload
+          name: ${{ steps.artifact.outputs.name }}
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
