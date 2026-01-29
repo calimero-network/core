@@ -333,9 +333,8 @@ fn generate_mergeable_impl(
         }
     };
 
-    // Generate merge calls for each field
-    // Only merge fields that are known CRDT types
-    let merge_calls: Vec<_> = fields
+    // Generate merge/copy calls for each field
+    let field_operations: Vec<_> = fields
         .iter()
         .filter_map(|field| {
             let field_name = field.ident.as_ref()?;
@@ -344,8 +343,7 @@ fn generate_mergeable_impl(
             // Check if this is a known CRDT type by examining the type path
             let type_str = quote! { #field_type }.to_string();
 
-            // Only generate merge for CRDT collections
-            // Non-CRDT fields (String, u64, etc.) are handled by storage layer's LWW
+            // CRDT types get proper merge semantics
             let is_crdt = type_str.contains("UnorderedMap")
                 || type_str.contains("Vector")
                 || type_str.contains("UnorderedSet")
@@ -355,26 +353,29 @@ fn generate_mergeable_impl(
                 || type_str.contains("UserStorage")
                 || type_str.contains("FrozenStorage");
 
-            if !is_crdt {
-                // Skip non-CRDT fields
-                return None;
-            }
-
-            // Generate merge call for CRDT fields
-            Some(quote! {
-                ::calimero_storage::collections::Mergeable::merge(
-                    &mut self.#field_name,
-                    &other.#field_name
-                ).map_err(|e| {
-                    ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
-                        format!(
-                            "Failed to merge field '{}': {:?}",
-                            stringify!(#field_name),
-                            e
+            if is_crdt {
+                // Generate merge call for CRDT fields
+                Some(quote! {
+                    ::calimero_storage::collections::Mergeable::merge(
+                        &mut self.#field_name,
+                        &other.#field_name
+                    ).map_err(|e| {
+                        ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
+                            format!(
+                                "Failed to merge field '{}': {:?}",
+                                stringify!(#field_name),
+                                e
+                            )
                         )
-                    )
-                })?;
-            })
+                    })?;
+                })
+            } else {
+                // Non-CRDT fields: copy from other (LWW - incoming wins)
+                // This ensures state consistency across nodes during sync
+                Some(quote! {
+                    self.#field_name = other.#field_name.clone();
+                })
+            }
         })
         .collect();
 
@@ -392,12 +393,12 @@ fn generate_mergeable_impl(
         //
         // Performance:
         // - Local ops: O(1) - this is NOT called
-        // - Remote sync: O(N) where N = number of CRDT fields (typically 3-10)
+        // - Remote sync: O(N) where N = number of fields (typically 3-10)
         // - Happens during network sync (already slow), so overhead is negligible
         //
         // What it does:
-        // - Merges each CRDT field (Map, Counter, RGA, etc.)
-        // - Skips non-CRDT fields (String, u64, etc.) - handled by storage LWW
+        // - Merges each CRDT field (Map, Counter, RGA, etc.) using CRDT semantics
+        // - Copies non-CRDT fields (String, u64, etc.) from incoming state (LWW)
         // - Recursive merging for nested CRDTs
         // - Guarantees no divergence!
         //
@@ -405,7 +406,7 @@ fn generate_mergeable_impl(
             fn merge(&mut self, other: &Self)
                 -> ::core::result::Result<(), ::calimero_storage::collections::crdt_meta::MergeError>
             {
-                #(#merge_calls)*
+                #(#field_operations)*
                 ::core::result::Result::Ok(())
             }
         }

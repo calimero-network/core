@@ -312,7 +312,10 @@ impl<S: StorageAdaptor> Index<S> {
     /// Updates parent's children list and hash after child removal.
     ///
     /// Step 2 of deletion: Remove child from parent's index and recalculate hash.
-    fn update_parent_after_child_removal(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
+    pub(crate) fn update_parent_after_child_removal(
+        parent_id: Id,
+        child_id: Id,
+    ) -> Result<(), StorageError> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 

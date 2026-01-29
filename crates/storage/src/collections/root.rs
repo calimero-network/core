@@ -129,28 +129,7 @@ where
 
         match artifact {
             StorageDelta::Actions(actions) => {
-                let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
-
                 for action in actions {
-                    match &action {
-                        Action::Add {
-                            id, data, metadata, ..
-                        }
-                        | Action::Update {
-                            id, data, metadata, ..
-                        } if id.is_root() => {
-                            info!(
-                                target: "storage::root",
-                                payload_len = data.len(),
-                                created_at = metadata.created_at,
-                                updated_at = metadata.updated_at(),
-                                "captured root snapshot from delta replay"
-                            );
-                            root_snapshot = Some((data.clone(), metadata.clone()));
-                        }
-                        _ => {}
-                    }
-
                     match action {
                         Action::Compare { id } => {
                             push_comparison(Comparison {
@@ -161,19 +140,16 @@ where
                             });
                         }
                         Action::Add { .. } | Action::Update { .. } | Action::DeleteRef { .. } => {
+                            // apply_action handles all entities including root via save_internal
+                            // which properly merges concurrent updates
                             <Interface<S>>::apply_action(action)?;
                         }
                     };
                 }
-
-                if let Some((payload, metadata)) = root_snapshot {
-                    if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
-                        info!(
-                            target: "storage::root",
-                            "persisted root document from delta replay"
-                        );
-                    }
-                }
+                // NOTE: Removed redundant save_raw call for root entities.
+                // apply_action already handles root Add/Update via save_internal which merges properly.
+                // A second save_raw with the original (unmerged) payload would overwrite the merged
+                // result, causing state divergence.
             }
             StorageDelta::Comparisons(comparisons) => {
                 if comparisons.is_empty() {

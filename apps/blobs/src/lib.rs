@@ -9,7 +9,7 @@
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env};
-use calimero_storage::collections::UnorderedMap;
+use calimero_storage::collections::{Counter, UnorderedMap};
 
 // === CONSTANTS ===
 
@@ -153,8 +153,8 @@ pub struct FileShareState {
     pub files: UnorderedMap<String, FileRecord>,
 
     /// Counter for generating unique file IDs
-    /// Incremented on each file upload
-    pub file_counter: u64,
+    /// Incremented on each file upload (CRDT Counter for proper merge across nodes)
+    pub file_counter: Counter,
 }
 
 /// Events emitted by the application
@@ -197,7 +197,7 @@ impl FileShareState {
         FileShareState {
             owner,
             files: UnorderedMap::new(),
-            file_counter: 0,
+            file_counter: Counter::new(),
         }
     }
 
@@ -225,8 +225,14 @@ impl FileShareState {
     ) -> Result<String, String> {
         let blob_id = parse_blob_id_base58(&blob_id_str)?;
 
-        let file_id = format!("file_{}", self.file_counter);
-        self.file_counter += 1;
+        let counter_value = self
+            .file_counter
+            .value()
+            .map_err(|e| format!("Failed to get file counter: {e:?}"))?;
+        let file_id = format!("file_{}", counter_value);
+        self.file_counter
+            .increment()
+            .map_err(|e| format!("Failed to increment file counter: {e:?}"))?;
 
         let uploader_id = env::executor_id();
         let uploader = encode_blob_id_base58(&uploader_id);

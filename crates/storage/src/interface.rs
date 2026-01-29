@@ -465,14 +465,29 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(());
         }
 
+        // Get parent ID before deletion to update parent's children list
+        let parent_id = <Index<S>>::get_parent_id(id)?;
+
         // Deletion wins - apply it
         let _ignored = S::storage_remove(Key::Entry(id));
         let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
         debug!(
             %id,
             deleted_at,
-            "DeleteRef applied - entity removed and tombstone updated"
+            "DeleteRef applied - entity removed and tombstone created"
         );
+
+        // Update parent's children list and recalculate hashes
+        // This is critical for Merkle tree consistency across nodes
+        if let Some(parent_id) = parent_id {
+            <Index<S>>::update_parent_after_child_removal(parent_id, id)?;
+            <Index<S>>::recalculate_ancestor_hashes_for(parent_id)?;
+            debug!(
+                %id,
+                %parent_id,
+                "Parent children list updated and hashes recalculated"
+            );
+        }
 
         Ok(())
     }
