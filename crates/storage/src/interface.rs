@@ -46,6 +46,7 @@ use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::address::Id;
+use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
@@ -107,6 +108,11 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     pub fn apply_action(action: Action) -> Result<(), StorageError> {
         crate::env::log("apply_action");
+
+        // Verify that the action timestamp is not too far in the future
+        // to prevent LWW Time Drift attacks.
+        verify_action_timestamp(&action)?;
+
         // TODO: refactor to a separate function.
         // Run verification logic before applying
         match &action {
@@ -1214,5 +1220,32 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     }
 
     // If this check passes, the data is verified.
+    Ok(())
+}
+
+/// Verifies that the action timestamp is within acceptable bounds of the local clock.
+fn verify_action_timestamp(action: &Action) -> Result<(), StorageError> {
+    let timestamp = match action {
+        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata.updated_at(),
+        Action::DeleteRef { deleted_at, .. } => *deleted_at,
+        Action::Compare { .. } => return Ok(()),
+    };
+
+    let now = time_now();
+
+    // Allow for network latency and small clock skew
+    let max_allowed = now.saturating_add(constants::DRIFT_TOLERANCE_NANOS);
+
+    if timestamp > max_allowed {
+        debug!(
+            %timestamp,
+            %now,
+            %max_allowed,
+            "Interface::verify_action_timestamp action with an invalid timestamp."
+        );
+
+        return Err(StorageError::InvalidTimestamp(timestamp, now));
+    }
+
     Ok(())
 }

@@ -36,7 +36,11 @@ pub enum StorageError {
     #[error("Invalid data: {0}")]
     InvalidData(String),
 
-    /// [NEW] The provided signature for an action is invalid.
+    /// The provided timestamp for an action is invalid (too far in the future).
+    #[error("Invalid timestamp {0} for an action, too far in the future (local time: {1}).")]
+    InvalidTimestamp(u64, u64),
+
+    /// The provided signature for an action is invalid.
     #[error("Invalid signature for user-owned data")]
     InvalidSignature,
 
@@ -75,6 +79,10 @@ impl Serialize for StorageError {
             | Self::IndexNotFound(id)
             | Self::UnexpectedId(id)
             | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
+            Self::InvalidTimestamp(timestamp, local_time) => serializer.serialize_str(&format!(
+                "Invalid timestamp {} for an action, too far in the future (local time: {}).",
+                timestamp, local_time
+            )),
             Self::InvalidData(ref msg) => serializer.serialize_str(msg),
             Self::InvalidSignature => serializer.serialize_str("Invalid signature"),
             Self::NonceReplay(ref data) => {
