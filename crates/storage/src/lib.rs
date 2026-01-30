@@ -117,6 +117,8 @@ pub mod tests {
     pub mod rga;
     /// Merkle tree synchronization tests (local, no network).
     pub mod tree_sync;
+    /// UnorderedMap synchronization tests (entry ID determinism, concurrent sync).
+    pub mod unordered_map_sync;
     // TODO: Re-enable once Clone is implemented for collections
     // /// Nested CRDT merge behavior tests.
     // pub mod nested_crdt_merge;

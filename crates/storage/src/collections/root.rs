@@ -129,28 +129,11 @@ where
 
         match artifact {
             StorageDelta::Actions(actions) => {
-                let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
-
+                // Apply all actions via apply_action which has proper CRDT merge logic.
+                // DO NOT save the root snapshot separately - apply_action handles root
+                // actions correctly, and an explicit save would overwrite merged state
+                // with the remote's stale root data (which doesn't know about local children).
                 for action in actions {
-                    match &action {
-                        Action::Add {
-                            id, data, metadata, ..
-                        }
-                        | Action::Update {
-                            id, data, metadata, ..
-                        } if id.is_root() => {
-                            info!(
-                                target: "storage::root",
-                                payload_len = data.len(),
-                                created_at = metadata.created_at,
-                                updated_at = metadata.updated_at(),
-                                "captured root snapshot from delta replay"
-                            );
-                            root_snapshot = Some((data.clone(), metadata.clone()));
-                        }
-                        _ => {}
-                    }
-
                     match action {
                         Action::Compare { id } => {
                             push_comparison(Comparison {
@@ -164,15 +147,6 @@ where
                             <Interface<S>>::apply_action(action)?;
                         }
                     };
-                }
-
-                if let Some((payload, metadata)) = root_snapshot {
-                    if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
-                        info!(
-                            target: "storage::root",
-                            "persisted root document from delta replay"
-                        );
-                    }
                 }
             }
             StorageDelta::Comparisons(comparisons) => {

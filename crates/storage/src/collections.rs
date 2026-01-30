@@ -117,10 +117,28 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self::new_with_crdt_type(id, CrdtType::LwwRegister)
     }
 
+    /// Creates a new collection with a deterministic ID based on field name.
+    /// This ensures all nodes generate the same collection ID for the same field.
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    fn new_with_field_name(field_name: &str, crdt_type: CrdtType) -> Self {
+        let id = Self::compute_deterministic_id(field_name);
+        Self::new_with_crdt_type(Some(id), crdt_type)
+    }
+
+    /// Computes a deterministic collection ID from a field name.
+    /// Uses SHA256 to ensure consistent IDs across all nodes.
+    fn compute_deterministic_id(field_name: &str) -> Id {
+        let mut hasher = Sha256::new();
+        // Prefix to distinguish from entry IDs and other hashes
+        hasher.update(b"calimero:collection:");
+        hasher.update(field_name.as_bytes());
+        Id::new(hasher.finalize().into())
+    }
+
     /// Creates a new collection with a specific CrdtType.
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new_with_crdt_type(id: Option<Id>, crdt_type: CrdtType) -> Self {
-        let id = id.unwrap_or_else(|| Id::random());
+        let id = id.unwrap_or_else(Id::random);
 
         let mut this = Self {
             children_ids: RefCell::new(None),

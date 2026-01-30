@@ -1354,9 +1354,25 @@ impl<S: StorageAdaptor> Interface<S> {
             data.to_vec()
         };
 
-        let own_hash = Sha256::digest(&final_data).into();
+        let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
+
+        debug!(
+            %id,
+            data_len = final_data.len(),
+            own_hash = ?hex::encode(own_hash),
+            created_at = metadata.created_at,
+            updated_at = *metadata.updated_at,
+            "save_internal: computed own_hash from final_data"
+        );
 
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+
+        debug!(
+            %id,
+            own_hash = ?hex::encode(own_hash),
+            full_hash = ?hex::encode(full_hash),
+            "save_internal: full_hash after update_hash_for"
+        );
 
         _ = S::storage_write(Key::Entry(id), &final_data);
 

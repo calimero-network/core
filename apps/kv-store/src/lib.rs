@@ -37,7 +37,8 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
-            items: UnorderedMap::new(),
+            // Use deterministic ID based on field name for sync compatibility
+            items: UnorderedMap::new_with_field_name("items"),
         }
     }
 

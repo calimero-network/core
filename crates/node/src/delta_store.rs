@@ -123,39 +123,48 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
         let computed_hash = outcome.root_hash;
 
-        // For merge scenarios: hash mismatch is EXPECTED
-        // The computed hash is the MERGED state hash (correct by construction)
-        // For sequential scenarios: verify hash matches expected
-        if !is_merge_scenario && *computed_hash != delta.expected_root_hash {
-            warn!(
-                context_id = %self.context_id,
-                delta_id = ?delta.id,
-                computed_hash = ?computed_hash,
-                expected_hash = ?Hash::from(delta.expected_root_hash),
-                "Root hash mismatch in sequential application - this shouldn't happen"
-            );
-
-            return Err(ApplyError::RootHashMismatch {
-                computed: *computed_hash.as_ref(),
-                expected: delta.expected_root_hash,
-            });
+        // In a CRDT environment, hash mismatches are EXPECTED when there are concurrent writes.
+        // The delta's expected_root_hash is based on the sender's linear history, but we may have
+        // additional data from concurrent writes (our own or from other nodes).
+        //
+        // We NEVER reject deltas due to hash mismatch - CRDT merge semantics ensure eventual
+        // consistency. The hash mismatch just means we have concurrent state.
+        //
+        // Log the mismatch for debugging, but always accept the delta.
+        if *computed_hash != delta.expected_root_hash {
+            if is_merge_scenario {
+                info!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    computed_hash = ?computed_hash,
+                    delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                    "Merge produced new hash (expected - concurrent branches merged)"
+                );
+            } else {
+                // Even "sequential" applications can produce different hashes if we have
+                // concurrent state that the sender doesn't know about. This is normal in
+                // a distributed CRDT system.
+                debug!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    computed_hash = ?computed_hash,
+                    expected_hash = ?Hash::from(delta.expected_root_hash),
+                    "Hash mismatch (concurrent state) - CRDT merge ensures consistency"
+                );
+            }
         }
 
-        if is_merge_scenario && *computed_hash != delta.expected_root_hash {
-            info!(
-                context_id = %self.context_id,
-                delta_id = ?delta.id,
-                computed_hash = ?computed_hash,
-                delta_expected_hash = ?Hash::from(delta.expected_root_hash),
-                "Merge produced new hash (expected - concurrent branches merged)"
-            );
-        }
-
-        // Store this delta's expected_root_hash for future merge detection
-        // This allows child deltas to know what state this delta expected
+        // Store the ACTUAL computed hash after applying this delta for future merge detection
+        // This is what OUR state actually is, not what the remote expected.
+        // Child deltas will check if our current state matches the parent's result.
+        //
+        // CRITICAL: We must store the computed hash, NOT delta.expected_root_hash!
+        // In merge scenarios, computed_hash differs from expected_root_hash.
+        // If we stored expected_root_hash, sequential child deltas would incorrectly
+        // appear to be merge scenarios because our state wouldn't match.
         {
             let mut hashes = self.parent_hashes.write().await;
-            hashes.insert(delta.id, delta.expected_root_hash);
+            hashes.insert(delta.id, *computed_hash);
         }
 
         debug!(
@@ -189,13 +198,21 @@ impl ContextStorageApplier {
         delta: &CausalDelta<Vec<Action>>,
         current_root_hash: &[u8; 32],
     ) -> bool {
-        // Genesis parent means this is the first delta - never a merge
+        // SIMPLE AND CORRECT: If our current state differs from what the delta expects
+        // as the RESULT, then we have diverged and need merge semantics.
+        // This covers all cases:
+        // 1. First concurrent delta from remote
+        // 2. Subsequent deltas in a remote chain after we've already merged
+        // 3. Any other divergence scenario
+        //
+        // The key insight: if delta.expected_root_hash == current_root_hash after
+        // sequential application, we'd be fine. If they differ, we've diverged.
+        // But we can't know that until after applying. So instead, check if our
+        // current state matches what ANY parent in the chain expected.
+
+        // Genesis parent means this is the first delta - check if we have state
         if delta.parents.is_empty() || delta.parents.iter().all(|p| *p == [0u8; 32]) {
-            // Check if current state is NOT initial state
-            // If so, we've applied local deltas before this remote one = merge
             if *current_root_hash != [0u8; 32] {
-                // We have state, but this delta claims to be from genesis
-                // This means concurrent operations from genesis - it's a merge
                 debug!(
                     context_id = %self.context_id,
                     delta_id = ?delta.id,
@@ -216,29 +233,37 @@ impl ContextStorageApplier {
             }
 
             if let Some(parent_expected_hash) = hashes.get(parent_id) {
-                // Parent's expected hash is the state AFTER applying parent
-                // If our current hash differs, concurrent deltas were applied
+                // Parent's expected_root_hash is what the REMOTE expected AFTER applying that parent
+                // If our current state differs, we've diverged (either we merged, or have local changes)
                 if parent_expected_hash != current_root_hash {
                     debug!(
                         context_id = %self.context_id,
+                        delta_id = ?delta.id,
                         parent_id = ?parent_id,
                         parent_expected_hash = ?Hash::from(*parent_expected_hash),
                         current_root_hash = ?Hash::from(*current_root_hash),
-                        "Detected concurrent branch: parent expected different state"
+                        "State diverged from parent's expected - treating as merge"
                     );
                     return true;
+                } else {
+                    debug!(
+                        context_id = %self.context_id,
+                        delta_id = ?delta.id,
+                        parent_id = ?parent_id,
+                        parent_expected_hash = ?Hash::from(*parent_expected_hash),
+                        current_root_hash = ?Hash::from(*current_root_hash),
+                        "State matches parent's expected - sequential application OK"
+                    );
                 }
             } else {
-                // Parent was created by another node - we don't have its hash
-                // This is VERY likely a merge scenario in concurrent writes
-                //
-                // Key insight: if the parent exists in DAG but we don't have its hash,
-                // another node applied it and we need to merge
+                // Parent was created by another node - we don't have its hash tracked
+                // Conservative: treat as merge
                 debug!(
                     context_id = %self.context_id,
+                    delta_id = ?delta.id,
                     parent_id = ?parent_id,
                     current_root_hash = ?Hash::from(*current_root_hash),
-                    "Unknown parent from other node - treating as merge scenario"
+                    "Unknown parent (not in our tracking) - treating as merge"
                 );
                 return true;
             }

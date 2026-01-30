@@ -157,12 +157,35 @@ impl<S: StorageAdaptor> Index<S> {
         hasher.update(own_hash);
 
         if let Some(children_vec) = children {
+            // Debug: Log children being hashed for troubleshooting non-determinism
+            if !children_vec.is_empty() {
+                tracing::debug!(
+                    own_hash = ?hex::encode(own_hash),
+                    child_count = children_vec.len(),
+                    "Calculating full hash with children"
+                );
+                for (i, child) in children_vec.iter().enumerate() {
+                    tracing::debug!(
+                        child_index = i,
+                        child_id = ?child.id(),
+                        child_merkle_hash = ?hex::encode(child.merkle_hash()),
+                        child_created_at = child.created_at(),
+                        "Child contributing to hash"
+                    );
+                }
+            }
             for child in children_vec {
                 hasher.update(child.merkle_hash());
             }
         }
 
-        Ok(hasher.finalize().into())
+        let result = hasher.finalize().into();
+        tracing::debug!(
+            own_hash = ?hex::encode(own_hash),
+            result_hash = ?hex::encode(result),
+            "Full hash calculated"
+        );
+        Ok(result)
     }
 
     /// Calculates full Merkle hash by loading from storage.

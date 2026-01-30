@@ -25,8 +25,22 @@ where
     V: BorshSerialize + BorshDeserialize,
 {
     /// Create a new vector collection.
+    ///
+    /// **Warning**: This generates a random collection ID. For state fields,
+    /// prefer `new_with_field_name` to ensure consistent IDs across nodes.
     pub fn new() -> Self {
         Self::new_internal()
+    }
+
+    /// Create a new vector collection with a deterministic ID based on field name.
+    ///
+    /// This ensures all nodes generate the same collection ID for the same field,
+    /// which is critical for state synchronization.
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        use super::CrdtType;
+        Self {
+            inner: Collection::new_with_field_name(field_name, CrdtType::Vector),
+        }
     }
 }
 
