@@ -812,10 +812,8 @@ This CIP is backwards compatible:
 - [x] Compile error if non-CRDT scalar used without `LwwRegister<T>` wrapper
 - N/A Root state doesn't need CrdtType::Custom (it's a container, fields handle their own types)
 
-**2.3 Runtime Integration:** (Part of Phase 3)
-- [ ] Implement `WasmMergeCallback` in runtime layer
-- [ ] `SyncManager` creates callback from loaded WASM module
-- [ ] Pass callback to storage layer during sync
+**2.3 Runtime Integration:** → Moved to Phase 3.1
+> Runtime integration requires networking context, moved to Phase 3.
 
 **2.4 Tests:** ✅
 - [x] Built-in CRDT merge during state sync (Counter, Map) - merge_integration.rs
@@ -828,7 +826,14 @@ This CIP is backwards compatible:
 - [x] Removed `ResolutionStrategy` enum entirely (not deprecated, deleted)
 - N/A merodb uses ABI for deserialization, doesn't need storage types
 
-### Phase 3: Network Layer (TODO)
+### Phase 3: Network Layer & Runtime Integration (TODO)
+
+**3.1 Runtime Integration (from Phase 2.3):**
+- [ ] Implement `WasmMergeCallback` in runtime layer (`crates/runtime`)
+- [ ] `SyncManager` creates callback from loaded WASM module
+- [ ] Pass callback to storage layer during sync
+
+**3.2 Network Messages:**
 - [ ] `SyncHandshake` message type
 - [ ] Protocol negotiation in `SyncManager`
 - [ ] Network message encoding for new protocols
@@ -836,7 +841,7 @@ This CIP is backwards compatible:
 - [ ] Lightweight hints in delta propagation (40 bytes overhead)
 
 ### Phase 4: Integration (TODO)
-- [ ] `SyncManager` uses storage-layer merge (no WASM callback needed!)
+- [ ] `SyncManager` uses storage-layer merge with WASM callback
 - [ ] Delta buffering during state sync
 - [ ] Post-sync delta replay
 - [ ] Sync state machine in `SyncManager`
