@@ -50,7 +50,7 @@ use crate::collections::crdt_meta::CrdtType;
 use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
-use crate::merge::try_merge_registered;
+use crate::merge::{try_merge_by_type_name, try_merge_registered, WasmMergeCallback};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -526,6 +526,24 @@ impl<S: StorageAdaptor> Interface<S> {
         local_metadata: &Metadata,
         remote_metadata: &Metadata,
     ) -> Result<Option<Vec<u8>>, StorageError> {
+        Self::merge_by_crdt_type_with_callback(
+            local_data,
+            remote_data,
+            local_metadata,
+            remote_metadata,
+            None,
+        )
+    }
+
+    /// Merge entities with optional WASM callback for custom types.
+    fn merge_by_crdt_type_with_callback(
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_metadata: &Metadata,
+        remote_metadata: &Metadata,
+        callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        #[allow(unused_imports)]
         use crate::collections::{LwwRegister, Mergeable};
 
         let crdt_type = local_metadata.crdt_type.as_ref();
@@ -582,16 +600,17 @@ impl<S: StorageAdaptor> Interface<S> {
             }
 
             // ════════════════════════════════════════════════════════
-            // CUSTOM TYPES: Try registry (WASM-registered), fallback to LWW
+            // CUSTOM TYPES: Use WASM callback, registry, or LWW fallback
             // ════════════════════════════════════════════════════════
-            Some(CrdtType::Custom { type_name: _ }) => {
-                // Custom types should have registered their merge function
-                // Try registry, fallback to LWW
-                Self::try_merge_via_registry_or_lww(
+            Some(CrdtType::Custom { type_name }) => {
+                // Custom types need WASM callback for proper merge
+                Self::try_merge_custom_with_registry(
+                    type_name,
                     local_data,
                     remote_data,
                     local_metadata,
                     remote_metadata,
+                    callback,
                 )
             }
 
@@ -645,6 +664,80 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(Some(winner.to_vec()))
     }
 
+    /// Merge custom type using WASM callback, registry, or LWW fallback.
+    ///
+    /// Priority:
+    /// 1. WASM callback (if provided) - for runtime-managed WASM merge
+    /// 2. Type-name registry - for types registered via `register_crdt_merge`
+    /// 3. Brute-force registry - legacy fallback
+    /// 4. LWW fallback
+    fn try_merge_custom_with_registry(
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_metadata: &Metadata,
+        remote_metadata: &Metadata,
+        callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        // 1. Try WASM callback first (production path)
+        if let Some(cb) = callback {
+            match cb.merge_custom(
+                type_name,
+                local_data,
+                remote_data,
+                local_metadata.updated_at(),
+                remote_metadata.updated_at(),
+            ) {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(e) => {
+                    debug!("WASM merge failed for {}: {}, falling back", type_name, e);
+                    // Fall through to registry/LWW
+                }
+            }
+        }
+
+        // 2. Try type-name registry (efficient lookup)
+        if let Some(result) = try_merge_by_type_name(
+            type_name,
+            local_data,
+            remote_data,
+            local_metadata.updated_at(),
+            remote_metadata.updated_at(),
+        ) {
+            match result {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(e) => {
+                    debug!(
+                        "Type-name merge failed for {}: {}, falling back",
+                        type_name, e
+                    );
+                    // Fall through to brute-force/LWW
+                }
+            }
+        }
+
+        // 3. Try brute-force registry (legacy fallback)
+        if let Some(result) = try_merge_registered(
+            local_data,
+            remote_data,
+            local_metadata.updated_at(),
+            remote_metadata.updated_at(),
+        ) {
+            match result {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(_) => {} // Fall through to LWW
+            }
+        }
+
+        // 4. Fallback to LWW
+        let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+            remote_data
+        } else {
+            local_data
+        };
+        Ok(Some(winner.to_vec()))
+    }
+
     /// Compares local and remote entity trees using CRDT-type-based merge.
     ///
     /// Compares Merkle hashes recursively, producing action lists for both sides.
@@ -659,12 +752,34 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// The merged result is sent to BOTH sides to ensure convergence.
     ///
+    /// For custom type merging via WASM, use `compare_trees_with_callback`.
+    ///
     /// # Errors
     /// Returns error if index lookup or hash comparison fails.
     ///
     pub fn compare_trees(
         foreign_entity_data: Option<Vec<u8>>,
         foreign_index_data: ComparisonData,
+    ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
+        Self::compare_trees_with_callback(foreign_entity_data, foreign_index_data, None)
+    }
+
+    /// Compares trees with an optional WASM merge callback for custom types.
+    ///
+    /// This variant allows passing a callback for merging `CrdtType::Custom` types
+    /// via WASM. Used by the runtime layer during state synchronization.
+    ///
+    /// # Arguments
+    /// * `foreign_entity_data` - Optional serialized entity data from foreign node
+    /// * `foreign_index_data` - Comparison metadata from foreign node
+    /// * `merge_callback` - Optional callback for custom type merging via WASM
+    ///
+    /// # Errors
+    /// Returns error if index lookup or hash comparison fails.
+    pub fn compare_trees_with_callback(
+        foreign_entity_data: Option<Vec<u8>>,
+        foreign_index_data: ComparisonData,
+        merge_callback: Option<&dyn WasmMergeCallback>,
     ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
         let mut actions: (Vec<Action>, Vec<Action>) = (vec![], vec![]);
 
@@ -699,12 +814,13 @@ impl<S: StorageAdaptor> Interface<S> {
         // Compare own hashes - if different, need to merge the data
         if local_own_hash != foreign_index_data.own_hash {
             if let Some(foreign_entity_data) = foreign_entity_data {
-                // Use CRDT-type-based merge dispatch
-                match Self::merge_by_crdt_type(
+                // Use CRDT-type-based merge dispatch (with optional WASM callback)
+                match Self::merge_by_crdt_type_with_callback(
                     &local_entity,
                     &foreign_entity_data,
                     &local_metadata,
                     &foreign_index_data.metadata,
+                    merge_callback,
                 )? {
                     Some(merged_data) => {
                         // Determine which metadata to use (newer timestamp)

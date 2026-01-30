@@ -74,7 +74,10 @@ pub mod snapshot;
 pub mod store;
 
 // Re-export for convenience
-pub use merge::register_crdt_merge;
+pub use merge::{
+    register_crdt_merge, NoopMergeCallback, RegistryMergeCallback, WasmMergeCallback,
+    WasmMergeError,
+};
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
