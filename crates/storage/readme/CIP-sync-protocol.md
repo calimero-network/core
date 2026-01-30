@@ -862,12 +862,12 @@ This CIP is backwards compatible:
 - `SyncHints` (per delta): Rich metadata for protocol selection (`entity_count`, `tree_depth`)
 - This split is intentional: heartbeats are high-frequency so kept minimal
 
-### Phase 5: Optimization (IN PROGRESS)
+### Phase 5: Optimization ✅
 - [x] Compressed snapshot transfer (lz4_flex, already implemented)
 - [x] Streaming for large snapshots (pagination with resume_cursor)
-- [ ] Adaptive protocol selection decision logic
-- [ ] Bloom filter for delta ID membership testing
-- [ ] Gossip mode selection (DeltaOnly vs WithHints)
+- [x] Adaptive protocol selection (`SyncHints::adaptive_select()`)
+- [x] Bloom filter (`DeltaIdBloomFilter`) for delta ID membership testing
+- [x] Gossip mode selection (`GossipMode`: WithHints, Minimal, Adaptive)
 
 ### Phase 6: Delta Pruning (TODO)
 - [ ] Checkpoint creation after snapshot sync
