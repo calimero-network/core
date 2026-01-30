@@ -3,7 +3,7 @@ use crate::store::MainStorage;
 
 mod index__public_methods {
     use super::*;
-    use crate::entities::StorageType;
+    use crate::entities::{ResolutionStrategy, StorageType};
     use crate::interface::{Action, Interface};
     use crate::store::MockedStorage;
 
@@ -20,6 +20,7 @@ mod index__public_methods {
                 created_at: 1,
                 updated_at: 1.into(),
                 storage_type: StorageType::Public,
+                resolution: ResolutionStrategy::default(),
             },
         };
 
@@ -33,12 +34,14 @@ mod index__public_methods {
                     created_at: 43,
                     updated_at: 22.into(),
                     storage_type: StorageType::Public,
+                    resolution: ResolutionStrategy::default(),
                 },
             )],
             metadata: Metadata {
                 created_at: 1,
                 updated_at: 1.into(),
                 storage_type: StorageType::Public,
+                resolution: ResolutionStrategy::default(),
             },
         };
 

@@ -106,8 +106,12 @@ pub mod tests {
     pub mod merge_integration;
     /// Merkle hash propagation tests.
     pub mod merkle;
+    /// Network-aware tree synchronization tests (simulated network).
+    pub mod network_sync;
     /// RGA (Replicated Growable Array) CRDT tests.
     pub mod rga;
+    /// Merkle tree synchronization tests (local, no network).
+    pub mod tree_sync;
     // TODO: Re-enable once Clone is implemented for collections
     // /// Nested CRDT merge behavior tests.
     // pub mod nested_crdt_merge;
