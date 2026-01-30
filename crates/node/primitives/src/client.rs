@@ -135,6 +135,8 @@ impl NodeClient {
             artifact: encrypted.into(),
             nonce,
             events: events.map(Cow::from),
+            // Sync hints are optional for backward compatibility
+            sync_hints: None,
         };
 
         let payload = borsh::to_vec(&payload)?;

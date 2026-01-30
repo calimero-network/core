@@ -5,6 +5,7 @@ pub mod bundle;
 pub mod client;
 pub mod messages;
 pub mod sync;
+pub mod sync_protocol;
 
 /// Node operation mode
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]

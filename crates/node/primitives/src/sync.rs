@@ -116,6 +116,10 @@ pub enum BroadcastMessage<'a> {
         /// Execution events that were emitted during the state change.
         /// This field is encrypted along with the artifact.
         events: Option<Cow<'a, [u8]>>,
+
+        /// Optional sync hints for proactive divergence detection.
+        /// Adds ~40 bytes overhead but enables faster sync triggering.
+        sync_hints: Option<crate::sync_protocol::SyncHints>,
     },
 
     /// Hash heartbeat for divergence detection
@@ -200,6 +204,10 @@ pub enum InitPayload {
         byte_limit: u32,
         resume_cursor: Option<Vec<u8>>,
     },
+    /// Sync handshake for protocol negotiation.
+    SyncHandshake {
+        handshake: crate::sync_protocol::SyncHandshake,
+    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -249,5 +257,9 @@ pub enum MessagePayload<'a> {
     /// Snapshot sync error.
     SnapshotError {
         error: SnapshotError,
+    },
+    /// Response to sync handshake with negotiated protocol.
+    SyncHandshakeResponse {
+        response: crate::sync_protocol::SyncHandshakeResponse,
     },
 }

@@ -13,6 +13,7 @@ mod constraint;
 pub mod errors;
 pub mod logic;
 mod memory;
+pub mod merge_callback;
 pub mod store;
 
 pub use constraint::Constraint;

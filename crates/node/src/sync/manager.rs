@@ -1475,8 +1475,65 @@ impl SyncManager {
                 )
                 .await?
             }
+            InitPayload::SyncHandshake { handshake } => {
+                // Handle sync handshake for protocol negotiation
+                self.handle_sync_handshake(&context, handshake, stream, nonce)
+                    .await?
+            }
         };
 
         Ok(Some(()))
+    }
+
+    /// Handle incoming sync handshake for protocol negotiation.
+    async fn handle_sync_handshake(
+        &self,
+        context: &calimero_primitives::context::Context,
+        handshake: calimero_node_primitives::sync_protocol::SyncHandshake,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_node_primitives::sync::MessagePayload;
+        use calimero_node_primitives::sync_protocol::{SyncCapabilities, SyncHandshakeResponse};
+
+        info!(
+            context_id = %context.id,
+            peer_root_hash = %handshake.root_hash,
+            peer_entity_count = handshake.entity_count,
+            peer_dag_heads = handshake.dag_heads.len(),
+            "Received sync handshake"
+        );
+
+        // Our capabilities
+        let our_caps = SyncCapabilities::full();
+
+        // Negotiate protocol
+        let negotiated_protocol = our_caps.negotiate(&handshake.capabilities);
+
+        if negotiated_protocol.is_none() {
+            warn!(
+                context_id = %context.id,
+                "No common sync protocol with peer"
+            );
+        }
+
+        // Build response
+        let response = SyncHandshakeResponse {
+            negotiated_protocol,
+            capabilities: our_caps,
+            root_hash: context.root_hash,
+            dag_heads: context.dag_heads.clone(),
+            entity_count: 0, // TODO: Get actual entity count from storage
+        };
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::SyncHandshakeResponse { response },
+            next_nonce: nonce,
+        };
+
+        self.send(stream, &msg, None).await?;
+
+        Ok(())
     }
 }
