@@ -4,7 +4,9 @@
 //! multiple nodes update the same data concurrently.
 
 pub mod registry;
-pub use registry::{register_crdt_merge, try_merge_by_type_name, try_merge_registered};
+pub use registry::{
+    register_crdt_merge, try_merge_by_type_name, try_merge_registered, MergeRegistry,
+};
 
 #[cfg(test)]
 pub use registry::clear_merge_registry;
@@ -242,7 +244,7 @@ impl WasmMergeCallback for NoopMergeCallback {
     }
 }
 
-/// A callback that uses the in-process merge registry.
+/// A callback that uses the in-process merge registry (global).
 ///
 /// This is useful when the WASM module has already registered its merge
 /// function via `register_crdt_merge`. The runtime calls this after WASM
@@ -277,20 +279,69 @@ impl WasmMergeCallback for RegistryMergeCallback {
     }
 }
 
+/// A callback that uses an injected `MergeRegistry` (for testing).
+///
+/// This allows tests to create isolated registries without global state.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut registry = MergeRegistry::new();
+/// registry.register::<MyState>();
+///
+/// let callback = InjectableRegistryCallback::new(&registry);
+/// compare_trees_with_callback(data, index, Some(&callback));
+/// ```
+pub struct InjectableRegistryCallback<'a> {
+    registry: &'a MergeRegistry,
+}
+
+impl<'a> InjectableRegistryCallback<'a> {
+    /// Creates a new callback with the given registry.
+    #[must_use]
+    pub const fn new(registry: &'a MergeRegistry) -> Self {
+        Self { registry }
+    }
+}
+
+impl WasmMergeCallback for InjectableRegistryCallback<'_> {
+    fn merge_custom(
+        &self,
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_ts: u64,
+        remote_ts: u64,
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        match self.registry.try_merge_by_type_name(
+            type_name,
+            local_data,
+            remote_data,
+            local_ts,
+            remote_ts,
+        ) {
+            Some(Ok(merged)) => Ok(merged),
+            Some(Err(e)) => Err(WasmMergeError::MergeFailed(e.to_string())),
+            None => Err(WasmMergeError::UnknownType(type_name.to_owned())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collections::{Counter, Mergeable};
-    use crate::env;
+    use crate::collections::Mergeable;
 
-    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Debug)]
-    struct CallbackTestState {
-        counter: Counter,
+    // PURE test type - NO storage operations!
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Debug, Clone, PartialEq)]
+    struct PureState {
+        value: i64,
     }
 
-    impl Mergeable for CallbackTestState {
+    impl Mergeable for PureState {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
-            self.counter.merge(&other.counter)
+            self.value += other.value; // G-Counter semantics
+            Ok(())
         }
     }
 
@@ -316,47 +367,30 @@ mod tests {
 
     #[test]
     fn test_registry_callback_uses_registered_merge() {
-        env::reset_for_testing();
-        registry::clear_merge_registry();
+        let mut registry = MergeRegistry::new();
+        registry.register::<PureState>();
 
-        // Register the type
-        register_crdt_merge::<CallbackTestState>();
-
-        // Create two states
-        env::set_executor_id([50; 32]);
-        let mut state1 = CallbackTestState {
-            counter: Counter::new(),
-        };
-        state1.counter.increment().unwrap();
-        state1.counter.increment().unwrap(); // value = 2
-
-        env::set_executor_id([60; 32]);
-        let mut state2 = CallbackTestState {
-            counter: Counter::new(),
-        };
-        state2.counter.increment().unwrap(); // value = 1
+        let state1 = PureState { value: 2 };
+        let state2 = PureState { value: 1 };
 
         let bytes1 = borsh::to_vec(&state1).unwrap();
         let bytes2 = borsh::to_vec(&state2).unwrap();
 
-        // Merge via RegistryMergeCallback
-        let callback = RegistryMergeCallback;
+        let callback = InjectableRegistryCallback::new(&registry);
         let merged_bytes = callback
-            .merge_custom("CallbackTestState", &bytes1, &bytes2, 100, 200)
+            .merge_custom("PureState", &bytes1, &bytes2, 100, 200)
             .expect("Merge should succeed");
 
-        let merged: CallbackTestState = borsh::from_slice(&merged_bytes).unwrap();
-        assert_eq!(merged.counter.value().unwrap(), 3); // 2 + 1
+        let merged: PureState = borsh::from_slice(&merged_bytes).unwrap();
+        assert_eq!(merged.value, 3); // 2 + 1
     }
 
     #[test]
     fn test_registry_callback_unknown_type() {
-        env::reset_for_testing();
-        registry::clear_merge_registry();
+        let registry = MergeRegistry::new();
+        let callback = InjectableRegistryCallback::new(&registry);
 
-        let callback = RegistryMergeCallback;
         let bytes = vec![1, 2, 3];
-
         let result = callback.merge_custom("UnknownType", &bytes, &bytes, 100, 200);
 
         assert!(matches!(result, Err(WasmMergeError::UnknownType(_))));

@@ -75,8 +75,8 @@ pub mod store;
 
 // Re-export for convenience
 pub use merge::{
-    register_crdt_merge, NoopMergeCallback, RegistryMergeCallback, WasmMergeCallback,
-    WasmMergeError,
+    register_crdt_merge, InjectableRegistryCallback, MergeRegistry, NoopMergeCallback,
+    RegistryMergeCallback, WasmMergeCallback, WasmMergeError,
 };
 
 /// Re-exported types, mostly for use in macros (for convenience).
