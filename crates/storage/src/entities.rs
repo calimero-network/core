@@ -189,6 +189,25 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                resolution: ResolutionStrategy::default(),
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates a new element with a specific resolution strategy.
+    #[must_use]
+    pub fn with_resolution(id: Option<Id>, resolution: ResolutionStrategy) -> Self {
+        let timestamp = time_now();
+        let element_id = id.unwrap_or_else(Id::random);
+        Self {
+            id: element_id,
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                resolution,
             },
             merkle_hash: [0; 32],
         }
@@ -205,6 +224,24 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                resolution: ResolutionStrategy::default(),
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates the root element with a specific resolution strategy.
+    #[must_use]
+    pub fn root_with_resolution(resolution: ResolutionStrategy) -> Self {
+        let timestamp = time_now();
+        Self {
+            id: Id::root(),
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                resolution,
             },
             merkle_hash: [0; 32],
         }
@@ -266,6 +303,20 @@ impl Element {
     #[must_use]
     pub fn updated_at_mut(&mut self) -> &mut u64 {
         &mut *self.metadata.updated_at
+    }
+
+    /// Returns the conflict resolution strategy.
+    #[must_use]
+    pub const fn resolution(&self) -> ResolutionStrategy {
+        self.metadata.resolution
+    }
+
+    /// Sets the conflict resolution strategy.
+    ///
+    /// Call this before saving to change how conflicts are resolved during sync.
+    pub fn set_resolution(&mut self, resolution: ResolutionStrategy) {
+        self.metadata.resolution = resolution;
+        self.is_dirty = true;
     }
 
     /// Helper to set the storage domain to `User`.
@@ -331,6 +382,78 @@ impl Default for StorageType {
     }
 }
 
+/// Strategy for resolving conflicts when two nodes have different values.
+///
+/// Used during tree synchronization to determine which value wins when
+/// the same entity has been modified on multiple nodes.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ResolutionStrategy {
+    /// Last-Write-Wins: The value with the newer timestamp wins.
+    /// This is the default strategy for most use cases.
+    LastWriteWins,
+
+    /// First-Write-Wins: The value with the older timestamp wins.
+    /// Useful for immutable-after-creation data.
+    FirstWriteWins,
+
+    /// Maximum value wins (compared as bytes).
+    /// Useful for version numbers, counters, etc.
+    MaxValue,
+
+    /// Minimum value wins (compared as bytes).
+    /// Useful for finding earliest timestamps, lowest bids, etc.
+    MinValue,
+
+    /// Both values are kept - requires manual resolution.
+    /// The sync will mark the entity as conflicted for app-level handling.
+    Manual,
+}
+
+impl Default for ResolutionStrategy {
+    fn default() -> Self {
+        Self::LastWriteWins
+    }
+}
+
+impl ResolutionStrategy {
+    /// Resolve a conflict between local and remote data.
+    ///
+    /// Returns `true` if remote should win (apply remote to local),
+    /// Returns `false` if local should win (apply local to remote).
+    /// Returns `None` for `Manual` strategy (both sides need notification).
+    #[must_use]
+    pub fn resolve(
+        &self,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_ts: u64,
+        remote_ts: u64,
+    ) -> Option<bool> {
+        match self {
+            Self::LastWriteWins => {
+                // Remote wins if its timestamp >= local
+                Some(remote_ts >= local_ts)
+            }
+            Self::FirstWriteWins => {
+                // Remote wins if its timestamp < local (it's older)
+                Some(remote_ts < local_ts)
+            }
+            Self::MaxValue => {
+                // Compare bytes lexicographically, higher value wins
+                Some(remote_data >= local_data)
+            }
+            Self::MinValue => {
+                // Compare bytes lexicographically, lower value wins
+                Some(remote_data <= local_data)
+            }
+            Self::Manual => {
+                // No automatic resolution
+                None
+            }
+        }
+    }
+}
+
 /// System metadata (timestamps in u64 nanoseconds).
 #[derive(
     BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
@@ -346,6 +469,11 @@ pub struct Metadata {
     /// different characteristics of handling in the node.
     /// See `StorageType`.
     pub storage_type: StorageType,
+
+    /// Strategy for resolving conflicts when syncing with other nodes.
+    /// Defaults to `LastWriteWins` for backward compatibility.
+    /// See `ResolutionStrategy`.
+    pub resolution: ResolutionStrategy,
 }
 
 impl Metadata {
@@ -356,6 +484,22 @@ impl Metadata {
             created_at,
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
+            resolution: ResolutionStrategy::default(),
+        }
+    }
+
+    /// Creates new metadata with a specific resolution strategy.
+    #[must_use]
+    pub fn with_resolution(
+        created_at: u64,
+        updated_at: u64,
+        resolution: ResolutionStrategy,
+    ) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            resolution,
         }
     }
 

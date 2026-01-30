@@ -39,6 +39,7 @@ Complete guide to Calimero Storage CRDT documentation.
 1. **[Architecture](architecture.md)** - How it works internally
 2. **[Merging Deep-Dive](merging.md)** - DAG vs explicit merge explained
 3. **[Design Decisions](design-decisions.md)** - Why we built it this way
+4. **[Network Sync](network-sync.md)** - Efficient synchronization protocols
 
 ### Performance
 - **[Performance Guide](performance.md)** - Benchmarks, optimization tips
@@ -56,6 +57,11 @@ Complete guide to Calimero Storage CRDT documentation.
 - [Merging Deep-Dive](merging.md) - Complete explanation
 - [Architecture - Layer System](architecture.md#the-three-layer-system)
 - [Performance - Merge Costs](performance.md#operation-costs)
+
+### Network Synchronization
+- [Network Sync](network-sync.md) - Protocol overview and selection
+- [Network Sync - Bloom Filter](network-sync.md#protocol-4-bloom-filter-sync) - Probabilistic diff detection
+- [Network Sync - Smart Selection](network-sync.md#protocol-selection-smart-adaptive-sync) - Automatic protocol choice
 
 ### Nesting
 - [Nesting Guide](nesting.md) - Patterns and examples
@@ -82,6 +88,7 @@ Complete guide to Calimero Storage CRDT documentation.
 - Learn API? → [Collections API](collections.md)
 - Understand architecture? → [Architecture](architecture.md)
 - See design rationale? → [Design Decisions](design-decisions.md)
+- Sync nodes efficiently? → [Network Sync](network-sync.md)
 
 ---
 
@@ -99,7 +106,8 @@ crates/storage/
     ├── merging.md                # Conflict resolution explained
     ├── performance.md            # Optimization guide
     ├── migration.md              # Upgrading guide
-    └── design-decisions.md       # Why we built it this way
+    ├── design-decisions.md       # Why we built it this way
+    └── network-sync.md           # Network synchronization protocols
 ```
 
 ---

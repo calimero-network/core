@@ -449,6 +449,10 @@ mod interface__comparison {
                 Action::Compare {
                     id: local_para1.id()
                 },
+                // Para3 exists on foreign but not local - local needs to fetch it
+                Action::Compare {
+                    id: foreign_para3.id()
+                },
             ]
         );
         local_para2.element_mut().is_dirty = true;
@@ -465,10 +469,6 @@ mod interface__comparison {
                     data: to_vec(&local_para2).unwrap(),
                     ancestors: vec![],
                     metadata: local_para2.element().metadata.clone(),
-                },
-                // Para3 needs to be added locally, but we don't have the data, so we compare
-                Action::Compare {
-                    id: foreign_para3.id()
                 },
             ]
         );
