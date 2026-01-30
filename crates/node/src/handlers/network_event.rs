@@ -91,8 +91,6 @@ impl Handler<NetworkEvent> for NodeManager {
                         events,
                         sync_hints,
                     } => {
-                        // TODO: Use sync_hints for proactive divergence detection
-                        let _ = sync_hints;
                         info!(
                             %context_id,
                             %author_id,
@@ -101,6 +99,48 @@ impl Handler<NetworkEvent> for NodeManager {
                             has_events = events.is_some(),
                             "Matched StateDelta message"
                         );
+
+                        // Process sync_hints for proactive divergence detection
+                        let context_client = self.clients.context.clone();
+                        let node_client = self.clients.node.clone();
+                        if let Ok(Some(our_context)) = context_client.get_context(&context_id) {
+                            // Check if sender's root hash differs from ours
+                            if our_context.root_hash != sync_hints.post_root_hash {
+                                // Use sync_hints to determine if we need proactive sync
+                                use calimero_node_primitives::sync_protocol::SyncProtocolHint;
+
+                                match sync_hints.suggested_protocol {
+                                    SyncProtocolHint::Snapshot => {
+                                        // Significant divergence - trigger immediate sync
+                                        info!(
+                                            %context_id,
+                                            our_root = %our_context.root_hash,
+                                            their_root = %sync_hints.post_root_hash,
+                                            their_entities = sync_hints.entity_count,
+                                            "Sync hints suggest snapshot sync needed"
+                                        );
+                                        let node_client_clone = node_client.clone();
+                                        let _ignored = ctx.spawn(async move {
+                                            if let Err(e) = node_client_clone.sync(Some(&context_id), None).await {
+                                                warn!(%context_id, ?e, "Failed to trigger proactive sync from hints");
+                                            }
+                                        }.into_actor(self));
+                                    }
+                                    SyncProtocolHint::HashBased => {
+                                        // Moderate divergence - log for monitoring
+                                        debug!(
+                                            %context_id,
+                                            their_entities = sync_hints.entity_count,
+                                            their_depth = sync_hints.tree_depth,
+                                            "Sync hints suggest hash-based sync may be beneficial"
+                                        );
+                                    }
+                                    _ => {
+                                        // DeltaSync or AdaptiveSelection - normal delta processing
+                                    }
+                                }
+                            }
+                        }
 
                         // Clone the components we need
                         let node_clients = self.clients.clone();
