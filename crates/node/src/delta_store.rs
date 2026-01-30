@@ -681,29 +681,19 @@ impl DeltaStore {
             .update_dag_heads(&self.applier.context_id, heads.clone())
             .map_err(|e| eyre::eyre!("Failed to update dag_heads: {}", e))?;
 
-        // Deterministic root hash selection for concurrent branches.
-        // When multiple DAG heads exist, use the lexicographically smallest head's root_hash
-        // to ensure all nodes converge to the same root regardless of delta arrival order.
+        // NOTE: We no longer force a deterministic root hash for concurrent branches.
+        // Our CRDT merge logic (in ContextStorageApplier::apply) now properly merges
+        // concurrent branches, producing a new root hash that incorporates all changes.
+        // Forcing one branch's hash would overwrite the merged state and lose data!
+        //
+        // Multiple DAG heads are expected during concurrent activity and will be resolved
+        // when deltas from other branches are applied with CRDT merge semantics.
         if heads.len() > 1 {
-            let head_hashes = self.head_root_hashes.read().await;
-            let mut sorted_heads = heads.clone();
-            sorted_heads.sort();
-            let canonical_head = sorted_heads[0];
-
-            if let Some(&canonical_root_hash) = head_hashes.get(&canonical_head) {
-                debug!(
-                    context_id = %self.applier.context_id,
-                    heads_count = heads.len(),
-                    canonical_head = ?canonical_head,
-                    canonical_root = ?canonical_root_hash,
-                    "Multiple DAG heads - using deterministic root hash selection"
-                );
-
-                self.applier
-                    .context_client
-                    .force_root_hash(&self.applier.context_id, canonical_root_hash.into())
-                    .map_err(|e| eyre::eyre!("Failed to set canonical root hash: {}", e))?;
-            }
+            debug!(
+                context_id = %self.applier.context_id,
+                heads_count = heads.len(),
+                "Multiple DAG heads detected - CRDT merge will reconcile when applying deltas"
+            );
         }
 
         // Cleanup old head hashes that are no longer active
