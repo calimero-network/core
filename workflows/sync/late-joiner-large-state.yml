@@ -1,0 +1,222 @@
+description: Test late joiner with large state gap - verifies snapshot sync triggers correctly
+name: Late Joiner Large State Test
+
+force_pull_image: true
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: late-joiner-node
+
+steps:
+  # =============================================================================
+  # PHASE 1: Node 1 builds up significant state BEFORE Node 2 exists
+  # =============================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: late-joiner-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: late-joiner-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  # Write substantial state - triggers snapshot sync when Node 2 joins
+  - name: "[Phase 1] Write 2000 keys on Node 1 (large state)"
+    type: repeat
+    count: 2000
+    steps:
+      - name: "Write large_key_{{iteration}}"
+        type: call
+        node: late-joiner-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "large_key_{{iteration}}"
+          value: "large_value_{{iteration}}_with_extra_payload_to_increase_size"
+
+  - name: Verify Large State on Node 1
+    type: call
+    node: late-joiner-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: len
+    outputs:
+      large_state_count: result
+
+  - name: Assert Large State Created
+    type: json_assert
+    statements:
+      - 'json_subset({{large_state_count}}, {"output": 2000})'
+
+  # =============================================================================
+  # PHASE 2: Node 2 joins with ZERO state - should trigger snapshot sync
+  # =============================================================================
+
+  - name: Create Identity on Node 2 (fresh node)
+    type: create_identity
+    node: late-joiner-node-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Wait for Identity
+    type: wait
+    seconds: 2
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: late-joiner-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation: invitation
+
+  - name: "[CRITICAL] Node 2 Joins (triggers snapshot sync for large gap)"
+    type: join_context
+    node: late-joiner-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation}}"
+
+  # =============================================================================
+  # PHASE 3: Wait for snapshot sync (may take longer for large state)
+  # =============================================================================
+
+  - name: Wait for Snapshot Sync (long timeout for 2000 keys)
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - late-joiner-node-1
+      - late-joiner-node-2
+    timeout: 600  # 10 minutes for large state
+    check_interval: 10
+    trigger_sync: true
+    outputs:
+      sync_root_hash: root_hash
+      sync_time: elapsed_seconds
+
+  # =============================================================================
+  # PHASE 4: Verify Node 2 received ALL state via snapshot
+  # =============================================================================
+
+  - name: "[Verify] Node 2 has first key"
+    type: call
+    node: late-joiner-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "large_key_1"
+    outputs:
+      verify_first: result
+
+  - name: "[Verify] Node 2 has middle key"
+    type: call
+    node: late-joiner-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "large_key_1000"
+    outputs:
+      verify_middle: result
+
+  - name: "[Verify] Node 2 has last key"
+    type: call
+    node: late-joiner-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "large_key_2000"
+    outputs:
+      verify_last: result
+
+  - name: "[Verify] Node 2 total count"
+    type: call
+    node: late-joiner-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: len
+    outputs:
+      count_node2: result
+
+  - name: Assert Snapshot Sync Successful
+    type: json_assert
+    statements:
+      - 'json_subset({{verify_first}}, {"output": "large_value_1_with_extra_payload_to_increase_size"})'
+      - 'json_subset({{verify_middle}}, {"output": "large_value_1000_with_extra_payload_to_increase_size"})'
+      - 'json_subset({{verify_last}}, {"output": "large_value_2000_with_extra_payload_to_increase_size"})'
+      - 'json_subset({{count_node2}}, {"output": 2000})'
+
+  # =============================================================================
+  # PHASE 5: Verify nodes can continue working after sync
+  # =============================================================================
+
+  - name: "[Post-Sync] Node 2 writes new key"
+    type: call
+    node: late-joiner-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: set
+    args:
+      key: "post_sync_key"
+      value: "node2_can_write_after_sync"
+
+  - name: Wait for Post-Sync Propagation
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - late-joiner-node-1
+      - late-joiner-node-2
+    timeout: 60
+    check_interval: 3
+    trigger_sync: true
+
+  - name: "[Verify] Node 1 received Node 2's post-sync write"
+    type: call
+    node: late-joiner-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "post_sync_key"
+    outputs:
+      post_sync_verify: result
+
+  - name: Assert Post-Sync Communication Works
+    type: json_assert
+    statements:
+      - 'json_subset({{post_sync_verify}}, {"output": "node2_can_write_after_sync"})'
+
+  # =============================================================================
+  # PHASE 6: Final Summary
+  # =============================================================================
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{sync_root_hash}})"
+        message: "Snapshot sync completed with matching root hash"
+      - statement: "is_set({{sync_time}})"
+        message: "Sync time recorded"
+      - statement: "is_set({{post_sync_verify}})"
+        message: "Nodes continue working after large snapshot sync"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 900

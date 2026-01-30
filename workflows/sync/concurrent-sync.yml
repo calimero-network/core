@@ -1,0 +1,186 @@
+description: Test concurrent modifications during sync - deltas arrive while node is syncing
+name: Concurrent Sync Test
+
+force_pull_image: true
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: concurrent-sync-node
+
+steps:
+  # =============================================================================
+  # PHASE 1: Setup Node 1 with substantial state
+  # =============================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: concurrent-sync-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: concurrent-sync-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      member_public_key_1: memberPublicKey
+
+  - name: "[Pre-Sync] Write 500 keys on Node 1"
+    type: repeat
+    count: 500
+    steps:
+      - name: "Write pre_key_{{iteration}}"
+        type: call
+        node: concurrent-sync-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key_1}}"
+        method: set
+        args:
+          key: "pre_key_{{iteration}}"
+          value: "pre_value_{{iteration}}"
+
+  - name: Verify Pre-Sync State on Node 1
+    type: call
+    node: concurrent-sync-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key_1}}"
+    method: len
+    outputs:
+      pre_sync_count: result
+
+  - name: Assert Pre-Sync State
+    type: json_assert
+    statements:
+      - 'json_subset({{pre_sync_count}}, {"output": 500})'
+
+  # =============================================================================
+  # PHASE 2: Node 2 joins and starts syncing
+  # =============================================================================
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: concurrent-sync-node-2
+    outputs:
+      public_key_node2: publicKey
+
+  - name: Invite Node 2 to Context
+    type: invite_identity
+    node: concurrent-sync-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_node2}}"
+    granter_id: "{{member_public_key_1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node 2 Joins Context (triggers sync)
+    type: join_context
+    node: concurrent-sync-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  # =============================================================================
+  # PHASE 3: While Node 2 is syncing, Node 1 continues writing
+  # This tests delta buffering during sync
+  # =============================================================================
+
+  - name: Small delay to let sync start
+    type: wait
+    seconds: 2
+
+  - name: "[During Sync] Node 1 writes 100 more keys"
+    type: repeat
+    count: 100
+    steps:
+      - name: "Write during_key_{{iteration}}"
+        type: call
+        node: concurrent-sync-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key_1}}"
+        method: set
+        args:
+          key: "during_key_{{iteration}}"
+          value: "during_value_{{iteration}}"
+
+  # =============================================================================
+  # PHASE 4: Wait for full sync completion
+  # =============================================================================
+
+  - name: Wait for Complete Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - concurrent-sync-node-1
+      - concurrent-sync-node-2
+    timeout: 300
+    check_interval: 5
+    trigger_sync: true
+    outputs:
+      final_root_hash: root_hash
+      sync_time: elapsed_seconds
+
+  # =============================================================================
+  # PHASE 5: Verify Node 2 has ALL keys (pre + during sync)
+  # =============================================================================
+
+  - name: "[Verify] Node 2 has pre-sync keys"
+    type: call
+    node: concurrent-sync-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: get
+    args:
+      key: "pre_key_250"
+    outputs:
+      verify_pre_key: result
+
+  - name: "[Verify] Node 2 has during-sync keys"
+    type: call
+    node: concurrent-sync-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: get
+    args:
+      key: "during_key_50"
+    outputs:
+      verify_during_key: result
+
+  - name: "[Verify] Node 2 total key count"
+    type: call
+    node: concurrent-sync-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: len
+    outputs:
+      final_count_node2: result
+
+  - name: Assert All Data Synced
+    type: json_assert
+    statements:
+      - 'json_subset({{verify_pre_key}}, {"output": "pre_value_250"})'
+      - 'json_subset({{verify_during_key}}, {"output": "during_value_50"})'
+      - 'json_subset({{final_count_node2}}, {"output": 600})'
+
+  # =============================================================================
+  # PHASE 6: Final Summary
+  # =============================================================================
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{final_root_hash}})"
+        message: "Sync completed with matching root hash"
+      - statement: "is_set({{verify_during_key}})"
+        message: "Delta buffering worked - keys written during sync were preserved"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 600

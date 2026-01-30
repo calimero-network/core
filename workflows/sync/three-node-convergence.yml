@@ -1,0 +1,289 @@
+description: Test 3-node convergence - all nodes eventually reach same state
+name: Three Node Convergence Test
+
+force_pull_image: true
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: convergence-node
+
+steps:
+  # =============================================================================
+  # PHASE 1: Setup all three nodes in same context
+  # =============================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: convergence-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: convergence-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  # Node 2 setup
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: convergence-node-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: convergence-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: convergence-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  # Node 3 setup
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: convergence-node-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: convergence-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node3: invitation
+
+  - name: Node 3 Joins
+    type: join_context
+    node: convergence-node-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_node3}}"
+
+  - name: Wait for Mesh Formation
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - convergence-node-1
+      - convergence-node-2
+      - convergence-node-3
+    timeout: 60
+    check_interval: 3
+    trigger_sync: true
+
+  # =============================================================================
+  # PHASE 2: Each node writes unique keys
+  # =============================================================================
+
+  - name: "[Node 1] Write keys"
+    type: repeat
+    count: 20
+    steps:
+      - name: "Node 1 writes n1_key_{{iteration}}"
+        type: call
+        node: convergence-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "n1_key_{{iteration}}"
+          value: "from_node1_{{iteration}}"
+
+  - name: "[Node 2] Write keys"
+    type: repeat
+    count: 20
+    steps:
+      - name: "Node 2 writes n2_key_{{iteration}}"
+        type: call
+        node: convergence-node-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "n2_key_{{iteration}}"
+          value: "from_node2_{{iteration}}"
+
+  - name: "[Node 3] Write keys"
+    type: repeat
+    count: 20
+    steps:
+      - name: "Node 3 writes n3_key_{{iteration}}"
+        type: call
+        node: convergence-node-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "n3_key_{{iteration}}"
+          value: "from_node3_{{iteration}}"
+
+  # =============================================================================
+  # PHASE 3: Wait for full convergence
+  # =============================================================================
+
+  - name: Wait for Full Convergence
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - convergence-node-1
+      - convergence-node-2
+      - convergence-node-3
+    timeout: 180
+    check_interval: 5
+    trigger_sync: true
+    outputs:
+      converged_root_hash: root_hash
+
+  # =============================================================================
+  # PHASE 4: Verify all nodes have all keys
+  # =============================================================================
+
+  # Node 1 verification
+  - name: "[Verify] Node 1 has Node 2's keys"
+    type: call
+    node: convergence-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "n2_key_10"
+    outputs:
+      node1_has_n2: result
+
+  - name: "[Verify] Node 1 has Node 3's keys"
+    type: call
+    node: convergence-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "n3_key_10"
+    outputs:
+      node1_has_n3: result
+
+  # Node 2 verification
+  - name: "[Verify] Node 2 has Node 1's keys"
+    type: call
+    node: convergence-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "n1_key_10"
+    outputs:
+      node2_has_n1: result
+
+  - name: "[Verify] Node 2 has Node 3's keys"
+    type: call
+    node: convergence-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "n3_key_10"
+    outputs:
+      node2_has_n3: result
+
+  # Node 3 verification
+  - name: "[Verify] Node 3 has Node 1's keys"
+    type: call
+    node: convergence-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "n1_key_10"
+    outputs:
+      node3_has_n1: result
+
+  - name: "[Verify] Node 3 has Node 2's keys"
+    type: call
+    node: convergence-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "n2_key_10"
+    outputs:
+      node3_has_n2: result
+
+  # All nodes should have same count
+  - name: "[Verify] Node 1 total count"
+    type: call
+    node: convergence-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: len
+    outputs:
+      count_node1: result
+
+  - name: "[Verify] Node 2 total count"
+    type: call
+    node: convergence-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: len
+    outputs:
+      count_node2: result
+
+  - name: "[Verify] Node 3 total count"
+    type: call
+    node: convergence-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: len
+    outputs:
+      count_node3: result
+
+  - name: Assert Full Convergence
+    type: json_assert
+    statements:
+      # Node 1 has all keys
+      - 'json_subset({{node1_has_n2}}, {"output": "from_node2_10"})'
+      - 'json_subset({{node1_has_n3}}, {"output": "from_node3_10"})'
+      # Node 2 has all keys
+      - 'json_subset({{node2_has_n1}}, {"output": "from_node1_10"})'
+      - 'json_subset({{node2_has_n3}}, {"output": "from_node3_10"})'
+      # Node 3 has all keys
+      - 'json_subset({{node3_has_n1}}, {"output": "from_node1_10"})'
+      - 'json_subset({{node3_has_n2}}, {"output": "from_node2_10"})'
+      # All have same count (60 keys total)
+      - 'json_subset({{count_node1}}, {"output": 60})'
+      - 'json_subset({{count_node2}}, {"output": 60})'
+      - 'json_subset({{count_node3}}, {"output": 60})'
+
+  # =============================================================================
+  # PHASE 5: Final Summary
+  # =============================================================================
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{converged_root_hash}})"
+        message: "All 3 nodes converged to identical root hash"
+      - statement: "is_set({{count_node1}})"
+        message: "All nodes have same key count"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 300

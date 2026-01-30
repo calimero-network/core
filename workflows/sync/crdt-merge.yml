@@ -1,0 +1,229 @@
+description: Test CRDT merge - two nodes make concurrent changes that merge correctly
+name: CRDT Merge Test
+
+force_pull_image: true
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: crdt-merge-node
+
+steps:
+  # =============================================================================
+  # PHASE 1: Setup both nodes with same context
+  # =============================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: crdt-merge-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: crdt-merge-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      member_public_key_1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: crdt-merge-node-2
+    outputs:
+      public_key_node2: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 2
+
+  - name: Invite Node 2 to Context
+    type: invite_identity
+    node: crdt-merge-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_node2}}"
+    granter_id: "{{member_public_key_1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node 2 Joins Context
+    type: join_context
+    node: crdt-merge-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Wait for Initial Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - crdt-merge-node-1
+      - crdt-merge-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # =============================================================================
+  # PHASE 2: Both nodes write to DIFFERENT keys (no conflict, just merge)
+  # =============================================================================
+
+  - name: "[Node 1] Write unique keys"
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node 1 writes key_1_{{iteration}}"
+        type: call
+        node: crdt-merge-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key_1}}"
+        method: set
+        args:
+          key: "key_1_{{iteration}}"
+          value: "value_from_node1_{{iteration}}"
+
+  - name: "[Node 2] Write unique keys (concurrently)"
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node 2 writes key_2_{{iteration}}"
+        type: call
+        node: crdt-merge-node-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{public_key_node2}}"
+        method: set
+        args:
+          key: "key_2_{{iteration}}"
+          value: "value_from_node2_{{iteration}}"
+
+  - name: Wait for Merge Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - crdt-merge-node-1
+      - crdt-merge-node-2
+    timeout: 120
+    check_interval: 3
+    trigger_sync: true
+    outputs:
+      merge_root_hash: root_hash
+
+  # =============================================================================
+  # PHASE 3: Verify both nodes have ALL keys (merge successful)
+  # =============================================================================
+
+  - name: "[Verify] Node 1 has Node 2's keys"
+    type: call
+    node: crdt-merge-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key_1}}"
+    method: get
+    args:
+      key: "key_2_5"
+    outputs:
+      node1_has_node2_key: result
+
+  - name: "[Verify] Node 2 has Node 1's keys"
+    type: call
+    node: crdt-merge-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: get
+    args:
+      key: "key_1_5"
+    outputs:
+      node2_has_node1_key: result
+
+  - name: Assert Merge Successful
+    type: json_assert
+    statements:
+      - 'json_subset({{node1_has_node2_key}}, {"output": "value_from_node2_5"})'
+      - 'json_subset({{node2_has_node1_key}}, {"output": "value_from_node1_5"})'
+
+  # =============================================================================
+  # PHASE 4: Both nodes write to SAME key (LWW conflict resolution)
+  # =============================================================================
+
+  - name: "[Concurrent Write] Node 1 writes to shared_key"
+    type: call
+    node: crdt-merge-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key_1}}"
+    method: set
+    args:
+      key: "shared_key"
+      value: "node1_wins"
+
+  - name: Small delay to create HLC difference
+    type: wait
+    seconds: 1
+
+  - name: "[Concurrent Write] Node 2 writes to shared_key (later, should win)"
+    type: call
+    node: crdt-merge-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: set
+    args:
+      key: "shared_key"
+      value: "node2_wins"
+
+  - name: Wait for LWW Conflict Resolution
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - crdt-merge-node-1
+      - crdt-merge-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: "[Verify LWW] Check shared_key on both nodes"
+    type: call
+    node: crdt-merge-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key_1}}"
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      lww_result_node1: result
+
+  - name: "[Verify LWW] Check shared_key on Node 2"
+    type: call
+    node: crdt-merge-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      lww_result_node2: result
+
+  # Both nodes should have the same value (later write wins)
+  - name: Assert LWW Resolution Consistent
+    type: json_assert
+    statements:
+      - 'json_subset({{lww_result_node1}}, {"output": "node2_wins"})'
+      - 'json_subset({{lww_result_node2}}, {"output": "node2_wins"})'
+
+  # =============================================================================
+  # PHASE 5: Final Summary
+  # =============================================================================
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{merge_root_hash}})"
+        message: "Nodes converged to same root hash after merge"
+      - statement: "is_set({{lww_result_node1}})"
+        message: "LWW conflict resolution completed"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 300
