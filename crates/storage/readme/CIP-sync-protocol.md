@@ -854,6 +854,7 @@ This CIP is backwards compatible:
 - [x] Post-sync delta replay (triggers DAG sync for missing deltas)
 - [x] Full sync state machine in `SyncManager` (`SyncSessionState` integration)
 - [x] Proactive sync triggers based on hints (in `network_event.rs`)
+- [x] Integration tests (14 tests in `sync_integration.rs`)
 - [ ] Periodic state announcements (deferred - heartbeats already exist)
 
 ### Phase 5: Optimization (TODO)
