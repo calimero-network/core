@@ -11,6 +11,7 @@
 use super::common::{Page, Paragraph};
 use crate::action::Action;
 use crate::address::Id;
+use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::entities::{Data, Element, Metadata};
 use crate::env::time_now;
 use crate::index::Index;
@@ -19,6 +20,8 @@ use crate::store::MockedStorage;
 
 type TestStorage = MockedStorage<5000>;
 type TestInterface = Interface<TestStorage>;
+
+const ONE_SEC_NANOS: u64 = 1_000_000_000;
 
 // ============================================================
 // Last-Write-Wins (LWW) Tests
@@ -573,4 +576,130 @@ fn rapid_add_delete_cycles() {
     }
 
     // Test completes without panic - actual final state depends on implementation
+}
+
+#[test]
+fn test_future_timestamp_rejected() {
+    let now = time_now();
+
+    // Create a timestamp that's above the tolerance by one sec.
+    let future_time = now + DRIFT_TOLERANCE_NANOS + ONE_SEC_NANOS;
+
+    let mut page = Page::new_from_element("Future Page", Element::root());
+    // Manually set the future timestamp in metadata
+    page.element_mut().set_updated_at(future_time);
+
+    let action = Action::Update {
+        id: page.id(),
+        data: borsh::to_vec(&page).unwrap(),
+        ancestors: vec![],
+        metadata: page.element().metadata.clone(),
+    };
+
+    let result = TestInterface::apply_action(action);
+
+    assert!(
+        result.is_err(),
+        "Should reject timestamp too far in the future"
+    );
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("too far in the future"),
+        "Error should mention future timestamp"
+    );
+}
+
+#[test]
+fn test_near_future_timestamp_accepted() {
+    let now = time_now();
+
+    // Create a timestamp within the tolerance, simulating execution delay.
+    let future_time = now + (DRIFT_TOLERANCE_NANOS / 2);
+
+    let mut page = Page::new_from_element("NEAR Future Page", Element::root());
+    page.element_mut().set_updated_at(future_time);
+
+    let action = Action::Update {
+        id: page.id(),
+        data: borsh::to_vec(&page).unwrap(),
+        ancestors: vec![],
+        metadata: page.element().metadata.clone(),
+    };
+
+    assert!(
+        TestInterface::apply_action(action).is_ok(),
+        "Should accept timestamp within drift tolerance"
+    );
+}
+
+#[test]
+fn test_past_timestamp_accepted() {
+    let now = time_now();
+
+    // Create a timestamp in the past (1 hour ago) to
+    // simulate normal sync of the node after being offline.
+    let past_time = now.saturating_sub(3600 * ONE_SEC_NANOS);
+
+    let mut page = Page::new_from_element("Past Page", Element::root());
+    page.element_mut().set_updated_at(past_time);
+
+    let action = Action::Update {
+        id: page.id(),
+        data: borsh::to_vec(&page).unwrap(),
+        ancestors: vec![],
+        metadata: page.element().metadata.clone(),
+    };
+
+    assert!(
+        TestInterface::apply_action(action).is_ok(),
+        "Should accept valid past timestamps"
+    );
+}
+
+#[test]
+fn test_delete_future_timestamp_rejected() {
+    let now = time_now();
+
+    // Create a timestamp that's above the tolerance by one sec.
+    let future_time = now + DRIFT_TOLERANCE_NANOS + ONE_SEC_NANOS;
+
+    let page = Page::new_from_element("Delete Page", Element::root());
+
+    let action = Action::DeleteRef {
+        id: page.id(),
+        deleted_at: future_time,
+        metadata: Metadata::default(),
+    };
+
+    let result = TestInterface::apply_action(action);
+    assert!(
+        result.is_err(),
+        "Should reject delete timestamp too far in the future"
+    );
+}
+
+#[test]
+fn test_delete_near_future_accepted() {
+    let now = time_now();
+
+    // Create a timestamp within the tolerance, simulating execution delay.
+    let future_time = now + (DRIFT_TOLERANCE_NANOS / 2);
+
+    // Create a timestamp within the tolerance, simulating execution delay.
+    let mut page = Page::new_from_element("Delete Page", Element::root());
+
+    // Save page to have it in the storage.
+    TestInterface::save(&mut page).unwrap();
+
+    let action = Action::DeleteRef {
+        id: page.id(),
+        deleted_at: future_time,
+        metadata: Metadata::default(),
+    };
+
+    assert!(
+        TestInterface::apply_action(action).is_ok(),
+        "Should accept delete timestamp within tolerance"
+    );
 }
