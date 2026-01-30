@@ -254,10 +254,37 @@ impl SyncManager {
             info!(
                 %context_id,
                 buffered_count,
-                "Snapshot sync ended, will replay buffered deltas"
+                "Snapshot sync ended, triggering DAG sync for buffered deltas"
             );
-            // TODO: Replay buffered deltas (p4-3)
-            // For now, just log - the deltas will be re-requested via normal sync
+
+            // Buffered deltas contain encrypted payloads that require author context to decrypt.
+            // Rather than trying to replay them directly (which would need author_id, nonce, etc.),
+            // we trigger a DAG sync to fetch any deltas newer than our snapshot.
+            //
+            // The buffered delta IDs tell us what we might be missing:
+            if let Some(ref deltas) = buffered_deltas {
+                let delta_ids: Vec<_> = deltas.iter().map(|d| d.id).collect();
+                debug!(
+                    %context_id,
+                    ?delta_ids,
+                    "Buffered delta IDs (will be fetched via DAG sync if still missing)"
+                );
+            }
+
+            // Trigger DAG sync to catch up - this will fetch any deltas we're missing
+            // The sync happens asynchronously; we don't wait for it here
+            if let Err(e) = self
+                .node_client
+                .sync(Some(&context_id), Some(&peer_id))
+                .await
+            {
+                warn!(
+                    %context_id,
+                    %peer_id,
+                    ?e,
+                    "Failed to trigger post-snapshot DAG sync (will retry on next interval)"
+                );
+            }
         }
 
         result

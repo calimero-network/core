@@ -2,9 +2,18 @@
 //!
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
+//!
+//! ## Merge Callbacks
+//!
+//! For hash-based incremental sync (comparing Merkle trees), we need CRDT merge logic:
+//! - **Built-in CRDTs** (Counter, Map, etc.) are merged in the storage layer
+//! - **Custom types** require WASM callbacks via `RuntimeMergeCallback`
+//!
+//! The `get_merge_callback()` method creates the appropriate callback for a context.
 
 use std::collections::{hash_map, HashMap};
 use std::pin::pin;
+use std::sync::Arc;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
@@ -15,6 +24,8 @@ use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage}
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
+use calimero_runtime::merge_callback::RuntimeMergeCallback;
+use calimero_storage::WasmMergeCallback;
 use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
@@ -510,6 +521,29 @@ impl SyncManager {
     ) -> eyre::Result<Option<StreamMessage<'static>>> {
         let budget = self.sync_config.timeout / 3;
         super::stream::recv(stream, shared_key, budget).await
+    }
+
+    /// Create a merge callback for hash-based incremental sync.
+    ///
+    /// This callback bridges storage-layer tree comparison with WASM merge logic:
+    /// - Built-in CRDTs (Counter, Map, etc.) are merged directly in storage
+    /// - Custom types call into WASM via the registry
+    ///
+    /// # Usage
+    ///
+    /// ```ignore
+    /// let callback = self.get_merge_callback();
+    /// let actions = calimero_storage::interface::compare_trees_with_callback(
+    ///     remote_data,
+    ///     index,
+    ///     Some(&*callback),
+    /// )?;
+    /// ```
+    #[must_use]
+    pub(super) fn get_merge_callback(&self) -> Arc<dyn WasmMergeCallback> {
+        // RuntimeMergeCallback uses the global type registry to dispatch merge calls
+        // For custom types, it looks up the merge function by type name
+        Arc::new(RuntimeMergeCallback::new())
     }
 
     /// Get blob ID and application config from application or context config
