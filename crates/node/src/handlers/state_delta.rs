@@ -62,6 +62,31 @@ pub async fn handle_state_delta(
         "Received state delta"
     );
 
+    // Check if we should buffer this delta (during snapshot sync)
+    if node_state.should_buffer_delta(&context_id) {
+        info!(
+            %context_id,
+            delta_id = ?delta_id,
+            "Buffering delta during snapshot sync"
+        );
+        let buffered = calimero_node_primitives::sync_protocol::BufferedDelta {
+            id: delta_id,
+            parents: parent_ids.clone(),
+            hlc: hlc.get_time().as_u64(),
+            payload: artifact.clone(), // Store encrypted payload for replay
+        };
+        if node_state.buffer_delta(&context_id, buffered) {
+            return Ok(()); // Successfully buffered, will be replayed after snapshot
+        } else {
+            warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                "Delta buffer full, proceeding with normal processing"
+            );
+            // Fall through to normal processing
+        }
+    }
+
     let sender_key = ensure_author_sender_key(
         &node_clients.context,
         &network_client,

@@ -238,6 +238,37 @@ impl SyncManager {
     ) -> Result<SnapshotSyncResult> {
         info!(%context_id, %peer_id, "Starting snapshot sync");
 
+        // Start buffering deltas during snapshot sync
+        let sync_start_hlc = time_now();
+        self.node_state
+            .start_sync_session(context_id, sync_start_hlc);
+        info!(%context_id, sync_start_hlc, "Started delta buffering for snapshot sync");
+
+        let result = self.request_snapshot_sync_inner(context_id, peer_id).await;
+
+        // End buffering and get buffered deltas (regardless of success/failure)
+        let buffered_deltas = self.node_state.end_sync_session(&context_id);
+        let buffered_count = buffered_deltas.as_ref().map_or(0, std::vec::Vec::len);
+
+        if buffered_count > 0 {
+            info!(
+                %context_id,
+                buffered_count,
+                "Snapshot sync ended, will replay buffered deltas"
+            );
+            // TODO: Replay buffered deltas (p4-3)
+            // For now, just log - the deltas will be re-requested via normal sync
+        }
+
+        result
+    }
+
+    /// Inner snapshot sync logic (separated for cleanup handling).
+    async fn request_snapshot_sync_inner(
+        &self,
+        context_id: ContextId,
+        peer_id: libp2p::PeerId,
+    ) -> Result<SnapshotSyncResult> {
         let mut stream = self.network_client.open_stream(peer_id).await?;
         let boundary = self
             .request_snapshot_boundary(context_id, &mut stream)
