@@ -855,12 +855,17 @@ This CIP is backwards compatible:
 - [x] Full sync state machine in `SyncManager` (`SyncSessionState` integration)
 - [x] Proactive sync triggers based on hints (in `network_event.rs`)
 - [x] Integration tests (14 tests in `sync_integration.rs`)
-- [ ] Periodic state announcements (deferred - heartbeats already exist)
+- [x] Periodic state announcements via `HashHeartbeat` (already exists, every 30s)
 
-### Phase 5: Optimization (TODO)
-- [ ] Compressed snapshot transfer
-- [ ] Streaming for large snapshots
-- [ ] Adaptive protocol selection tuning
+**Note on Heartbeats vs SyncHints:**
+- `HashHeartbeat` (30s interval): Lightweight divergence detection (`root_hash` + `dag_heads`)
+- `SyncHints` (per delta): Rich metadata for protocol selection (`entity_count`, `tree_depth`)
+- This split is intentional: heartbeats are high-frequency so kept minimal
+
+### Phase 5: Optimization (IN PROGRESS)
+- [x] Compressed snapshot transfer (lz4_flex, already implemented)
+- [x] Streaming for large snapshots (pagination with resume_cursor)
+- [ ] Adaptive protocol selection decision logic
 - [ ] Bloom filter for delta ID membership testing
 - [ ] Gossip mode selection (DeltaOnly vs WithHints)
 
