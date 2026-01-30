@@ -191,6 +191,56 @@ impl SyncHints {
         let count_diff = (self.entity_count as i64 - local_entity_count as i64).abs();
         count_diff > 10 // Threshold for significant divergence
     }
+
+    /// Perform adaptive protocol selection based on local state.
+    ///
+    /// When `suggested_protocol` is `AdaptiveSelection`, the receiver uses
+    /// their local state to decide the best sync approach.
+    ///
+    /// # Decision Logic
+    ///
+    /// ```text
+    /// 1. No divergence (same hash) → None (no sync needed)
+    /// 2. Local is empty → Snapshot (bootstrap)
+    /// 3. Sender has 10x+ more entities → Snapshot (we're far behind)
+    /// 4. Small local tree (<100 entities) → DeltaSync
+    /// 5. Medium local tree (100-10000) → HashBased
+    /// 6. Large local tree (>10000) → HashBased (still better than snapshot)
+    /// ```
+    #[must_use]
+    pub fn adaptive_select(
+        &self,
+        local_root_hash: &Hash,
+        local_entity_count: u32,
+    ) -> Option<SyncProtocolHint> {
+        // No divergence - no sync needed
+        if self.post_root_hash == *local_root_hash {
+            return None;
+        }
+
+        // Local is empty - need full bootstrap
+        if local_entity_count == 0 {
+            return Some(SyncProtocolHint::Snapshot);
+        }
+
+        // Sender has significantly more entities (10x+) - we're far behind
+        if self.entity_count > local_entity_count.saturating_mul(10) {
+            return Some(SyncProtocolHint::Snapshot);
+        }
+
+        // Choose based on local tree size
+        if local_entity_count < 100 {
+            // Small tree - delta sync can handle it
+            Some(SyncProtocolHint::DeltaSync)
+        } else if local_entity_count < 10000 {
+            // Medium tree - hash-based comparison is efficient
+            Some(SyncProtocolHint::HashBased)
+        } else {
+            // Large tree - still prefer hash-based over snapshot
+            // (snapshot is expensive, hash-based finds specific differences)
+            Some(SyncProtocolHint::HashBased)
+        }
+    }
 }
 
 /// Hint about which sync protocol might be optimal.

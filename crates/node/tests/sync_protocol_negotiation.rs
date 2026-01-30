@@ -470,3 +470,78 @@ fn test_delta_buffer_zero_capacity() {
 
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Adaptive Protocol Selection Tests
+// ============================================================================
+
+#[test]
+fn test_adaptive_select_no_divergence() {
+    let root_hash = Hash::from([42u8; 32]);
+    let hints = SyncHints::from_state(root_hash, 1000, 10);
+
+    // Same hash = no sync needed
+    let result = hints.adaptive_select(&root_hash, 1000);
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_adaptive_select_local_empty_needs_snapshot() {
+    let hints = SyncHints::from_state(Hash::from([1u8; 32]), 5000, 12);
+    let local_hash = Hash::from([0u8; 32]); // Different hash
+
+    // Local is empty (0 entities) → needs snapshot bootstrap
+    let result = hints.adaptive_select(&local_hash, 0);
+    assert_eq!(result, Some(SyncProtocolHint::Snapshot));
+}
+
+#[test]
+fn test_adaptive_select_sender_has_10x_more_needs_snapshot() {
+    let hints = SyncHints::from_state(Hash::from([1u8; 32]), 10000, 12);
+    let local_hash = Hash::from([2u8; 32]); // Different hash
+
+    // Sender has 10000, we have 100 → 100x more → snapshot
+    let result = hints.adaptive_select(&local_hash, 100);
+    assert_eq!(result, Some(SyncProtocolHint::Snapshot));
+}
+
+#[test]
+fn test_adaptive_select_small_tree_uses_delta() {
+    let hints = SyncHints::from_state(Hash::from([1u8; 32]), 150, 5);
+    let local_hash = Hash::from([2u8; 32]); // Different hash
+
+    // Local has 50 entities (small tree) → delta sync
+    let result = hints.adaptive_select(&local_hash, 50);
+    assert_eq!(result, Some(SyncProtocolHint::DeltaSync));
+}
+
+#[test]
+fn test_adaptive_select_medium_tree_uses_hash_based() {
+    let hints = SyncHints::from_state(Hash::from([1u8; 32]), 5000, 10);
+    let local_hash = Hash::from([2u8; 32]); // Different hash
+
+    // Local has 1000 entities (medium tree) → hash-based
+    let result = hints.adaptive_select(&local_hash, 1000);
+    assert_eq!(result, Some(SyncProtocolHint::HashBased));
+}
+
+#[test]
+fn test_adaptive_select_large_tree_still_uses_hash_based() {
+    let hints = SyncHints::from_state(Hash::from([1u8; 32]), 50000, 15);
+    let local_hash = Hash::from([2u8; 32]); // Different hash
+
+    // Local has 20000 entities (large tree) → still hash-based (not snapshot)
+    let result = hints.adaptive_select(&local_hash, 20000);
+    assert_eq!(result, Some(SyncProtocolHint::HashBased));
+}
+
+#[test]
+fn test_adaptive_select_similar_entity_count_no_snapshot() {
+    let hints = SyncHints::from_state(Hash::from([1u8; 32]), 1000, 10);
+    let local_hash = Hash::from([2u8; 32]); // Different hash
+
+    // Sender has 1000, we have 500 → only 2x more → no snapshot trigger
+    // Medium tree (500 entities) → hash-based
+    let result = hints.adaptive_select(&local_hash, 500);
+    assert_eq!(result, Some(SyncProtocolHint::HashBased));
+}

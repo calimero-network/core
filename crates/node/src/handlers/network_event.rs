@@ -109,7 +109,23 @@ impl Handler<NetworkEvent> for NodeManager {
                                 // Use sync_hints to determine if we need proactive sync
                                 use calimero_node_primitives::sync_protocol::SyncProtocolHint;
 
-                                match sync_hints.suggested_protocol {
+                                // Determine the effective protocol hint
+                                let effective_hint = match sync_hints.suggested_protocol {
+                                    SyncProtocolHint::AdaptiveSelection => {
+                                        // Perform adaptive selection based on our local state
+                                        // TODO: Get actual local entity count from storage
+                                        let local_entity_count = 0u32; // Placeholder - would need storage query
+                                        sync_hints
+                                            .adaptive_select(
+                                                &our_context.root_hash,
+                                                local_entity_count,
+                                            )
+                                            .unwrap_or(SyncProtocolHint::DeltaSync)
+                                    }
+                                    other => other,
+                                };
+
+                                match effective_hint {
                                     SyncProtocolHint::Snapshot => {
                                         // Significant divergence - trigger immediate sync
                                         info!(
@@ -127,16 +143,27 @@ impl Handler<NetworkEvent> for NodeManager {
                                         }.into_actor(self));
                                     }
                                     SyncProtocolHint::HashBased => {
-                                        // Moderate divergence - log for monitoring
+                                        // Moderate divergence - trigger sync for hash-based comparison
                                         debug!(
                                             %context_id,
                                             their_entities = sync_hints.entity_count,
                                             their_depth = sync_hints.tree_depth,
-                                            "Sync hints suggest hash-based sync may be beneficial"
+                                            "Sync hints suggest hash-based sync, triggering"
                                         );
+                                        let node_client_clone = node_client.clone();
+                                        let _ignored = ctx.spawn(async move {
+                                            if let Err(e) = node_client_clone.sync(Some(&context_id), None).await {
+                                                warn!(%context_id, ?e, "Failed to trigger hash-based sync from hints");
+                                            }
+                                        }.into_actor(self));
                                     }
-                                    _ => {
-                                        // DeltaSync or AdaptiveSelection - normal delta processing
+                                    SyncProtocolHint::DeltaSync
+                                    | SyncProtocolHint::AdaptiveSelection => {
+                                        // Normal delta processing will handle it
+                                        debug!(
+                                            %context_id,
+                                            "Delta sync sufficient, processing normally"
+                                        );
                                     }
                                 }
                             }
