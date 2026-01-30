@@ -86,6 +86,19 @@ pub trait DeltaApplier<T> {
 pub enum ApplyError {
     #[error("Failed to apply delta: {0}")]
     Application(String),
+
+    /// Root hash mismatch - delta was based on different state
+    ///
+    /// This happens when concurrent updates create divergent histories.
+    /// The caller should trigger a proper state sync/merge instead of
+    /// blindly applying the delta.
+    #[error("Root hash mismatch: computed {computed:?}, expected {expected:?}")]
+    RootHashMismatch {
+        /// Hash computed after applying delta to current state
+        computed: [u8; 32],
+        /// Hash the delta author expected (based on their state)
+        expected: [u8; 32],
+    },
 }
 
 #[derive(Debug, Error)]

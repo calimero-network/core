@@ -195,7 +195,15 @@ impl Handler<NetworkEvent> for NodeManager {
                                 )
                                 .await
                                 {
-                                    warn!(?err, "Failed to handle state delta");
+                                    warn!(
+                                        %context_id,
+                                        %author_id,
+                                        delta_id = ?delta_id,
+                                        error_msg = %err,
+                                        error_debug = ?err,
+                                        error_chain = ?err.chain().collect::<Vec<_>>(),
+                                        "Failed to handle state delta"
+                                    );
                                 }
                             }
                             .into_actor(self),

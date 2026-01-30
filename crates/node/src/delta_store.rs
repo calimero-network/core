@@ -92,9 +92,18 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // Ensure deterministic root hash across all nodes.
-        // WASM execution may produce different hashes due to non-deterministic factors;
-        // use the delta author's expected_root_hash to maintain DAG consistency.
+        // Check root hash consistency
+        //
+        // If the computed hash differs from expected, we have divergent histories.
+        // This means the delta was created on a different base state than ours.
+        //
+        // CRITICAL: We MUST NOT force-overwrite the hash! That would:
+        // - Corrupt the Merkle tree integrity (hash doesn't match content)
+        // - Hide divergence (nodes think they're in sync but have different data)
+        // - Silently lose concurrent updates
+        //
+        // Instead, we return an error so the caller can trigger proper state sync
+        // with CRDT merge semantics to reconcile the divergent states.
         let computed_hash = outcome.root_hash;
         if *computed_hash != delta.expected_root_hash {
             warn!(
@@ -102,12 +111,16 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 delta_id = ?delta.id,
                 computed_hash = ?computed_hash,
                 expected_hash = ?Hash::from(delta.expected_root_hash),
-                "Root hash mismatch - using expected hash for consistency"
+                "Root hash mismatch detected - divergent histories require state sync"
             );
 
-            self.context_client
-                .force_root_hash(&self.context_id, delta.expected_root_hash.into())
-                .map_err(|e| ApplyError::Application(format!("Failed to set root hash: {}", e)))?;
+            // TODO: Ideally we'd rollback the changes we just made.
+            // For now, the caller must handle this by triggering a full state sync
+            // which will use CRDT merge to reconcile the divergent states.
+            return Err(ApplyError::RootHashMismatch {
+                computed: *computed_hash.as_ref(),
+                expected: delta.expected_root_hash,
+            });
         }
 
         debug!(

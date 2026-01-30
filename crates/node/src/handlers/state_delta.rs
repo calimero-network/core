@@ -87,7 +87,7 @@ pub async fn handle_state_delta(
         }
     }
 
-    let sender_key = ensure_author_sender_key(
+    let sender_key = match ensure_author_sender_key(
         &node_clients.context,
         &network_client,
         &context_id,
@@ -96,9 +96,34 @@ pub async fn handle_state_delta(
         sync_timeout,
         context.root_hash,
     )
-    .await?;
+    .await
+    {
+        Ok(key) => key,
+        Err(e) => {
+            warn!(
+                %context_id,
+                %author_id,
+                ?source,
+                error = %e,
+                "ensure_author_sender_key failed"
+            );
+            return Err(e);
+        }
+    };
 
-    let actions = decrypt_delta_actions(artifact, nonce, sender_key)?;
+    let actions = match decrypt_delta_actions(artifact, nonce, sender_key) {
+        Ok(a) => a,
+        Err(e) => {
+            warn!(
+                %context_id,
+                %author_id,
+                ?source,
+                error = %e,
+                "decrypt_delta_actions failed"
+            );
+            return Err(e);
+        }
+    };
 
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
@@ -142,9 +167,46 @@ pub async fn handle_state_delta(
     )
     .await?;
 
-    let add_result = delta_store_ref
-        .add_delta_with_events(delta, events.clone())
-        .await?;
+    let add_result = match delta_store_ref
+        .add_delta_with_events(delta.clone(), events.clone())
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            // Check if this is a root hash mismatch (divergent histories)
+            let error_str = format!("{:?}", e);
+            if error_str.contains("RootHashMismatch") {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    delta_id = ?delta_id,
+                    error = %e,
+                    "Divergent histories detected - triggering state sync with peer"
+                );
+
+                // Trigger state sync to reconcile divergent states using CRDT merge
+                // The sync will compare Merkle trees and merge using proper CRDT semantics
+                if let Err(sync_err) = node_clients
+                    .node
+                    .sync(Some(&context_id), Some(&source))
+                    .await
+                {
+                    warn!(
+                        %context_id,
+                        ?sync_err,
+                        "Failed to trigger state sync after root hash mismatch"
+                    );
+                }
+
+                // Return the error so the delta isn't marked as processed
+                // It will be retried after sync completes
+                return Err(e);
+            }
+
+            // Other errors propagate normally
+            return Err(e);
+        }
+    };
     let mut applied = add_result.applied;
     let mut handlers_already_executed = false;
 
