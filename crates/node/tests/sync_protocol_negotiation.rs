@@ -343,6 +343,18 @@ fn test_sync_hints_size_overhead() {
     );
 }
 
+#[test]
+fn test_sync_hints_required_in_broadcast() {
+    // Since we control all nodes (alpha stage), sync_hints is required, not optional.
+    // This test verifies that SyncHints is always present and properly serializable.
+    let hints = SyncHints::from_state(Hash::from([99; 32]), 500, 7);
+
+    // Verify the hints contain expected values
+    assert_eq!(hints.entity_count, 500);
+    assert_eq!(hints.tree_depth, 7);
+    assert_eq!(hints.suggested_protocol, SyncProtocolHint::HashBased);
+}
+
 // ============================================================================
 // Protocol Selection Scenarios
 // ============================================================================

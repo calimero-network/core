@@ -117,9 +117,9 @@ pub enum BroadcastMessage<'a> {
         /// This field is encrypted along with the artifact.
         events: Option<Cow<'a, [u8]>>,
 
-        /// Optional sync hints for proactive divergence detection.
+        /// Sync hints for proactive divergence detection.
         /// Adds ~40 bytes overhead but enables faster sync triggering.
-        sync_hints: Option<crate::sync_protocol::SyncHints>,
+        sync_hints: crate::sync_protocol::SyncHints,
     },
 
     /// Hash heartbeat for divergence detection

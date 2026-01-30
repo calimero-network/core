@@ -89,8 +89,10 @@ impl Handler<NetworkEvent> for NodeManager {
                         artifact,
                         nonce,
                         events,
-                        sync_hints: _, // TODO: Use sync_hints for proactive divergence detection
+                        sync_hints,
                     } => {
+                        // TODO: Use sync_hints for proactive divergence detection
+                        let _ = sync_hints;
                         info!(
                             %context_id,
                             %author_id,

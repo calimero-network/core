@@ -125,6 +125,13 @@ impl NodeClient {
             .encrypt(artifact, nonce)
             .ok_or_eyre("failed to encrypt artifact")?;
 
+        // Build sync hints from current state
+        let sync_hints = crate::sync_protocol::SyncHints::from_state(
+            context.root_hash,
+            0, // TODO: Get actual entity count from storage
+            0, // TODO: Get actual tree depth from storage
+        );
+
         let payload = BroadcastMessage::StateDelta {
             context_id: context.id,
             author_id: *sender,
@@ -135,8 +142,7 @@ impl NodeClient {
             artifact: encrypted.into(),
             nonce,
             events: events.map(Cow::from),
-            // Sync hints are optional for backward compatibility
-            sync_hints: None,
+            sync_hints,
         };
 
         let payload = borsh::to_vec(&payload)?;
