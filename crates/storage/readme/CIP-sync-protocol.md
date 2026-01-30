@@ -826,25 +826,33 @@ This CIP is backwards compatible:
 - [x] Removed `ResolutionStrategy` enum entirely (not deprecated, deleted)
 - N/A merodb uses ABI for deserialization, doesn't need storage types
 
-### Phase 3: Network Layer & Runtime Integration (TODO)
+### Phase 3: Network Layer & Runtime Integration ✅ DONE
 
-**3.1 Runtime Integration (from Phase 2.3):**
-- [ ] Implement `WasmMergeCallback` in runtime layer (`crates/runtime`)
-- [ ] `SyncManager` creates callback from loaded WASM module
-- [ ] Pass callback to storage layer during sync
+**3.1 Runtime Integration:** ✅
+- [x] `RuntimeMergeCallback` in `crates/runtime/src/merge_callback.rs`
+- [x] `MockMergeCallback` for testing (custom handlers, call recording)
+- [x] Falls back to type registry or LWW when WASM not available
+- [ ] Wire up to `SyncManager` (deferred to Phase 4)
 
-**3.2 Network Messages:**
-- [ ] `SyncHandshake` message type
-- [ ] Protocol negotiation in `SyncManager`
-- [ ] Network message encoding for new protocols
-- [ ] `DeltaWithHints` / `SyncHints` message types
-- [ ] Lightweight hints in delta propagation (40 bytes overhead)
+**3.2 Network Messages:** ✅
+- [x] `SyncHandshake` / `SyncHandshakeResponse` for protocol negotiation
+- [x] `SyncCapabilities` for advertising supported protocols
+- [x] `SyncProtocolVersion` enum (DeltaSync, SnapshotSync, HybridSync)
+- [x] `SyncHints` in `BroadcastMessage::StateDelta` (~40 bytes overhead)
+- [x] `SyncSessionState` for sync state machine
+- [x] `DeltaBuffer` for buffering deltas during snapshot sync
+- [x] `InitPayload::SyncHandshake` handler in `SyncManager`
+
+**3.3 Tests:** ✅
+- [x] 9 sync_protocol unit tests (capabilities, hints, buffers, state)
+- [x] 9 merge_callback unit tests (mock handlers, LWW, recording)
+- [x] 27 integration tests (negotiation, scenarios, serialization)
 
 ### Phase 4: Integration (TODO)
-- [ ] `SyncManager` uses storage-layer merge with WASM callback
-- [ ] Delta buffering during state sync
+- [ ] Wire `RuntimeMergeCallback` to `SyncManager` sync operations
+- [ ] Delta buffering during state sync (types ready, logic TODO)
 - [ ] Post-sync delta replay
-- [ ] Sync state machine in `SyncManager`
+- [ ] Full sync state machine in `SyncManager`
 - [ ] Proactive sync triggers based on hints
 - [ ] Periodic state announcements
 
