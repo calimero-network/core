@@ -41,6 +41,8 @@ fn create_test_bundle(
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
+        signer_id: None,
+        min_runtime_version: "1.0.0".to_string(),
         metadata: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
@@ -400,6 +402,7 @@ async fn test_bundle_validation_missing_fields() {
     let invalid_manifest_json = r#"{
         "version": "1.0",
         "appVersion": "1.0.0",
+        "minRuntimeVersion": "1.0.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
@@ -500,6 +503,8 @@ fn create_test_bundle_custom_wasm_path(
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
+        signer_id: None,
+        min_runtime_version: "1.0.0".to_string(),
         metadata: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
@@ -641,6 +646,7 @@ async fn test_bundle_validation_empty_package() {
         "version": "1.0",
         "package": "",
         "appVersion": "1.0.0",
+        "minRuntimeVersion": "1.0.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
@@ -695,6 +701,7 @@ async fn test_bundle_validation_empty_app_version() {
         "version": "1.0",
         "package": "com.example.test",
         "appVersion": "",
+        "minRuntimeVersion": "1.0.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
@@ -748,6 +755,7 @@ async fn test_bundle_validation_missing_app_version() {
     let invalid_manifest_json = r#"{
         "version": "1.0",
         "package": "com.example.test",
+        "minRuntimeVersion": "1.0.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
