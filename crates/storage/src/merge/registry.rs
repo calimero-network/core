@@ -233,11 +233,36 @@ pub fn try_merge_registered(
 ) -> Option<Result<Vec<u8>, Box<dyn std::error::Error>>> {
     let registry = MERGE_REGISTRY.read().ok()?;
 
+    tracing::debug!(
+        target: "storage::merge",
+        registered_types = registry.len(),
+        "Trying registered merge functions"
+    );
+
     for entry in registry.values() {
-        if let Ok(merged) = (entry.merge_fn)(existing, incoming, existing_ts, incoming_ts) {
-            return Some(Ok(merged));
+        match (entry.merge_fn)(existing, incoming, existing_ts, incoming_ts) {
+            Ok(merged) => {
+                tracing::info!(
+                    target: "storage::merge",
+                    merged_len = merged.len(),
+                    "Successfully merged using registered function"
+                );
+                return Some(Ok(merged));
+            }
+            Err(e) => {
+                tracing::trace!(
+                    target: "storage::merge",
+                    error = %e,
+                    "Merge function failed, trying next"
+                );
+            }
         }
     }
+
+    tracing::debug!(
+        target: "storage::merge",
+        "No registered merge function succeeded"
+    );
 
     None
 }

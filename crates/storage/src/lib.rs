@@ -99,6 +99,8 @@ pub mod tests {
     pub mod collections;
     /// Common test utilities and data structures.
     pub mod common;
+    /// Concurrent merge scenario tests (simulates E2E sync).
+    pub mod concurrent_merge;
     /// Comprehensive CRDT behavior tests.
     pub mod crdt;
     /// Delta creation and commit tests.

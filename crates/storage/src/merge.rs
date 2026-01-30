@@ -54,11 +54,30 @@ pub fn merge_root_state(
     existing_ts: u64,
     incoming_ts: u64,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    tracing::debug!(
+        target: "storage::merge",
+        existing_len = existing.len(),
+        incoming_len = incoming.len(),
+        existing_ts,
+        incoming_ts,
+        "merge_root_state called"
+    );
+
     // Try registered CRDT merge functions first
     // This enables automatic nested CRDT merging when apps use #[app::state]
     if let Some(result) = try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
+        tracing::info!(
+            target: "storage::merge",
+            success = result.is_ok(),
+            "Registered CRDT merge function found and executed"
+        );
         return result;
     }
+
+    tracing::warn!(
+        target: "storage::merge",
+        "No registered CRDT merge function found - falling back to LWW"
+    );
 
     // NOTE: We can't blindly deserialize without knowing the type.
     // The collections (UnorderedMap, Vector, Counter, etc.) already handle

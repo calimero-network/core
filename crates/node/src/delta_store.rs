@@ -1,6 +1,13 @@
 //! DAG-based delta storage and application
 //!
 //! Wraps calimero-dag and provides context-aware delta application via WASM.
+//!
+//! # Merge Handling
+//!
+//! When concurrent deltas are detected (deltas from different branches of the DAG),
+//! the applier uses CRDT merge semantics instead of failing on hash mismatch.
+//! This ensures that all nodes converge to the same state regardless of the
+//! order in which they receive concurrent deltas.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,28 +47,49 @@ pub struct MissingParentsResult {
 }
 
 /// Applier that applies actions to WASM storage via ContextClient
+///
+/// Supports two application modes:
+/// 1. **Sequential**: When delta's parent matches our current state - verify hash
+/// 2. **Merge**: When concurrent branches detected - CRDT merge, skip hash check
 #[derive(Debug)]
 struct ContextStorageApplier {
     context_client: ContextClient,
     context_id: ContextId,
     our_identity: PublicKey,
+    /// Maps delta_id -> expected_root_hash for parent state tracking
+    /// Used to detect concurrent branches (merge scenarios)
+    parent_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
 #[async_trait::async_trait]
 impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
     async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
-        // Serialize actions to StorageDelta
-        let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))
-            .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {}", e)))?;
-
-        // Get context to access WASM runtime
-        let Some(_context) = self
+        // Get current context state
+        let context = self
             .context_client
             .get_context(&self.context_id)
             .map_err(|e| ApplyError::Application(format!("Failed to get context: {}", e)))?
-        else {
-            return Err(ApplyError::Application("Context not found".to_owned()));
-        };
+            .ok_or_else(|| ApplyError::Application("Context not found".to_owned()))?;
+
+        let current_root_hash = *context.root_hash;
+
+        // Detect if this is a merge scenario (concurrent branches)
+        // A merge is needed when our current state differs from what the delta's parent expects
+        let is_merge_scenario = self.is_merge_scenario(delta, &current_root_hash).await;
+
+        if is_merge_scenario {
+            info!(
+                context_id = %self.context_id,
+                delta_id = ?delta.id,
+                current_root_hash = ?Hash::from(current_root_hash),
+                delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                "Concurrent branch detected - applying with CRDT merge semantics"
+            );
+        }
+
+        // Serialize actions to StorageDelta
+        let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))
+            .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {}", e)))?;
 
         // Execute __calimero_sync_next via WASM to apply actions to storage
         let outcome = self
@@ -82,6 +110,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             delta_id = ?delta.id,
             root_hash = ?outcome.root_hash,
             return_registers = ?outcome.returns,
+            is_merge = is_merge_scenario,
             "WASM sync completed execution"
         );
 
@@ -92,46 +121,130 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // Check root hash consistency
-        //
-        // If the computed hash differs from expected, we have divergent histories.
-        // This means the delta was created on a different base state than ours.
-        //
-        // CRITICAL: We MUST NOT force-overwrite the hash! That would:
-        // - Corrupt the Merkle tree integrity (hash doesn't match content)
-        // - Hide divergence (nodes think they're in sync but have different data)
-        // - Silently lose concurrent updates
-        //
-        // Instead, we return an error so the caller can trigger proper state sync
-        // with CRDT merge semantics to reconcile the divergent states.
         let computed_hash = outcome.root_hash;
-        if *computed_hash != delta.expected_root_hash {
+
+        // For merge scenarios: hash mismatch is EXPECTED
+        // The computed hash is the MERGED state hash (correct by construction)
+        // For sequential scenarios: verify hash matches expected
+        if !is_merge_scenario && *computed_hash != delta.expected_root_hash {
             warn!(
                 context_id = %self.context_id,
                 delta_id = ?delta.id,
                 computed_hash = ?computed_hash,
                 expected_hash = ?Hash::from(delta.expected_root_hash),
-                "Root hash mismatch detected - divergent histories require state sync"
+                "Root hash mismatch in sequential application - this shouldn't happen"
             );
 
-            // TODO: Ideally we'd rollback the changes we just made.
-            // For now, the caller must handle this by triggering a full state sync
-            // which will use CRDT merge to reconcile the divergent states.
             return Err(ApplyError::RootHashMismatch {
                 computed: *computed_hash.as_ref(),
                 expected: delta.expected_root_hash,
             });
         }
 
+        if is_merge_scenario && *computed_hash != delta.expected_root_hash {
+            info!(
+                context_id = %self.context_id,
+                delta_id = ?delta.id,
+                computed_hash = ?computed_hash,
+                delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                "Merge produced new hash (expected - concurrent branches merged)"
+            );
+        }
+
+        // Store this delta's expected_root_hash for future merge detection
+        // This allows child deltas to know what state this delta expected
+        {
+            let mut hashes = self.parent_hashes.write().await;
+            hashes.insert(delta.id, delta.expected_root_hash);
+        }
+
         debug!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             action_count = delta.payload.len(),
-            expected_root_hash = ?delta.expected_root_hash,
+            final_root_hash = ?computed_hash,
+            was_merge = is_merge_scenario,
             "Applied delta to WASM storage"
         );
 
         Ok(())
+    }
+}
+
+impl ContextStorageApplier {
+    /// Determine if this delta application is a merge scenario.
+    ///
+    /// A merge is needed when:
+    /// 1. The delta has a non-genesis parent, AND
+    /// 2. Our current state has diverged from that parent's expected state
+    ///
+    /// This happens when concurrent deltas were applied before this one.
+    ///
+    /// Detection strategies (in order):
+    /// 1. If parent hash is tracked, compare directly
+    /// 2. If the delta expects a different state than we have, it's a merge
+    /// 3. If parent is unknown and we're not at genesis, assume merge (conservative)
+    async fn is_merge_scenario(
+        &self,
+        delta: &CausalDelta<Vec<Action>>,
+        current_root_hash: &[u8; 32],
+    ) -> bool {
+        // Genesis parent means this is the first delta - never a merge
+        if delta.parents.is_empty() || delta.parents.iter().all(|p| *p == [0u8; 32]) {
+            // Check if current state is NOT initial state
+            // If so, we've applied local deltas before this remote one = merge
+            if *current_root_hash != [0u8; 32] {
+                // We have state, but this delta claims to be from genesis
+                // This means concurrent operations from genesis - it's a merge
+                debug!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    current_root_hash = ?Hash::from(*current_root_hash),
+                    "Delta from genesis but we have state - concurrent branch detected"
+                );
+                return true;
+            }
+            return false;
+        }
+
+        // Get the expected root hash of the delta's parent(s)
+        let hashes = self.parent_hashes.read().await;
+
+        for parent_id in &delta.parents {
+            if *parent_id == [0u8; 32] {
+                continue; // Skip genesis
+            }
+
+            if let Some(parent_expected_hash) = hashes.get(parent_id) {
+                // Parent's expected hash is the state AFTER applying parent
+                // If our current hash differs, concurrent deltas were applied
+                if parent_expected_hash != current_root_hash {
+                    debug!(
+                        context_id = %self.context_id,
+                        parent_id = ?parent_id,
+                        parent_expected_hash = ?Hash::from(*parent_expected_hash),
+                        current_root_hash = ?Hash::from(*current_root_hash),
+                        "Detected concurrent branch: parent expected different state"
+                    );
+                    return true;
+                }
+            } else {
+                // Parent was created by another node - we don't have its hash
+                // This is VERY likely a merge scenario in concurrent writes
+                //
+                // Key insight: if the parent exists in DAG but we don't have its hash,
+                // another node applied it and we need to merge
+                debug!(
+                    context_id = %self.context_id,
+                    parent_id = ?parent_id,
+                    current_root_hash = ?Hash::from(*current_root_hash),
+                    "Unknown parent from other node - treating as merge scenario"
+                );
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -157,10 +270,14 @@ impl DeltaStore {
         context_id: ContextId,
         our_identity: PublicKey,
     ) -> Self {
+        // Shared parent hash tracking for merge detection
+        let parent_hashes = Arc::new(RwLock::new(HashMap::new()));
+
         let applier = Arc::new(ContextStorageApplier {
             context_client,
             context_id,
             our_identity,
+            parent_hashes: Arc::clone(&parent_hashes),
         });
 
         Self {
@@ -219,10 +336,16 @@ impl DeltaStore {
                 expected_root_hash: stored_delta.expected_root_hash,
             };
 
-            // Store root hash mapping
+            // Store root hash mapping for merge detection
             {
                 let mut head_hashes = self.head_root_hashes.write().await;
                 let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+            }
+            {
+                // Also populate parent hash tracker for merge detection
+                let mut parent_hashes = self.applier.parent_hashes.write().await;
+                let _ =
+                    parent_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
             }
 
             drop(all_deltas.insert(stored_delta.delta_id, dag_delta));

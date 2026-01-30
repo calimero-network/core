@@ -1310,16 +1310,12 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
-            // CRDT-based merge: all types use LWW with merge for root/concurrent updates
-            // The merge logic in compare_trees has already determined the winner for conflicts
-
-            // Reject if existing is newer (LWW semantics)
-            if last_metadata.updated_at > metadata.updated_at {
-                return Ok(None);
-            }
+            // CRDT-based merge: root state ALWAYS merges, non-root uses LWW with merge fallback
 
             if id.is_root() {
-                // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
+                // Root entity (app state) - ALWAYS merge regardless of timestamp
+                // This preserves CRDT semantics (Counter, UnorderedMap, etc.)
+                // The root contains all application state; merging combines concurrent updates
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
                     Self::try_merge_data(
                         id,
@@ -1331,6 +1327,9 @@ impl<S: StorageAdaptor> Interface<S> {
                 } else {
                     data.to_vec()
                 }
+            } else if last_metadata.updated_at > metadata.updated_at {
+                // Non-root entity with older incoming timestamp - reject (LWW)
+                return Ok(None);
             } else if last_metadata.updated_at == metadata.updated_at {
                 // Concurrent update (same timestamp) - try to merge
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
