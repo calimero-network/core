@@ -848,13 +848,13 @@ This CIP is backwards compatible:
 - [x] 9 merge_callback unit tests (mock handlers, LWW, recording)
 - [x] 27 integration tests (negotiation, scenarios, serialization)
 
-### Phase 4: Integration (TODO)
-- [ ] Wire `RuntimeMergeCallback` to `SyncManager` sync operations
-- [ ] Delta buffering during state sync (types ready, logic TODO)
-- [ ] Post-sync delta replay
-- [ ] Full sync state machine in `SyncManager`
-- [ ] Proactive sync triggers based on hints
-- [ ] Periodic state announcements
+### Phase 4: Integration ✅
+- [x] Wire `RuntimeMergeCallback` to `SyncManager` (`get_merge_callback()` ready for hash-based sync)
+- [x] Delta buffering during state sync (`SyncSession` in `NodeState`)
+- [x] Post-sync delta replay (triggers DAG sync for missing deltas)
+- [x] Full sync state machine in `SyncManager` (`SyncSessionState` integration)
+- [x] Proactive sync triggers based on hints (in `network_event.rs`)
+- [ ] Periodic state announcements (deferred - heartbeats already exist)
 
 ### Phase 5: Optimization (TODO)
 - [ ] Compressed snapshot transfer
