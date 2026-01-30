@@ -593,7 +593,7 @@ impl HashBasedSync {
             // Process responses - collect BOTH local and remote actions
             for (_id, remote_data, remote_comparison) in entities {
                 let (local_actions, remote_actions) =
-                    Local::<L>::compare_trees_full(remote_data, remote_comparison)?;
+                    Local::<L>::compare_trees(remote_data, remote_comparison)?;
 
                 for action in local_actions {
                     match &action {
@@ -923,7 +923,7 @@ impl SubtreePrefetchSync {
                 // Process subtree entities - collect BOTH local and remote actions
                 for (_id, remote_data, remote_comparison) in entities {
                     let (local_actions, remote_actions) =
-                        Interface::<L>::compare_trees_full(remote_data.clone(), remote_comparison)?;
+                        Interface::<L>::compare_trees(remote_data.clone(), remote_comparison)?;
 
                     for action in local_actions {
                         if !matches!(action, Action::Compare { .. }) {
@@ -946,10 +946,10 @@ impl SubtreePrefetchSync {
                 let entities = get_subtree_entities::<L>(subtree_root, None);
                 for (_id, local_data, local_comparison) in entities {
                     // Generate actions for remote to add this entity
-                    // Call compare_trees_full from R's perspective with local data as "foreign"
+                    // Call compare_trees from R's perspective with local data as "foreign"
                     // local_actions = what R needs to do to match local (this is what we want)
                     let (r_local_actions, _) =
-                        Interface::<R>::compare_trees_full(local_data.clone(), local_comparison)?;
+                        Interface::<R>::compare_trees(local_data.clone(), local_comparison)?;
                     for action in r_local_actions {
                         if !matches!(action, Action::Compare { .. }) {
                             actions_for_remote.push(action);
@@ -1062,7 +1062,7 @@ impl BloomFilterSync {
 
         for (_id, remote_data, remote_comparison) in missing_entities {
             let (local_actions, remote_actions) =
-                Interface::<L>::compare_trees_full(remote_data, remote_comparison)?;
+                Interface::<L>::compare_trees(remote_data, remote_comparison)?;
 
             for action in local_actions {
                 if !matches!(action, Action::Compare { .. }) {
@@ -1095,10 +1095,10 @@ impl BloomFilterSync {
                         Interface::<L>::generate_comparison_data(Some(*local_id))?;
 
                     // Generate action for remote to add this entity
-                    // Call compare_trees_full from R's perspective with local data as "foreign"
+                    // Call compare_trees from R's perspective with local data as "foreign"
                     // r_local_actions = what R needs to do to match local (this is what we want)
                     let (r_local_actions, _) =
-                        Interface::<R>::compare_trees_full(local_data, local_comparison)?;
+                        Interface::<R>::compare_trees(local_data, local_comparison)?;
 
                     for action in r_local_actions {
                         if !matches!(action, Action::Compare { .. }) {
@@ -1247,7 +1247,7 @@ impl LevelWiseSync {
 
                 if needs_sync {
                     let (local_actions, remote_actions) =
-                        Interface::<L>::compare_trees_full(remote_data, remote_comparison.clone())?;
+                        Interface::<L>::compare_trees(remote_data, remote_comparison.clone())?;
 
                     for action in local_actions {
                         match &action {
@@ -1279,10 +1279,10 @@ impl LevelWiseSync {
                     let local_comparison =
                         Interface::<L>::generate_comparison_data(Some(child_id))?;
 
-                    // Call compare_trees_full from R's perspective with local data as "foreign"
+                    // Call compare_trees from R's perspective with local data as "foreign"
                     // r_local_actions = what R needs to do to match local (this is what we want)
                     let (r_local_actions, _) =
-                        Interface::<R>::compare_trees_full(local_data, local_comparison)?;
+                        Interface::<R>::compare_trees(local_data, local_comparison)?;
 
                     for action in r_local_actions {
                         if !matches!(action, Action::Compare { .. }) {
@@ -1937,7 +1937,7 @@ fn network_sync_resumable() {
     // "Network failure" - sync just root
     let root_data = Remote::find_by_id_raw(Id::root());
     let root_comparison = Remote::generate_comparison_data(Some(Id::root())).unwrap();
-    let (actions, _) = Local::compare_trees_full(root_data, root_comparison).unwrap();
+    let (actions, _) = Local::compare_trees(root_data, root_comparison).unwrap();
 
     // Apply partial sync (just root, without following children)
     for action in &actions {

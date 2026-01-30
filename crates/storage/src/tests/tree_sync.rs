@@ -44,31 +44,15 @@ type NodeC = Interface<StorageC>;
 // Helper Functions
 // ============================================================
 
-/// Compares trees between two nodes and returns sync actions (original method).
+/// Compares trees between two nodes using CRDT-type-based merge.
 /// Returns (actions_for_node_a, actions_for_node_b)
 fn compare_trees_between<SA: crate::store::StorageAdaptor, SB: crate::store::StorageAdaptor>(
     id: Id,
 ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
-    // Get node B's data and comparison info
     let node_b_data = Interface::<SB>::find_by_id_raw(id);
     let node_b_comparison = Interface::<SB>::generate_comparison_data(Some(id))?;
 
-    // Compare from node A's perspective
     Interface::<SA>::compare_trees(node_b_data, node_b_comparison)
-}
-
-/// Compares trees between two nodes using the FIXED method with proper ancestors.
-/// Returns (actions_for_node_a, actions_for_node_b)
-fn compare_trees_full_between<
-    SA: crate::store::StorageAdaptor,
-    SB: crate::store::StorageAdaptor,
->(
-    id: Id,
-) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
-    let node_b_data = Interface::<SB>::find_by_id_raw(id);
-    let node_b_comparison = Interface::<SB>::generate_comparison_data(Some(id))?;
-
-    Interface::<SA>::compare_trees_full(node_b_data, node_b_comparison)
 }
 
 /// Performs full recursive tree sync between two nodes.
@@ -254,8 +238,8 @@ fn tree_sync_bidirectional_different_children() {
 }
 
 // ============================================================
-// Test: Bidirectional Sync with FIXED compare_trees_full
-// Shows that compare_trees_full correctly sets ancestors
+// Test: Bidirectional Sync with FIXED compare_trees
+// Shows that compare_trees correctly sets ancestors
 // ============================================================
 
 #[test]
@@ -284,9 +268,9 @@ fn tree_sync_bidirectional_with_fixed_method() {
     let mut para_b = Paragraph::new_from_element("From Node B", Element::new(None));
     FixedNodeB::add_child_to(page_b.id(), &mut para_b).unwrap();
 
-    // Use the FIXED compare_trees_full method
+    // Use the FIXED compare_trees method
     let (actions_for_a, actions_for_b) =
-        compare_trees_full_between::<FixedStorageA, FixedStorageB>(Id::root()).unwrap();
+        compare_trees_between::<FixedStorageA, FixedStorageB>(Id::root()).unwrap();
 
     println!("FIXED - Actions for A: {:?}", actions_for_a);
     println!("FIXED - Actions for B: {:?}", actions_for_b);
@@ -305,7 +289,7 @@ fn tree_sync_bidirectional_with_fixed_method() {
     }
 
     // Note: Actions for A will be Compare actions for B's children because
-    // compare_trees_full doesn't have B's child data, only its hash.
+    // compare_trees doesn't have B's child data, only its hash.
     // For full bidirectional sync, use sync_trees which handles Compare recursively.
     let compare_count = actions_for_a
         .iter()
@@ -1321,7 +1305,7 @@ fn demo_resolution_strategies_at_scale() {
 
     println!("\n  Comparing root entities...");
     let (root_actions_for_alice, root_actions_for_bob) =
-        Alice::compare_trees_full(bob_root_data, bob_root_comparison).unwrap();
+        Alice::compare_trees(bob_root_data, bob_root_comparison).unwrap();
 
     println!("    Actions for Alice: {}", root_actions_for_alice.len());
     println!("    Actions for Bob: {}", root_actions_for_bob.len());
@@ -1369,7 +1353,7 @@ fn demo_resolution_strategies_at_scale() {
         let bob_child_comparison = Bob::generate_comparison_data(Some(child_id)).unwrap();
 
         let (child_actions_for_alice, _) =
-            Alice::compare_trees_full(bob_child_data, bob_child_comparison).unwrap();
+            Alice::compare_trees(bob_child_data, bob_child_comparison).unwrap();
 
         // Find which paragraph this is
         let para_idx = alice_paragraphs

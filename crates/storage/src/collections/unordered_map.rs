@@ -43,8 +43,9 @@ where
 {
     /// Create a new map collection (internal, shared with Counter).
     pub(super) fn new_internal() -> Self {
+        use super::CrdtType;
         Self {
-            inner: Collection::new(None),
+            inner: Collection::new_with_crdt_type(None, CrdtType::UnorderedMap),
         }
     }
 

@@ -796,7 +796,7 @@ This CIP is backwards compatible:
 > **This phase is critical** - without it, state sync loses CRDT data!
 
 **2.1 Storage Layer Changes:**
-- [ ] Extend `CrdtType` enum with `Custom { type_name, is_mergeable }` variant
+- [ ] Extend `CrdtType` enum with `Custom { type_name }` variant (all custom types MUST be Mergeable)
 - [ ] Add `crdt_type: Option<CrdtType>` field to `Metadata` struct
 - [ ] Collections auto-set crdt_type on creation:
   - [ ] Counter → `CrdtType::Counter`
@@ -883,8 +883,8 @@ The merge architecture has two categories of types:
 │                             │   │                                   │
 │   CrdtType::Counter         │   │   CrdtType::Custom {              │
 │   CrdtType::UnorderedMap    │   │       type_name: "MyGameState",   │
-│   CrdtType::Vector          │   │       is_mergeable: true,         │
-│   CrdtType::Rga             │   │   }                               │
+│   CrdtType::Vector          │   │   }                               │
+│   CrdtType::Rga             │   │                                   │
 │   CrdtType::UnorderedSet    │   │                                   │
 │   CrdtType::LwwRegister     │   │   ┌───────────────────────────┐   │
 │                             │   │   │      WASM Module          │   │
@@ -906,7 +906,7 @@ We already have the type system but don't store it with entities:
 // ✅ HAVE: Type enumeration
 pub enum CrdtType {
     LwwRegister, Counter, Rga, UnorderedMap, UnorderedSet, Vector,
-    Custom(String)  // ← For app-defined types
+    Custom { type_name: String }  // ← ONLY for app-defined #[app::state] types
 }
 
 // ✅ HAVE: Every CRDT knows its type
@@ -1121,11 +1121,15 @@ impl<S: StorageAdaptor> Interface<S> {
             }
             
             // ════════════════════════════════════════════════════════
-            // CUSTOM TYPES: Dispatch to WASM (all custom types MUST be Mergeable)
+            // CUSTOM TYPES: Dispatch to WASM
             // ════════════════════════════════════════════════════════
+            // ONLY for user-defined #[app::state] types.
+            // NOT for built-in wrappers like UserStorage/FrozenStorage
+            // (those use their underlying collection's CrdtType).
+            // All custom types MUST implement Mergeable in WASM.
             
             Some(CrdtType::Custom { type_name }) => {
-                // Custom type - MUST call WASM for merge
+                // App-defined type - MUST call WASM for merge
                 let callback = wasm_callback.ok_or_else(|| {
                     MergeError::WasmCallbackRequired {
                         type_name: type_name.clone(),

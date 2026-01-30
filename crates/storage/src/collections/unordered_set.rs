@@ -36,8 +36,9 @@ where
 {
     /// Create a new set collection.
     fn new_internal() -> Self {
+        use super::CrdtType;
         Self {
-            inner: Collection::new(None),
+            inner: Collection::new_with_crdt_type(None, CrdtType::UnorderedSet),
         }
     }
 

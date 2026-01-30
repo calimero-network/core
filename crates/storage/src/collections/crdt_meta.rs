@@ -12,23 +12,42 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// Identifies the specific CRDT type
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Identifies the specific CRDT type for merge dispatch.
+///
+/// **All types in state MUST be mergeable!**
+/// - Built-in types (Counter, Map, etc.) merge in storage layer
+/// - Custom types dispatch to WASM for app-defined merge
+///
+/// Non-CRDT scalars must be wrapped in `LwwRegister<T>`:
+/// - ❌ `name: String` → ✅ `name: LwwRegister<String>`
+/// - ❌ `count: u64` → ✅ `count: LwwRegister<u64>` or `count: Counter`
+#[derive(BorshDeserialize, BorshSerialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CrdtType {
-    /// Last-Write-Wins Register
+    /// Last-Write-Wins Register: Higher timestamp wins.
+    /// Use to wrap non-CRDT scalars: `LwwRegister<String>`, `LwwRegister<u64>`
     LwwRegister,
-    /// Grow-only Counter
+
+    /// Grow-only Counter (G-Counter) or PN-Counter: Sum per-node counts
     Counter,
-    /// Replicated Growable Array (text CRDT)
+
+    /// Replicated Growable Array: Tombstone-based text CRDT
     Rga,
-    /// Unordered Map (add-wins set semantics for keys)
+
+    /// Unordered Map: Per-key merge with add-wins semantics
     UnorderedMap,
-    /// Unordered Set (add-wins semantics)
+
+    /// Unordered Set: Add-wins union semantics
     UnorderedSet,
-    /// Vector (ordered list with operational transformation)
+
+    /// Vector: Element-wise merge with ordering
     Vector,
-    /// Custom user-defined CRDT (with #[derive(CrdtState)])
-    Custom(String),
+
+    /// Custom user-defined type (MUST implement Mergeable).
+    /// The type_name is used for WASM dispatch.
+    Custom {
+        /// Type name for WASM dispatch (e.g., "MyGameState")
+        type_name: String,
+    },
 }
 
 /// Storage strategy for a CRDT type

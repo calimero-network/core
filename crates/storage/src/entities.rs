@@ -21,6 +21,7 @@ use std::ops::{Deref, DerefMut};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::Id;
+use crate::collections::crdt_meta::CrdtType;
 use crate::env::time_now;
 
 /// Marker trait for atomic, persistable entities.
@@ -190,12 +191,35 @@ impl Element {
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
                 resolution: ResolutionStrategy::default(),
+                crdt_type: Some(CrdtType::LwwRegister),
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates a new element with a specific CRDT type.
+    #[must_use]
+    pub fn with_crdt_type(id: Option<Id>, crdt_type: CrdtType) -> Self {
+        let timestamp = time_now();
+        let element_id = id.unwrap_or_else(Id::random);
+        Self {
+            id: element_id,
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                resolution: ResolutionStrategy::default(),
+                crdt_type: Some(crdt_type),
             },
             merkle_hash: [0; 32],
         }
     }
 
     /// Creates a new element with a specific resolution strategy.
+    ///
+    /// **DEPRECATED**: Use `with_crdt_type` instead.
+    #[deprecated(since = "0.1.0", note = "Use with_crdt_type instead")]
     #[must_use]
     pub fn with_resolution(id: Option<Id>, resolution: ResolutionStrategy) -> Self {
         let timestamp = time_now();
@@ -208,6 +232,7 @@ impl Element {
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
                 resolution,
+                crdt_type: None,
             },
             merkle_hash: [0; 32],
         }
@@ -225,12 +250,34 @@ impl Element {
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
                 resolution: ResolutionStrategy::default(),
+                crdt_type: Some(CrdtType::LwwRegister),
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates the root element with a specific CRDT type (typically Custom for app state).
+    #[must_use]
+    pub fn root_with_crdt_type(crdt_type: CrdtType) -> Self {
+        let timestamp = time_now();
+        Self {
+            id: Id::root(),
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                resolution: ResolutionStrategy::default(),
+                crdt_type: Some(crdt_type),
             },
             merkle_hash: [0; 32],
         }
     }
 
     /// Creates the root element with a specific resolution strategy.
+    ///
+    /// **DEPRECATED**: Use `root_with_crdt_type` instead.
+    #[deprecated(since = "0.1.0", note = "Use root_with_crdt_type instead")]
     #[must_use]
     pub fn root_with_resolution(resolution: ResolutionStrategy) -> Self {
         let timestamp = time_now();
@@ -242,6 +289,7 @@ impl Element {
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
                 resolution,
+                crdt_type: None,
             },
             merkle_hash: [0; 32],
         }
@@ -472,12 +520,25 @@ pub struct Metadata {
 
     /// Strategy for resolving conflicts when syncing with other nodes.
     /// Defaults to `LastWriteWins` for backward compatibility.
+    ///
+    /// **DEPRECATED**: Use `crdt_type` for merge dispatch instead.
+    /// This field is kept for backwards compatibility during migration.
     /// See `ResolutionStrategy`.
     pub resolution: ResolutionStrategy,
+
+    /// CRDT type for merge dispatch during state synchronization.
+    ///
+    /// - Built-in types (Counter, Map, etc.) merge in storage layer
+    /// - Custom types dispatch to WASM for app-defined merge
+    /// - None indicates legacy data (falls back to LWW)
+    ///
+    /// See `CrdtType`.
+    pub crdt_type: Option<CrdtType>,
 }
 
 impl Metadata {
     /// Creates new metadata with the provided timestamps.
+    /// Defaults to LwwRegister CRDT type.
     #[must_use]
     pub fn new(created_at: u64, updated_at: u64) -> Self {
         Self {
@@ -485,10 +546,26 @@ impl Metadata {
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
             resolution: ResolutionStrategy::default(),
+            crdt_type: Some(CrdtType::LwwRegister),
+        }
+    }
+
+    /// Creates new metadata with a specific CRDT type.
+    #[must_use]
+    pub fn with_crdt_type(created_at: u64, updated_at: u64, crdt_type: CrdtType) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            resolution: ResolutionStrategy::default(),
+            crdt_type: Some(crdt_type),
         }
     }
 
     /// Creates new metadata with a specific resolution strategy.
+    ///
+    /// **DEPRECATED**: Use `with_crdt_type` instead.
+    #[deprecated(since = "0.1.0", note = "Use with_crdt_type instead")]
     #[must_use]
     pub fn with_resolution(
         created_at: u64,
@@ -500,12 +577,24 @@ impl Metadata {
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
             resolution,
+            crdt_type: None,
         }
     }
 
     /// Updates the `updated_at` timestamp.
     pub fn set_updated_at(&mut self, timestamp: u64) {
         self.updated_at = timestamp.into();
+    }
+
+    /// Sets the CRDT type for merge dispatch.
+    pub fn set_crdt_type(&mut self, crdt_type: CrdtType) {
+        self.crdt_type = Some(crdt_type);
+    }
+
+    /// Returns the CRDT type, if set.
+    #[must_use]
+    pub const fn crdt_type(&self) -> &Option<CrdtType> {
+        &self.crdt_type
     }
 
     /// Returns the creation timestamp.

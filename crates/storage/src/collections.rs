@@ -111,14 +111,20 @@ type StoreResult<T> = std::result::Result<T, StoreError>;
 static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
 
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
-    /// Creates a new collection.
+    /// Creates a new collection with default CrdtType (LwwRegister).
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new(id: Option<Id>) -> Self {
+        Self::new_with_crdt_type(id, CrdtType::LwwRegister)
+    }
+
+    /// Creates a new collection with a specific CrdtType.
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    fn new_with_crdt_type(id: Option<Id>, crdt_type: CrdtType) -> Self {
         let id = id.unwrap_or_else(|| Id::random());
 
         let mut this = Self {
             children_ids: RefCell::new(None),
-            storage: Element::new(Some(id)),
+            storage: Element::with_crdt_type(Some(id), crdt_type),
             _priv: PhantomData,
         };
 

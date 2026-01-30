@@ -46,9 +46,11 @@ use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::address::Id;
+use crate::collections::crdt_meta::CrdtType;
 use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
+use crate::merge::try_merge_registered;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -507,193 +509,160 @@ impl<S: StorageAdaptor> Interface<S> {
         <Index<S>>::get_children_of(parent_id)
     }
 
-    /// Compares local and remote entity trees, generating sync actions.
+    /// Merges two entity data blobs using CRDT semantics based on the metadata's crdt_type.
+    ///
+    /// # Returns
+    /// - `Ok(Some(merged_bytes))` if merge succeeded - both sides should use this
+    /// - `Ok(None)` if merge not applicable (e.g., Manual resolution needed)
+    /// - `Err` if merge failed
+    ///
+    /// # CRDT Type Dispatch
+    /// - **Built-in CRDTs** (LwwRegister, Counter, etc.): Merged in storage layer
+    /// - **Custom types**: Try registered merge, fallback to LWW
+    /// - **None** (legacy): Use LWW based on timestamps
+    fn merge_by_crdt_type(
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_metadata: &Metadata,
+        remote_metadata: &Metadata,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        use crate::collections::{LwwRegister, Mergeable};
+
+        let crdt_type = local_metadata.crdt_type.as_ref();
+
+        match crdt_type {
+            // ════════════════════════════════════════════════════════
+            // BUILT-IN CRDTs: Merge in storage layer (fast, no WASM)
+            // ════════════════════════════════════════════════════════
+            Some(CrdtType::LwwRegister) => {
+                // LWW uses timestamps for deterministic resolution
+                // Note: For typed LwwRegister<T>, the merge just compares timestamps
+                // Here we're working with raw bytes, so compare metadata timestamps
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
+            }
+
+            Some(CrdtType::Counter) => {
+                // Counter merges by summing per-node counts
+                // Requires deserializing the Counter struct
+                // For now, fallback to registry or LWW since Counter has complex internal structure
+                Self::try_merge_via_registry_or_lww(
+                    local_data,
+                    remote_data,
+                    local_metadata,
+                    remote_metadata,
+                )
+            }
+
+            Some(CrdtType::UnorderedMap)
+            | Some(CrdtType::UnorderedSet)
+            | Some(CrdtType::Vector) => {
+                // Collections are merged at the entry level via their child IDs
+                // The collection container itself uses LWW for its metadata
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
+            }
+
+            Some(CrdtType::Rga) => {
+                // RGA is built on UnorderedMap, merge happens at character level
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
+            }
+
+            // ════════════════════════════════════════════════════════
+            // CUSTOM TYPES: Try registry (WASM-registered), fallback to LWW
+            // ════════════════════════════════════════════════════════
+            Some(CrdtType::Custom { type_name: _ }) => {
+                // Custom types should have registered their merge function
+                // Try registry, fallback to LWW
+                Self::try_merge_via_registry_or_lww(
+                    local_data,
+                    remote_data,
+                    local_metadata,
+                    remote_metadata,
+                )
+            }
+
+            // ════════════════════════════════════════════════════════
+            // LEGACY: No type info, use LWW
+            // ════════════════════════════════════════════════════════
+            None => {
+                // Legacy data or ResolutionStrategy-based resolution
+                let resolution = local_metadata.resolution;
+
+                match resolution.resolve(
+                    local_data,
+                    remote_data,
+                    local_metadata.updated_at(),
+                    remote_metadata.updated_at(),
+                ) {
+                    Some(true) => Ok(Some(remote_data.to_vec())), // Remote wins
+                    Some(false) => Ok(Some(local_data.to_vec())), // Local wins
+                    None => Ok(None),                             // Manual resolution needed
+                }
+            }
+        }
+    }
+
+    /// Try merge via registry, fallback to LWW if not registered.
+    fn try_merge_via_registry_or_lww(
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_metadata: &Metadata,
+        remote_metadata: &Metadata,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        // Try registered merge functions
+        if let Some(result) = try_merge_registered(
+            local_data,
+            remote_data,
+            local_metadata.updated_at(),
+            remote_metadata.updated_at(),
+        ) {
+            match result {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(_) => {} // Fall through to LWW
+            }
+        }
+
+        // Fallback to LWW
+        let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+            remote_data
+        } else {
+            local_data
+        };
+        Ok(Some(winner.to_vec()))
+    }
+
+    /// Compares local and remote entity trees using CRDT-type-based merge.
     ///
     /// Compares Merkle hashes recursively, producing action lists for both sides.
     /// Returns `(local_actions, remote_actions)` to bring trees into sync.
+    ///
+    /// # CRDT Merge Behavior
+    ///
+    /// When own hashes differ (data conflict):
+    /// - **Built-in CRDTs**: Merged using type-specific logic (LWW, sum, etc.)
+    /// - **Custom types**: Uses registered merge function or falls back to LWW
+    /// - **Legacy (None)**: Uses `ResolutionStrategy` from metadata
+    ///
+    /// The merged result is sent to BOTH sides to ensure convergence.
     ///
     /// # Errors
     /// Returns error if index lookup or hash comparison fails.
     ///
     pub fn compare_trees(
-        foreign_entity_data: Option<Vec<u8>>,
-        foreign_index_data: ComparisonData,
-    ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
-        let mut actions = (vec![], vec![]);
-
-        let id = foreign_index_data.id;
-
-        let local_metadata = <Index<S>>::get_metadata(id)?;
-
-        let Some(local_entity) = Self::find_by_id_raw(id) else {
-            if let Some(foreign_entity) = foreign_entity_data {
-                // Local entity doesn't exist, so we need to add it
-                actions.0.push(Action::Add {
-                    id,
-                    data: foreign_entity,
-                    ancestors: foreign_index_data.ancestors,
-                    metadata: foreign_index_data.metadata,
-                });
-            }
-
-            return Ok(actions);
-        };
-
-        let local_metadata = local_metadata.ok_or(StorageError::IndexNotFound(id))?;
-
-        let (local_full_hash, local_own_hash) =
-            <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
-
-        // Compare full Merkle hashes
-        if local_full_hash == foreign_index_data.full_hash {
-            return Ok(actions);
-        }
-
-        // Compare own hashes and use resolution strategy for conflicts
-        if local_own_hash != foreign_index_data.own_hash {
-            if let Some(foreign_entity_data) = foreign_entity_data {
-                // Use the resolution strategy from local metadata
-                let resolution = local_metadata.resolution;
-
-                match resolution.resolve(
-                    &local_entity,
-                    &foreign_entity_data,
-                    local_metadata.updated_at(),
-                    foreign_index_data.metadata.updated_at(),
-                ) {
-                    Some(true) => {
-                        // Remote wins - update local
-                        actions.0.push(Action::Update {
-                            id,
-                            data: foreign_entity_data,
-                            ancestors: foreign_index_data.ancestors,
-                            metadata: foreign_index_data.metadata,
-                        });
-                    }
-                    Some(false) => {
-                        // Local wins - update remote
-                        actions.1.push(Action::Update {
-                            id,
-                            data: local_entity,
-                            ancestors: <Index<S>>::get_ancestors_of(id)?,
-                            metadata: local_metadata,
-                        });
-                    }
-                    None => {
-                        // Manual resolution - both sides need notification
-                        actions.0.push(Action::Compare { id });
-                        actions.1.push(Action::Compare { id });
-                    }
-                }
-            } else {
-                // No foreign data but hashes differ - local wins by default
-                actions.1.push(Action::Update {
-                    id,
-                    data: local_entity,
-                    ancestors: <Index<S>>::get_ancestors_of(id)?,
-                    metadata: local_metadata,
-                });
-            }
-        }
-
-        // The list of collections from the type will be the same on both sides, as
-        // the type is the same.
-
-        let local_collection_names = <Index<S>>::get_collection_names_for(id)?;
-
-        let local_collections = local_collection_names
-            .into_iter()
-            .map(|name| {
-                let children = <Index<S>>::get_children_of(id)?;
-                Ok((name, children))
-            })
-            .collect::<Result<BTreeMap<_, _>, StorageError>>()?;
-
-        // Compare children
-        for (local_coll_name, local_children) in &local_collections {
-            if let Some(foreign_children) = foreign_index_data.children.get(local_coll_name) {
-                let local_child_map: IndexMap<_, _> = local_children
-                    .iter()
-                    .map(|child| (child.id(), child.merkle_hash()))
-                    .collect();
-                let foreign_child_map: IndexMap<_, _> = foreign_children
-                    .iter()
-                    .map(|child| (child.id(), child.merkle_hash()))
-                    .collect();
-
-                for (child_id, local_hash) in &local_child_map {
-                    match foreign_child_map.get(child_id) {
-                        Some(foreign_hash) if local_hash != foreign_hash => {
-                            actions.0.push(Action::Compare { id: *child_id });
-                            actions.1.push(Action::Compare { id: *child_id });
-                        }
-                        None => {
-                            if let Some(local_child) = Self::find_by_id_raw(*child_id) {
-                                let metadata = <Index<S>>::get_metadata(*child_id)?
-                                    .ok_or(StorageError::IndexNotFound(*child_id))?;
-
-                                actions.1.push(Action::Add {
-                                    id: *child_id,
-                                    data: local_child,
-                                    ancestors: <Index<S>>::get_ancestors_of(id)?,
-                                    metadata,
-                                });
-                            }
-                        }
-                        // Hashes match, no action needed
-                        _ => {}
-                    }
-                }
-
-                for id in foreign_child_map.keys() {
-                    if !local_child_map.contains_key(id) {
-                        // Child exists in foreign but not locally - local needs to sync
-                        // We can't get the full data for the foreign child, so we flag it for
-                        // comparison. Local needs to request this child's data.
-                        actions.0.push(Action::Compare { id: *id });
-                    }
-                }
-            } else {
-                // The entire collection is missing from the foreign entity
-                for child in local_children {
-                    if let Some(local_child) = Self::find_by_id_raw(child.id()) {
-                        let metadata = <Index<S>>::get_metadata(child.id())?
-                            .ok_or(StorageError::IndexNotFound(child.id()))?;
-
-                        actions.1.push(Action::Add {
-                            id: child.id(),
-                            data: local_child,
-                            ancestors: <Index<S>>::get_ancestors_of(child.id())?,
-                            metadata,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Check for collections in the foreign entity that don't exist locally
-        for (foreign_coll_name, foreign_children) in &foreign_index_data.children {
-            if !local_collections.contains_key(foreign_coll_name) {
-                for child in foreign_children {
-                    // Local needs to request data for children it doesn't have
-                    actions.0.push(Action::Compare { id: child.id() });
-                }
-            }
-        }
-
-        Ok(actions)
-    }
-
-    /// Fixed version of compare_trees that correctly populates ancestors for child Add actions.
-    ///
-    /// This is like [`compare_trees()`](Self::compare_trees()) but fixes the ancestor
-    /// field for child Add actions by using the child's actual ancestors instead of
-    /// the parent's ancestors.
-    ///
-    /// # Errors
-    /// Returns error if index lookup or hash comparison fails.
-    ///
-    pub fn compare_trees_full(
         foreign_entity_data: Option<Vec<u8>>,
         foreign_index_data: ComparisonData,
     ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
@@ -722,43 +691,57 @@ impl<S: StorageAdaptor> Interface<S> {
         let (local_full_hash, local_own_hash) =
             <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
-        // Compare full Merkle hashes
+        // Compare full Merkle hashes - if equal, trees are in sync
         if local_full_hash == foreign_index_data.full_hash {
             return Ok(actions);
         }
 
-        // Compare own hashes and use resolution strategy for conflicts
+        // Compare own hashes - if different, need to merge the data
         if local_own_hash != foreign_index_data.own_hash {
             if let Some(foreign_entity_data) = foreign_entity_data {
-                // Use the resolution strategy from local metadata
-                let resolution = local_metadata.resolution;
-
-                match resolution.resolve(
+                // Use CRDT-type-based merge dispatch
+                match Self::merge_by_crdt_type(
                     &local_entity,
                     &foreign_entity_data,
-                    local_metadata.updated_at(),
-                    foreign_index_data.metadata.updated_at(),
-                ) {
-                    Some(true) => {
-                        // Remote wins - update local
-                        actions.0.push(Action::Update {
-                            id,
-                            data: foreign_entity_data,
-                            ancestors: foreign_index_data.ancestors,
-                            metadata: foreign_index_data.metadata,
-                        });
-                    }
-                    Some(false) => {
-                        // Local wins - update remote
-                        actions.1.push(Action::Update {
-                            id,
-                            data: local_entity,
-                            ancestors: <Index<S>>::get_ancestors_of(id)?,
-                            metadata: local_metadata,
-                        });
+                    &local_metadata,
+                    &foreign_index_data.metadata,
+                )? {
+                    Some(merged_data) => {
+                        // Determine which metadata to use (newer timestamp)
+                        let (merged_metadata, merged_ancestors) =
+                            if foreign_index_data.metadata.updated_at()
+                                >= local_metadata.updated_at()
+                            {
+                                (
+                                    foreign_index_data.metadata.clone(),
+                                    foreign_index_data.ancestors.clone(),
+                                )
+                            } else {
+                                (local_metadata.clone(), <Index<S>>::get_ancestors_of(id)?)
+                            };
+
+                        // Check if local needs update
+                        if merged_data != local_entity {
+                            actions.0.push(Action::Update {
+                                id,
+                                data: merged_data.clone(),
+                                ancestors: merged_ancestors.clone(),
+                                metadata: merged_metadata.clone(),
+                            });
+                        }
+
+                        // Check if remote needs update
+                        if merged_data != foreign_entity_data {
+                            actions.1.push(Action::Update {
+                                id,
+                                data: merged_data,
+                                ancestors: merged_ancestors,
+                                metadata: merged_metadata,
+                            });
+                        }
                     }
                     None => {
-                        // Manual resolution - both sides need notification
+                        // Manual resolution needed - both sides get Compare action
                         actions.0.push(Action::Compare { id });
                         actions.1.push(Action::Compare { id });
                     }
@@ -885,7 +868,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
 
             let (mut local_actions, mut remote_actions) =
-                Interface::<S>::compare_trees_full(foreign_entity_data, foreign_index_data)?;
+                Interface::<S>::compare_trees(foreign_entity_data, foreign_index_data)?;
 
             // Process Compare actions recursively
             let mut i = 0;

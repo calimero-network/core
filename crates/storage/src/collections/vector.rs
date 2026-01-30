@@ -37,8 +37,9 @@ where
 {
     /// Create a new vector collection (internal, shared with decompose).
     pub(super) fn new_internal() -> Self {
+        use super::CrdtType;
         Self {
-            inner: Collection::new(None),
+            inner: Collection::new_with_crdt_type(None, CrdtType::Vector),
         }
     }
 

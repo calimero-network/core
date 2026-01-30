@@ -16,33 +16,14 @@ mod index__public_methods {
             id: root_id,
             data: vec![],
             ancestors: vec![],
-            metadata: Metadata {
-                created_at: 1,
-                updated_at: 1.into(),
-                storage_type: StorageType::Public,
-                resolution: ResolutionStrategy::default(),
-            },
+            metadata: Metadata::new(1, 1),
         };
 
         let a2 = Action::Update {
             id: p1_id,
             data: vec![33; 10],
-            ancestors: vec![ChildInfo::new(
-                root_id,
-                [37; 32],
-                Metadata {
-                    created_at: 43,
-                    updated_at: 22.into(),
-                    storage_type: StorageType::Public,
-                    resolution: ResolutionStrategy::default(),
-                },
-            )],
-            metadata: Metadata {
-                created_at: 1,
-                updated_at: 1.into(),
-                storage_type: StorageType::Public,
-                resolution: ResolutionStrategy::default(),
-            },
+            ancestors: vec![ChildInfo::new(root_id, [37; 32], Metadata::new(43, 22))],
+            metadata: Metadata::new(1, 1),
         };
 
         // --------------------------------------------------------------

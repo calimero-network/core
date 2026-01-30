@@ -159,7 +159,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::Custom("FrozenStorage".to_owned())
+        CrdtType::UnorderedMap
     }
     fn storage_strategy() -> StorageStrategy {
         StorageStrategy::Structured
