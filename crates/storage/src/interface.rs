@@ -618,19 +618,13 @@ impl<S: StorageAdaptor> Interface<S> {
             // LEGACY: No type info, use LWW
             // ════════════════════════════════════════════════════════
             None => {
-                // Legacy data or ResolutionStrategy-based resolution
-                let resolution = local_metadata.resolution;
-
-                match resolution.resolve(
-                    local_data,
-                    remote_data,
-                    local_metadata.updated_at(),
-                    remote_metadata.updated_at(),
-                ) {
-                    Some(true) => Ok(Some(remote_data.to_vec())), // Remote wins
-                    Some(false) => Ok(Some(local_data.to_vec())), // Local wins
-                    None => Ok(None),                             // Manual resolution needed
-                }
+                // Legacy data - fallback to LWW
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
             }
         }
     }
@@ -748,7 +742,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// When own hashes differ (data conflict):
     /// - **Built-in CRDTs**: Merged using type-specific logic (LWW, sum, etc.)
     /// - **Custom types**: Uses registered merge function or falls back to LWW
-    /// - **Legacy (None)**: Uses `ResolutionStrategy` from metadata
+    /// - **Legacy (None)**: Falls back to LWW
     ///
     /// The merged result is sent to BOTH sides to ensure convergence.
     ///
@@ -1316,78 +1310,43 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
-            // Use resolution strategy to determine if we should accept this update
-            // For sync actions, the resolution has already been decided by compare_trees
-            let should_reject = match metadata.resolution {
-                crate::entities::ResolutionStrategy::LastWriteWins => {
-                    // LWW: reject if existing is newer
-                    last_metadata.updated_at > metadata.updated_at
-                }
-                crate::entities::ResolutionStrategy::FirstWriteWins => {
-                    // FWW: reject if existing is older (we want to keep the first/older value)
-                    *last_metadata.updated_at < metadata.updated_at()
-                }
-                crate::entities::ResolutionStrategy::MaxValue
-                | crate::entities::ResolutionStrategy::MinValue => {
-                    // Value-based: compare_trees already decided, always accept
-                    false
-                }
-                crate::entities::ResolutionStrategy::Manual => {
-                    // Manual: shouldn't reach here through normal flow
-                    // If it does, reject to avoid accidental overwrites
-                    true
-                }
-            };
+            // CRDT-based merge: all types use LWW with merge for root/concurrent updates
+            // The merge logic in compare_trees has already determined the winner for conflicts
 
-            if should_reject {
+            // Reject if existing is newer (LWW semantics)
+            if last_metadata.updated_at > metadata.updated_at {
                 return Ok(None);
             }
 
-            // For non-LWW strategies, use incoming data directly (resolution already decided)
-            match metadata.resolution {
-                crate::entities::ResolutionStrategy::FirstWriteWins
-                | crate::entities::ResolutionStrategy::MaxValue
-                | crate::entities::ResolutionStrategy::MinValue => {
-                    // Resolution already decided by compare_trees - use incoming data
+            if id.is_root() {
+                // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
+                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                    Self::try_merge_data(
+                        id,
+                        &existing_data,
+                        data,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?
+                } else {
                     data.to_vec()
                 }
-                crate::entities::ResolutionStrategy::LastWriteWins => {
-                    // LWW: might need merging for root entities or concurrent updates
-                    if id.is_root() {
-                        // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
-                        if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
-                            Self::try_merge_data(
-                                id,
-                                &existing_data,
-                                data,
-                                *last_metadata.updated_at,
-                                *metadata.updated_at,
-                            )?
-                        } else {
-                            data.to_vec()
-                        }
-                    } else if last_metadata.updated_at == metadata.updated_at {
-                        // Concurrent update (same timestamp) - try to merge
-                        if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
-                            Self::try_merge_data(
-                                id,
-                                &existing_data,
-                                data,
-                                *last_metadata.updated_at,
-                                *metadata.updated_at,
-                            )?
-                        } else {
-                            data.to_vec()
-                        }
-                    } else {
-                        // Incoming is newer - use it (LWW for non-root entities)
-                        data.to_vec()
-                    }
-                }
-                crate::entities::ResolutionStrategy::Manual => {
-                    // Should not reach here, but if it does, use incoming
+            } else if last_metadata.updated_at == metadata.updated_at {
+                // Concurrent update (same timestamp) - try to merge
+                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                    Self::try_merge_data(
+                        id,
+                        &existing_data,
+                        data,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?
+                } else {
                     data.to_vec()
                 }
+            } else {
+                // Incoming is newer - use it (LWW for non-root entities)
+                data.to_vec()
             }
         } else {
             if id.is_root() {

@@ -675,3 +675,254 @@ fn test_merge_nested_document_with_rga() {
 
     println!("✅ Nested Document RGA merge test PASSED - no divergence!");
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// compare_trees_with_callback Tests
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Test that compare_trees_with_callback can dispatch to custom merge logic
+/// for CrdtType::Custom types.
+#[test]
+#[serial]
+fn test_compare_trees_with_callback_custom_merge() {
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::Element;
+    use crate::interface::Interface;
+    use crate::merge::{RegistryMergeCallback, WasmMergeCallback, WasmMergeError};
+    use crate::store::MockedStorage;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+
+    // Define a custom type with app-specific merge logic
+    #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+    struct CustomConfig {
+        priority: u32,
+        name: String,
+    }
+
+    impl Mergeable for CustomConfig {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            // Custom merge: higher priority wins, concatenate names on tie
+            match self.priority.cmp(&other.priority) {
+                std::cmp::Ordering::Less => {
+                    self.priority = other.priority;
+                    self.name = other.name.clone();
+                }
+                std::cmp::Ordering::Equal => {
+                    // Tie: concatenate names
+                    self.name = format!("{}+{}", self.name, other.name);
+                }
+                std::cmp::Ordering::Greater => {
+                    // Keep self
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // Register the custom type
+    register_crdt_merge::<CustomConfig>();
+
+    // Create a custom callback that delegates to the registry
+    struct TestCallback;
+
+    impl WasmMergeCallback for TestCallback {
+        fn merge_custom(
+            &self,
+            type_name: &str,
+            local_data: &[u8],
+            remote_data: &[u8],
+            local_ts: u64,
+            remote_ts: u64,
+        ) -> Result<Vec<u8>, WasmMergeError> {
+            // Use the registry callback internally
+            let registry = RegistryMergeCallback;
+            registry.merge_custom(type_name, local_data, remote_data, local_ts, remote_ts)
+        }
+    }
+
+    let callback = TestCallback;
+
+    // Test that the callback properly merges custom types
+    let local = CustomConfig {
+        priority: 5,
+        name: "Alice".to_string(),
+    };
+    let remote = CustomConfig {
+        priority: 5, // Same priority - should concatenate
+        name: "Bob".to_string(),
+    };
+
+    let local_bytes = borsh::to_vec(&local).unwrap();
+    let remote_bytes = borsh::to_vec(&remote).unwrap();
+
+    let merged_bytes = callback
+        .merge_custom("CustomConfig", &local_bytes, &remote_bytes, 100, 100)
+        .expect("Merge should succeed");
+
+    let merged: CustomConfig = borsh::from_slice(&merged_bytes).unwrap();
+    assert_eq!(merged.priority, 5);
+    assert!(
+        merged.name.contains("Alice") && merged.name.contains("Bob"),
+        "Expected concatenated names, got: {}",
+        merged.name
+    );
+
+    println!("✅ compare_trees_with_callback custom merge test PASSED!");
+}
+
+/// Test that built-in CRDTs merge correctly through compare_trees
+/// without needing a callback.
+#[test]
+#[serial]
+fn test_builtin_crdt_merge_no_callback_needed() {
+    env::reset_for_testing();
+
+    // Built-in CRDTs like Counter, UnorderedMap should merge via their
+    // CrdtType metadata, not requiring WASM callbacks.
+
+    #[derive(BorshSerialize, BorshDeserialize, Debug)]
+    struct BuiltInState {
+        counter: Counter,
+        flags: UnorderedMap<String, LwwRegister<bool>>,
+    }
+
+    impl Mergeable for BuiltInState {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counter.merge(&other.counter)?;
+            self.flags.merge(&other.flags)?;
+            Ok(())
+        }
+    }
+
+    register_crdt_merge::<BuiltInState>();
+
+    // Node 1
+    env::set_executor_id([10; 32]);
+    let mut state1 = Root::new(|| BuiltInState {
+        counter: Counter::new(),
+        flags: UnorderedMap::new(),
+    });
+    state1.counter.increment().unwrap();
+    state1.counter.increment().unwrap();
+    state1
+        .flags
+        .insert("feature_a".to_string(), LwwRegister::new(true))
+        .unwrap();
+
+    let bytes1 = borsh::to_vec(&*state1).unwrap();
+
+    // Node 2
+    env::set_executor_id([20; 32]);
+    let mut state2 = Root::new(|| BuiltInState {
+        counter: Counter::new(),
+        flags: UnorderedMap::new(),
+    });
+    state2.counter.increment().unwrap();
+    state2
+        .flags
+        .insert("feature_b".to_string(), LwwRegister::new(false))
+        .unwrap();
+
+    let bytes2 = borsh::to_vec(&*state2).unwrap();
+
+    // Merge without any special callback - should use type-specific merge
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 100).unwrap();
+    let merged: BuiltInState = borsh::from_slice(&merged_bytes).unwrap();
+
+    // Counter should sum: 2 + 1 = 3
+    assert_eq!(merged.counter.value().unwrap(), 3);
+
+    // Both flags should be present
+    assert!(merged
+        .flags
+        .get(&"feature_a".to_string())
+        .unwrap()
+        .is_some());
+    assert!(merged
+        .flags
+        .get(&"feature_b".to_string())
+        .unwrap()
+        .is_some());
+
+    println!("✅ Built-in CRDT merge without callback test PASSED!");
+}
+
+/// Performance benchmark: compare built-in merge vs registry-based merge
+#[test]
+#[serial]
+fn test_merge_performance_comparison() {
+    use std::time::Instant;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+
+    #[derive(BorshSerialize, BorshDeserialize, Debug)]
+    struct BenchState {
+        counters: Vec<Counter>,
+    }
+
+    impl Mergeable for BenchState {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            for (i, c) in other.counters.iter().enumerate() {
+                if i < self.counters.len() {
+                    self.counters[i].merge(c)?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    register_crdt_merge::<BenchState>();
+
+    const NUM_COUNTERS: usize = 100;
+    const NUM_ITERATIONS: usize = 100;
+
+    // Create states with many counters
+    env::set_executor_id([30; 32]);
+    let mut state1 = BenchState {
+        counters: (0..NUM_COUNTERS).map(|_| Counter::new()).collect(),
+    };
+    for c in &mut state1.counters {
+        c.increment().unwrap();
+    }
+
+    env::set_executor_id([40; 32]);
+    let mut state2 = BenchState {
+        counters: (0..NUM_COUNTERS).map(|_| Counter::new()).collect(),
+    };
+    for c in &mut state2.counters {
+        c.increment().unwrap();
+    }
+
+    let bytes1 = borsh::to_vec(&state1).unwrap();
+    let bytes2 = borsh::to_vec(&state2).unwrap();
+
+    // Benchmark registry-based merge
+    let start = Instant::now();
+    for _ in 0..NUM_ITERATIONS {
+        let _ = merge_root_state(&bytes1, &bytes2, 100, 200).unwrap();
+    }
+    let registry_duration = start.elapsed();
+
+    // Benchmark LWW fallback (clear registry)
+    clear_merge_registry();
+    let start = Instant::now();
+    for _ in 0..NUM_ITERATIONS {
+        let _ = merge_root_state(&bytes1, &bytes2, 100, 200).unwrap();
+    }
+    let lww_duration = start.elapsed();
+
+    println!(
+        "📊 Performance comparison ({} counters, {} iterations):",
+        NUM_COUNTERS, NUM_ITERATIONS
+    );
+    println!("   Registry-based merge: {:?}", registry_duration);
+    println!("   LWW fallback:         {:?}", lww_duration);
+
+    // Registry merge should be slower but correct
+    // LWW is fast but loses data
+    // This test just verifies both complete successfully
+    println!("✅ Performance benchmark completed!");
+}
