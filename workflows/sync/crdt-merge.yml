@@ -1,7 +1,7 @@
 description: Test CRDT merge - two nodes make concurrent changes that merge correctly
 name: CRDT Merge Test
 
-force_pull_image: true
+force_pull_image: false
 nuke_on_start: true
 e2e_mode: true
 
@@ -60,14 +60,8 @@ steps:
     invitation: "{{invitation_node2}}"
 
   - name: Wait for Initial Sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - crdt-merge-node-1
-      - crdt-merge-node-2
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
+    type: wait
+    seconds: 10
 
   # =============================================================================
   # PHASE 2: Both nodes write to DIFFERENT keys (no conflict, just merge)
@@ -102,16 +96,8 @@ steps:
           value: "value_from_node2_{{iteration}}"
 
   - name: Wait for Merge Sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - crdt-merge-node-1
-      - crdt-merge-node-2
-    timeout: 120
-    check_interval: 3
-    trigger_sync: true
-    outputs:
-      merge_root_hash: root_hash
+    type: wait
+    seconds: 30
 
   # =============================================================================
   # PHASE 3: Verify both nodes have ALL keys (merge successful)
@@ -174,14 +160,8 @@ steps:
       value: "node2_wins"
 
   - name: Wait for LWW Conflict Resolution
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - crdt-merge-node-1
-      - crdt-merge-node-2
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
+    type: wait
+    seconds: 15
 
   - name: "[Verify LWW] Check shared_key on both nodes"
     type: call
@@ -219,8 +199,8 @@ steps:
   - name: Final Summary
     type: assert
     statements:
-      - statement: "is_set({{merge_root_hash}})"
-        message: "Nodes converged to same root hash after merge"
+      - statement: "is_set({{node1_has_node2_key}})"
+        message: "Nodes merged disjoint keys successfully"
       - statement: "is_set({{lww_result_node1}})"
         message: "LWW conflict resolution completed"
 

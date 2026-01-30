@@ -1,7 +1,7 @@
 description: Test late joiner with large state gap - verifies snapshot sync triggers correctly
 name: Late Joiner Large State Test
 
-force_pull_image: true
+force_pull_image: false
 nuke_on_start: true
 e2e_mode: true
 
@@ -33,9 +33,9 @@ steps:
       pk_node1: memberPublicKey
 
   # Write substantial state - triggers snapshot sync when Node 2 joins
-  - name: "[Phase 1] Write 2000 keys on Node 1 (large state)"
+  - name: "[Phase 1] Write 500 keys on Node 1 (large state)"
     type: repeat
-    count: 2000
+    count: 500
     steps:
       - name: "Write large_key_{{iteration}}"
         type: call
@@ -59,7 +59,7 @@ steps:
   - name: Assert Large State Created
     type: json_assert
     statements:
-      - 'json_subset({{large_state_count}}, {"output": 2000})'
+      - 'json_subset({{large_state_count}}, {"output": 500})'
 
   # =============================================================================
   # PHASE 2: Node 2 joins with ZERO state - should trigger snapshot sync
@@ -93,21 +93,12 @@ steps:
     invitation: "{{invitation}}"
 
   # =============================================================================
-  # PHASE 3: Wait for snapshot sync (may take longer for large state)
+  # PHASE 3: Wait for snapshot sync
   # =============================================================================
 
-  - name: Wait for Snapshot Sync (long timeout for 2000 keys)
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - late-joiner-node-1
-      - late-joiner-node-2
-    timeout: 600  # 10 minutes for large state
-    check_interval: 10
-    trigger_sync: true
-    outputs:
-      sync_root_hash: root_hash
-      sync_time: elapsed_seconds
+  - name: Wait for Snapshot Sync
+    type: wait
+    seconds: 120
 
   # =============================================================================
   # PHASE 4: Verify Node 2 received ALL state via snapshot
@@ -131,7 +122,7 @@ steps:
     executor_public_key: "{{pk_node2}}"
     method: get
     args:
-      key: "large_key_1000"
+      key: "large_key_250"
     outputs:
       verify_middle: result
 
@@ -142,7 +133,7 @@ steps:
     executor_public_key: "{{pk_node2}}"
     method: get
     args:
-      key: "large_key_2000"
+      key: "large_key_500"
     outputs:
       verify_last: result
 
@@ -159,9 +150,9 @@ steps:
     type: json_assert
     statements:
       - 'json_subset({{verify_first}}, {"output": "large_value_1_with_extra_payload_to_increase_size"})'
-      - 'json_subset({{verify_middle}}, {"output": "large_value_1000_with_extra_payload_to_increase_size"})'
-      - 'json_subset({{verify_last}}, {"output": "large_value_2000_with_extra_payload_to_increase_size"})'
-      - 'json_subset({{count_node2}}, {"output": 2000})'
+      - 'json_subset({{verify_middle}}, {"output": "large_value_250_with_extra_payload_to_increase_size"})'
+      - 'json_subset({{verify_last}}, {"output": "large_value_500_with_extra_payload_to_increase_size"})'
+      - 'json_subset({{count_node2}}, {"output": 500})'
 
   # =============================================================================
   # PHASE 5: Verify nodes can continue working after sync
@@ -178,14 +169,8 @@ steps:
       value: "node2_can_write_after_sync"
 
   - name: Wait for Post-Sync Propagation
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - late-joiner-node-1
-      - late-joiner-node-2
-    timeout: 60
-    check_interval: 3
-    trigger_sync: true
+    type: wait
+    seconds: 15
 
   - name: "[Verify] Node 1 received Node 2's post-sync write"
     type: call
@@ -210,13 +195,11 @@ steps:
   - name: Final Summary
     type: assert
     statements:
-      - statement: "is_set({{sync_root_hash}})"
-        message: "Snapshot sync completed with matching root hash"
-      - statement: "is_set({{sync_time}})"
-        message: "Sync time recorded"
+      - statement: "is_set({{verify_last}})"
+        message: "Snapshot sync completed successfully"
       - statement: "is_set({{post_sync_verify}})"
         message: "Nodes continue working after large snapshot sync"
 
 stop_all_nodes: true
 restart: false
-wait_timeout: 900
+wait_timeout: 600

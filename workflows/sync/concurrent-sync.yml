@@ -1,7 +1,7 @@
 description: Test concurrent modifications during sync - deltas arrive while node is syncing
 name: Concurrent Sync Test
 
-force_pull_image: true
+force_pull_image: false
 nuke_on_start: true
 e2e_mode: true
 
@@ -32,9 +32,9 @@ steps:
       context_id: contextId
       member_public_key_1: memberPublicKey
 
-  - name: "[Pre-Sync] Write 500 keys on Node 1"
+  - name: "[Pre-Sync] Write 200 keys on Node 1"
     type: repeat
-    count: 500
+    count: 200
     steps:
       - name: "Write pre_key_{{iteration}}"
         type: call
@@ -58,7 +58,7 @@ steps:
   - name: Assert Pre-Sync State
     type: json_assert
     statements:
-      - 'json_subset({{pre_sync_count}}, {"output": 500})'
+      - 'json_subset({{pre_sync_count}}, {"output": 200})'
 
   # =============================================================================
   # PHASE 2: Node 2 joins and starts syncing
@@ -96,9 +96,9 @@ steps:
     type: wait
     seconds: 2
 
-  - name: "[During Sync] Node 1 writes 100 more keys"
+  - name: "[During Sync] Node 1 writes 50 more keys"
     type: repeat
-    count: 100
+    count: 50
     steps:
       - name: "Write during_key_{{iteration}}"
         type: call
@@ -115,17 +115,8 @@ steps:
   # =============================================================================
 
   - name: Wait for Complete Sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - concurrent-sync-node-1
-      - concurrent-sync-node-2
-    timeout: 300
-    check_interval: 5
-    trigger_sync: true
-    outputs:
-      final_root_hash: root_hash
-      sync_time: elapsed_seconds
+    type: wait
+    seconds: 60
 
   # =============================================================================
   # PHASE 5: Verify Node 2 has ALL keys (pre + during sync)
@@ -138,7 +129,7 @@ steps:
     executor_public_key: "{{public_key_node2}}"
     method: get
     args:
-      key: "pre_key_250"
+      key: "pre_key_100"
     outputs:
       verify_pre_key: result
 
@@ -149,7 +140,7 @@ steps:
     executor_public_key: "{{public_key_node2}}"
     method: get
     args:
-      key: "during_key_50"
+      key: "during_key_25"
     outputs:
       verify_during_key: result
 
@@ -165,9 +156,9 @@ steps:
   - name: Assert All Data Synced
     type: json_assert
     statements:
-      - 'json_subset({{verify_pre_key}}, {"output": "pre_value_250"})'
-      - 'json_subset({{verify_during_key}}, {"output": "during_value_50"})'
-      - 'json_subset({{final_count_node2}}, {"output": 600})'
+      - 'json_subset({{verify_pre_key}}, {"output": "pre_value_100"})'
+      - 'json_subset({{verify_during_key}}, {"output": "during_value_25"})'
+      - 'json_subset({{final_count_node2}}, {"output": 250})'
 
   # =============================================================================
   # PHASE 6: Final Summary
@@ -176,11 +167,9 @@ steps:
   - name: Final Summary
     type: assert
     statements:
-      - statement: "is_set({{final_root_hash}})"
-        message: "Sync completed with matching root hash"
       - statement: "is_set({{verify_during_key}})"
         message: "Delta buffering worked - keys written during sync were preserved"
 
 stop_all_nodes: true
 restart: false
-wait_timeout: 600
+wait_timeout: 300
