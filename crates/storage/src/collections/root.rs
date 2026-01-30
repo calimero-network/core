@@ -8,6 +8,7 @@ use std::ptr;
 use super::{Collection, ROOT_ID};
 use crate::address::Id;
 use crate::delta::{push_comparison, StorageDelta};
+use crate::entities::Data;
 use crate::integration::Comparison;
 use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};

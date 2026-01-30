@@ -456,6 +456,18 @@ mod interface__comparison {
             ]
         );
         local_para2.element_mut().is_dirty = true;
+
+        // Extract the ancestor info from the actual Add action for verification
+        let para2_ancestors = match foreign_actions.get(1) {
+            Some(Action::Add { ancestors, .. }) => ancestors.clone(),
+            _ => panic!("Expected second action to be Add"),
+        };
+        // Verify ancestors is not empty (parent page should be included)
+        assert!(
+            !para2_ancestors.is_empty(),
+            "Add action should include ancestors (parent page info)"
+        );
+
         assert_eq!(
             foreign_actions,
             vec![
@@ -463,11 +475,11 @@ mod interface__comparison {
                 Action::Compare {
                     id: local_para1.id()
                 },
-                // Para2 needs to be added to foreign
+                // Para2 needs to be added to foreign (with ancestor info for chain verification)
                 Action::Add {
                     id: local_para2.id(),
                     data: to_vec(&local_para2).unwrap(),
-                    ancestors: vec![],
+                    ancestors: para2_ancestors,
                     metadata: local_para2.element().metadata.clone(),
                 },
             ]

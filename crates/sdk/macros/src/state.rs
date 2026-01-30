@@ -314,6 +314,78 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
     }
 }
 
+/// Check if a type string represents a known CRDT type.
+///
+/// Returns `true` for types that implement `Mergeable`:
+/// - Built-in CRDTs: UnorderedMap, Vector, UnorderedSet, Counter, RGA, LwwRegister
+/// - Storage wrappers: UserStorage, FrozenStorage
+/// - Option<T> where T is a CRDT type
+fn is_crdt_type(type_str: &str) -> bool {
+    // Built-in CRDT collections
+    type_str.contains("UnorderedMap")
+        || type_str.contains("Vector")
+        || type_str.contains("UnorderedSet")
+        || type_str.contains("Counter")
+        || type_str.contains("GCounter")
+        || type_str.contains("PNCounter")
+        || type_str.contains("ReplicatedGrowableArray")
+        || type_str.contains("LwwRegister")
+        // Storage wrappers (backed by UnorderedMap)
+        || type_str.contains("UserStorage")
+        || type_str.contains("FrozenStorage")
+        // Option<T> is Mergeable if T is Mergeable
+        // We check for Option containing a CRDT type
+        || (type_str.contains("Option") && is_option_of_crdt(type_str))
+}
+
+/// Check if an Option type contains a CRDT type.
+fn is_option_of_crdt(type_str: &str) -> bool {
+    // Extract the inner type from Option<T>
+    // Simple heuristic: check if any CRDT type appears after "Option"
+    let after_option = type_str.split("Option").nth(1).unwrap_or("");
+    after_option.contains("UnorderedMap")
+        || after_option.contains("Vector")
+        || after_option.contains("UnorderedSet")
+        || after_option.contains("Counter")
+        || after_option.contains("ReplicatedGrowableArray")
+        || after_option.contains("LwwRegister")
+        || after_option.contains("UserStorage")
+        || after_option.contains("FrozenStorage")
+}
+
+/// Get a helpful suggestion for a non-CRDT type.
+fn get_crdt_suggestion(type_str: &str) -> &'static str {
+    if type_str.contains("String") || type_str.contains("str") {
+        "LwwRegister<String>"
+    } else if type_str.contains("u8")
+        || type_str.contains("u16")
+        || type_str.contains("u32")
+        || type_str.contains("u64")
+        || type_str.contains("u128")
+        || type_str.contains("usize")
+    {
+        "LwwRegister<T> or Counter"
+    } else if type_str.contains("i8")
+        || type_str.contains("i16")
+        || type_str.contains("i32")
+        || type_str.contains("i64")
+        || type_str.contains("i128")
+        || type_str.contains("isize")
+    {
+        "LwwRegister<T> or PNCounter"
+    } else if type_str.contains("bool") {
+        "LwwRegister<bool>"
+    } else if type_str.contains("Vec<") {
+        "Vector<T>"
+    } else if type_str.contains("HashMap") || type_str.contains("BTreeMap") {
+        "UnorderedMap<K, V>"
+    } else if type_str.contains("HashSet") || type_str.contains("BTreeSet") {
+        "UnorderedSet<V>"
+    } else {
+        "LwwRegister<T> for single values, or a CRDT collection"
+    }
+}
+
 /// Generate Mergeable trait implementation for the state struct
 fn generate_mergeable_impl(
     ident: &Ident,
@@ -326,57 +398,70 @@ fn generate_mergeable_impl(
     let fields = match orig {
         StructOrEnumItem::Struct(s) => &s.fields,
         StructOrEnumItem::Enum(_) => {
-            // Enums don't have fields to merge
+            // Enums don't have fields to merge - they must be wrapped in LwwRegister
             return quote! {
-                // No Mergeable impl for enums
+                ::core::compile_error!(
+                    "Enums in #[app::state] must be wrapped in LwwRegister<T> to be mergeable.\n\
+                     Example: `status: LwwRegister<MyEnum>` instead of `status: MyEnum`"
+                );
             };
         }
     };
 
-    // Generate merge calls for each field
-    // Only merge fields that are known CRDT types
-    let merge_calls: Vec<_> = fields
-        .iter()
-        .filter_map(|field| {
-            let field_name = field.ident.as_ref()?;
-            let field_type = &field.ty;
+    // Collect errors for non-CRDT fields
+    let mut errors: Vec<TokenStream> = Vec::new();
+    let mut merge_calls: Vec<TokenStream> = Vec::new();
 
-            // Check if this is a known CRDT type by examining the type path
-            let type_str = quote! { #field_type }.to_string();
+    for field in fields.iter() {
+        let Some(field_name) = field.ident.as_ref() else {
+            continue;
+        };
+        let field_type = &field.ty;
 
-            // Only generate merge for CRDT collections
-            // Non-CRDT fields (String, u64, etc.) are handled by storage layer's LWW
-            let is_crdt = type_str.contains("UnorderedMap")
-                || type_str.contains("Vector")
-                || type_str.contains("UnorderedSet")
-                || type_str.contains("Counter")
-                || type_str.contains("ReplicatedGrowableArray")
-                || type_str.contains("LwwRegister")
-                || type_str.contains("UserStorage")
-                || type_str.contains("FrozenStorage");
+        // Check if this is a known CRDT type by examining the type path
+        let type_str = quote! { #field_type }.to_string();
 
-            if !is_crdt {
-                // Skip non-CRDT fields
-                return None;
-            }
+        if !is_crdt_type(&type_str) {
+            // Generate compile error for non-CRDT field
+            let suggestion = get_crdt_suggestion(&type_str);
+            let error_msg = format!(
+                "Field `{}` has type `{}` which is not a CRDT type.\n\n\
+                 All fields in #[app::state] must implement Mergeable to ensure \
+                 distributed state convergence.\n\n\
+                 Suggestion: Use `{}` instead.\n\n\
+                 Why? Non-CRDT types cause permanent state divergence across nodes. \
+                 See: crates/storage/README.md",
+                field_name, type_str, suggestion
+            );
+            errors.push(quote! {
+                ::core::compile_error!(#error_msg);
+            });
+            continue;
+        }
 
-            // Generate merge call for CRDT fields
-            Some(quote! {
-                ::calimero_storage::collections::Mergeable::merge(
-                    &mut self.#field_name,
-                    &other.#field_name
-                ).map_err(|e| {
-                    ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
-                        format!(
-                            "Failed to merge field '{}': {:?}",
-                            stringify!(#field_name),
-                            e
-                        )
+        // Generate merge call for CRDT fields
+        merge_calls.push(quote! {
+            ::calimero_storage::collections::Mergeable::merge(
+                &mut self.#field_name,
+                &other.#field_name
+            ).map_err(|e| {
+                ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
+                    format!(
+                        "Failed to merge field '{}': {:?}",
+                        stringify!(#field_name),
+                        e
                     )
-                })?;
-            })
-        })
-        .collect();
+                )
+            })?;
+        });
+    }
+
+    // If there are errors, return them instead of the impl
+    if !errors.is_empty() {
+        return quote! {
+            #(#errors)*
+        };
+    }
 
     quote! {
         // ============================================================================
@@ -396,10 +481,9 @@ fn generate_mergeable_impl(
         // - Happens during network sync (already slow), so overhead is negligible
         //
         // What it does:
-        // - Merges each CRDT field (Map, Counter, RGA, etc.)
-        // - Skips non-CRDT fields (String, u64, etc.) - handled by storage LWW
+        // - Merges ALL fields (every field must be a CRDT type)
         // - Recursive merging for nested CRDTs
-        // - Guarantees no divergence!
+        // - Guarantees eventual consistency across all nodes!
         //
         impl #impl_generics ::calimero_storage::collections::Mergeable for #ident #ty_generics #where_clause {
             fn merge(&mut self, other: &Self)

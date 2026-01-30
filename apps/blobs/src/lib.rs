@@ -9,7 +9,7 @@
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env};
-use calimero_storage::collections::UnorderedMap;
+use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap};
 
 // === CONSTANTS ===
 
@@ -146,15 +146,15 @@ impl calimero_storage::collections::Mergeable for FileRecord {
 pub struct FileShareState {
     /// Context owner's identity as base58-encoded public key
     /// Set during initialization from `env::executor_id()`
-    pub owner: String,
+    pub owner: LwwRegister<String>,
 
     /// Map of file ID to file metadata records
     /// Key: file ID (e.g., "file_0"), Value: FileRecord
     pub files: UnorderedMap<String, FileRecord>,
 
     /// Counter for generating unique file IDs
-    /// Incremented on each file upload
-    pub file_counter: u64,
+    /// Incremented on each file upload (CRDT G-Counter for distributed safety)
+    pub file_counter: Counter,
 }
 
 /// Events emitted by the application
@@ -195,9 +195,9 @@ impl FileShareState {
         app::log!("Initializing file sharing app for owner: {}", owner);
 
         FileShareState {
-            owner,
+            owner: LwwRegister::new(owner),
             files: UnorderedMap::new(),
-            file_counter: 0,
+            file_counter: Counter::new(),
         }
     }
 
@@ -225,8 +225,15 @@ impl FileShareState {
     ) -> Result<String, String> {
         let blob_id = parse_blob_id_base58(&blob_id_str)?;
 
-        let file_id = format!("file_{}", self.file_counter);
-        self.file_counter += 1;
+        // Get current counter value for file ID, then increment
+        let counter_value = self
+            .file_counter
+            .value()
+            .map_err(|e| format!("Failed to get counter: {e:?}"))?;
+        let file_id = format!("file_{}", counter_value);
+        self.file_counter
+            .increment()
+            .map_err(|e| format!("Failed to increment counter: {e:?}"))?;
 
         let uploader_id = env::executor_id();
         let uploader = encode_blob_id_base58(&uploader_id);
@@ -436,7 +443,10 @@ impl FileShareState {
              - Total files: {}\n\
              - Total storage: {:.2} MB ({} bytes)\n\
              - Owner: {}",
-            file_count, total_mb, total_size, self.owner
+            file_count,
+            total_mb,
+            total_size,
+            self.owner.get()
         ))
     }
 }

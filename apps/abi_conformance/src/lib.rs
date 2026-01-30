@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
+use calimero_storage::collections::{LwwRegister, UnorderedMap, Vector};
 use thiserror::Error;
 
 // Test multi-file ABI generation
@@ -106,11 +107,11 @@ pub enum Event {
 
 // State
 #[app::state(emits = Event)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
-    counters: BTreeMap<String, u32>, // map<string,u32>
-    users: Vec<UserId32>,            // list<UserId32>
+    counters: UnorderedMap<String, LwwRegister<u32>>, // map<string,u32> - CRDT with LWW values
+    users: Vector<LwwRegister<UserId32>>,             // list<UserId32> - CRDT with LWW values
 }
 
 // Implementation
@@ -118,10 +119,10 @@ pub struct AbiState {
 impl AbiState {
     #[app::init]
     #[must_use]
-    pub const fn init() -> Self {
+    pub fn init() -> Self {
         Self {
-            counters: BTreeMap::new(),
-            users: Vec::new(),
+            counters: UnorderedMap::new(),
+            users: Vector::new(),
         }
     }
 
