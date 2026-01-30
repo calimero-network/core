@@ -102,6 +102,92 @@ impl SyncCapabilities {
     }
 }
 
+// ============================================================================
+// Gossip Mode
+// ============================================================================
+
+/// Mode for delta gossip propagation.
+///
+/// Controls whether sync hints are included with delta broadcasts.
+/// This allows trading off between bandwidth and sync responsiveness.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum GossipMode {
+    /// Include sync hints with every delta (~40 bytes overhead).
+    ///
+    /// Enables:
+    /// - Proactive divergence detection
+    /// - Adaptive protocol selection by receivers
+    /// - Faster recovery from network partitions
+    #[default]
+    WithHints,
+
+    /// Send deltas without sync hints (minimal bandwidth).
+    ///
+    /// Use when:
+    /// - Network is bandwidth-constrained
+    /// - All nodes are well-synced (heartbeats sufficient)
+    /// - Testing or debugging without hint complexity
+    Minimal,
+
+    /// Adaptive mode: include hints only when divergence is likely.
+    ///
+    /// Triggers hints when:
+    /// - Entity count changed significantly (>10% delta)
+    /// - Tree depth increased
+    /// - After sync completion (announce new state)
+    Adaptive {
+        /// Minimum entity count change to trigger hints.
+        entity_change_threshold: u32,
+    },
+}
+
+impl GossipMode {
+    /// Create adaptive mode with default thresholds.
+    #[must_use]
+    pub fn adaptive() -> Self {
+        Self::Adaptive {
+            entity_change_threshold: 10,
+        }
+    }
+
+    /// Check if hints should be included for a state change.
+    #[must_use]
+    pub fn should_include_hints(&self, entity_count_delta: i32) -> bool {
+        match self {
+            Self::WithHints => true,
+            Self::Minimal => false,
+            Self::Adaptive {
+                entity_change_threshold,
+            } => entity_count_delta.unsigned_abs() >= *entity_change_threshold,
+        }
+    }
+
+    /// Create hints based on mode and state.
+    ///
+    /// Returns `Some(SyncHints)` if hints should be included, `None` otherwise.
+    #[must_use]
+    pub fn create_hints(
+        &self,
+        root_hash: Hash,
+        entity_count: u32,
+        tree_depth: u8,
+        entity_count_delta: i32,
+    ) -> Option<SyncHints> {
+        if self.should_include_hints(entity_count_delta) {
+            Some(SyncHints::from_state(root_hash, entity_count, tree_depth))
+        } else {
+            // Return minimal hints with just the hash
+            // (required field, but receiver knows hints aren't authoritative)
+            Some(SyncHints {
+                post_root_hash: root_hash,
+                entity_count: 0,
+                tree_depth: 0,
+                suggested_protocol: SyncProtocolHint::DeltaSync,
+            })
+        }
+    }
+}
+
 /// Handshake message for protocol negotiation.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SyncHandshake {
@@ -831,5 +917,114 @@ mod tests {
         // Should be ready for typical sync scenarios
         assert!(filter.is_empty());
         assert!(filter.size_bytes() > 0);
+    }
+
+    // =========================================================================
+    // Gossip Mode Tests
+    // =========================================================================
+
+    #[test]
+    fn test_gossip_mode_with_hints_always_includes() {
+        let mode = GossipMode::WithHints;
+
+        assert!(mode.should_include_hints(0));
+        assert!(mode.should_include_hints(1));
+        assert!(mode.should_include_hints(100));
+        assert!(mode.should_include_hints(-50));
+    }
+
+    #[test]
+    fn test_gossip_mode_minimal_never_includes() {
+        let mode = GossipMode::Minimal;
+
+        assert!(!mode.should_include_hints(0));
+        assert!(!mode.should_include_hints(100));
+        assert!(!mode.should_include_hints(-1000));
+    }
+
+    #[test]
+    fn test_gossip_mode_adaptive_threshold() {
+        let mode = GossipMode::Adaptive {
+            entity_change_threshold: 10,
+        };
+
+        // Below threshold - no hints
+        assert!(!mode.should_include_hints(0));
+        assert!(!mode.should_include_hints(5));
+        assert!(!mode.should_include_hints(-9));
+
+        // At or above threshold - include hints
+        assert!(mode.should_include_hints(10));
+        assert!(mode.should_include_hints(-10));
+        assert!(mode.should_include_hints(100));
+    }
+
+    #[test]
+    fn test_gossip_mode_create_hints_with_hints() {
+        let mode = GossipMode::WithHints;
+        let root_hash = Hash::from([1u8; 32]);
+
+        let hints = mode.create_hints(root_hash, 1000, 10, 5);
+        assert!(hints.is_some());
+
+        let hints = hints.unwrap();
+        assert_eq!(hints.post_root_hash, root_hash);
+        assert_eq!(hints.entity_count, 1000);
+        assert_eq!(hints.tree_depth, 10);
+    }
+
+    #[test]
+    fn test_gossip_mode_create_hints_minimal() {
+        let mode = GossipMode::Minimal;
+        let root_hash = Hash::from([2u8; 32]);
+
+        // Minimal mode still returns hints but with zeroed metadata
+        let hints = mode.create_hints(root_hash, 1000, 10, 5);
+        assert!(hints.is_some());
+
+        let hints = hints.unwrap();
+        assert_eq!(hints.post_root_hash, root_hash); // Hash is always included
+        assert_eq!(hints.entity_count, 0); // But metadata is zeroed
+        assert_eq!(hints.tree_depth, 0);
+    }
+
+    #[test]
+    fn test_gossip_mode_adaptive_creates_hints_when_threshold_met() {
+        let mode = GossipMode::adaptive();
+        let root_hash = Hash::from([3u8; 32]);
+
+        // Large change - full hints
+        let hints = mode.create_hints(root_hash, 1000, 10, 50);
+        assert!(hints.is_some());
+        let hints = hints.unwrap();
+        assert_eq!(hints.entity_count, 1000);
+
+        // Small change - minimal hints
+        let hints = mode.create_hints(root_hash, 1000, 10, 5);
+        assert!(hints.is_some());
+        let hints = hints.unwrap();
+        assert_eq!(hints.entity_count, 0); // Zeroed for small changes
+    }
+
+    #[test]
+    fn test_gossip_mode_serialization() {
+        let modes = [
+            GossipMode::WithHints,
+            GossipMode::Minimal,
+            GossipMode::Adaptive {
+                entity_change_threshold: 25,
+            },
+        ];
+
+        for mode in modes {
+            let encoded = borsh::to_vec(&mode).unwrap();
+            let decoded: GossipMode = borsh::from_slice(&encoded).unwrap();
+            assert_eq!(decoded, mode);
+        }
+    }
+
+    #[test]
+    fn test_gossip_mode_default_is_with_hints() {
+        assert_eq!(GossipMode::default(), GossipMode::WithHints);
     }
 }
