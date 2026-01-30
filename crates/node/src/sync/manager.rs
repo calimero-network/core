@@ -539,7 +539,12 @@ impl SyncManager {
     ///     Some(&*callback),
     /// )?;
     /// ```
+    ///
+    /// # Note
+    ///
+    /// Currently unused - will be used when hash-based incremental sync is implemented.
     #[must_use]
+    #[allow(dead_code)] // Ready for hash-based sync (Phase 5)
     pub(super) fn get_merge_callback(&self) -> Arc<dyn WasmMergeCallback> {
         // RuntimeMergeCallback uses the global type registry to dispatch merge calls
         // For custom types, it looks up the merge function by type name
