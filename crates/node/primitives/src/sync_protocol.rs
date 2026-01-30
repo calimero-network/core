@@ -414,6 +414,143 @@ impl std::fmt::Display for DeltaBufferFull {
 impl std::error::Error for DeltaBufferFull {}
 
 // ============================================================================
+// Delta ID Bloom Filter
+// ============================================================================
+
+/// Bloom filter for efficient delta ID membership testing.
+///
+/// Used to quickly check "do you have these deltas?" without transferring
+/// full ID lists. False positives are possible but false negatives are not.
+///
+/// # Usage
+///
+/// ```ignore
+/// let mut filter = DeltaIdBloomFilter::with_capacity(1000, 0.01);
+/// filter.insert(&delta_id);
+/// if filter.maybe_contains(&other_id) {
+///     // Might have it - verify with actual lookup
+/// }
+/// ```
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct DeltaIdBloomFilter {
+    /// Bit array storage.
+    bits: Vec<u8>,
+    /// Number of hash functions.
+    num_hashes: u8,
+    /// Number of items inserted.
+    num_items: u32,
+}
+
+impl DeltaIdBloomFilter {
+    /// Create a new bloom filter with given capacity and false positive rate.
+    ///
+    /// # Arguments
+    /// * `expected_items` - Expected number of delta IDs to store
+    /// * `false_positive_rate` - Desired false positive rate (e.g., 0.01 for 1%)
+    #[must_use]
+    pub fn with_capacity(expected_items: usize, false_positive_rate: f64) -> Self {
+        // Calculate optimal size: m = -n * ln(p) / (ln(2)^2)
+        let n = expected_items.max(1) as f64;
+        let p = false_positive_rate.max(0.0001).min(0.5);
+        let m = (-n * p.ln() / (2_f64.ln().powi(2))).ceil() as usize;
+        let m = m.max(64); // Minimum 64 bits
+
+        // Calculate optimal hash count: k = m/n * ln(2)
+        let k = ((m as f64 / n) * 2_f64.ln()).ceil() as usize;
+        let k = k.clamp(1, 16) as u8;
+
+        Self {
+            bits: vec![0; (m + 7) / 8],
+            num_hashes: k,
+            num_items: 0,
+        }
+    }
+
+    /// Create a filter optimized for typical delta sync scenarios.
+    ///
+    /// Uses 1% false positive rate with capacity for 1000 deltas.
+    #[must_use]
+    pub fn default_for_sync() -> Self {
+        Self::with_capacity(1000, 0.01)
+    }
+
+    /// Insert a delta ID into the filter.
+    pub fn insert(&mut self, delta_id: &[u8; 32]) {
+        for i in 0..self.num_hashes {
+            let hash = self.hash(delta_id, i);
+            let bit_index = hash % (self.bits.len() * 8);
+            self.bits[bit_index / 8] |= 1 << (bit_index % 8);
+        }
+        self.num_items += 1;
+    }
+
+    /// Check if a delta ID might be in the filter.
+    ///
+    /// Returns `true` if possibly present, `false` if definitely absent.
+    #[must_use]
+    pub fn maybe_contains(&self, delta_id: &[u8; 32]) -> bool {
+        for i in 0..self.num_hashes {
+            let hash = self.hash(delta_id, i);
+            let bit_index = hash % (self.bits.len() * 8);
+            if self.bits[bit_index / 8] & (1 << (bit_index % 8)) == 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Get the number of items inserted.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.num_items as usize
+    }
+
+    /// Check if the filter is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.num_items == 0
+    }
+
+    /// Get the size of the filter in bytes.
+    #[must_use]
+    pub fn size_bytes(&self) -> usize {
+        self.bits.len()
+    }
+
+    /// Get the estimated false positive rate for current fill level.
+    #[must_use]
+    pub fn estimated_fp_rate(&self) -> f64 {
+        let m = (self.bits.len() * 8) as f64;
+        let k = self.num_hashes as f64;
+        let n = self.num_items as f64;
+        (1.0 - (-k * n / m).exp()).powf(k)
+    }
+
+    /// Hash function using FNV-1a with seed.
+    fn hash(&self, data: &[u8; 32], seed: u8) -> usize {
+        let mut hash: u64 = 0xcbf29ce484222325_u64; // FNV offset basis
+        hash = hash.wrapping_add(seed as u64);
+        for byte in data {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+        }
+        hash as usize
+    }
+
+    /// Find delta IDs from a list that are definitely NOT in this filter.
+    ///
+    /// Returns IDs that the filter owner definitely doesn't have.
+    /// This is useful for sync: ask "which of these do you need?"
+    #[must_use]
+    pub fn filter_missing(&self, ids: &[[u8; 32]]) -> Vec<[u8; 32]> {
+        ids.iter()
+            .filter(|id| !self.maybe_contains(id))
+            .copied()
+            .collect()
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -588,5 +725,111 @@ mod tests {
         assert_eq!(decoded.dag_heads, handshake.dag_heads);
         assert_eq!(decoded.entity_count, handshake.entity_count);
         assert!(decoded.capabilities.supports_compression);
+    }
+
+    // =========================================================================
+    // Bloom Filter Tests
+    // =========================================================================
+
+    #[test]
+    fn test_bloom_filter_insert_and_contains() {
+        let mut filter = DeltaIdBloomFilter::with_capacity(100, 0.01);
+        let id1 = [1u8; 32];
+        let id2 = [2u8; 32];
+        let id3 = [3u8; 32];
+
+        // Initially empty
+        assert!(filter.is_empty());
+        assert!(!filter.maybe_contains(&id1));
+
+        // Insert and check
+        filter.insert(&id1);
+        assert!(!filter.is_empty());
+        assert_eq!(filter.len(), 1);
+        assert!(filter.maybe_contains(&id1));
+        assert!(!filter.maybe_contains(&id2)); // Definitely not present
+
+        // Insert another
+        filter.insert(&id2);
+        assert_eq!(filter.len(), 2);
+        assert!(filter.maybe_contains(&id2));
+        assert!(!filter.maybe_contains(&id3)); // Definitely not present
+    }
+
+    #[test]
+    fn test_bloom_filter_no_false_negatives() {
+        let mut filter = DeltaIdBloomFilter::with_capacity(1000, 0.01);
+
+        // Insert 100 random-ish IDs
+        let ids: Vec<[u8; 32]> = (0..100u8)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                id[0] = i;
+                id[31] = 255 - i;
+                id
+            })
+            .collect();
+
+        for id in &ids {
+            filter.insert(id);
+        }
+
+        // All inserted IDs MUST be found (no false negatives)
+        for id in &ids {
+            assert!(filter.maybe_contains(id), "False negative for {:?}", id[0]);
+        }
+    }
+
+    #[test]
+    fn test_bloom_filter_serialization() {
+        let mut filter = DeltaIdBloomFilter::with_capacity(100, 0.01);
+        filter.insert(&[1u8; 32]);
+        filter.insert(&[2u8; 32]);
+
+        let encoded = borsh::to_vec(&filter).unwrap();
+        let decoded: DeltaIdBloomFilter = borsh::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.len(), 2);
+        assert!(decoded.maybe_contains(&[1u8; 32]));
+        assert!(decoded.maybe_contains(&[2u8; 32]));
+        assert!(!decoded.maybe_contains(&[3u8; 32]));
+    }
+
+    #[test]
+    fn test_bloom_filter_filter_missing() {
+        let mut filter = DeltaIdBloomFilter::with_capacity(100, 0.01);
+        filter.insert(&[1u8; 32]);
+        filter.insert(&[2u8; 32]);
+
+        let query = [[1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]];
+        let missing = filter.filter_missing(&query);
+
+        // [3] and [4] are definitely missing
+        assert!(missing.contains(&[3u8; 32]));
+        assert!(missing.contains(&[4u8; 32]));
+        // [1] and [2] should NOT be in missing (they're in the filter)
+        assert!(!missing.contains(&[1u8; 32]));
+        assert!(!missing.contains(&[2u8; 32]));
+    }
+
+    #[test]
+    fn test_bloom_filter_size_and_fp_rate() {
+        let filter = DeltaIdBloomFilter::with_capacity(1000, 0.01);
+
+        // Should be reasonably sized (1% FP for 1000 items ≈ 1.2KB)
+        assert!(filter.size_bytes() > 100);
+        assert!(filter.size_bytes() < 10000);
+
+        // Initial FP rate should be 0 (empty)
+        assert_eq!(filter.estimated_fp_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_bloom_filter_default_for_sync() {
+        let filter = DeltaIdBloomFilter::default_for_sync();
+
+        // Should be ready for typical sync scenarios
+        assert!(filter.is_empty());
+        assert!(filter.size_bytes() > 0);
     }
 }
