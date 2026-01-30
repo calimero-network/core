@@ -47,6 +47,32 @@ pub struct EntityIndex {
     pub deleted_at: Option<u64>,
 }
 
+impl EntityIndex {
+    /// Returns the entity's own hash (hash of entity data only, not descendants).
+    #[must_use]
+    pub const fn own_hash(&self) -> [u8; 32] {
+        self.own_hash
+    }
+
+    /// Returns the entity's full hash (hash of entity data + all descendants).
+    #[must_use]
+    pub const fn full_hash(&self) -> [u8; 32] {
+        self.full_hash
+    }
+
+    /// Returns the entity ID.
+    #[must_use]
+    pub const fn id(&self) -> Id {
+        self.id
+    }
+
+    /// Returns the parent ID, if any.
+    #[must_use]
+    pub const fn parent_id(&self) -> Option<Id> {
+        self.parent_id
+    }
+}
+
 /// Entity index manager.
 #[derive(Debug)]
 pub struct Index<S: StorageAdaptor>(PhantomData<S>);

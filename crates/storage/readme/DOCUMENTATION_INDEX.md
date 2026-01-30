@@ -40,6 +40,7 @@ Complete guide to Calimero Storage CRDT documentation.
 2. **[Merging Deep-Dive](merging.md)** - DAG vs explicit merge explained
 3. **[Design Decisions](design-decisions.md)** - Why we built it this way
 4. **[Network Sync](network-sync.md)** - Efficient synchronization protocols
+5. **[CIP: Sync Protocol](CIP-sync-protocol.md)** - Hybrid sync protocol proposal
 
 ### Performance
 - **[Performance Guide](performance.md)** - Benchmarks, optimization tips
@@ -89,6 +90,7 @@ Complete guide to Calimero Storage CRDT documentation.
 - Understand architecture? → [Architecture](architecture.md)
 - See design rationale? → [Design Decisions](design-decisions.md)
 - Sync nodes efficiently? → [Network Sync](network-sync.md)
+- Understand sync protocol roadmap? → [CIP: Sync Protocol](CIP-sync-protocol.md)
 
 ---
 
@@ -107,7 +109,8 @@ crates/storage/
     ├── performance.md            # Optimization guide
     ├── migration.md              # Upgrading guide
     ├── design-decisions.md       # Why we built it this way
-    └── network-sync.md           # Network synchronization protocols
+    ├── network-sync.md           # Network synchronization protocols
+    └── CIP-sync-protocol.md      # Hybrid sync protocol proposal (CIP)
 ```
 
 ---
@@ -179,6 +182,6 @@ Found an error? Want to improve something?
 
 ---
 
-**Last Updated:** 2025-10-29  
-**Version:** 0.10.0
+**Last Updated:** 2026-01-30  
+**Version:** 0.11.0
 

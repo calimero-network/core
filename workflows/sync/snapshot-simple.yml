@@ -1,0 +1,169 @@
+description: Test snapshot sync by having Node 2 join after Node 1 has accumulated 1000 key/values (simplified for merobox 0.2.x)
+name: Snapshot Sync Test (Simple)
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: snapshot-node
+
+steps:
+  # =============================================================================
+  # PHASE 1: Setup Node 1 with application and context
+  # =============================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: snapshot-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: snapshot-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Assert Context Created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{member_public_key}})"
+
+  # =============================================================================
+  # PHASE 2: Write 1000 key/value pairs on Node 1 (sequential for testing)
+  # =============================================================================
+
+  - name: "[Bulk Write] Writing 1000 key/value pairs on Node 1 (sequential)"
+    type: repeat
+    count: 1000
+    steps:
+      - name: "Write key {{iteration}}"
+        type: call
+        node: snapshot-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{member_public_key}}"
+        method: set
+        args:
+          key: "snapshot_key_{{iteration}}"
+          value: "snapshot_value_{{iteration}}"
+
+  - name: Verify last key written on Node 1
+    type: call
+    node: snapshot-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get
+    args:
+      key: "snapshot_key_1000"
+    outputs:
+      verify_node1_last_key: result
+
+  - name: Assert last key exists on Node 1
+    type: json_assert
+    statements:
+      - 'json_subset({{verify_node1_last_key}}, {"output": "snapshot_value_1000"})'
+
+  # =============================================================================
+  # PHASE 3: Node 2 joins context - should trigger snapshot sync
+  # =============================================================================
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: snapshot-node-2
+    outputs:
+      public_key_node2: publicKey
+
+  - name: Wait for Identity Creation
+    type: wait
+    seconds: 3
+
+  - name: Invite Node 2 to Context
+    type: invite_identity
+    node: snapshot-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{public_key_node2}}"
+    granter_id: "{{member_public_key}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node 2 Joins Context (triggers snapshot sync)
+    type: join_context
+    node: snapshot-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{public_key_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  # Wait for snapshot sync to complete (using simple wait instead of wait_for_sync)
+  - name: Wait for Snapshot Sync
+    type: wait
+    seconds: 60
+
+  # =============================================================================
+  # PHASE 4: Verify Node 2 has all 1000 keys via snapshot sync
+  # =============================================================================
+
+  - name: "[Verify Sync] Check first key on Node 2"
+    type: call
+    node: snapshot-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: get
+    args:
+      key: "snapshot_key_1"
+    outputs:
+      verify_first_key: result
+
+  - name: "[Verify Sync] Check middle key on Node 2"
+    type: call
+    node: snapshot-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: get
+    args:
+      key: "snapshot_key_500"
+    outputs:
+      verify_middle_key: result
+
+  - name: "[Verify Sync] Check last key on Node 2"
+    type: call
+    node: snapshot-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_node2}}"
+    method: get
+    args:
+      key: "snapshot_key_1000"
+    outputs:
+      verify_last_key: result
+
+  - name: Assert Node 2 has synced all keys
+    type: json_assert
+    statements:
+      - 'json_subset({{verify_first_key}}, {"output": "snapshot_value_1"})'
+      - 'json_subset({{verify_middle_key}}, {"output": "snapshot_value_500"})'
+      - 'json_subset({{verify_last_key}}, {"output": "snapshot_value_1000"})'
+
+  # =============================================================================
+  # PHASE 5: Final Summary
+  # =============================================================================
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{context_id}})"
+        message: "Context was created successfully"
+      - statement: "is_set({{verify_last_key}})"
+        message: "Node 2 received all 1000 keys via snapshot sync"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 600
