@@ -869,6 +869,12 @@ This CIP is backwards compatible:
 - [x] Bloom filter (`DeltaIdBloomFilter`) for delta ID membership testing
 - [x] Gossip mode selection (`GossipMode`: WithHints, Minimal, Adaptive)
 
+### E2E Workflow Tests ✅
+- [x] `crdt-merge.yml` - Two-node concurrent writes + LWW conflict resolution
+- [x] `concurrent-sync.yml` - Delta buffering during sync (500+100 keys)
+- [x] `three-node-convergence.yml` - 3-node convergence (60 keys total)
+- [x] `late-joiner-large-state.yml` - Snapshot sync for 2000-key state gap
+
 ### Phase 6: Delta Pruning (TODO)
 - [ ] Checkpoint creation after snapshot sync
 - [ ] Delta garbage collection protocol
