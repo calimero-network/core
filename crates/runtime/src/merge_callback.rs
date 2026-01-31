@@ -65,12 +65,20 @@ impl RuntimeMergeCallback {
 
     /// Create a callback from a WASM module.
     ///
-    /// This would validate that the module has the required exports.
+    /// # Note
+    ///
+    /// This returns `None` because WASM-level merge exports (`__calimero_merge`)
+    /// are not currently used. Instead, merge is handled by:
+    ///
+    /// 1. The global type registry (populated by `__calimero_register_merge()`)
+    /// 2. The `merge_custom()` method which calls `try_merge_by_type_name()`
+    ///
+    /// This method exists for future extensibility if apps want to define
+    /// custom WASM-level merge exports (different from Rust-level `Mergeable`).
     #[must_use]
     pub fn from_module(_module: &crate::Module) -> Option<Self> {
-        // TODO: Check if module has __calimero_merge export
-        // For now, return None to indicate WASM merge is not available
-        // and the storage layer should fall back to registry or LWW
+        // WASM-level merge exports are not used - registry handles all cases
+        // See TECH-DEBT-SYNC-2026-01.md for details
         None
     }
 }
@@ -84,27 +92,28 @@ impl Default for RuntimeMergeCallback {
 impl WasmMergeCallback for RuntimeMergeCallback {
     /// Merge custom type data during state sync.
     ///
-    /// # KNOWN LIMITATION
+    /// # How It Works
     ///
-    /// **WASM dispatch is not yet implemented.** This method falls back to:
-    /// 1. Type registry (built-in CRDTs like Counter, Map work correctly)
-    /// 2. Last-Write-Wins (custom `#[derive(Mergeable)]` types lose CRDT semantics)
+    /// 1. **First**: Try the global type registry via `try_merge_by_type_name()`
+    ///    - This handles all `#[derive(Mergeable)]` types correctly
+    ///    - Registry is populated when WASM loads (`__calimero_register_merge()`)
     ///
-    /// See `TECH-DEBT-SYNC-2026-01.md` for discussion.
+    /// 2. **Fallback**: Last-Write-Wins (only for unregistered types)
     ///
-    /// # Impact
+    /// # Type Support
     ///
     /// | Type | Behavior | Correct? |
     /// |------|----------|----------|
-    /// | Built-in CRDTs | Registry merge | ✅ |
-    /// | Custom Mergeable | LWW fallback | ⚠️ NO |
+    /// | Built-in CRDTs (Counter, Map, etc.) | Registry merge | ✅ |
+    /// | `#[app::state]` structs | Registry merge | ✅ |
+    /// | Custom `Mergeable` impls | Registry merge | ✅ |
+    /// | Unregistered types | LWW fallback | ⚠️ |
     ///
-    /// # Future Work
+    /// # Note
     ///
-    /// To properly support custom Mergeable types:
-    /// 1. Store entity type metadata in storage
-    /// 2. Implement `from_module()` to load WASM merge functions
-    /// 3. Dispatch to `__calimero_merge` export
+    /// The "WASM merge" in the name refers to the fact that this callback is
+    /// used during sync of WASM app state. The actual merge happens via the
+    /// type registry, not a WASM export.
     fn merge_custom(
         &self,
         type_name: &str,
@@ -122,11 +131,9 @@ impl WasmMergeCallback for RuntimeMergeCallback {
             "RuntimeMergeCallback::merge_custom called"
         );
 
-        // NOTE: WASM merge not implemented - see method docs for limitations
-        warn!(
-            type_name,
-            "WASM merge not yet implemented, falling back to type registry or LWW"
-        );
+        // Note: "WASM merge" happens via the type registry, not a WASM export
+        // The warning below is for debugging unregistered types only
+        debug!(type_name, "Attempting merge via type registry");
 
         // Try the type-name registry first (handles built-in CRDTs)
         if let Some(result) = calimero_storage::merge::try_merge_by_type_name(
