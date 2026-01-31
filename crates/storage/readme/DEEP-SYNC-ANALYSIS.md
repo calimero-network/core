@@ -1077,3 +1077,16 @@ Edge case benchmarks were conducted to identify production failure modes.
 - Implement catch-up mode for lagging nodes
 
 *Full analysis: See `EDGE-CASE-BENCHMARK-RESULTS.md`*
+
+---
+
+## Related Documents
+
+- **[SYNC-PERFORMANCE-INVESTIGATION.md](SYNC-PERFORMANCE-INVESTIGATION.md)** - Master overview
+- **[PEER-FINDING-ANALYSIS.md](PEER-FINDING-ANALYSIS.md)** - Phase 1 analysis
+- **[DIAL-OPTIMIZATION-ANALYSIS.md](DIAL-OPTIMIZATION-ANALYSIS.md)** - Phase 2 analysis
+- **[BENCHMARK-RESULTS-2026-01.md](BENCHMARK-RESULTS-2026-01.md)** - Latest benchmarks
+- **[PRODUCTION-MONITORING.md](PRODUCTION-MONITORING.md)** - Monitoring setup
+- **[DECISION-LOG.md](DECISION-LOG.md)** - Architectural decisions
+
+*Last updated: January 31, 2026*

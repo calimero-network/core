@@ -221,9 +221,27 @@ histogram_quantile(0.95, rate(sync_duration_seconds_bucket[5m]))
 
 ---
 
-## Next Steps
+## Completion Status
 
-1. **Run full benchmark suite** with new instrumentation
-2. **Update DEEP-SYNC-ANALYSIS.md** with proven metrics
-3. **Add gossip mesh timing** for bootstrap analysis
-4. **Enable Prometheus scraping** in production for continuous monitoring
+All core instrumentation is now implemented:
+
+1. ✅ Per-phase timing breakdown (`SYNC_PHASE_BREAKDOWN`)
+2. ✅ Delta apply timing (`DELTA_APPLY_TIMING`)
+3. ✅ Prometheus metrics for all phases
+4. ✅ Peer finding instrumentation (`PEER_FIND_PHASES`)
+5. ✅ Dial instrumentation (`PEER_DIAL_BREAKDOWN`)
+6. ✅ Connection state tracking
+
+### Remaining (Optional)
+
+- 🔶 Gossip mesh formation timing (P2 - nice to have)
+- 🔶 Hash comparison detail metrics (P2 - for algorithm tuning)
+- 🔶 Network byte counting (P2 - partial)
+
+### Related Documents
+
+- [BENCHMARK-RESULTS-2026-01.md](BENCHMARK-RESULTS-2026-01.md) - Results using new instrumentation
+- [PRODUCTION-MONITORING.md](PRODUCTION-MONITORING.md) - How to use the metrics
+- [SYNC-PERFORMANCE-INVESTIGATION.md](SYNC-PERFORMANCE-INVESTIGATION.md) - Full investigation
+
+*Last updated: January 31, 2026*

@@ -228,6 +228,15 @@ data/part_analysis/   # Scenario D metrics
 data/scale_analysis/  # Scenario E metrics
 ```
 
+## Related Documents
+
+- **[SYNC-PERFORMANCE-INVESTIGATION.md](SYNC-PERFORMANCE-INVESTIGATION.md)** - Master overview
+- **[PEER-FINDING-ANALYSIS.md](PEER-FINDING-ANALYSIS.md)** - Peer finding optimization
+- **[DIAL-OPTIMIZATION-ANALYSIS.md](DIAL-OPTIMIZATION-ANALYSIS.md)** - Dial optimization
+- **[DEEP-SYNC-ANALYSIS.md](DEEP-SYNC-ANALYSIS.md)** - Comprehensive analysis
+- **[DECISION-LOG.md](DECISION-LOG.md)** - Architectural decisions
+
 ---
 
-*Analysis generated from edge case benchmark run on test/tree_sync branch*
+*Analysis generated from edge case benchmark run on test/tree_sync branch*  
+*Last updated: January 31, 2026*

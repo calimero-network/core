@@ -42,6 +42,14 @@ Complete guide to Calimero Storage CRDT documentation.
 4. **[Network Sync](network-sync.md)** - Efficient synchronization protocols
 5. **[CIP: Sync Protocol](CIP-sync-protocol.md)** - Hybrid sync protocol proposal
 
+### Sync Performance (NEW)
+1. **[Sync Performance Investigation](SYNC-PERFORMANCE-INVESTIGATION.md)** - Master overview
+2. **[Peer Finding Analysis](PEER-FINDING-ANALYSIS.md)** - Phase 1: Finding optimization
+3. **[Dial Optimization Analysis](DIAL-OPTIMIZATION-ANALYSIS.md)** - Phase 2: Connection optimization
+4. **[Benchmark Results (Jan 2026)](BENCHMARK-RESULTS-2026-01.md)** - Latest benchmarks
+5. **[Decision Log](DECISION-LOG.md)** - Architectural decisions
+6. **[Production Monitoring](PRODUCTION-MONITORING.md)** - PromQL alerts + Grafana
+
 ### Performance
 - **[Performance Guide](performance.md)** - Benchmarks, optimization tips
 - **[Merging](merging.md#merge-frequency-analysis)** - When merge is called
@@ -91,6 +99,9 @@ Complete guide to Calimero Storage CRDT documentation.
 - See design rationale? → [Design Decisions](design-decisions.md)
 - Sync nodes efficiently? → [Network Sync](network-sync.md)
 - Understand sync protocol roadmap? → [CIP: Sync Protocol](CIP-sync-protocol.md)
+- Tune sync performance? → [Sync Performance Investigation](SYNC-PERFORMANCE-INVESTIGATION.md)
+- Set up monitoring? → [Production Monitoring](PRODUCTION-MONITORING.md)
+- See benchmark results? → [Benchmark Results Jan 2026](BENCHMARK-RESULTS-2026-01.md)
 
 ---
 
@@ -110,7 +121,18 @@ crates/storage/
     ├── migration.md              # Upgrading guide
     ├── design-decisions.md       # Why we built it this way
     ├── network-sync.md           # Network synchronization protocols
-    └── CIP-sync-protocol.md      # Hybrid sync protocol proposal (CIP)
+    ├── CIP-sync-protocol.md      # Hybrid sync protocol proposal (CIP)
+    │
+    │ # Sync Performance Investigation (Jan 2026)
+    ├── SYNC-PERFORMANCE-INVESTIGATION.md  # Master overview
+    ├── PEER-FINDING-ANALYSIS.md           # Phase 1 analysis
+    ├── DIAL-OPTIMIZATION-ANALYSIS.md      # Phase 2 analysis
+    ├── BENCHMARK-RESULTS-2026-01.md       # Latest benchmarks
+    ├── DECISION-LOG.md                    # Architectural decisions
+    ├── PRODUCTION-MONITORING.md           # PromQL + Grafana
+    ├── DEEP-SYNC-ANALYSIS.md              # Comprehensive analysis
+    ├── EDGE-CASE-BENCHMARK-RESULTS.md     # Edge case results
+    └── MISSING_INSTRUMENTATION.md         # Instrumentation status
 ```
 
 ---
@@ -182,6 +204,6 @@ Found an error? Want to improve something?
 
 ---
 
-**Last Updated:** 2026-01-30  
+**Last Updated:** 2026-01-31  
 **Version:** 0.11.0
 

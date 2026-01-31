@@ -399,6 +399,13 @@ See **CIP-sync-protocol.md Appendix N** for full details and PromQL examples.
 4. **Checkpointing**: Remember last sync point to skip unchanged subtrees
 5. **Adaptive batch sizing**: Adjust batch size based on network latency
 
+## Related Documents
+
+- **[Sync Performance Investigation](SYNC-PERFORMANCE-INVESTIGATION.md)** - Detailed performance analysis and optimization
+- **[CIP-sync-protocol.md](CIP-sync-protocol.md)** - Full protocol specification
+- **[Benchmark Results](BENCHMARK-RESULTS-2026-01.md)** - Latest benchmark data
+- **[Production Monitoring](PRODUCTION-MONITORING.md)** - PromQL alerts and Grafana
+
 ## References
 
 - [Merkle Trees](https://en.wikipedia.org/wiki/Merkle_tree)
