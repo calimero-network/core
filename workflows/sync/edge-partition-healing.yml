@@ -1,0 +1,481 @@
+# Scenario D: Partition Healing (10 nodes, 5/5 split)
+# Goal: Measure convergence after real divergence with overlapping writes
+#
+# Simulation approach: Stop 5 nodes, write disjoint + overlapping keys on both sides,
+# then restart and measure convergence.
+#
+# Expected findings:
+# - time_to_full_convergence (P50/P95)
+# - DAG heads peak during divergence
+# - delta replay volume during heal
+# - bandwidth burst during heal
+
+description: "Edge Case D: Partition Healing - 10 nodes, 5/5 split with overlapping writes"
+name: "Edge Partition Healing"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 10
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: part
+
+steps:
+  # Setup: Install app and create context
+  - name: Install Application on Node 1
+    type: install_application
+    node: part-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: part-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  # Create identities for all nodes
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: part-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: part-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Create Identity on Node 4
+    type: create_identity
+    node: part-4
+    outputs:
+      pk_node4: publicKey
+
+  - name: Create Identity on Node 5
+    type: create_identity
+    node: part-5
+    outputs:
+      pk_node5: publicKey
+
+  - name: Create Identity on Node 6
+    type: create_identity
+    node: part-6
+    outputs:
+      pk_node6: publicKey
+
+  - name: Create Identity on Node 7
+    type: create_identity
+    node: part-7
+    outputs:
+      pk_node7: publicKey
+
+  - name: Create Identity on Node 8
+    type: create_identity
+    node: part-8
+    outputs:
+      pk_node8: publicKey
+
+  - name: Create Identity on Node 9
+    type: create_identity
+    node: part-9
+    outputs:
+      pk_node9: publicKey
+
+  - name: Create Identity on Node 10
+    type: create_identity
+    node: part-10
+    outputs:
+      pk_node10: publicKey
+
+  # Invite all nodes
+  - name: Invite Node 2
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: Invite Node 4
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node4}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv4: invitation
+
+  - name: Invite Node 5
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node5}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv5: invitation
+
+  - name: Invite Node 6
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node6}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv6: invitation
+
+  - name: Invite Node 7
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node7}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv7: invitation
+
+  - name: Invite Node 8
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node8}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv8: invitation
+
+  - name: Invite Node 9
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node9}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv9: invitation
+
+  - name: Invite Node 10
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node10}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv10: invitation
+
+  # Join all nodes
+  - name: Node 2 Joins
+    type: join_context
+    node: part-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{inv2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: part-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{inv3}}"
+
+  - name: Node 4 Joins
+    type: join_context
+    node: part-4
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node4}}"
+    invitation: "{{inv4}}"
+
+  - name: Node 5 Joins
+    type: join_context
+    node: part-5
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node5}}"
+    invitation: "{{inv5}}"
+
+  - name: Node 6 Joins
+    type: join_context
+    node: part-6
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node6}}"
+    invitation: "{{inv6}}"
+
+  - name: Node 7 Joins
+    type: join_context
+    node: part-7
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node7}}"
+    invitation: "{{inv7}}"
+
+  - name: Node 8 Joins
+    type: join_context
+    node: part-8
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node8}}"
+    invitation: "{{inv8}}"
+
+  - name: Node 9 Joins
+    type: join_context
+    node: part-9
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node9}}"
+    invitation: "{{inv9}}"
+
+  - name: Node 10 Joins
+    type: join_context
+    node: part-10
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node10}}"
+    invitation: "{{inv10}}"
+
+  - name: Wait for full mesh formation (10 nodes)
+    type: wait
+    seconds: 30
+
+  # Write baseline keys before partition
+  - name: ">>> BASELINE: Write shared baseline from Node 1"
+    type: call
+    node: part-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "baseline_key"
+      value: "baseline_before_partition"
+
+  - name: Wait for baseline sync
+    type: wait
+    seconds: 10
+
+  # ============ CREATE PARTITION: Stop nodes 6-10 ============
+  - name: ">>> PARTITION: Stop Node 6"
+    type: stop_node
+    nodes: part-6
+
+  - name: ">>> PARTITION: Stop Node 7"
+    type: stop_node
+    nodes: part-7
+
+  - name: ">>> PARTITION: Stop Node 8"
+    type: stop_node
+    nodes: part-8
+
+  - name: ">>> PARTITION: Stop Node 9"
+    type: stop_node
+    nodes: part-9
+
+  - name: ">>> PARTITION: Stop Node 10"
+    type: stop_node
+    nodes: part-10
+
+  # ============ PARTITION A WRITES (nodes 1-5): 80% disjoint, 20% hot keys ============
+  - name: ">>> PARTITION A: Write disjoint keys (Node 1)"
+    type: repeat
+    count: 8
+    steps:
+      - name: "PartA disjoint key {{iteration}}"
+        type: call
+        node: part-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "partA_disjoint_{{iteration}}"
+          value: "partition_A_value_{{iteration}}"
+
+  - name: ">>> PARTITION A: Write HOT keys (Node 2) - will conflict"
+    type: repeat
+    count: 2
+    steps:
+      - name: "PartA hot key {{iteration}}"
+        type: call
+        node: part-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "hot_key_{{iteration}}"
+          value: "partitionA_hot_{{iteration}}_WINNER_A"
+
+  - name: ">>> PARTITION A: More disjoint keys (Node 3)"
+    type: repeat
+    count: 8
+    steps:
+      - name: "PartA disjoint2 key {{iteration}}"
+        type: call
+        node: part-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "partA_disjoint2_{{iteration}}"
+          value: "partition_A2_value_{{iteration}}"
+
+  - name: Wait during partition (simulate 60s partition)
+    type: wait
+    seconds: 30
+
+  # ============ HEAL PARTITION: Restart nodes 6-10 ============
+  - name: ">>> HEAL: Start Node 6"
+    type: start_node
+    nodes: part-6
+
+  - name: ">>> HEAL: Start Node 7"
+    type: start_node
+    nodes: part-7
+
+  - name: ">>> HEAL: Start Node 8"
+    type: start_node
+    nodes: part-8
+
+  - name: ">>> HEAL: Start Node 9"
+    type: start_node
+    nodes: part-9
+
+  - name: ">>> HEAL: Start Node 10"
+    type: start_node
+    nodes: part-10
+
+  # ============ PARTITION B WRITES AFTER RESTART (they missed A's writes) ============
+  - name: Wait for partition B nodes to come up
+    type: wait
+    seconds: 15
+
+  - name: ">>> PARTITION B: Write disjoint keys (Node 6)"
+    type: repeat
+    count: 8
+    steps:
+      - name: "PartB disjoint key {{iteration}}"
+        type: call
+        node: part-6
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node6}}"
+        method: set
+        args:
+          key: "partB_disjoint_{{iteration}}"
+          value: "partition_B_value_{{iteration}}"
+
+  - name: ">>> PARTITION B: Write HOT keys (Node 7) - will conflict with A's hot keys"
+    type: repeat
+    count: 2
+    steps:
+      - name: "PartB hot key {{iteration}}"
+        type: call
+        node: part-7
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node7}}"
+        method: set
+        args:
+          key: "hot_key_{{iteration}}"
+          value: "partitionB_hot_{{iteration}}_WINNER_B"
+
+  - name: ">>> PARTITION B: More disjoint keys (Node 8)"
+    type: repeat
+    count: 8
+    steps:
+      - name: "PartB disjoint2 key {{iteration}}"
+        type: call
+        node: part-8
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node8}}"
+        method: set
+        args:
+          key: "partB_disjoint2_{{iteration}}"
+          value: "partition_B2_value_{{iteration}}"
+
+  # ============ CONVERGENCE PHASE ============
+  - name: ">>> CONVERGENCE: Wait for full sync across partitions"
+    type: wait
+    seconds: 60
+
+  # Verify convergence: All nodes should have all keys
+  - name: "Verify Node 1 has Partition B's disjoint keys"
+    type: call
+    node: part-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "partB_disjoint_5"
+    outputs:
+      n1_has_partB: result
+
+  - name: "Verify Node 10 has Partition A's disjoint keys"
+    type: call
+    node: part-10
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node10}}"
+    method: get
+    args:
+      key: "partA_disjoint_5"
+    outputs:
+      n10_has_partA: result
+
+  - name: "Check hot key 1 (LWW: should be B's value - written later)"
+    type: call
+    node: part-5
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node5}}"
+    method: get
+    args:
+      key: "hot_key_1"
+    outputs:
+      hot_key_1_value: result
+
+  - name: "Check hot key 2 (LWW: should be B's value - written later)"
+    type: call
+    node: part-5
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node5}}"
+    method: get
+    args:
+      key: "hot_key_2"
+    outputs:
+      hot_key_2_value: result
+
+  - name: "Verify Node 6 has baseline (written before partition)"
+    type: call
+    node: part-6
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node6}}"
+    method: get
+    args:
+      key: "baseline_key"
+    outputs:
+      n6_has_baseline: result
+
+  - name: Assert partition healing successful
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_has_partB}}, {"output": "partition_B_value_5"})'
+      - 'json_subset({{n10_has_partA}}, {"output": "partition_A_value_5"})'
+      - 'json_subset({{hot_key_1_value}}, {"output": "partitionB_hot_1_WINNER_B"})'
+      - 'json_subset({{hot_key_2_value}}, {"output": "partitionB_hot_2_WINNER_B"})'
+      - 'json_subset({{n6_has_baseline}}, {"output": "baseline_before_partition"})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 420

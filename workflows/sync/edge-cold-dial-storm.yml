@@ -1,0 +1,331 @@
+# Scenario A: Cold Dial Storm (10 nodes)
+# Goal: Quantify "first dial" cost and connection reuse effect
+# 
+# Expected findings:
+# - peer_selection P50/P95/P99 for first vs subsequent dials
+# - Connection reuse effect (first sync ~500ms, subsequent ~170ms based on prior data)
+
+description: "Edge Case A: Cold Dial Storm - 10 nodes, measure peer_selection costs"
+name: "Edge Cold Dial Storm"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 10
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: dial
+
+steps:
+  # Setup: Install app and create context on node 1
+  - name: Install Application on Node 1
+    type: install_application
+    node: dial-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: dial-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  # Create identities for all other nodes
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: dial-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: dial-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Create Identity on Node 4
+    type: create_identity
+    node: dial-4
+    outputs:
+      pk_node4: publicKey
+
+  - name: Create Identity on Node 5
+    type: create_identity
+    node: dial-5
+    outputs:
+      pk_node5: publicKey
+
+  - name: Create Identity on Node 6
+    type: create_identity
+    node: dial-6
+    outputs:
+      pk_node6: publicKey
+
+  - name: Create Identity on Node 7
+    type: create_identity
+    node: dial-7
+    outputs:
+      pk_node7: publicKey
+
+  - name: Create Identity on Node 8
+    type: create_identity
+    node: dial-8
+    outputs:
+      pk_node8: publicKey
+
+  - name: Create Identity on Node 9
+    type: create_identity
+    node: dial-9
+    outputs:
+      pk_node9: publicKey
+
+  - name: Create Identity on Node 10
+    type: create_identity
+    node: dial-10
+    outputs:
+      pk_node10: publicKey
+
+  # Invite and join all nodes
+  - name: Invite Node 2
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: Invite Node 4
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node4}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv4: invitation
+
+  - name: Invite Node 5
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node5}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv5: invitation
+
+  - name: Invite Node 6
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node6}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv6: invitation
+
+  - name: Invite Node 7
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node7}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv7: invitation
+
+  - name: Invite Node 8
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node8}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv8: invitation
+
+  - name: Invite Node 9
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node9}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv9: invitation
+
+  - name: Invite Node 10
+    type: invite_identity
+    node: dial-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node10}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv10: invitation
+
+  # Join all nodes in sequence (cold dials)
+  - name: Node 2 Joins (Cold Dial 1)
+    type: join_context
+    node: dial-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{inv2}}"
+
+  - name: Node 3 Joins (Cold Dial 2)
+    type: join_context
+    node: dial-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{inv3}}"
+
+  - name: Node 4 Joins (Cold Dial 3)
+    type: join_context
+    node: dial-4
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node4}}"
+    invitation: "{{inv4}}"
+
+  - name: Node 5 Joins (Cold Dial 4)
+    type: join_context
+    node: dial-5
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node5}}"
+    invitation: "{{inv5}}"
+
+  - name: Node 6 Joins (Cold Dial 5)
+    type: join_context
+    node: dial-6
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node6}}"
+    invitation: "{{inv6}}"
+
+  - name: Node 7 Joins (Cold Dial 6)
+    type: join_context
+    node: dial-7
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node7}}"
+    invitation: "{{inv7}}"
+
+  - name: Node 8 Joins (Cold Dial 7)
+    type: join_context
+    node: dial-8
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node8}}"
+    invitation: "{{inv8}}"
+
+  - name: Node 9 Joins (Cold Dial 8)
+    type: join_context
+    node: dial-9
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node9}}"
+    invitation: "{{inv9}}"
+
+  - name: Node 10 Joins (Cold Dial 9)
+    type: join_context
+    node: dial-10
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node10}}"
+    invitation: "{{inv10}}"
+
+  - name: Wait for mesh formation (10 nodes)
+    type: wait
+    seconds: 30
+
+  # Write keys from different nodes to trigger cross-node syncs
+  - name: ">>> COLD DIAL TEST: Write from Node 1"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N1 writes dial_n1_{{iteration}}"
+        type: call
+        node: dial-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "dial_n1_{{iteration}}"
+          value: "value_from_node1_{{iteration}}"
+
+  - name: ">>> COLD DIAL TEST: Write from Node 5"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N5 writes dial_n5_{{iteration}}"
+        type: call
+        node: dial-5
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node5}}"
+        method: set
+        args:
+          key: "dial_n5_{{iteration}}"
+          value: "value_from_node5_{{iteration}}"
+
+  - name: ">>> COLD DIAL TEST: Write from Node 10"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N10 writes dial_n10_{{iteration}}"
+        type: call
+        node: dial-10
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node10}}"
+        method: set
+        args:
+          key: "dial_n10_{{iteration}}"
+          value: "value_from_node10_{{iteration}}"
+
+  - name: Wait for sync propagation across 10 nodes
+    type: wait
+    seconds: 60
+
+  # Verify convergence
+  - name: "Verify Node 2 has Node 10's data"
+    type: call
+    node: dial-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "dial_n10_5"
+    outputs:
+      n2_has_n10: result
+
+  - name: "Verify Node 10 has Node 1's data"
+    type: call
+    node: dial-10
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node10}}"
+    method: get
+    args:
+      key: "dial_n1_5"
+    outputs:
+      n10_has_n1: result
+
+  - name: Assert convergence across 10 nodes
+    type: json_assert
+    statements:
+      - 'json_subset({{n2_has_n10}}, {"output": "value_from_node10_5"})'
+      - 'json_subset({{n10_has_n1}}, {"output": "value_from_node1_5"})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 300

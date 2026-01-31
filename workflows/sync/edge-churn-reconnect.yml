@@ -1,0 +1,437 @@
+# Scenario B: Churn + Reconnect Under Writes (10 nodes)
+# Goal: See if churn causes repeated peer_selection spikes and sync storms
+#
+# Expected findings:
+# - Recovery time after restart (P50/P95)
+# - sync_success_rate during churn
+# - peer_selection spikes correlation with restarts
+
+description: "Edge Case B: Churn + Reconnect - 10 nodes with restarts during writes"
+name: "Edge Churn Reconnect"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 10
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: churn
+
+steps:
+  # Setup: Install app and create context
+  - name: Install Application on Node 1
+    type: install_application
+    node: churn-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: churn-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  # Create identities for nodes 2-10
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: churn-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: churn-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Create Identity on Node 4
+    type: create_identity
+    node: churn-4
+    outputs:
+      pk_node4: publicKey
+
+  - name: Create Identity on Node 5
+    type: create_identity
+    node: churn-5
+    outputs:
+      pk_node5: publicKey
+
+  - name: Create Identity on Node 6
+    type: create_identity
+    node: churn-6
+    outputs:
+      pk_node6: publicKey
+
+  - name: Create Identity on Node 7
+    type: create_identity
+    node: churn-7
+    outputs:
+      pk_node7: publicKey
+
+  - name: Create Identity on Node 8
+    type: create_identity
+    node: churn-8
+    outputs:
+      pk_node8: publicKey
+
+  - name: Create Identity on Node 9
+    type: create_identity
+    node: churn-9
+    outputs:
+      pk_node9: publicKey
+
+  - name: Create Identity on Node 10
+    type: create_identity
+    node: churn-10
+    outputs:
+      pk_node10: publicKey
+
+  # Invite nodes 2-10
+  - name: Invite Node 2
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: Invite Node 4
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node4}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv4: invitation
+
+  - name: Invite Node 5
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node5}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv5: invitation
+
+  - name: Invite Node 6
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node6}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv6: invitation
+
+  - name: Invite Node 7
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node7}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv7: invitation
+
+  - name: Invite Node 8
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node8}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv8: invitation
+
+  - name: Invite Node 9
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node9}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv9: invitation
+
+  - name: Invite Node 10
+    type: invite_identity
+    node: churn-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node10}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv10: invitation
+
+  # Join all nodes
+  - name: Node 2 Joins
+    type: join_context
+    node: churn-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{inv2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: churn-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{inv3}}"
+
+  - name: Node 4 Joins
+    type: join_context
+    node: churn-4
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node4}}"
+    invitation: "{{inv4}}"
+
+  - name: Node 5 Joins
+    type: join_context
+    node: churn-5
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node5}}"
+    invitation: "{{inv5}}"
+
+  - name: Node 6 Joins
+    type: join_context
+    node: churn-6
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node6}}"
+    invitation: "{{inv6}}"
+
+  - name: Node 7 Joins
+    type: join_context
+    node: churn-7
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node7}}"
+    invitation: "{{inv7}}"
+
+  - name: Node 8 Joins
+    type: join_context
+    node: churn-8
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node8}}"
+    invitation: "{{inv8}}"
+
+  - name: Node 9 Joins
+    type: join_context
+    node: churn-9
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node9}}"
+    invitation: "{{inv9}}"
+
+  - name: Node 10 Joins
+    type: join_context
+    node: churn-10
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node10}}"
+    invitation: "{{inv10}}"
+
+  - name: Wait for initial mesh formation
+    type: wait
+    seconds: 30
+
+  # ============ CHURN PHASE 1: Write while stopping Node 5 ============
+  - name: ">>> CHURN PHASE 1: Continuous writes from Node 1"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N1 writes churn_p1_{{iteration}}"
+        type: call
+        node: churn-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "churn_p1_{{iteration}}"
+          value: "phase1_value_{{iteration}}"
+
+  - name: ">>> CHURN: Stop Node 5"
+    type: stop_node
+    nodes: churn-5
+
+  - name: ">>> CHURN PHASE 1: More writes from Node 2 (while N5 down)"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N2 writes churn_p1b_{{iteration}}"
+        type: call
+        node: churn-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "churn_p1b_{{iteration}}"
+          value: "phase1b_value_{{iteration}}"
+
+  - name: Wait 10s for sync while N5 is down
+    type: wait
+    seconds: 10
+
+  - name: ">>> CHURN: Restart Node 5"
+    type: start_node
+    nodes: churn-5
+
+  # ============ CHURN PHASE 2: Write while stopping Node 8 ============
+  - name: ">>> CHURN PHASE 2: Writes from Node 3"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N3 writes churn_p2_{{iteration}}"
+        type: call
+        node: churn-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "churn_p2_{{iteration}}"
+          value: "phase2_value_{{iteration}}"
+
+  - name: ">>> CHURN: Stop Node 8"
+    type: stop_node
+    nodes: churn-8
+
+  - name: ">>> CHURN PHASE 2: More writes from Node 4 (while N8 down)"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N4 writes churn_p2b_{{iteration}}"
+        type: call
+        node: churn-4
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node4}}"
+        method: set
+        args:
+          key: "churn_p2b_{{iteration}}"
+          value: "phase2b_value_{{iteration}}"
+
+  - name: Wait 10s for sync while N8 is down
+    type: wait
+    seconds: 10
+
+  - name: ">>> CHURN: Restart Node 8"
+    type: start_node
+    nodes: churn-8
+
+  # ============ CHURN PHASE 3: Write while stopping Node 10 ============
+  - name: ">>> CHURN PHASE 3: Writes from Node 6"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N6 writes churn_p3_{{iteration}}"
+        type: call
+        node: churn-6
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node6}}"
+        method: set
+        args:
+          key: "churn_p3_{{iteration}}"
+          value: "phase3_value_{{iteration}}"
+
+  - name: ">>> CHURN: Stop Node 10"
+    type: stop_node
+    nodes: churn-10
+
+  - name: ">>> CHURN PHASE 3: More writes from Node 7 (while N10 down)"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N7 writes churn_p3b_{{iteration}}"
+        type: call
+        node: churn-7
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node7}}"
+        method: set
+        args:
+          key: "churn_p3b_{{iteration}}"
+          value: "phase3b_value_{{iteration}}"
+
+  - name: Wait 10s for sync while N10 is down
+    type: wait
+    seconds: 10
+
+  - name: ">>> CHURN: Restart Node 10"
+    type: start_node
+    nodes: churn-10
+
+  # ============ RECOVERY PHASE ============
+  - name: Wait for all restarted nodes to catch up
+    type: wait
+    seconds: 45
+
+  # Verify all churned nodes caught up
+  - name: "Verify Node 5 has data written while it was down"
+    type: call
+    node: churn-5
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node5}}"
+    method: get
+    args:
+      key: "churn_p1b_5"
+    outputs:
+      n5_catchup: result
+
+  - name: "Verify Node 8 has data written while it was down"
+    type: call
+    node: churn-8
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node8}}"
+    method: get
+    args:
+      key: "churn_p2b_5"
+    outputs:
+      n8_catchup: result
+
+  - name: "Verify Node 10 has data written while it was down"
+    type: call
+    node: churn-10
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node10}}"
+    method: get
+    args:
+      key: "churn_p3b_5"
+    outputs:
+      n10_catchup: result
+
+  - name: "Verify Node 10 has ALL data (full convergence)"
+    type: call
+    node: churn-10
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node10}}"
+    method: get
+    args:
+      key: "churn_p1_5"
+    outputs:
+      n10_full: result
+
+  - name: Assert churn recovery successful
+    type: json_assert
+    statements:
+      - 'json_subset({{n5_catchup}}, {"output": "phase1b_value_5"})'
+      - 'json_subset({{n8_catchup}}, {"output": "phase2b_value_5"})'
+      - 'json_subset({{n10_catchup}}, {"output": "phase3b_value_5"})'
+      - 'json_subset({{n10_full}}, {"output": "phase1_value_5"})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 360

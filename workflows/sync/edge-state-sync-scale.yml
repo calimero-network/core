@@ -1,0 +1,214 @@
+# Scenario E: State-Sync Strategy at Scale (force state sync)
+# Goal: Validate Bloom/LevelWise/Subtree wins at realistic sizes
+#
+# NOTE: 100k keys would take too long. Using 1000 keys for practical testing.
+# Run with --force-state-sync --state-sync-strategy <strategy>
+#
+# Variants to test:
+# 1. Bloom case: 1000 keys, 1% diff (10 new keys)
+# 2. LevelWise case: 1000 keys, 10% diff (100 new keys)  
+# 3. Subtree case: 500 keys localized changes
+
+description: "Edge Case E: State-Sync at Scale - 1000 keys, test strategy differences"
+name: "Edge State Sync Scale"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: scale
+
+steps:
+  - name: Install Application on Node 1
+    type: install_application
+    node: scale-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: scale-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: scale-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: scale-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: scale-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation}}"
+
+  - name: Wait for mesh formation
+    type: wait
+    seconds: 15
+
+  # ============ PHASE 1: Write 500 baseline keys (both nodes will have these) ============
+  - name: ">>> SCALE SETUP: Writing 500 baseline keys (batch 1-100)"
+    type: repeat
+    count: 100
+    steps:
+      - name: "Baseline key b1_{{iteration}}"
+        type: call
+        node: scale-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "baseline_b1_{{iteration}}"
+          value: "baseline_value_{{iteration}}_data_padding_to_make_this_a_reasonable_size"
+
+  - name: ">>> SCALE SETUP: Writing 500 baseline keys (batch 101-200)"
+    type: repeat
+    count: 100
+    steps:
+      - name: "Baseline key b2_{{iteration}}"
+        type: call
+        node: scale-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "baseline_b2_{{iteration}}"
+          value: "baseline_value_{{iteration}}_data_padding_to_make_this_a_reasonable_size"
+
+  - name: ">>> SCALE SETUP: Writing 500 baseline keys (batch 201-300)"
+    type: repeat
+    count: 100
+    steps:
+      - name: "Baseline key b3_{{iteration}}"
+        type: call
+        node: scale-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "baseline_b3_{{iteration}}"
+          value: "baseline_value_{{iteration}}_data_padding_to_make_this_a_reasonable_size"
+
+  - name: ">>> SCALE SETUP: Writing 500 baseline keys (batch 301-400)"
+    type: repeat
+    count: 100
+    steps:
+      - name: "Baseline key b4_{{iteration}}"
+        type: call
+        node: scale-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "baseline_b4_{{iteration}}"
+          value: "baseline_value_{{iteration}}_data_padding_to_make_this_a_reasonable_size"
+
+  - name: ">>> SCALE SETUP: Writing 500 baseline keys (batch 401-500)"
+    type: repeat
+    count: 100
+    steps:
+      - name: "Baseline key b5_{{iteration}}"
+        type: call
+        node: scale-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "baseline_b5_{{iteration}}"
+          value: "baseline_value_{{iteration}}_data_padding_to_make_this_a_reasonable_size"
+
+  - name: Wait for baseline sync (500 keys)
+    type: wait
+    seconds: 30
+
+  # ============ PHASE 2: Create divergence - stop Node 2, write more keys ============
+  - name: ">>> DIVERGENCE: Stopping Node 2"
+    type: stop_node
+    nodes: scale-2
+
+  - name: ">>> DIVERGENCE: Writing 100 new keys while Node 2 is down (10% diff)"
+    type: repeat
+    count: 100
+    steps:
+      - name: "Diverge key d_{{iteration}}"
+        type: call
+        node: scale-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "diverge_key_{{iteration}}"
+          value: "diverge_value_{{iteration}}_node2_missed_this_data"
+
+  - name: ">>> SYNC TEST: Restarting Node 2 (will sync using configured strategy)"
+    type: start_node
+    nodes: scale-2
+
+  - name: Wait for state sync at scale (600 keys total, 100 diverged)
+    type: wait
+    seconds: 45
+
+  # ============ VERIFICATION ============
+  - name: "Verify Node 2 has baseline keys"
+    type: call
+    node: scale-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "baseline_b3_50"
+    outputs:
+      n2_has_baseline: result
+
+  - name: "Verify Node 2 has diverged keys (synced after restart)"
+    type: call
+    node: scale-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "diverge_key_50"
+    outputs:
+      n2_has_diverge: result
+
+  - name: "Verify Node 2 has last diverged key"
+    type: call
+    node: scale-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "diverge_key_100"
+    outputs:
+      n2_has_last: result
+
+  - name: Assert scale sync successful
+    type: json_assert
+    statements:
+      - 'json_subset({{n2_has_baseline}}, {"output": "baseline_value_50_data_padding_to_make_this_a_reasonable_size"})'
+      - 'json_subset({{n2_has_diverge}}, {"output": "diverge_value_50_node2_missed_this_data"})'
+      - 'json_subset({{n2_has_last}}, {"output": "diverge_value_100_node2_missed_this_data"})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 300
