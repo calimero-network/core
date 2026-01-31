@@ -1,0 +1,296 @@
+# ============================================================================
+# Benchmark: 3 Nodes, 50 Keys, ALL CONFLICTING (LWW Stress)
+# ============================================================================
+#
+# Scenario: All 3 nodes write to the SAME 50 keys simultaneously.
+# Total unique keys: 50 (each written 3 times by different nodes)
+# Goal: Stress test LWW conflict resolution and measure convergence.
+#
+# Expected behavior: Last-Write-Wins based on HLC timestamp.
+# All nodes should converge to the same values (whichever had latest timestamp).
+#
+# ============================================================================
+
+description: "3 nodes, 50 shared keys, all conflicting - LWW stress test"
+name: "Bench 3N-50K Conflicts"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: b3n50c
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup
+  # ===========================================================================
+
+  - name: Install Application
+    type: install_application
+    node: b3n50c-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context
+    type: create_context
+    node: b3n50c-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity N2
+    type: create_identity
+    node: b3n50c-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity N3
+    type: create_identity
+    node: b3n50c-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite N2
+    type: invite_identity
+    node: b3n50c-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite N3
+    type: invite_identity
+    node: b3n50c-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: N2 Joins
+    type: join_context
+    node: b3n50c-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{inv2}}"
+
+  - name: N3 Joins
+    type: join_context
+    node: b3n50c-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{inv3}}"
+
+  - name: Wait for mesh
+    type: wait
+    seconds: 25
+
+  # ===========================================================================
+  # PHASE 2: Create CONFLICTING writes (all nodes write SAME keys)
+  # ===========================================================================
+
+  - name: ">>> BENCHMARK START: LWW Conflict Storm (50 keys x 3 writers)"
+    type: wait
+    seconds: 1
+
+  # Node 1 writes to shared_key_1 through shared_key_50
+  - name: N1 writes 50 shared keys
+    type: repeat
+    count: 50
+    steps:
+      - name: "N1:shared_k{{iteration}}"
+        type: call
+        node: b3n50c-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "shared_k{{iteration}}"
+          value: "FROM_NODE1_iter{{iteration}}"
+
+  # Node 2 writes to SAME keys (creates conflicts)
+  - name: N2 writes 50 shared keys (CONFLICTS)
+    type: repeat
+    count: 50
+    steps:
+      - name: "N2:shared_k{{iteration}}"
+        type: call
+        node: b3n50c-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "shared_k{{iteration}}"
+          value: "FROM_NODE2_iter{{iteration}}"
+
+  # Node 3 writes to SAME keys (more conflicts)
+  - name: N3 writes 50 shared keys (CONFLICTS)
+    type: repeat
+    count: 50
+    steps:
+      - name: "N3:shared_k{{iteration}}"
+        type: call
+        node: b3n50c-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "shared_k{{iteration}}"
+          value: "FROM_NODE3_iter{{iteration}}"
+
+  # ===========================================================================
+  # PHASE 3: Convergence (needs more time due to conflict resolution)
+  # ===========================================================================
+
+  - name: ">>> CONVERGENCE PHASE (LWW resolution in progress)"
+    type: wait
+    seconds: 60
+
+  # ===========================================================================
+  # PHASE 4: Verify CONSISTENCY (all nodes have SAME value for each key)
+  # ===========================================================================
+
+  # Read key 10 from all nodes
+  - name: "N1 reads shared_k10"
+    type: call
+    node: b3n50c-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "shared_k10"
+    outputs:
+      n1_k10: result
+
+  - name: "N2 reads shared_k10"
+    type: call
+    node: b3n50c-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "shared_k10"
+    outputs:
+      n2_k10: result
+
+  - name: "N3 reads shared_k10"
+    type: call
+    node: b3n50c-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "shared_k10"
+    outputs:
+      n3_k10: result
+
+  # Read key 25 from all nodes
+  - name: "N1 reads shared_k25"
+    type: call
+    node: b3n50c-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "shared_k25"
+    outputs:
+      n1_k25: result
+
+  - name: "N2 reads shared_k25"
+    type: call
+    node: b3n50c-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "shared_k25"
+    outputs:
+      n2_k25: result
+
+  - name: "N3 reads shared_k25"
+    type: call
+    node: b3n50c-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "shared_k25"
+    outputs:
+      n3_k25: result
+
+  # Read key 50 from all nodes  
+  - name: "N1 reads shared_k50"
+    type: call
+    node: b3n50c-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "shared_k50"
+    outputs:
+      n1_k50: result
+
+  - name: "N2 reads shared_k50"
+    type: call
+    node: b3n50c-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "shared_k50"
+    outputs:
+      n2_k50: result
+
+  - name: "N3 reads shared_k50"
+    type: call
+    node: b3n50c-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "shared_k50"
+    outputs:
+      n3_k50: result
+
+  # ===========================================================================
+  # PHASE 5: Assert CONSISTENCY (values match across nodes, don't care which won)
+  # ===========================================================================
+
+  - name: Assert consistency (all nodes agree)
+    type: assert
+    statements:
+      # Key 10: All nodes must have the same value
+      - statement: "{{n1_k10}} == {{n2_k10}}"
+        message: "shared_k10: N1 and N2 must agree"
+      - statement: "{{n2_k10}} == {{n3_k10}}"
+        message: "shared_k10: N2 and N3 must agree"
+      # Key 25: All nodes must have the same value
+      - statement: "{{n1_k25}} == {{n2_k25}}"
+        message: "shared_k25: N1 and N2 must agree"
+      - statement: "{{n2_k25}} == {{n3_k25}}"
+        message: "shared_k25: N2 and N3 must agree"
+      # Key 50: All nodes must have the same value
+      - statement: "{{n1_k50}} == {{n2_k50}}"
+        message: "shared_k50: N1 and N2 must agree"
+      - statement: "{{n2_k50}} == {{n3_k50}}"
+        message: "shared_k50: N2 and N3 must agree"
+
+  - name: ">>> BENCHMARK COMPLETE"
+    type: assert
+    statements:
+      - statement: "is_set({{n1_k10}})"
+        message: "3N-50K-CONFLICTS: LWW resolved, all nodes consistent"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

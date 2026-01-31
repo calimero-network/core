@@ -367,6 +367,30 @@ This prevents "Delta pending due to missing parents" errors after snapshot sync.
 
 See **CIP-sync-protocol.md Appendix K & L** for full implementation details.
 
+## Sync Metrics and Observability
+
+Prometheus metrics and detailed timing logs provide visibility into sync operations:
+
+### Prometheus Metrics (`sync_*` prefix)
+
+- `sync_duration_seconds` - Histogram of sync durations
+- `sync_successes_total` / `sync_failures_total` - Outcome counters
+- `sync_active` - Currently running syncs
+- `sync_snapshot_records_applied_total` - Snapshot sync throughput
+- `sync_deltas_fetched_total` / `sync_deltas_applied_total` - Delta operations
+
+### Log Output
+
+```
+INFO calimero_node::sync::manager: Sync finished successfully
+    duration_ms=1234.00  protocol=SnapshotSync  success_count=1
+
+INFO calimero_node::sync::snapshot: Snapshot sync completed
+    applied_records=42  duration_ms=567.89
+```
+
+See **CIP-sync-protocol.md Appendix N** for full details and PromQL examples.
+
 ## Future Improvements
 
 1. **Delta encoding**: Send byte-level diffs for updates instead of full data

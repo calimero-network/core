@@ -1,0 +1,190 @@
+# ============================================================================
+# Benchmark: Fresh Node Bootstrap - DELTA Strategy
+# ============================================================================
+#
+# This workflow benchmarks fresh node bootstrap using DELTA sync strategy.
+# Run with:
+#   merobox bootstrap run --no-docker --binary-path ./target/release/merod \
+#     --merod-args="--sync-strategy delta" \
+#     workflows/sync/bench-fresh-node-delta.yml
+#
+# Key metrics to observe in logs:
+#   - "Using delta sync for fresh node bootstrap" message
+#   - "request_delta" messages showing individual delta fetches
+#   - "Delta applied successfully" for each delta
+#   - Total time from join to first successful read
+#
+# Compare with bench-fresh-node-snapshot.yml to see the difference.
+#
+# ============================================================================
+
+description: Benchmark fresh node bootstrap using delta strategy
+name: Benchmark Fresh Node - Delta
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: bench-delta
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup - Install app and create context on Node 1
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: bench-delta-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: bench-delta-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  # ===========================================================================
+  # PHASE 2: Populate state on Node 1 (create data to sync)
+  # ===========================================================================
+
+  - name: Write 50 key-value pairs to Node 1
+    type: repeat
+    count: 50
+    steps:
+      - name: "Write key {{iteration}}"
+        type: call
+        node: bench-delta-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "bench_key_{{iteration}}"
+          value: "benchmark_value_{{iteration}}_with_padding_to_increase_size_0123456789"
+
+  - name: Wait for writes to settle
+    type: wait
+    seconds: 5
+
+  # ===========================================================================
+  # PHASE 3: Fresh Node 2 joins (will trigger bootstrap sync via deltas)
+  # ===========================================================================
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: bench-delta-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: bench-delta-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: ">>> BENCHMARK START: Node 2 joins (fresh node - DELTA bootstrap)"
+    type: join_context
+    node: bench-delta-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  # Wait for sync - delta sync takes longer (one roundtrip per delta)
+  - name: Wait for bootstrap sync (delta is slower)
+    type: wait
+    seconds: 60
+
+  # ===========================================================================
+  # PHASE 4: Verify Node 2 received all data
+  # ===========================================================================
+
+  - name: Verify Node 2 has key 25
+    type: call
+    node: bench-delta-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "bench_key_25"
+    outputs:
+      verify_25: result
+
+  - name: Verify Node 2 has key 50
+    type: call
+    node: bench-delta-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "bench_key_50"
+    outputs:
+      verify_50: result
+
+  - name: Assert data synced correctly
+    type: json_assert
+    statements:
+      - 'json_subset({{verify_25}}, {"output": "benchmark_value_25_with_padding_to_increase_size_0123456789"})'
+      - 'json_subset({{verify_50}}, {"output": "benchmark_value_50_with_padding_to_increase_size_0123456789"})'
+
+  # ===========================================================================
+  # PHASE 5: Fresh Node 3 joins (second fresh node)
+  # ===========================================================================
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: bench-delta-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: bench-delta-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node3: invitation
+
+  - name: ">>> BENCHMARK: Node 3 joins (second fresh node - DELTA)"
+    type: join_context
+    node: bench-delta-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_node3}}"
+
+  - name: Wait for Node 3 sync
+    type: wait
+    seconds: 60
+
+  - name: Verify Node 3 has key 1
+    type: call
+    node: bench-delta-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "bench_key_1"
+    outputs:
+      n3_verify: result
+
+  - name: Assert Node 3 synced
+    type: json_assert
+    statements:
+      - 'json_subset({{n3_verify}}, {"output": "benchmark_value_1_with_padding_to_increase_size_0123456789"})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 300

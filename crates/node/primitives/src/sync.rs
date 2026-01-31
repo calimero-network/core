@@ -208,6 +208,25 @@ pub enum InitPayload {
     SyncHandshake {
         handshake: crate::sync_protocol::SyncHandshake,
     },
+    /// Request tree node(s) for hash comparison sync.
+    ///
+    /// Used by HashComparison, SubtreePrefetch, and LevelWise strategies.
+    TreeNodeRequest {
+        context_id: ContextId,
+        /// Node IDs to fetch (hash of the node key/path).
+        /// Empty = request root node.
+        node_ids: Vec<[u8; 32]>,
+        /// Maximum depth to include children (0 = node only, 1 = immediate children, etc.)
+        include_children_depth: u8,
+    },
+    /// Request using bloom filter for efficient diff detection.
+    BloomFilterRequest {
+        context_id: ContextId,
+        /// Serialized bloom filter containing local entity IDs.
+        bloom_filter: Vec<u8>,
+        /// Expected false positive rate used to construct the filter.
+        false_positive_rate: f32,
+    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -262,4 +281,44 @@ pub enum MessagePayload<'a> {
     SyncHandshakeResponse {
         response: crate::sync_protocol::SyncHandshakeResponse,
     },
+    /// Response to TreeNodeRequest containing tree node data.
+    TreeNodeResponse {
+        /// Requested nodes with their data.
+        nodes: Vec<TreeNode>,
+    },
+    /// Response to BloomFilterRequest containing entities missing from requester.
+    BloomFilterResponse {
+        /// Serialized entities that were NOT in the requester's bloom filter.
+        /// Format: Vec<(key, value)> serialized with borsh.
+        missing_entities: Vec<u8>,
+        /// Count of entities that matched the filter (for diagnostics).
+        matched_count: u32,
+    },
+}
+
+// =============================================================================
+// Tree Sync Types (for HashComparison, SubtreePrefetch, LevelWise)
+// =============================================================================
+
+/// A tree node for hash comparison sync.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct TreeNode {
+    /// Node ID (hash of the key/path).
+    pub node_id: [u8; 32],
+    /// Node's hash (for comparison).
+    pub hash: Hash,
+    /// If this is a leaf node, contains the actual key-value data.
+    /// Format: Option<(key, value)> serialized.
+    pub leaf_data: Option<Vec<u8>>,
+    /// Child node IDs and hashes (for internal nodes).
+    pub children: Vec<TreeNodeChild>,
+}
+
+/// Reference to a child tree node.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct TreeNodeChild {
+    /// Child node ID.
+    pub node_id: [u8; 32],
+    /// Child node's hash.
+    pub hash: Hash,
 }

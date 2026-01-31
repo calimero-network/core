@@ -562,6 +562,75 @@ impl<T: Clone> DagStore<T> {
         self.deltas.get(id)
     }
 
+    /// Get all applied delta IDs
+    ///
+    /// Returns all delta IDs that have been successfully applied.
+    /// Used by bloom filter sync to build a filter of known deltas.
+    pub fn get_applied_delta_ids(&self) -> Vec<[u8; 32]> {
+        self.applied.iter().copied().collect()
+    }
+
+    /// Get deltas that the remote doesn't have based on a bloom filter
+    ///
+    /// Checks each of our applied deltas against the bloom filter.
+    /// Returns deltas that are NOT in the filter (remote is missing them).
+    pub fn get_deltas_not_in_bloom(
+        &self,
+        bloom_filter: &[u8],
+        false_positive_rate: f32,
+    ) -> Vec<CausalDelta<T>> {
+        if bloom_filter.len() < 5 {
+            // Invalid filter, return all deltas
+            return self
+                .applied
+                .iter()
+                .filter_map(|id| self.deltas.get(id).cloned())
+                .collect();
+        }
+
+        // Parse bloom filter metadata
+        let num_bits = u32::from_le_bytes([
+            bloom_filter[0],
+            bloom_filter[1],
+            bloom_filter[2],
+            bloom_filter[3],
+        ]) as usize;
+        let num_hashes = bloom_filter[4] as usize;
+        let bits = &bloom_filter[5..];
+
+        let mut missing = Vec::new();
+
+        for delta_id in &self.applied {
+            // Check if delta_id is in bloom filter
+            let mut in_filter = true;
+            for i in 0..num_hashes {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+
+                let mut hasher = DefaultHasher::new();
+                delta_id.hash(&mut hasher);
+                i.hash(&mut hasher);
+                let bit_index = (hasher.finish() as usize) % num_bits;
+
+                if bit_index / 8 >= bits.len()
+                    || (bits[bit_index / 8] & (1 << (bit_index % 8))) == 0
+                {
+                    in_filter = false;
+                    break;
+                }
+            }
+
+            if !in_filter {
+                // Remote doesn't have this delta
+                if let Some(delta) = self.deltas.get(delta_id) {
+                    missing.push(delta.clone());
+                }
+            }
+        }
+
+        missing
+    }
+
     /// Get statistics
     pub fn stats(&self) -> DagStats {
         DagStats {

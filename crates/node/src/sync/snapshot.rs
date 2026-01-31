@@ -296,6 +296,7 @@ impl SyncManager {
         context_id: ContextId,
         peer_id: libp2p::PeerId,
     ) -> Result<SnapshotSyncResult> {
+        let sync_start = std::time::Instant::now();
         let mut stream = self.network_client.open_stream(peer_id).await?;
         let boundary = self
             .request_snapshot_boundary(context_id, &mut stream)
@@ -358,7 +359,14 @@ impl SyncManager {
             }
         }
 
-        info!(%context_id, applied_records, "Snapshot sync completed");
+        let elapsed = sync_start.elapsed();
+        info!(
+            %context_id,
+            applied_records,
+            duration_ms = format!("{:.2}", elapsed.as_secs_f64() * 1000.0),
+            duration_secs = format!("{:.3}", elapsed.as_secs_f64()),
+            "Snapshot sync completed"
+        );
 
         Ok(SnapshotSyncResult {
             boundary_root_hash: boundary.boundary_root_hash,
@@ -776,6 +784,129 @@ fn collect_context_state_keys<L: calimero_store::layer::ReadLayer>(
     }
 
     Ok(keys)
+}
+
+// =============================================================================
+// Entity-based sync functions for BloomFilter and HashComparison protocols
+// =============================================================================
+
+/// Get all entity keys for a context (for bloom filter construction).
+pub fn get_entity_keys<L: calimero_store::layer::ReadLayer>(
+    handle: &calimero_store::Handle<L>,
+    context_id: ContextId,
+) -> Result<Vec<[u8; 32]>> {
+    collect_context_state_keys(handle, context_id)
+}
+
+/// Get entities NOT in the given bloom filter.
+///
+/// Returns entries that the remote is likely missing.
+pub fn get_entities_not_in_bloom<L: calimero_store::layer::ReadLayer>(
+    handle: &calimero_store::Handle<L>,
+    context_id: ContextId,
+    bloom_filter: &[u8],
+) -> Result<Vec<([u8; 32], Vec<u8>)>> {
+    if bloom_filter.len() < 5 {
+        // Invalid filter - return all entries
+        let mut entries = Vec::new();
+        let mut iter = handle.iter_snapshot::<ContextStateKey>()?;
+        for (key_result, value_result) in iter.entries() {
+            let key = key_result?;
+            let value = value_result?;
+            if key.context_id() == context_id {
+                entries.push((key.state_key(), value.value.to_vec()));
+            }
+        }
+        return Ok(entries);
+    }
+
+    // Parse bloom filter metadata
+    let num_bits = u32::from_le_bytes([
+        bloom_filter[0],
+        bloom_filter[1],
+        bloom_filter[2],
+        bloom_filter[3],
+    ]) as usize;
+    let num_hashes = bloom_filter[4] as usize;
+    let bits = &bloom_filter[5..];
+
+    let mut missing = Vec::new();
+    let mut iter = handle.iter_snapshot::<ContextStateKey>()?;
+
+    for (key_result, value_result) in iter.entries() {
+        let key = key_result?;
+        let value = value_result?;
+
+        if key.context_id() != context_id {
+            continue;
+        }
+
+        let state_key = key.state_key();
+
+        // Check if key is in bloom filter
+        let mut in_filter = true;
+        for i in 0..num_hashes {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+
+            let mut hasher = DefaultHasher::new();
+            state_key.hash(&mut hasher);
+            i.hash(&mut hasher);
+            let bit_index = (hasher.finish() as usize) % num_bits;
+
+            if bit_index / 8 >= bits.len() || (bits[bit_index / 8] & (1 << (bit_index % 8))) == 0 {
+                in_filter = false;
+                break;
+            }
+        }
+
+        if !in_filter {
+            // Remote doesn't have this entity
+            missing.push((state_key, value.value.to_vec()));
+        }
+    }
+
+    Ok(missing)
+}
+
+/// Build a bloom filter from entity keys.
+pub fn build_entity_bloom_filter(keys: &[[u8; 32]], false_positive_rate: f32) -> Vec<u8> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    if keys.is_empty() {
+        // Return minimal filter for empty set
+        return vec![0u8; 13]; // 4 bytes num_bits + 1 byte num_hashes + 8 bytes filter
+    }
+
+    // Calculate optimal filter size
+    let num_bits = ((keys.len() as f64 * (false_positive_rate as f64).ln().abs())
+        / (2.0_f64.ln().powi(2)))
+    .ceil() as usize;
+    let num_bits = num_bits.max(64); // Minimum 64 bits
+
+    let num_hashes = ((num_bits as f64 / keys.len() as f64) * 2.0_f64.ln()).ceil() as usize;
+    let num_hashes = num_hashes.max(1).min(16); // 1-16 hash functions
+
+    let mut bits = vec![0u8; (num_bits + 7) / 8];
+
+    for key in keys {
+        for i in 0..num_hashes {
+            let mut hasher = DefaultHasher::new();
+            key.hash(&mut hasher);
+            i.hash(&mut hasher);
+            let bit_index = (hasher.finish() as usize) % num_bits;
+            bits[bit_index / 8] |= 1 << (bit_index % 8);
+        }
+    }
+
+    // Prepend metadata: num_bits (u32) + num_hashes (u8)
+    let mut result = Vec::with_capacity(5 + bits.len());
+    result.extend_from_slice(&(num_bits as u32).to_le_bytes());
+    result.push(num_hashes as u8);
+    result.extend_from_slice(&bits);
+
+    result
 }
 
 #[cfg(test)]

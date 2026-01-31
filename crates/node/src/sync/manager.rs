@@ -55,6 +55,9 @@ pub struct SyncManager {
     pub(super) node_state: crate::NodeState,
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+
+    /// Prometheus metrics for sync operations.
+    pub(super) metrics: super::metrics::SharedSyncMetrics,
 }
 
 impl Clone for SyncManager {
@@ -66,6 +69,7 @@ impl Clone for SyncManager {
             network_client: self.network_client.clone(),
             node_state: self.node_state.clone(),
             ctx_sync_rx: None, // Receiver can't be cloned
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -78,6 +82,7 @@ impl SyncManager {
         network_client: NetworkClient,
         node_state: crate::NodeState,
         ctx_sync_rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
+        metrics: super::metrics::SharedSyncMetrics,
     ) -> Self {
         Self {
             sync_config,
@@ -86,6 +91,7 @@ impl SyncManager {
             network_client,
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
+            metrics,
         }
     }
 
@@ -98,7 +104,10 @@ impl SyncManager {
 
         let mut futs = FuturesUnordered::new();
 
-        let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>| {
+        let metrics = self.metrics.clone();
+        let advance = async |futs: &mut FuturesUnordered<_>,
+                             state: &mut HashMap<_, SyncState>,
+                             metrics: &super::metrics::SyncMetrics| {
             let (context_id, peer_id, start, result): (
                 ContextId,
                 PeerId,
@@ -108,13 +117,20 @@ impl SyncManager {
 
             let now = Instant::now();
             let took = Instant::saturating_duration_since(&now, start);
+            let duration_secs = took.as_secs_f64();
 
             let _ignored = state.entry(context_id).and_modify(|state| match result {
                 Ok(Ok(protocol)) => {
                     state.on_success(peer_id, protocol);
+
+                    // Record metrics
+                    metrics.sync_duration.observe(duration_secs);
+                    metrics.sync_successes.inc();
+
                     info!(
                         %context_id,
                         ?took,
+                        duration_ms = format!("{:.2}", duration_secs * 1000.0),
                         ?protocol,
                         success_count = state.success_count,
                         "Sync finished successfully"
@@ -122,9 +138,15 @@ impl SyncManager {
                 }
                 Ok(Err(ref err)) => {
                     state.on_failure(err.to_string());
+
+                    // Record failure metrics
+                    metrics.sync_duration.observe(duration_secs);
+                    metrics.sync_failures.inc();
+
                     warn!(
                         %context_id,
                         ?took,
+                        duration_ms = format!("{:.2}", duration_secs * 1000.0),
                         error = %err,
                         failure_count = state.failure_count(),
                         backoff_secs = state.backoff_delay().as_secs(),
@@ -133,9 +155,15 @@ impl SyncManager {
                 }
                 Err(ref timeout_err) => {
                     state.on_failure(timeout_err.to_string());
+
+                    // Record timeout metrics
+                    metrics.sync_duration.observe(duration_secs);
+                    metrics.sync_failures.inc();
+
                     warn!(
                         %context_id,
                         ?took,
+                        duration_ms = format!("{:.2}", duration_secs * 1000.0),
                         failure_count = state.failure_count(),
                         backoff_secs = state.backoff_delay().as_secs(),
                         "Sync timed out, applying exponential backoff"
@@ -161,7 +189,7 @@ impl SyncManager {
                     debug!("Performing interval sync");
                 }
                 Some(()) = async {
-                    loop { advance(&mut futs, &mut state).await? }
+                    loop { advance(&mut futs, &mut state, &metrics).await? }
                 } => {},
                 Some((ctx, peer)) = ctx_sync_rx.recv() => {
                     info!(?ctx, ?peer, "Received sync request");
@@ -293,7 +321,7 @@ impl SyncManager {
                 futs.push(fut);
 
                 if futs.len() >= self.sync_config.max_concurrent {
-                    let _ignored = advance(&mut futs, &mut state).await;
+                    let _ignored = advance(&mut futs, &mut state, &metrics).await;
                 }
             }
         }
@@ -870,6 +898,10 @@ impl SyncManager {
                         // will be closed when this function returns
                         match self.request_snapshot_sync(context_id, chosen_peer).await {
                             Ok(result) => {
+                                // Record snapshot metrics
+                                self.metrics
+                                    .record_snapshot_records(result.applied_records as u64);
+
                                 info!(
                                     %context_id,
                                     %chosen_peer,
@@ -1035,12 +1067,81 @@ impl SyncManager {
                         "Same DAG heads but different root hash - state sync needed"
                     );
 
-                    // Currently falls back to DAG sync as full state sync protocols
-                    // (BloomFilter, SubtreePrefetch, etc.) are not yet wired to network layer.
-                    // The selected strategy is logged for observability and future implementation.
-                    let result = self
-                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
-                        .await?;
+                    // Dispatch to the appropriate sync protocol based on selected strategy
+                    let result = match strategy {
+                        StateSyncStrategy::HashComparison => {
+                            self.hash_comparison_sync(
+                                context_id,
+                                chosen_peer,
+                                our_identity,
+                                stream,
+                                context.root_hash,
+                                peer_root_hash,
+                            )
+                            .await?
+                        }
+                        StateSyncStrategy::BloomFilter {
+                            false_positive_rate,
+                        } => {
+                            self.bloom_filter_sync(
+                                context_id,
+                                chosen_peer,
+                                our_identity,
+                                stream,
+                                false_positive_rate,
+                            )
+                            .await?
+                        }
+                        StateSyncStrategy::SubtreePrefetch { .. }
+                        | StateSyncStrategy::LevelWise { .. } => {
+                            // These strategies also use hash comparison as the base
+                            // with optimizations for subtree fetching or level batching.
+                            // For now, fall back to hash comparison.
+                            warn!(
+                                %context_id,
+                                %strategy,
+                                "Strategy not fully implemented, using HashComparison"
+                            );
+                            self.hash_comparison_sync(
+                                context_id,
+                                chosen_peer,
+                                our_identity,
+                                stream,
+                                context.root_hash,
+                                peer_root_hash,
+                            )
+                            .await?
+                        }
+                        // Adaptive already selected a concrete strategy, shouldn't reach here
+                        StateSyncStrategy::Adaptive => {
+                            self.hash_comparison_sync(
+                                context_id,
+                                chosen_peer,
+                                our_identity,
+                                stream,
+                                context.root_hash,
+                                peer_root_hash,
+                            )
+                            .await?
+                        }
+                        // Snapshot/CompressedSnapshot are blocked for initialized nodes
+                        // by the safety check above, but handle defensively
+                        StateSyncStrategy::Snapshot | StateSyncStrategy::CompressedSnapshot => {
+                            warn!(
+                                %context_id,
+                                "Snapshot strategy should have been blocked for initialized node"
+                            );
+                            self.hash_comparison_sync(
+                                context_id,
+                                chosen_peer,
+                                our_identity,
+                                stream,
+                                context.root_hash,
+                                peer_root_hash,
+                            )
+                            .await?
+                        }
+                    };
 
                     // If peer had no data or unexpected response, return error to try next peer
                     if matches!(result, SyncProtocol::None) {
@@ -1114,6 +1215,17 @@ impl SyncManager {
         context_id: ContextId,
         chosen_peer: PeerId,
     ) -> eyre::Result<SyncProtocol> {
+        use super::metrics::{PhaseTimer, SyncPhaseTimings};
+
+        // Initialize per-phase timing tracker
+        let mut timings = SyncPhaseTimings::new();
+        let sync_start = std::time::Instant::now();
+
+        // =====================================================================
+        // PHASE 1: Peer Selection & Stream Setup
+        // =====================================================================
+        let phase_timer = PhaseTimer::start();
+
         let mut context = self
             .context_client
             .sync_context_config(context_id, None)
@@ -1138,10 +1250,24 @@ impl SyncManager {
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
+        timings.peer_selection_ms = phase_timer.stop();
+
+        // =====================================================================
+        // PHASE 2: Key Share
+        // =====================================================================
+        let phase_timer = PhaseTimer::start();
+
         self.initiate_key_share_process(&mut context, our_identity, &mut stream)
             .await?;
 
+        timings.key_share_ms = phase_timer.stop();
+
+        // =====================================================================
+        // PHASE 3: Blob Share (if needed)
+        // =====================================================================
         if !self.node_client.has_blob(&blob_id)? {
+            let phase_timer = PhaseTimer::start();
+
             // Get size from application config if we don't have application yet
             let size = self
                 .get_application_size(&context_id, &application, &app_config_opt)
@@ -1161,27 +1287,53 @@ impl SyncManager {
                 )
                 .await?;
             }
+
+            timings.data_transfer_ms += phase_timer.stop();
         }
 
         let Some(_application) = application else {
             bail!("application not found: {}", context.application_id);
         };
 
+        // =====================================================================
+        // PHASE 4: DAG Sync
+        // =====================================================================
+        let phase_timer = PhaseTimer::start();
+
         // Handle DAG synchronization if needed (uninitialized or incomplete DAG)
-        if let Some(result) = self
+        let result = if let Some(result) = self
             .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
             .await?
         {
-            return Ok(result);
-        }
+            timings.dag_compare_ms = phase_timer.stop();
+            result
+        } else {
+            timings.dag_compare_ms = phase_timer.stop();
+            // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
+            debug!(%context_id, "Node is in sync, no active protocol needed");
+            SyncProtocol::None
+        };
 
-        // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
-        debug!(%context_id, "Node is in sync, no active protocol needed");
-        Ok(SyncProtocol::None)
+        // =====================================================================
+        // Log phase breakdown
+        // =====================================================================
+        timings.total_ms = sync_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Log detailed breakdown (searchable with SYNC_PHASE_BREAKDOWN)
+        timings.log(
+            &context_id.to_string(),
+            &chosen_peer.to_string(),
+            &format!("{:?}", result),
+        );
+
+        // Record to Prometheus
+        self.metrics.record_phase_timings(&timings);
+
+        Ok(result)
     }
 
     /// Request peer's DAG heads and sync all missing deltas
-    async fn request_dag_heads_and_sync(
+    pub(super) async fn request_dag_heads_and_sync(
         &self,
         context_id: ContextId,
         peer_id: PeerId,
@@ -1432,6 +1584,11 @@ impl SyncManager {
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 
         let result = self.request_snapshot_sync(context_id, peer_id).await?;
+
+        // Record snapshot metrics
+        self.metrics
+            .record_snapshot_records(result.applied_records as u64);
+
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
 
         // Fine-sync to catch any deltas since the snapshot boundary
@@ -1658,6 +1815,36 @@ impl SyncManager {
                 self.handle_sync_handshake(&context, handshake, stream, nonce)
                     .await?
             }
+            InitPayload::TreeNodeRequest {
+                context_id: requested_context_id,
+                node_ids,
+                include_children_depth,
+            } => {
+                // Handle tree node request for hash comparison sync
+                self.handle_tree_node_request(
+                    requested_context_id,
+                    node_ids,
+                    include_children_depth,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::BloomFilterRequest {
+                context_id: requested_context_id,
+                bloom_filter,
+                false_positive_rate,
+            } => {
+                // Handle bloom filter request for efficient diff detection
+                self.handle_bloom_filter_request(
+                    requested_context_id,
+                    bloom_filter,
+                    false_positive_rate,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
         };
 
         Ok(Some(()))
@@ -1707,6 +1894,159 @@ impl SyncManager {
         let msg = StreamMessage::Message {
             sequence_id: 0,
             payload: MessagePayload::SyncHandshakeResponse { response },
+            next_nonce: nonce,
+        };
+
+        self.send(stream, &msg, None).await?;
+
+        Ok(())
+    }
+
+    /// Handle tree node request for hash comparison sync.
+    async fn handle_tree_node_request(
+        &self,
+        context_id: ContextId,
+        node_ids: Vec<[u8; 32]>,
+        include_children_depth: u8,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_node_primitives::sync::{TreeNode, TreeNodeChild};
+
+        info!(
+            %context_id,
+            node_count = node_ids.len(),
+            include_children_depth,
+            "Handling tree node request"
+        );
+
+        // Get context to access root hash
+        let context = self
+            .context_client
+            .get_context(&context_id)?
+            .ok_or_else(|| eyre::eyre!("Context not found"))?;
+
+        let delta_store = self.node_state.delta_stores.get(&context_id);
+
+        let nodes = if let Some(store) = delta_store {
+            // Get DAG heads
+            let dag_heads = store.get_heads().await;
+
+            // Create response based on request type
+            if node_ids.is_empty() {
+                // Root node request - return context summary
+                vec![TreeNode {
+                    node_id: [0; 32], // Root
+                    hash: context.root_hash,
+                    leaf_data: None,
+                    children: dag_heads
+                        .iter()
+                        .map(|h| TreeNodeChild {
+                            node_id: *h,
+                            hash: calimero_primitives::hash::Hash::default(),
+                        })
+                        .collect(),
+                }]
+            } else {
+                // Specific node requests - return stubs for now
+                // Full implementation would query Merkle tree storage
+                node_ids
+                    .iter()
+                    .map(|id| TreeNode {
+                        node_id: *id,
+                        hash: calimero_primitives::hash::Hash::default(),
+                        leaf_data: None,
+                        children: vec![],
+                    })
+                    .collect()
+            }
+        } else {
+            vec![]
+        };
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::TreeNodeResponse { nodes },
+            next_nonce: nonce,
+        };
+
+        self.send(stream, &msg, None).await?;
+
+        Ok(())
+    }
+
+    /// Handle bloom filter request for efficient diff detection.
+    ///
+    /// Checks our ENTITIES against the remote's bloom filter and
+    /// returns any entities they're missing.
+    async fn handle_bloom_filter_request(
+        &self,
+        context_id: ContextId,
+        bloom_filter: Vec<u8>,
+        false_positive_rate: f32,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use super::snapshot::get_entities_not_in_bloom;
+
+        info!(
+            %context_id,
+            filter_size = bloom_filter.len(),
+            false_positive_rate,
+            "Handling ENTITY-based bloom filter request"
+        );
+
+        // Parse bloom filter metadata
+        if bloom_filter.len() < 5 {
+            warn!(%context_id, "Invalid bloom filter: too small");
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::BloomFilterResponse {
+                    missing_entities: vec![],
+                    matched_count: 0,
+                },
+                next_nonce: nonce,
+            };
+            self.send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // Get storage handle via context_client
+        let store_handle = self.context_client.datastore_handle();
+
+        // Get entities NOT in the remote's bloom filter
+        let missing_entries = get_entities_not_in_bloom(&store_handle, context_id, &bloom_filter)?;
+
+        // Get total entity count for matched calculation
+        let total_entities = {
+            use super::snapshot::get_entity_keys;
+            get_entity_keys(&store_handle, context_id)?.len() as u32
+        };
+        let missing_count = missing_entries.len() as u32;
+        let matched = total_entities.saturating_sub(missing_count);
+
+        // Serialize entities: key (32 bytes) + value_len (4 bytes) + value
+        let mut serialized: Vec<u8> = Vec::new();
+        for (key, value) in &missing_entries {
+            serialized.extend_from_slice(key);
+            serialized.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            serialized.extend_from_slice(value);
+        }
+
+        info!(
+            %context_id,
+            missing_count,
+            matched,
+            serialized_bytes = serialized.len(),
+            "Bloom filter check complete, returning missing ENTITIES"
+        );
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::BloomFilterResponse {
+                missing_entities: serialized,
+                matched_count: matched,
+            },
             next_nonce: nonce,
         };
 

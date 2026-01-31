@@ -229,6 +229,9 @@ pub trait WasmMergeCallback: Send + Sync {
     ///
     /// # Returns
     /// Borsh-serialized merged result, or error if merge fails.
+    ///
+    /// # Errors
+    /// Returns `WasmMergeError` if the WASM merge callback fails or the type is not registered.
     fn merge_custom(
         &self,
         type_name: &str,

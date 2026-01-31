@@ -1,0 +1,292 @@
+# ============================================================================
+# Benchmark: 3 Nodes, Restart + Catch-up
+# ============================================================================
+#
+# Scenario:
+#   1. All 3 nodes join and sync initial state
+#   2. STOP N3
+#   3. N1 and N2 create new divergent state while N3 is down
+#   4. RESTART N3
+#   5. Measure time for N3 to catch up
+#
+# Goal: Test node recovery after downtime with missed writes.
+# Uses: stop_node, start_node workflow steps
+#
+# ============================================================================
+
+description: "3 nodes, restart + catch-up after missed writes"
+name: "Bench 3N Restart Catch-up"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: b3nrc
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup - All nodes join
+  # ===========================================================================
+
+  - name: Install Application
+    type: install_application
+    node: b3nrc-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context
+    type: create_context
+    node: b3nrc-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity N2
+    type: create_identity
+    node: b3nrc-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity N3
+    type: create_identity
+    node: b3nrc-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite N2
+    type: invite_identity
+    node: b3nrc-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite N3
+    type: invite_identity
+    node: b3nrc-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: N2 Joins
+    type: join_context
+    node: b3nrc-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{inv2}}"
+
+  - name: N3 Joins
+    type: join_context
+    node: b3nrc-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{inv3}}"
+
+  - name: Wait for mesh formation
+    type: wait
+    seconds: 25
+
+  # ===========================================================================
+  # PHASE 2: Create initial shared state
+  # ===========================================================================
+
+  - name: N1 writes initial state (20 keys)
+    type: repeat
+    count: 20
+    steps:
+      - name: "Initial:init_k{{iteration}}"
+        type: call
+        node: b3nrc-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "init_k{{iteration}}"
+          value: "initial_value_{{iteration}}"
+
+  - name: Wait for initial sync
+    type: wait
+    seconds: 20
+
+  # Verify N3 has initial state
+  - name: "Verify N3 has initial state"
+    type: call
+    node: b3nrc-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "init_k10"
+    outputs:
+      n3_initial: result
+
+  - name: Assert N3 has initial state
+    type: json_assert
+    statements:
+      - 'json_subset({{n3_initial}}, {"output": "initial_value_10"})'
+
+  # ===========================================================================
+  # PHASE 3: STOP N3
+  # ===========================================================================
+
+  - name: ">>> STOPPING N3 (simulating downtime)"
+    type: stop_node
+    nodes: b3nrc-3
+
+  - name: Wait after stop
+    type: wait
+    seconds: 5
+
+  # ===========================================================================
+  # PHASE 4: N1 and N2 create state while N3 is DOWN
+  # ===========================================================================
+
+  - name: ">>> Creating state while N3 is down"
+    type: wait
+    seconds: 1
+
+  - name: N1 writes 30 new keys (N3 will miss these)
+    type: repeat
+    count: 30
+    steps:
+      - name: "N1:missed_n1_k{{iteration}}"
+        type: call
+        node: b3nrc-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "missed_n1_k{{iteration}}"
+          value: "n1_wrote_while_n3_down_{{iteration}}"
+
+  - name: N2 writes 30 new keys (N3 will miss these)
+    type: repeat
+    count: 30
+    steps:
+      - name: "N2:missed_n2_k{{iteration}}"
+        type: call
+        node: b3nrc-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "missed_n2_k{{iteration}}"
+          value: "n2_wrote_while_n3_down_{{iteration}}"
+
+  # Wait for N1-N2 to sync between themselves
+  - name: Wait for N1-N2 sync
+    type: wait
+    seconds: 20
+
+  # ===========================================================================
+  # PHASE 5: RESTART N3
+  # ===========================================================================
+
+  - name: ">>> BENCHMARK START: Restarting N3 (60 keys to catch up)"
+    type: start_node
+    nodes: b3nrc-3
+    wait_for_ready: true
+    wait_timeout: 30
+
+  # ===========================================================================
+  # PHASE 6: Wait for N3 to catch up
+  # ===========================================================================
+
+  - name: ">>> CATCH-UP PHASE: N3 syncing missed writes"
+    type: wait
+    seconds: 45
+
+  # ===========================================================================
+  # PHASE 7: Verify N3 caught up with ALL missed data
+  # ===========================================================================
+
+  - name: "N3 has missed N1 key 1"
+    type: call
+    node: b3nrc-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "missed_n1_k1"
+    outputs:
+      n3_m_n1_k1: result
+
+  - name: "N3 has missed N1 key 30"
+    type: call
+    node: b3nrc-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "missed_n1_k30"
+    outputs:
+      n3_m_n1_k30: result
+
+  - name: "N3 has missed N2 key 1"
+    type: call
+    node: b3nrc-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "missed_n2_k1"
+    outputs:
+      n3_m_n2_k1: result
+
+  - name: "N3 has missed N2 key 30"
+    type: call
+    node: b3nrc-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "missed_n2_k30"
+    outputs:
+      n3_m_n2_k30: result
+
+  # Also verify N3 still has initial state
+  - name: "N3 still has initial state"
+    type: call
+    node: b3nrc-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "init_k15"
+    outputs:
+      n3_still_init: result
+
+  # ===========================================================================
+  # PHASE 8: Assert complete catch-up
+  # ===========================================================================
+
+  - name: Assert N3 caught up with missed writes
+    type: json_assert
+    statements:
+      - 'json_subset({{n3_m_n1_k1}}, {"output": "n1_wrote_while_n3_down_1"})'
+      - 'json_subset({{n3_m_n1_k30}}, {"output": "n1_wrote_while_n3_down_30"})'
+      - 'json_subset({{n3_m_n2_k1}}, {"output": "n2_wrote_while_n3_down_1"})'
+      - 'json_subset({{n3_m_n2_k30}}, {"output": "n2_wrote_while_n3_down_30"})'
+      - 'json_subset({{n3_still_init}}, {"output": "initial_value_15"})'
+
+  - name: ">>> BENCHMARK COMPLETE"
+    type: assert
+    statements:
+      - statement: "is_set({{n3_m_n1_k1}})"
+        message: "RESTART-CATCHUP: N3 recovered and caught up with 60 missed keys"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 240

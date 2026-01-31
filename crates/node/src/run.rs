@@ -36,7 +36,7 @@ use crate::arbiter_pool::ArbiterPool;
 use crate::gc::GarbageCollector;
 use crate::network_event_channel::{self, NetworkEventChannelConfig};
 use crate::network_event_processor::NetworkEventBridge;
-use crate::sync::{SyncConfig, SyncManager};
+use crate::sync::{create_sync_metrics, SyncConfig, SyncManager};
 use crate::NodeManager;
 
 pub use calimero_node_primitives::NodeMode;
@@ -167,6 +167,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let node_state = crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
 
+    // Create sync metrics
+    let sync_metrics = create_sync_metrics(&mut registry);
+    info!("Sync metrics registered with Prometheus");
+
     let sync_manager = SyncManager::new(
         config.sync,
         node_client.clone(),
@@ -174,6 +178,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         network_client.clone(),
         node_state.clone(),
         ctx_sync_rx,
+        sync_metrics,
     );
 
     let node_manager = NodeManager::new(

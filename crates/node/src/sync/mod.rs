@@ -28,11 +28,14 @@ mod delta_request;
 mod helpers;
 mod key;
 mod manager;
+pub mod metrics;
 mod snapshot;
 pub(crate) mod stream;
 mod tracking;
+mod tree_sync;
 
 pub use config::{FreshNodeStrategy, StateSyncStrategy, SyncConfig};
 pub use manager::SyncManager;
+pub use metrics::{create_sync_metrics, SharedSyncMetrics, SyncMetrics};
 
 pub use key::CHALLENGE_DOMAIN;

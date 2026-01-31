@@ -64,6 +64,8 @@ struct ContextStorageApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
     async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
+        let apply_start = std::time::Instant::now();
+
         // Get current context state
         let context = self
             .context_client
@@ -91,6 +93,8 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))
             .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {}", e)))?;
 
+        let wasm_start = std::time::Instant::now();
+
         // Execute __calimero_sync_next via WASM to apply actions to storage
         let outcome = self
             .context_client
@@ -105,12 +109,15 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             .await
             .map_err(|e| ApplyError::Application(format!("WASM execution failed: {}", e)))?;
 
+        let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
+
         debug!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             root_hash = ?outcome.root_hash,
             return_registers = ?outcome.returns,
             is_merge = is_merge_scenario,
+            wasm_ms = format!("{:.2}", wasm_elapsed_ms),
             "WASM sync completed execution"
         );
 
@@ -138,6 +145,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                     delta_id = ?delta.id,
                     computed_hash = ?computed_hash,
                     delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                    merge_wasm_ms = format!("{:.2}", wasm_elapsed_ms),
                     "Merge produced new hash (expected - concurrent branches merged)"
                 );
             } else {
@@ -167,13 +175,18 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             hashes.insert(delta.id, *computed_hash);
         }
 
-        debug!(
+        let total_elapsed_ms = apply_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Log with unique marker for parsing: DELTA_APPLY_TIMING
+        info!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             action_count = delta.payload.len(),
             final_root_hash = ?computed_hash,
             was_merge = is_merge_scenario,
-            "Applied delta to WASM storage"
+            wasm_ms = format!("{:.2}", wasm_elapsed_ms),
+            total_ms = format!("{:.2}", total_elapsed_ms),
+            "DELTA_APPLY_TIMING"
         );
 
         Ok(())
@@ -998,5 +1011,26 @@ impl DeltaStore {
     pub async fn get_delta(&self, id: &[u8; 32]) -> Option<CausalDelta<Vec<Action>>> {
         let dag = self.dag.read().await;
         dag.get_delta(id).cloned()
+    }
+
+    /// Get all applied delta IDs for bloom filter sync
+    ///
+    /// Returns all delta IDs that have been successfully applied to this store.
+    pub async fn get_applied_delta_ids(&self) -> Vec<[u8; 32]> {
+        let dag = self.dag.read().await;
+        dag.get_applied_delta_ids()
+    }
+
+    /// Get deltas that the remote doesn't have based on their bloom filter
+    ///
+    /// Checks each of our applied deltas against the remote's bloom filter.
+    /// Returns deltas that are NOT in the filter (remote is missing them).
+    pub async fn get_deltas_not_in_bloom(
+        &self,
+        bloom_filter: &[u8],
+        false_positive_rate: f32,
+    ) -> Vec<CausalDelta<Vec<Action>>> {
+        let dag = self.dag.read().await;
+        dag.get_deltas_not_in_bloom(bloom_filter, false_positive_rate)
     }
 }

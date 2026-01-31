@@ -19,6 +19,14 @@ pub(crate) enum SyncProtocol {
     DagCatchup,
     /// Full snapshot sync (used when delta sync is not possible)
     SnapshotSync,
+    /// Hash-based tree comparison sync
+    HashComparison,
+    /// Bloom filter-based diff detection sync
+    BloomFilter,
+    /// Subtree prefetch sync
+    SubtreePrefetch,
+    /// Level-wise breadth-first sync
+    LevelWise,
 }
 
 /// Tracks sync state and history for a context.

@@ -1,0 +1,140 @@
+# Benchmark: Fresh Node Sync Strategies
+#
+# Compares snapshot vs delta sync for fresh node bootstrap.
+# Run with: merobox bootstrap run --no-docker workflows/sync/benchmark-fresh-node-strategies.yml
+#
+# Metrics to observe in logs:
+# - "Snapshot sync completed" with applied_records count
+# - "Delta sync" messages showing individual delta fetches
+# - Total bootstrap time (observe timestamps)
+
+name: Benchmark Fresh Node Strategies
+
+nodes:
+  - name: benchmark-node-1
+    port: 2528
+  - name: benchmark-node-2
+    port: 2529
+  - name: benchmark-node-3
+    port: 2530
+
+steps:
+  # ============================================================
+  # Phase 1: Setup - Create state on Node 1
+  # ============================================================
+  - action: Create Context on Node 1
+    request:
+      node: benchmark-node-1
+      endpoint: /admin-api/dev/contexts
+      method: POST
+      body:
+        applicationId: "{{ env.APPLICATION_ID }}"
+        contextSeed: benchmark-context-seed-12345
+        initParams: {}
+
+  - action: Join Context on Node 2 (will use configured strategy)
+    request:
+      node: benchmark-node-2
+      endpoint: /admin-api/dev/contexts
+      method: POST
+      body:
+        applicationId: "{{ env.APPLICATION_ID }}"
+        contextId: "{{ steps[0].response.data.contextId }}"
+
+  - action: Wait for Node 2 to join
+    wait: 5s
+
+  # Create significant state on Node 1
+  - action: Create 20 key-value pairs on Node 1
+    repeat: 20
+    request:
+      node: benchmark-node-1
+      endpoint: /jsonrpc
+      method: POST
+      body:
+        jsonrpc: "2.0"
+        id: "{{ repeatIndex }}"
+        method: set
+        params:
+          contextId: "{{ steps[0].response.data.contextId }}"
+          executorPublicKey: "{{ steps[0].response.data.memberPublicKey }}"
+          method: set
+          argsJson:
+            key: "benchmark_key_{{ repeatIndex }}"
+            value: "benchmark_value_{{ repeatIndex }}_with_some_extra_data_to_increase_size"
+
+  - action: Wait for state to propagate
+    wait: 10s
+
+  # ============================================================
+  # Phase 2: Fresh Node Bootstrap - Node 3 joins
+  # ============================================================
+  - action: Log - Starting fresh node benchmark
+    log: |
+      ============================================================
+      BENCHMARK: Fresh node joining with 20 key-value pairs
+      Check logs for:
+        - "Using fresh node sync strategy" 
+        - "Snapshot sync completed" (if snapshot)
+        - "request_delta" messages (if delta)
+      ============================================================
+
+  - action: Join Context on Node 3 (FRESH NODE - will trigger bootstrap)
+    request:
+      node: benchmark-node-3
+      endpoint: /admin-api/dev/contexts
+      method: POST
+      body:
+        applicationId: "{{ env.APPLICATION_ID }}"
+        contextId: "{{ steps[0].response.data.contextId }}"
+
+  - action: Wait for Node 3 to sync
+    wait: 15s
+
+  # ============================================================
+  # Phase 3: Verify all nodes converged
+  # ============================================================
+  - action: Get key count from Node 1
+    request:
+      node: benchmark-node-1
+      endpoint: /jsonrpc
+      method: POST
+      body:
+        jsonrpc: "2.0"
+        id: "verify-1"
+        method: get
+        params:
+          contextId: "{{ steps[0].response.data.contextId }}"
+          executorPublicKey: "{{ steps[0].response.data.memberPublicKey }}"
+          method: entries
+          argsJson: {}
+
+  - action: Get key count from Node 3 (fresh node)
+    request:
+      node: benchmark-node-3
+      endpoint: /jsonrpc
+      method: POST
+      body:
+        jsonrpc: "2.0"
+        id: "verify-3"
+        method: get
+        params:
+          contextId: "{{ steps[0].response.data.contextId }}"
+          executorPublicKey: "{{ steps[2].response.data.memberPublicKey }}"
+          method: entries
+          argsJson: {}
+
+  - action: Verify Node 3 synced all data
+    assert:
+      - equals:
+          actual: "{{ steps[-1].response.result | length }}"
+          expected: "{{ steps[-2].response.result | length }}"
+        message: "Node 3 should have same number of entries as Node 1"
+
+  - action: Log benchmark complete
+    log: |
+      ============================================================
+      BENCHMARK COMPLETE
+      Node 1 entries: {{ steps[-2].response.result | length }}
+      Node 3 entries: {{ steps[-1].response.result | length }}
+      ============================================================

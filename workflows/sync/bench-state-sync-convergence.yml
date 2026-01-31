@@ -1,0 +1,293 @@
+# ============================================================================
+# Benchmark: State Sync Convergence
+# ============================================================================
+#
+# This workflow benchmarks state synchronization when nodes have DIVERGENT
+# state and need to converge. This tests the state-sync-strategy options.
+#
+# Run with different strategies:
+#   merobox bootstrap run --no-docker --binary-path ./target/release/merod \
+#     --merod-args="--state-sync-strategy adaptive" \
+#     workflows/sync/bench-state-sync-convergence.yml
+#
+#   merobox bootstrap run --no-docker --binary-path ./target/release/merod \
+#     --merod-args="--state-sync-strategy hash" \
+#     workflows/sync/bench-state-sync-convergence.yml
+#
+# Key metrics to observe:
+#   - "Selected state sync strategy" log entries
+#   - "Root hash mismatch" detection
+#   - "Sync finished successfully" with timing
+#   - CRDT merge operations
+#
+# ============================================================================
+
+description: Benchmark state sync convergence with divergent nodes
+name: Benchmark State Sync Convergence
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: bench-conv
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup - All nodes join context
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: bench-conv-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: bench-conv-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: bench-conv-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: bench-conv-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: bench-conv-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: bench-conv-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node3: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: bench-conv-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: bench-conv-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_node3}}"
+
+  - name: Wait for all nodes to join
+    type: wait
+    seconds: 30
+
+  # ===========================================================================
+  # PHASE 2: Create SHARED baseline state
+  # ===========================================================================
+
+  - name: Create baseline state on Node 1
+    type: repeat
+    count: 20
+    steps:
+      - name: "Write baseline_{{iteration}}"
+        type: call
+        node: bench-conv-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "baseline_{{iteration}}"
+          value: "baseline_value_{{iteration}}"
+
+  - name: Wait for baseline sync
+    type: wait
+    seconds: 20
+
+  # ===========================================================================
+  # PHASE 3: Create DIVERGENT writes (concurrent updates to different keys)
+  # ===========================================================================
+
+  - name: ">>> BENCHMARK START: Creating divergent state"
+    type: wait
+    seconds: 1
+
+  # Node 1 writes its keys
+  - name: Node 1 writes divergent keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node1 writes n1_key_{{iteration}}"
+        type: call
+        node: bench-conv-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "n1_divergent_{{iteration}}"
+          value: "node1_divergent_value_{{iteration}}"
+
+  # Node 2 writes its keys
+  - name: Node 2 writes divergent keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node2 writes n2_key_{{iteration}}"
+        type: call
+        node: bench-conv-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "n2_divergent_{{iteration}}"
+          value: "node2_divergent_value_{{iteration}}"
+
+  # Node 3 writes its keys
+  - name: Node 3 writes divergent keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node3 writes n3_key_{{iteration}}"
+        type: call
+        node: bench-conv-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "n3_divergent_{{iteration}}"
+          value: "node3_divergent_value_{{iteration}}"
+
+  # ===========================================================================
+  # PHASE 4: Wait for convergence (state sync)
+  # ===========================================================================
+
+  - name: Wait for state convergence
+    type: wait
+    seconds: 45
+
+  # ===========================================================================
+  # PHASE 5: Verify all nodes have ALL data (convergence check)
+  # ===========================================================================
+
+  # Check Node 1 has Node 2's data
+  - name: Node 1 has Node 2's key
+    type: call
+    node: bench-conv-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "n2_divergent_5"
+    outputs:
+      n1_has_n2: result
+
+  # Check Node 1 has Node 3's data
+  - name: Node 1 has Node 3's key
+    type: call
+    node: bench-conv-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "n3_divergent_5"
+    outputs:
+      n1_has_n3: result
+
+  # Check Node 2 has Node 1's data
+  - name: Node 2 has Node 1's key
+    type: call
+    node: bench-conv-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "n1_divergent_5"
+    outputs:
+      n2_has_n1: result
+
+  # Check Node 2 has Node 3's data
+  - name: Node 2 has Node 3's key
+    type: call
+    node: bench-conv-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "n3_divergent_5"
+    outputs:
+      n2_has_n3: result
+
+  # Check Node 3 has Node 1's data
+  - name: Node 3 has Node 1's key
+    type: call
+    node: bench-conv-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "n1_divergent_5"
+    outputs:
+      n3_has_n1: result
+
+  # Check Node 3 has Node 2's data
+  - name: Node 3 has Node 2's key
+    type: call
+    node: bench-conv-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "n2_divergent_5"
+    outputs:
+      n3_has_n2: result
+
+  # ===========================================================================
+  # PHASE 6: Assert convergence
+  # ===========================================================================
+
+  - name: Assert full convergence
+    type: json_assert
+    statements:
+      # Node 1 has everyone's data
+      - 'json_subset({{n1_has_n2}}, {"output": "node2_divergent_value_5"})'
+      - 'json_subset({{n1_has_n3}}, {"output": "node3_divergent_value_5"})'
+      # Node 2 has everyone's data
+      - 'json_subset({{n2_has_n1}}, {"output": "node1_divergent_value_5"})'
+      - 'json_subset({{n2_has_n3}}, {"output": "node3_divergent_value_5"})'
+      # Node 3 has everyone's data
+      - 'json_subset({{n3_has_n1}}, {"output": "node1_divergent_value_5"})'
+      - 'json_subset({{n3_has_n2}}, {"output": "node2_divergent_value_5"})'
+
+  - name: Benchmark complete
+    type: assert
+    statements:
+      - statement: "is_set({{n1_has_n2}})"
+        message: "State sync convergence successful - all nodes have all data"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 240

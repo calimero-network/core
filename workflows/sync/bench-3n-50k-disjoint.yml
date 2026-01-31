@@ -1,0 +1,245 @@
+# ============================================================================
+# Benchmark: 3 Nodes, 50 Keys/Node, Disjoint Writes
+# ============================================================================
+#
+# Scenario: Each node writes 50 UNIQUE keys simultaneously, then converges.
+# Total keys: 150 (50 per node, no conflicts)
+# Goal: Measure convergence time for medium disjoint state.
+#
+# ============================================================================
+
+description: "3 nodes, 50 keys/node, disjoint writes - medium load"
+name: "Bench 3N-50K Disjoint"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: b3n50d
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup
+  # ===========================================================================
+
+  - name: Install Application
+    type: install_application
+    node: b3n50d-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context
+    type: create_context
+    node: b3n50d-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity N2
+    type: create_identity
+    node: b3n50d-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity N3
+    type: create_identity
+    node: b3n50d-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite N2
+    type: invite_identity
+    node: b3n50d-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite N3
+    type: invite_identity
+    node: b3n50d-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: N2 Joins
+    type: join_context
+    node: b3n50d-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{inv2}}"
+
+  - name: N3 Joins
+    type: join_context
+    node: b3n50d-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{inv3}}"
+
+  - name: Wait for mesh
+    type: wait
+    seconds: 25
+
+  # ===========================================================================
+  # PHASE 2: Create DISJOINT divergence (50 keys per node)
+  # ===========================================================================
+
+  - name: ">>> BENCHMARK START: 150 total keys (50/node)"
+    type: wait
+    seconds: 1
+
+  - name: N1 writes 50 keys
+    type: repeat
+    count: 50
+    steps:
+      - name: "N1:n1_k{{iteration}}"
+        type: call
+        node: b3n50d-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "n1_k{{iteration}}"
+          value: "v1_{{iteration}}_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  - name: N2 writes 50 keys
+    type: repeat
+    count: 50
+    steps:
+      - name: "N2:n2_k{{iteration}}"
+        type: call
+        node: b3n50d-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "n2_k{{iteration}}"
+          value: "v2_{{iteration}}_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  - name: N3 writes 50 keys
+    type: repeat
+    count: 50
+    steps:
+      - name: "N3:n3_k{{iteration}}"
+        type: call
+        node: b3n50d-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "n3_k{{iteration}}"
+          value: "v3_{{iteration}}_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  # ===========================================================================
+  # PHASE 3: Convergence
+  # ===========================================================================
+
+  - name: ">>> CONVERGENCE PHASE"
+    type: wait
+    seconds: 45
+
+  # ===========================================================================
+  # PHASE 4: Verify (spot check multiple keys per node)
+  # ===========================================================================
+
+  - name: "N1 has N2:k10"
+    type: call
+    node: b3n50d-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "n2_k10"
+    outputs:
+      check1: result
+
+  - name: "N1 has N3:k25"
+    type: call
+    node: b3n50d-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "n3_k25"
+    outputs:
+      check2: result
+
+  - name: "N2 has N1:k50"
+    type: call
+    node: b3n50d-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "n1_k50"
+    outputs:
+      check3: result
+
+  - name: "N2 has N3:k1"
+    type: call
+    node: b3n50d-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "n3_k1"
+    outputs:
+      check4: result
+
+  - name: "N3 has N1:k30"
+    type: call
+    node: b3n50d-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "n1_k30"
+    outputs:
+      check5: result
+
+  - name: "N3 has N2:k40"
+    type: call
+    node: b3n50d-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "n2_k40"
+    outputs:
+      check6: result
+
+  # ===========================================================================
+  # PHASE 5: Assert
+  # ===========================================================================
+
+  - name: Assert convergence
+    type: json_assert
+    statements:
+      - 'json_subset({{check1}}, {"output": "v2_10_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})'
+      - 'json_subset({{check2}}, {"output": "v3_25_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})'
+      - 'json_subset({{check3}}, {"output": "v1_50_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})'
+      - 'json_subset({{check4}}, {"output": "v3_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})'
+      - 'json_subset({{check5}}, {"output": "v1_30_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})'
+      - 'json_subset({{check6}}, {"output": "v2_40_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})'
+
+  - name: ">>> BENCHMARK COMPLETE"
+    type: assert
+    statements:
+      - statement: "is_set({{check1}})"
+        message: "3N-50K-DISJOINT: All 3 nodes converged with 150 total keys"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

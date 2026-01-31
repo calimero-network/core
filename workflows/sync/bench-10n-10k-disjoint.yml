@@ -1,0 +1,484 @@
+# ============================================================================
+# Benchmark: 10 Nodes, 10 Keys/Node, Disjoint Writes
+# ============================================================================
+#
+# Scenario: 10 nodes each write 10 UNIQUE keys simultaneously, then converge.
+# Total keys: 100 (10 per node, no conflicts)
+# Goal: Measure convergence time with many nodes.
+#
+# ============================================================================
+
+description: "10 nodes, 10 keys/node, disjoint writes - many-node baseline"
+name: "Bench 10N-10K Disjoint"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 10
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: b10n
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup - Create context and invite all nodes
+  # ===========================================================================
+
+  - name: Install Application
+    type: install_application
+    node: b10n-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context
+    type: create_context
+    node: b10n-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk1: memberPublicKey
+
+  # Create identities for nodes 2-10
+  - name: Create ID N2
+    type: create_identity
+    node: b10n-2
+    outputs:
+      pk2: publicKey
+
+  - name: Create ID N3
+    type: create_identity
+    node: b10n-3
+    outputs:
+      pk3: publicKey
+
+  - name: Create ID N4
+    type: create_identity
+    node: b10n-4
+    outputs:
+      pk4: publicKey
+
+  - name: Create ID N5
+    type: create_identity
+    node: b10n-5
+    outputs:
+      pk5: publicKey
+
+  - name: Create ID N6
+    type: create_identity
+    node: b10n-6
+    outputs:
+      pk6: publicKey
+
+  - name: Create ID N7
+    type: create_identity
+    node: b10n-7
+    outputs:
+      pk7: publicKey
+
+  - name: Create ID N8
+    type: create_identity
+    node: b10n-8
+    outputs:
+      pk8: publicKey
+
+  - name: Create ID N9
+    type: create_identity
+    node: b10n-9
+    outputs:
+      pk9: publicKey
+
+  - name: Create ID N10
+    type: create_identity
+    node: b10n-10
+    outputs:
+      pk10: publicKey
+
+  # Invite all nodes
+  - name: Invite N2
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk2}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite N3
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk3}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: Invite N4
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk4}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv4: invitation
+
+  - name: Invite N5
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk5}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv5: invitation
+
+  - name: Invite N6
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk6}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv6: invitation
+
+  - name: Invite N7
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk7}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv7: invitation
+
+  - name: Invite N8
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk8}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv8: invitation
+
+  - name: Invite N9
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk9}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv9: invitation
+
+  - name: Invite N10
+    type: invite_identity
+    node: b10n-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk10}}"
+    granter_id: "{{pk1}}"
+    capability: member
+    outputs:
+      inv10: invitation
+
+  # All nodes join
+  - name: N2 Joins
+    type: join_context
+    node: b10n-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk2}}"
+    invitation: "{{inv2}}"
+
+  - name: N3 Joins
+    type: join_context
+    node: b10n-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk3}}"
+    invitation: "{{inv3}}"
+
+  - name: N4 Joins
+    type: join_context
+    node: b10n-4
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk4}}"
+    invitation: "{{inv4}}"
+
+  - name: N5 Joins
+    type: join_context
+    node: b10n-5
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk5}}"
+    invitation: "{{inv5}}"
+
+  - name: N6 Joins
+    type: join_context
+    node: b10n-6
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk6}}"
+    invitation: "{{inv6}}"
+
+  - name: N7 Joins
+    type: join_context
+    node: b10n-7
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk7}}"
+    invitation: "{{inv7}}"
+
+  - name: N8 Joins
+    type: join_context
+    node: b10n-8
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk8}}"
+    invitation: "{{inv8}}"
+
+  - name: N9 Joins
+    type: join_context
+    node: b10n-9
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk9}}"
+    invitation: "{{inv9}}"
+
+  - name: N10 Joins
+    type: join_context
+    node: b10n-10
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk10}}"
+    invitation: "{{inv10}}"
+
+  - name: Wait for 10-node mesh formation
+    type: wait
+    seconds: 45
+
+  # ===========================================================================
+  # PHASE 2: Create DISJOINT divergence (10 keys per node = 100 total)
+  # ===========================================================================
+
+  - name: ">>> BENCHMARK START: 10 nodes x 10 keys = 100 total"
+    type: wait
+    seconds: 1
+
+  # Each node writes 10 unique keys
+  - name: N1 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N1:k{{iteration}}"
+        type: call
+        node: b10n-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk1}}"
+        method: set
+        args:
+          key: "n1_k{{iteration}}"
+          value: "v1_{{iteration}}"
+
+  - name: N2 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N2:k{{iteration}}"
+        type: call
+        node: b10n-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk2}}"
+        method: set
+        args:
+          key: "n2_k{{iteration}}"
+          value: "v2_{{iteration}}"
+
+  - name: N3 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N3:k{{iteration}}"
+        type: call
+        node: b10n-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk3}}"
+        method: set
+        args:
+          key: "n3_k{{iteration}}"
+          value: "v3_{{iteration}}"
+
+  - name: N4 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N4:k{{iteration}}"
+        type: call
+        node: b10n-4
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk4}}"
+        method: set
+        args:
+          key: "n4_k{{iteration}}"
+          value: "v4_{{iteration}}"
+
+  - name: N5 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N5:k{{iteration}}"
+        type: call
+        node: b10n-5
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk5}}"
+        method: set
+        args:
+          key: "n5_k{{iteration}}"
+          value: "v5_{{iteration}}"
+
+  - name: N6 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N6:k{{iteration}}"
+        type: call
+        node: b10n-6
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk6}}"
+        method: set
+        args:
+          key: "n6_k{{iteration}}"
+          value: "v6_{{iteration}}"
+
+  - name: N7 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N7:k{{iteration}}"
+        type: call
+        node: b10n-7
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk7}}"
+        method: set
+        args:
+          key: "n7_k{{iteration}}"
+          value: "v7_{{iteration}}"
+
+  - name: N8 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N8:k{{iteration}}"
+        type: call
+        node: b10n-8
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk8}}"
+        method: set
+        args:
+          key: "n8_k{{iteration}}"
+          value: "v8_{{iteration}}"
+
+  - name: N9 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N9:k{{iteration}}"
+        type: call
+        node: b10n-9
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk9}}"
+        method: set
+        args:
+          key: "n9_k{{iteration}}"
+          value: "v9_{{iteration}}"
+
+  - name: N10 writes 10 keys
+    type: repeat
+    count: 10
+    steps:
+      - name: "N10:k{{iteration}}"
+        type: call
+        node: b10n-10
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk10}}"
+        method: set
+        args:
+          key: "n10_k{{iteration}}"
+          value: "v10_{{iteration}}"
+
+  # ===========================================================================
+  # PHASE 3: Convergence
+  # ===========================================================================
+
+  - name: ">>> CONVERGENCE PHASE: 10 nodes syncing"
+    type: wait
+    seconds: 90
+
+  # ===========================================================================
+  # PHASE 4: Spot check convergence (N1 has data from N5 and N10)
+  # ===========================================================================
+
+  - name: "N1 has N5:k5"
+    type: call
+    node: b10n-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk1}}"
+    method: get
+    args:
+      key: "n5_k5"
+    outputs:
+      n1_has_n5: result
+
+  - name: "N1 has N10:k10"
+    type: call
+    node: b10n-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk1}}"
+    method: get
+    args:
+      key: "n10_k10"
+    outputs:
+      n1_has_n10: result
+
+  - name: "N10 has N1:k1"
+    type: call
+    node: b10n-10
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk10}}"
+    method: get
+    args:
+      key: "n1_k1"
+    outputs:
+      n10_has_n1: result
+
+  - name: "N5 has N8:k7"
+    type: call
+    node: b10n-5
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk5}}"
+    method: get
+    args:
+      key: "n8_k7"
+    outputs:
+      n5_has_n8: result
+
+  # ===========================================================================
+  # PHASE 5: Assert
+  # ===========================================================================
+
+  - name: Assert 10-node convergence
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_has_n5}}, {"output": "v5_5"})'
+      - 'json_subset({{n1_has_n10}}, {"output": "v10_10"})'
+      - 'json_subset({{n10_has_n1}}, {"output": "v1_1"})'
+      - 'json_subset({{n5_has_n8}}, {"output": "v8_7"})'
+
+  - name: ">>> BENCHMARK COMPLETE"
+    type: assert
+    statements:
+      - statement: "is_set({{n1_has_n5}})"
+        message: "10N-10K-DISJOINT: All 10 nodes converged with 100 total keys"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 300

@@ -1,0 +1,289 @@
+# ============================================================================
+# Benchmark: Continuous Write Load Stress Test
+# ============================================================================
+#
+# Scenario: Multiple rapid write bursts from all nodes during sync
+# Tests: Sync stability under continuous write load, convergence drift
+#
+# Run with:
+#   merobox bootstrap run --no-docker --binary-path ./target/release/merod \
+#     --merod-args="--state-sync-strategy adaptive" \
+#     workflows/sync/bench-continuous-write.yml
+#
+# ============================================================================
+
+description: "Continuous write load stress test - sync under pressure"
+name: "Bench Continuous Write"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: cw
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: cw-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: cw-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: cw-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: cw-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: cw-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: cw-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node3: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: cw-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: cw-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_node3}}"
+
+  - name: Wait for mesh formation
+    type: wait
+    seconds: 15
+
+  # ===========================================================================
+  # PHASE 2: Continuous Write Bursts
+  # ===========================================================================
+
+  - name: ">>> STRESS TEST START: Continuous write bursts"
+    type: wait
+    seconds: 1
+
+  # First burst - disjoint writes
+  - name: "Burst 1: N1 writes 5 keys"
+    type: repeat
+    count: 5
+    steps:
+      - name: "N1 burst1 key {{iteration}}"
+        type: call
+        node: cw-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "n1_burst1_{{iteration}}"
+          value: "value_{{iteration}}"
+
+  - name: "Burst 1: N2 writes 5 keys"
+    type: repeat
+    count: 5
+    steps:
+      - name: "N2 burst1 key {{iteration}}"
+        type: call
+        node: cw-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "n2_burst1_{{iteration}}"
+          value: "value_{{iteration}}"
+
+  - name: "Burst 1: N3 writes 5 keys"
+    type: repeat
+    count: 5
+    steps:
+      - name: "N3 burst1 key {{iteration}}"
+        type: call
+        node: cw-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "n3_burst1_{{iteration}}"
+          value: "value_{{iteration}}"
+
+  # Brief pause then hot key contention
+  - name: Brief pause
+    type: wait
+    seconds: 2
+
+  # Hot key contention - all nodes write same key
+  - name: "Hot Key Contention: N1"
+    type: call
+    node: cw-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "hot_key"
+      value: "from_node_1"
+
+  - name: "Hot Key Contention: N2"
+    type: call
+    node: cw-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: set
+    args:
+      key: "hot_key"
+      value: "from_node_2"
+
+  - name: "Hot Key Contention: N3"
+    type: call
+    node: cw-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: set
+    args:
+      key: "hot_key"
+      value: "from_node_3"
+
+  # Second burst during sync
+  - name: "Burst 2: N1 writes while syncing"
+    type: repeat
+    count: 5
+    steps:
+      - name: "N1 burst2 key {{iteration}}"
+        type: call
+        node: cw-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "n1_burst2_{{iteration}}"
+          value: "burst2_value_{{iteration}}"
+
+  - name: "Burst 2: N2 writes while syncing"
+    type: repeat
+    count: 5
+    steps:
+      - name: "N2 burst2 key {{iteration}}"
+        type: call
+        node: cw-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "n2_burst2_{{iteration}}"
+          value: "burst2_value_{{iteration}}"
+
+  - name: "Burst 2: N3 writes while syncing"
+    type: repeat
+    count: 5
+    steps:
+      - name: "N3 burst2 key {{iteration}}"
+        type: call
+        node: cw-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "n3_burst2_{{iteration}}"
+          value: "burst2_value_{{iteration}}"
+
+  # ===========================================================================
+  # PHASE 3: Wait for convergence
+  # ===========================================================================
+
+  - name: ">>> CONVERGENCE PHASE: Waiting for sync"
+    type: wait
+    seconds: 30
+
+  # ===========================================================================
+  # PHASE 4: Verify convergence
+  # ===========================================================================
+
+  - name: "N1 reads N2's burst2 key"
+    type: call
+    node: cw-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "n2_burst2_3"
+    outputs:
+      n1_has_n2: result
+
+  - name: "N2 reads N3's burst2 key"
+    type: call
+    node: cw-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "n3_burst2_3"
+    outputs:
+      n2_has_n3: result
+
+  - name: "N3 reads N1's burst2 key"
+    type: call
+    node: cw-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "n1_burst2_3"
+    outputs:
+      n3_has_n1: result
+
+  - name: Assert convergence
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_has_n2}}, {"output": "burst2_value_3"})'
+      - 'json_subset({{n2_has_n3}}, {"output": "burst2_value_3"})'
+      - 'json_subset({{n3_has_n1}}, {"output": "burst2_value_3"})'
+
+  - name: ">>> CONTINUOUS WRITE STRESS TEST COMPLETE"
+    type: assert
+    statements:
+      - statement: "is_set({{n1_has_n2}})"
+        message: "Continuous write stress test passed - sync stable under load"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
