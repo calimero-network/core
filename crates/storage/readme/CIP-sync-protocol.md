@@ -3083,16 +3083,23 @@ merod run --state-sync-strategy level       # Level-wise
 merod run --state-sync-strategy level:3     # Max depth 3
 ```
 
-### Adaptive Selection Logic
+### Safety: Snapshot Protection for Initialized Nodes
 
-When `Adaptive` is configured, the protocol is chosen based on:
+**CRITICAL**: Snapshot sync would overwrite local data! Two layers of protection prevent this:
+
+#### Layer 1: Adaptive Selection Never Returns Snapshot for Initialized Nodes
 
 ```
 if !local_has_data:
-    return CompressedSnapshot if remote_entities > 100 else Snapshot
+    return CompressedSnapshot if remote_entities > 100 else Snapshot  // ✅ Safe
+
+// ========================================================
+// INITIALIZED NODE: NEVER use Snapshot - it would lose local changes!
+// All protocols below use CRDT merge to preserve both sides.
+// ========================================================
 
 if divergence_ratio > 50% && remote_entities > 20:
-    return CompressedSnapshot if remote_entities > 100 else Snapshot
+    return HashComparison  // ✅ Uses CRDT merge (NOT Snapshot!)
 
 if tree_depth > 3 && child_count < 10:
     return SubtreePrefetch
@@ -3106,59 +3113,83 @@ if tree_depth <= 2 && child_count > 5:
 return HashComparison  // Default
 ```
 
+#### Layer 2: Runtime Safety Check in SyncManager
+
+Even if explicitly configured via CLI (`--state-sync-strategy snapshot`):
+
+```rust
+if local_has_data {
+    match selected {
+        Snapshot | CompressedSnapshot => {
+            warn!("SAFETY: Snapshot blocked for initialized node - using HashComparison");
+            selected = HashComparison;
+        }
+    }
+}
+```
+
+#### Safety Matrix
+
+| Strategy | Fresh Node | Initialized Node |
+|----------|-----------|------------------|
+| **Snapshot** | ✅ Used | ⛔ **BLOCKED** → HashComparison |
+| **CompressedSnapshot** | ✅ Used | ⛔ **BLOCKED** → HashComparison |
+| **HashComparison** | ✅ Safe | ✅ **Uses CRDT merge** |
+| **BloomFilter** | ✅ Safe | ✅ **Uses CRDT merge** |
+| **SubtreePrefetch** | ✅ Safe | ✅ **Uses CRDT merge** |
+| **LevelWise** | ✅ Safe | ✅ **Uses CRDT merge** |
+
 ### Protocol Comparison
 
 | Protocol | Round Trips | Best For | Trade-offs |
 |----------|-------------|----------|------------|
-| **HashComparison** | O(depth) | General, moderate diff | Multiple round trips |
-| **Snapshot** | 1 | Fresh nodes, >50% diff | High bandwidth |
-| **CompressedSnapshot** | 1 | Large state (>100 entities) | CPU overhead |
+| **HashComparison** | O(depth) | General, any divergence | Multiple round trips |
+| **Snapshot** | 1 | **Fresh nodes ONLY** | ⚠️ Blocked for initialized nodes |
+| **CompressedSnapshot** | 1 | **Fresh nodes ONLY** | ⚠️ Blocked for initialized nodes |
 | **BloomFilter** | 1-2 | Large tree, <10% diff | False positives |
 | **SubtreePrefetch** | 2 | Deep trees, localized changes | Over-fetch risk |
 | **LevelWise** | O(depth) | Wide shallow trees | High message count |
 
 ### Integration in SyncManager
 
-The strategy is selected and logged when divergence is detected:
+The strategy is selected with safety checks:
 
 ```rust
-// In SyncManager::handle_dag_sync
-let strategy = self.select_state_sync_strategy(
-    context_id,
-    local_has_data,
-    local_entity_count,
-    remote_entity_count,
-    tree_depth,
-    child_count,
-);
+// In SyncManager::select_state_sync_strategy
+let mut selected = if configured.is_adaptive() {
+    StateSyncStrategy::choose_protocol(...)
+} else {
+    configured
+};
 
-info!(
-    %context_id,
-    configured = %self.sync_config.state_sync_strategy,
-    selected = %strategy,
-    "Selected state sync strategy"
-);
+// SAFETY CHECK: Never use Snapshot on initialized nodes!
+if local_has_data {
+    match selected {
+        Snapshot | CompressedSnapshot => {
+            warn!("SAFETY: Snapshot blocked - using HashComparison");
+            selected = HashComparison;
+        }
+    }
+}
 ```
 
 ### Log Output
 
-When strategy selection occurs, you'll see:
-
+Normal selection:
 ```
 INFO calimero_node::sync::manager: Selected state sync strategy
     context_id=...
     configured=adaptive
     selected=hash
     local_has_data=true
-    local_entity_count=50
-    remote_entity_count=55
-    tree_depth=3
-    child_count=5
+```
 
-WARN calimero_node::sync::manager: Same DAG heads but different root hash - state sync needed
+Safety block (when Snapshot is explicitly configured but blocked):
+```
+WARN calimero_node::sync::manager: SAFETY: Snapshot strategy blocked for initialized node 
+    - using HashComparison to preserve local data
     context_id=...
-    chosen_peer=12D3KooW...
-    state_sync_strategy=hash
+    configured=snapshot
 ```
 
 ### Current Implementation Status
@@ -3168,6 +3199,7 @@ WARN calimero_node::sync::manager: Same DAG heads but different root hash - stat
 | `StateSyncStrategy` enum | ✅ Implemented |
 | CLI `--state-sync-strategy` flag | ✅ Implemented |
 | Adaptive selection logic | ✅ Implemented |
+| **Snapshot safety protection** | ✅ **Implemented (2 layers)** |
 | Strategy logging | ✅ Implemented |
 | Network-level BloomFilter | ⏳ Defined in storage tests only |
 | Network-level SubtreePrefetch | ⏳ Defined in storage tests only |
