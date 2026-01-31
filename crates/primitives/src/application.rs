@@ -211,7 +211,7 @@ impl BorshDeserialize for SignerId {
     }
 }
 
-/// Stable application identity: (appId, signerId). Per CIP-0001, an app is uniquely
+/// Stable application identity: (appId, signerId). An app is uniquely
 /// identified by its AppKey. appId is the manifest `package` (human-friendly label, not
 /// a security boundary); signerId is the cryptographic update authority.
 /// Display format is `{app_id}:{signer_id}`, used as keys in Desired State Documents.

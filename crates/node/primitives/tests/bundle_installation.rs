@@ -4,23 +4,51 @@ use std::fs;
 
 use std::sync::Arc;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
+use calimero_node_primitives::bundle::{
+    canonicalize_manifest, compute_signing_payload, derive_signer_id_did_key, BundleManifest,
+    BundleSignature,
+};
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
+use ed25519_dalek::{Signer, SigningKey};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::io::Cursor;
-use serde_json;
+use rand::rngs::OsRng;
 use tar::Builder;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 
-use calimero_node_primitives::bundle::BundleManifest;
+/// Signs a manifest JSON value and adds the signature field.
+fn sign_manifest(manifest_json: &mut serde_json::Value, signing_key: &SigningKey) {
+    // Canonicalize the manifest (without signature field)
+    let canonical_bytes = canonicalize_manifest(manifest_json).unwrap();
+
+    // Compute the signing payload
+    let signing_payload = compute_signing_payload(&canonical_bytes);
+
+    // Sign the payload
+    let signature = signing_key.sign(&signing_payload);
+
+    // Encode public key and signature as base64url
+    let public_key_b64 = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
+    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+
+    // Add the signature object to the manifest
+    manifest_json["signature"] = serde_json::json!({
+        "algorithm": "ed25519",
+        "publicKey": public_key_b64,
+        "signature": signature_b64
+    });
+}
 
 /// Create a test bundle archive with manifest.json, app.wasm, abi.json, and migrations
 fn create_test_bundle(
@@ -36,12 +64,16 @@ fn create_test_bundle(
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
 
-    // Create manifest.json
-    let manifest = BundleManifest {
+    // Generate a signing key for the test bundle
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest.json (without signature initially)
+    let mut manifest = BundleManifest {
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
-        signer_id: None,
+        signer_id: Some(signer_id),
         min_runtime_version: "1.0.0".to_string(),
         metadata: None,
         interfaces: None,
@@ -69,12 +101,24 @@ fn create_test_bundle(
         signature: None,
     };
 
-    let manifest_json = serde_json::to_vec(&manifest).unwrap();
+    // Serialize to JSON value, sign it, then re-serialize
+    let mut manifest_json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
+    sign_manifest(&mut manifest_json, &signing_key);
+
+    // Update manifest struct with signature for completeness
+    manifest.signature = Some(BundleSignature {
+        algorithm: "ed25519".to_string(),
+        public_key: URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
+        signature: URL_SAFE_NO_PAD.encode(signing_key.sign(&[0u8; 32]).to_bytes()),
+        signed_at: None,
+    });
+
+    let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
     let mut manifest_header = tar::Header::new_gnu();
     manifest_header.set_path("manifest.json").unwrap();
-    manifest_header.set_size(manifest_json.len() as u64);
+    manifest_header.set_size(manifest_bytes.len() as u64);
     manifest_header.set_cksum();
-    tar.append(&manifest_header, manifest_json.as_slice())
+    tar.append(&manifest_header, manifest_bytes.as_slice())
         .unwrap();
 
     // Add WASM file
@@ -498,12 +542,16 @@ fn create_test_bundle_custom_wasm_path(
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
 
-    // Create manifest.json with custom WASM path
+    // Generate a signing key for the test bundle
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest.json with custom WASM path (without signature initially)
     let manifest = BundleManifest {
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
-        signer_id: None,
+        signer_id: Some(signer_id),
         min_runtime_version: "1.0.0".to_string(),
         metadata: None,
         interfaces: None,
@@ -518,12 +566,16 @@ fn create_test_bundle_custom_wasm_path(
         signature: None,
     };
 
-    let manifest_json = serde_json::to_vec(&manifest).unwrap();
+    // Serialize to JSON value, sign it, then re-serialize
+    let mut manifest_json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
+    sign_manifest(&mut manifest_json, &signing_key);
+
+    let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
     let mut manifest_header = tar::Header::new_gnu();
     manifest_header.set_path("manifest.json").unwrap();
-    manifest_header.set_size(manifest_json.len() as u64);
+    manifest_header.set_size(manifest_bytes.len() as u64);
     manifest_header.set_cksum();
-    tar.append(&manifest_header, manifest_json.as_slice())
+    tar.append(&manifest_header, manifest_bytes.as_slice())
         .unwrap();
 
     // Add WASM file at custom path

@@ -48,10 +48,9 @@ pub struct BundleLinks {
     pub docs: Option<String>,
 }
 
-/// Cryptographic signature of the manifest (CIP-0001 compliant)
+/// Cryptographic signature of the manifest
 ///
-/// Per CIP-0001, the signature is computed over the SHA-256 hash of the
-/// canonical manifest bytes (RFC 8785 JCS) with the `signature` field excluded.
+/// The signature is computed over the SHA-256 hash of the canonical manifest bytes (RFC 8785 JCS) with the `signature` field excluded.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleSignature {

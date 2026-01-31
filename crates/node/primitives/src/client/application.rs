@@ -1,7 +1,7 @@
 use std::io::{self, ErrorKind, Read};
 use std::sync::Arc;
 
-use crate::bundle::BundleManifest;
+use crate::bundle::{verify_manifest_signature, BundleManifest};
 use calimero_primitives::application::{
     Application, ApplicationBlob, ApplicationId, ApplicationSource,
 };
@@ -81,7 +81,7 @@ impl NodeClient {
             // This is a bundle, extract WASM from extracted directory or bundle
             // Extract manifest (blocking I/O wrapped in spawn_blocking)
             let blob_bytes_clone = blob_bytes.clone();
-            let manifest = tokio::task::spawn_blocking(move || {
+            let (_, manifest) = tokio::task::spawn_blocking(move || {
                 Self::extract_bundle_manifest(&blob_bytes_clone)
             })
             .await??;
@@ -258,9 +258,10 @@ impl NodeClient {
         );
 
         let application_id = if is_bundle {
-            // For bundles: use only package and version for deterministic ApplicationId
-            // This allows overwriting apps and supports multi-version installations
-            let components = (&application.package, &application.version);
+            // For bundles: use package and signer_id for deterministic ApplicationId
+            // This creates a stable application identity based on who signed the bundle,
+            // allowing version upgrades while maintaining the same ApplicationId
+            let components = (&application.package, &application.signer_id);
             ApplicationId::from(*Hash::hash_borsh(&components)?)
         } else {
             // For single WASM: use current logic (blob_id, size, source, metadata)
@@ -356,7 +357,7 @@ impl NodeClient {
             metadata,
             package,
             version,
-            None, // signer_id: None for non-bundle installations
+            None,  // signer_id: None for non-bundle installations
             false, // is_bundle: false for single WASM
         )
     }
@@ -396,10 +397,19 @@ impl NodeClient {
             // Extract bundle to parse manifest and extract artifacts
             // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
             let bundle_data_clone = bundle_data.clone();
-            let manifest = tokio::task::spawn_blocking(move || {
+            let (manifest_json, manifest) = tokio::task::spawn_blocking(move || {
                 Self::extract_bundle_manifest(&bundle_data_clone)
             })
             .await??;
+
+            // Verify manifest signature and derive signerId
+            let verification = verify_manifest_signature(&manifest_json)?;
+            let signer_id = verification.signer_id;
+            debug!(
+                signer_id = %signer_id,
+                bundle_hash = %hex::encode(verification.bundle_hash),
+                "bundle manifest signature verified"
+            );
 
             // Extract package and version from manifest
             let package = &manifest.package;
@@ -516,7 +526,6 @@ impl NodeClient {
             };
 
             // Install application with bundle blob_id and extracted metadata
-            // TODO: Wire in signer_id from manifest verification (install_flow task)
             return self.install_application(
                 &bundle_blob_id,
                 stored_size,
@@ -524,8 +533,8 @@ impl NodeClient {
                 bundle_metadata, // Use metadata extracted from bundle manifest
                 package,
                 version,
-                None, // signer_id: to be wired from manifest verification
-                true, // is_bundle: true for bundles
+                Some(&signer_id), // signer_id from manifest verification
+                true,             // is_bundle: true for bundles
             );
         }
 
@@ -546,13 +555,8 @@ impl NodeClient {
             .await?;
 
         self.install_application(
-            &blob_id,
-            size,
-            &uri,
-            metadata,
-            package,
-            version,
-            None, // signer_id: None for non-bundle installations
+            &blob_id, size, &uri, metadata, package, version,
+            None,  // signer_id: None for non-bundle installations
             false, // is_bundle: false for single WASM
         )
     }
@@ -590,9 +594,18 @@ impl NodeClient {
         // Extract bundle to parse manifest and extract artifacts
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
         let bundle_data_clone = bundle_data.clone();
-        let manifest =
+        let (manifest_json, manifest) =
             tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_data_clone))
                 .await??;
+
+        // Verify manifest signature and derive signerId
+        let verification = verify_manifest_signature(&manifest_json)?;
+        let signer_id = verification.signer_id;
+        debug!(
+            signer_id = %signer_id,
+            bundle_hash = %hex::encode(verification.bundle_hash),
+            "bundle manifest signature verified"
+        );
 
         // Extract package and version from manifest (ignore provided values)
         let package = &manifest.package;
@@ -710,7 +723,6 @@ impl NodeClient {
         };
 
         // Install application with bundle blob_id and extracted metadata
-        // TODO: Wire in signer_id from manifest verification (install_flow task)
         let application_id = self.install_application(
             &bundle_blob_id,
             stored_size,
@@ -718,8 +730,8 @@ impl NodeClient {
             bundle_metadata, // Use metadata extracted from bundle manifest
             package,
             version,
-            None, // signer_id: to be wired from manifest verification
-            true, // is_bundle: true for bundles
+            Some(&signer_id), // signer_id from manifest verification
+            true,             // is_bundle: true for bundles
         )?;
 
         // Delete bundle file after successful installation (it's now stored as a blob)
@@ -740,8 +752,11 @@ impl NodeClient {
         Ok(application_id)
     }
 
-    /// Extract and parse bundle manifest from bundle archive data
-    fn extract_bundle_manifest(bundle_data: &[u8]) -> eyre::Result<BundleManifest> {
+    /// Extract and parse bundle manifest from bundle archive data.
+    /// Returns both the raw JSON value (for signature verification) and the typed manifest.
+    fn extract_bundle_manifest(
+        bundle_data: &[u8],
+    ) -> eyre::Result<(serde_json::Value, BundleManifest)> {
         let tar = GzDecoder::new(bundle_data);
         let mut archive = Archive::new(tar);
 
@@ -750,9 +765,15 @@ impl NodeClient {
             let path = entry.path()?;
 
             if path.file_name().and_then(|n| n.to_str()) == Some("manifest.json") {
-                let mut manifest_json = String::new();
-                entry.read_to_string(&mut manifest_json)?;
-                let manifest: BundleManifest = serde_json::from_str(&manifest_json)
+                let mut manifest_str = String::new();
+                entry.read_to_string(&mut manifest_str)?;
+
+                // Parse as raw JSON value first (needed for signature verification)
+                let manifest_json: serde_json::Value = serde_json::from_str(&manifest_str)
+                    .map_err(|e| eyre::eyre!("failed to parse manifest.json as JSON: {}", e))?;
+
+                // Parse as typed manifest
+                let manifest: BundleManifest = serde_json::from_str(&manifest_str)
                     .map_err(|e| eyre::eyre!("failed to parse manifest.json: {}", e))?;
 
                 // Validate required fields
@@ -763,7 +784,7 @@ impl NodeClient {
                     bail!("bundle manifest 'appVersion' field is empty");
                 }
 
-                return Ok(manifest);
+                return Ok((manifest_json, manifest));
             }
         }
 
@@ -844,9 +865,19 @@ impl NodeClient {
         // No metadata needed - bundle detection happens via is_bundle_blob()
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
         let bundle_bytes_clone = bundle_bytes.clone();
-        let manifest =
+        let (manifest_json, manifest) =
             tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_bytes_clone))
                 .await??;
+
+        // Verify manifest signature and derive signerId
+        let verification = verify_manifest_signature(&manifest_json)?;
+        let signer_id = verification.signer_id;
+        debug!(
+            signer_id = %signer_id,
+            bundle_hash = %hex::encode(verification.bundle_hash),
+            "bundle manifest signature verified"
+        );
+
         let package = &manifest.package;
         let version = &manifest.app_version;
 
@@ -965,7 +996,6 @@ impl NodeClient {
         };
 
         // Install application with extracted metadata
-        // TODO: Wire in signer_id from manifest verification (install_flow task)
         self.install_application(
             blob_id,
             size,
@@ -973,8 +1003,8 @@ impl NodeClient {
             bundle_metadata,
             package,
             version,
-            None, // signer_id: to be wired from manifest verification
-            true, // is_bundle: true for bundles
+            Some(&signer_id), // signer_id from manifest verification
+            true,             // is_bundle: true for bundles
         )
     }
 
