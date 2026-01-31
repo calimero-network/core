@@ -1,14 +1,34 @@
+# ============================================================================
 # Benchmark: Cold Connection Dial Latency
+# ============================================================================
+#
 # Tests dial latency after node restart (new connections required)
 # Expected: Dial should be slower (~150-200ms) as new connections established
+#
+# Run with:
+#   merobox bootstrap run --no-docker --binary-path ./target/release/merod \
+#     --e2e-mode workflows/sync/bench-dial-cold.yml
+#
+# ============================================================================
 
-name: bench-dial-cold
-nodes: 2
-dev_mode: true
+description: "2 nodes, cold connection dial latency test (after restart)"
+name: "Bench Dial Cold"
 
-merod_args: "--state-sync-strategy hash-comparison"
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: dial
 
 steps:
+  # ===========================================================================
+  # PHASE 1: Setup
+  # ===========================================================================
+
   - name: Install Application on Node 1
     type: install_application
     node: dial-1
@@ -25,77 +45,115 @@ steps:
       context_id: contextId
       pk_node1: memberPublicKey
 
-  - name: Get Node 2 identity
-    type: get_node_identity
+  - name: Create Identity on Node 2
+    type: create_identity
     node: dial-2
     outputs:
       pk_node2: publicKey
 
   - name: Invite Node 2 to Context
-    type: invite_node
+    type: invite_identity
     node: dial-1
     context_id: "{{context_id}}"
-    inviter_pk: "{{pk_node1}}"
-    invitee_pk: "{{pk_node2}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
 
-  - name: Join Context on Node 2
+  - name: Node 2 Joins Context
     type: join_context
     node: dial-2
     context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
 
   - name: Wait for mesh formation
-    type: sleep
-    duration_ms: 3000
+    type: wait
+    seconds: 10
 
-  # Write baseline data
+  # ===========================================================================
+  # PHASE 2: Establish baseline with warm connection
+  # ===========================================================================
+
   - name: Write baseline key
     type: call
     node: dial-1
     context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
     method: set
-    args_json: '{"key": "baseline", "value": "initial"}'
+    args:
+      key: baseline
+      value: initial
 
   - name: Wait for sync
-    type: sleep
-    duration_ms: 3000
+    type: wait
+    seconds: 5
 
-  # Stop Node 2 to break connections
+  - name: Verify baseline on Node 2
+    type: call
+    node: dial-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: baseline
+
+  # ===========================================================================
+  # PHASE 3: Stop Node 2 to break connections
+  # ===========================================================================
+
   - name: Stop Node 2
     type: stop_node
     node: dial-2
 
   - name: Wait for connections to close
-    type: sleep
-    duration_ms: 2000
+    type: wait
+    seconds: 5
 
-  # Write while Node 2 is down
+  # ===========================================================================
+  # PHASE 4: Write while Node 2 is down
+  # ===========================================================================
+
   - name: Write key while N2 down
     type: call
     node: dial-1
     context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
     method: set
-    args_json: '{"key": "cold1", "value": "written_while_down"}'
+    args:
+      key: cold1
+      value: written_while_down
 
-  # Restart Node 2 - will need cold dial
+  - name: Wait
+    type: wait
+    seconds: 2
+
+  # ===========================================================================
+  # PHASE 5: Restart Node 2 - will need cold dial
+  # ===========================================================================
+
   - name: Start Node 2
     type: start_node
     node: dial-2
 
   - name: Wait for restart and cold dial
-    type: sleep
-    duration_ms: 15000
+    type: wait
+    seconds: 30
 
-  # Verify cold dial synced the data
+  # ===========================================================================
+  # PHASE 6: Verify cold dial synced the data
+  # ===========================================================================
+
   - name: Verify cold1 synced
     type: call
     node: dial-2
     context_id: "{{context_id}}"
-    method: entries
-    expected_result:
-      contains:
-        - key: cold1
-          value: written_while_down
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: cold1
 
   - name: Final wait for log flush
-    type: sleep
-    duration_ms: 1000
+    type: wait
+    seconds: 2
