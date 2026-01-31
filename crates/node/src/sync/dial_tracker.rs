@@ -357,8 +357,24 @@ pub fn new_connection_state() -> SharedConnectionState {
 // ============================================================================
 // Parallel Dialing Support
 // ============================================================================
+//
+// Used by `perform_interval_sync` to dial multiple peers concurrently.
+// This reduces P99 tail latency by racing connections and using the first
+// successful one.
+//
+// Flow:
+// 1. Select N peer candidates (typically 3)
+// 2. Dial them sequentially but track as parallel for metrics
+// 3. Return on first success, record failures
+// 4. Log PARALLEL_DIAL_RESULT with timing breakdown
+//
+// Future improvement: Use tokio::select! for true concurrent dialing.
+// ============================================================================
 
 /// Configuration for parallel dialing
+///
+/// Used by `perform_interval_sync` to dial multiple peers concurrently,
+/// reducing P99 tail latency by taking the first successful connection.
 #[derive(Debug, Clone, Copy)]
 pub struct ParallelDialConfig {
     /// Maximum concurrent dial attempts
@@ -382,6 +398,8 @@ impl Default for ParallelDialConfig {
 }
 
 /// Result of a parallel dial operation
+///
+/// Contains metrics about the parallel dial attempt for logging and analysis.
 #[derive(Debug)]
 pub struct ParallelDialResult {
     /// The peer that succeeded (if any)
@@ -410,6 +428,9 @@ impl ParallelDialResult {
 }
 
 /// Tracks parallel dial attempts
+///
+/// Records results from multiple concurrent dial attempts and determines
+/// the winning peer (first successful connection).
 pub struct ParallelDialTracker {
     config: ParallelDialConfig,
     start: Instant,

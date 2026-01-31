@@ -82,6 +82,29 @@ impl Default for RuntimeMergeCallback {
 }
 
 impl WasmMergeCallback for RuntimeMergeCallback {
+    /// Merge custom type data during state sync.
+    ///
+    /// # KNOWN LIMITATION
+    ///
+    /// **WASM dispatch is not yet implemented.** This method falls back to:
+    /// 1. Type registry (built-in CRDTs like Counter, Map work correctly)
+    /// 2. Last-Write-Wins (custom `#[derive(Mergeable)]` types lose CRDT semantics)
+    ///
+    /// See `TECH-DEBT-SYNC-2026-01.md` for discussion.
+    ///
+    /// # Impact
+    ///
+    /// | Type | Behavior | Correct? |
+    /// |------|----------|----------|
+    /// | Built-in CRDTs | Registry merge | ✅ |
+    /// | Custom Mergeable | LWW fallback | ⚠️ NO |
+    ///
+    /// # Future Work
+    ///
+    /// To properly support custom Mergeable types:
+    /// 1. Store entity type metadata in storage
+    /// 2. Implement `from_module()` to load WASM merge functions
+    /// 3. Dispatch to `__calimero_merge` export
     fn merge_custom(
         &self,
         type_name: &str,
@@ -99,14 +122,13 @@ impl WasmMergeCallback for RuntimeMergeCallback {
             "RuntimeMergeCallback::merge_custom called"
         );
 
-        // TODO: Actually call into WASM module
-        // For now, fall back to registry-based merge or LWW
+        // NOTE: WASM merge not implemented - see method docs for limitations
         warn!(
             type_name,
             "WASM merge not yet implemented, falling back to type registry or LWW"
         );
 
-        // Try the type-name registry first
+        // Try the type-name registry first (handles built-in CRDTs)
         if let Some(result) = calimero_storage::merge::try_merge_by_type_name(
             type_name,
             local_data,
@@ -118,8 +140,13 @@ impl WasmMergeCallback for RuntimeMergeCallback {
             return result.map_err(|e| WasmMergeError::MergeFailed(e.to_string()));
         }
 
-        // Fall back to Last-Write-Wins
-        trace!(type_name, local_ts, remote_ts, "Falling back to LWW");
+        // Fall back to Last-Write-Wins (WARNING: loses CRDT semantics for custom types!)
+        trace!(
+            type_name,
+            local_ts,
+            remote_ts,
+            "Falling back to LWW - CRDT semantics lost"
+        );
         if remote_ts > local_ts {
             Ok(remote_data.to_vec())
         } else {

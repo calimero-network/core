@@ -464,12 +464,34 @@ impl DeltaStore {
 
     /// Add boundary delta stubs to the DAG after snapshot sync.
     ///
-    /// When a node joins via snapshot sync, it receives the state but not the DAG history.
-    /// This method creates "stub" deltas for the snapshot boundary heads so that:
-    /// 1. New deltas that reference these heads as parents can be applied
-    /// 2. The DAG maintains correct topology
+    /// # WORKAROUND
     ///
-    /// The stubs have no payload (empty actions) and are marked as already applied.
+    /// This is a **workaround** for the snapshot sync → delta sync transition.
+    /// See `TECH-DEBT-SYNC-2026-01.md` for discussion of alternatives.
+    ///
+    /// # Problem
+    ///
+    /// Snapshot sync transfers state without delta history. When new deltas arrive
+    /// referencing pre-snapshot parents, the DAG would reject them with "parent not found".
+    ///
+    /// # Solution
+    ///
+    /// Create placeholder ("stub") deltas for the snapshot boundary DAG heads:
+    /// - Stub ID = actual DAG head ID (so new deltas can reference it as parent)
+    /// - Stub parent = genesis `[0; 32]` (fake - we don't know actual parents)
+    /// - Stub payload = empty (no actions to replay)
+    /// - Marked as "already applied" via `restore_applied_delta()`
+    ///
+    /// # Limitations
+    ///
+    /// - **No history replay**: Can't reconstruct pre-snapshot state changes
+    /// - **Broken parent chain**: DAG traversal stops at stubs
+    /// - **Audit gap**: No verification of pre-snapshot history
+    ///
+    /// # Future Work
+    ///
+    /// Consider a proper "checkpoint delta" type in the DAG protocol that
+    /// represents snapshot boundaries as first-class citizens.
     pub async fn add_snapshot_boundary_stubs(
         &self,
         boundary_dag_heads: Vec<[u8; 32]>,
