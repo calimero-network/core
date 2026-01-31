@@ -32,7 +32,7 @@ mod snapshot;
 pub(crate) mod stream;
 mod tracking;
 
-pub use config::{FreshNodeStrategy, SyncConfig};
+pub use config::{FreshNodeStrategy, StateSyncStrategy, SyncConfig};
 pub use manager::SyncManager;
 
 pub use key::CHALLENGE_DOMAIN;

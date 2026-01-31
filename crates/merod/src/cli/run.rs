@@ -1,7 +1,7 @@
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
-use calimero_node::sync::{FreshNodeStrategy, SyncConfig};
+use calimero_node::sync::{FreshNodeStrategy, StateSyncStrategy, SyncConfig};
 use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
@@ -31,6 +31,22 @@ pub struct RunCommand {
     /// - "adaptive:N": Use snapshot if peer has >= N DAG heads
     #[arg(long, default_value = "snapshot")]
     pub sync_strategy: String,
+
+    /// State tree sync strategy for testing/benchmarking.
+    ///
+    /// Controls which Merkle tree comparison protocol is used:
+    /// - "adaptive": Auto-select based on tree characteristics (default)
+    /// - "hash": Standard recursive hash comparison
+    /// - "snapshot": Full state snapshot transfer
+    /// - "compressed": Compressed snapshot (for large state)
+    /// - "bloom": Bloom filter quick diff (for <10% divergence)
+    /// - "bloom:0.05": Bloom filter with custom false positive rate
+    /// - "subtree": Subtree prefetch (for deep trees)
+    /// - "subtree:5": Subtree prefetch with max depth
+    /// - "level": Level-wise breadth-first sync
+    /// - "level:3": Level-wise with max depth
+    #[arg(long, default_value = "adaptive")]
+    pub state_sync_strategy: String,
 }
 
 impl RunCommand {
@@ -133,6 +149,13 @@ impl RunCommand {
             .map_err(|e| eyre::eyre!("Invalid sync strategy: {}", e))?;
         info!(%fresh_node_strategy, "Using fresh node sync strategy");
 
+        // Parse state sync strategy
+        let state_sync_strategy: StateSyncStrategy = self
+            .state_sync_strategy
+            .parse()
+            .map_err(|e| eyre::eyre!("Invalid state sync strategy: {}", e))?;
+        info!(%state_sync_strategy, "Using state sync strategy");
+
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.clone(),
@@ -147,6 +170,7 @@ impl RunCommand {
                 interval: config.sync.interval,
                 frequency: config.sync.frequency,
                 fresh_node_strategy,
+                state_sync_strategy,
                 ..Default::default()
             },
             datastore: datastore_config,
