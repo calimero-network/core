@@ -160,20 +160,35 @@ SyncManager::initiate_sync_inner()
 
 ## Implementation Plan
 
-### Phase 1: Instrumentation
-1. Add `PEER_FIND_BREAKDOWN` logging
-2. Separate "find" time from "dial" time
-3. Track peer sources and quality metrics
+### Phase 1: Instrumentation ✅ COMPLETE
+1. ✅ Add `PEER_FIND_BREAKDOWN` logging
+2. ✅ Separate "find" time from "dial" time  
+3. ✅ Track peer sources and quality metrics
 
-### Phase 2: Strategy Implementation
-1. Add `RecentPeerCache` (LRU of last successful peers)
-2. Add `PeerQualityTracker` (failure counts, last success time)
-3. Implement alternative strategies (A1-A5)
+**Implemented in**: `crates/node/src/sync/peer_finder.rs`
 
-### Phase 3: Benchmarking
-1. Create workflows for each scenario
-2. Run each strategy × scenario combination
-3. Analyze results and recommend default
+### Phase 2: Strategy Implementation (TODO)
+1. ✅ Add `RecentPeerCache` (LRU of last successful peers) - **Implemented**
+2. ✅ Add `PeerQualityTracker` (failure counts, last success time) - **Implemented**
+3. ⏳ Implement alternative strategies (A1-A5) - **Framework ready**
+
+### Phase 3: Benchmarking (TODO)
+1. ⏳ Create workflows for each scenario
+2. ⏳ Run each strategy × scenario combination
+3. ⏳ Analyze results and recommend default
+
+## Running Instrumentation
+
+The `PEER_FIND_BREAKDOWN` log marker is now emitted on every peer finding attempt. Extract metrics with:
+
+```bash
+./scripts/extract-sync-metrics.sh <prefix>
+```
+
+Output includes:
+- `peer_find_total_ms`: P50/P95 of total peer finding time
+- `from_mesh_ms`: Time spent querying gossipsub mesh
+- `candidates_total`: Average candidates found
 
 ---
 

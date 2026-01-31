@@ -1,5 +1,16 @@
 #!/bin/bash
 # ============================================================================
+# Extract Sync Metrics from Node Logs
+# ============================================================================
+#
+# Parses the following log markers:
+# - SYNC_PHASE_BREAKDOWN: Per-phase timing for sync operations
+# - DELTA_APPLY_TIMING: WASM execution and delta application timing
+# - STRATEGY_SYNC_METRICS: State sync strategy performance
+# - PEER_FIND_BREAKDOWN: Peer finding/discovery timing (NEW)
+#
+# ============================================================================
+# ============================================================================
 # Extract Sync Metrics from Node Logs (Enhanced with Strategy Metrics)
 # ============================================================================
 #
@@ -439,3 +450,64 @@ echo ""
 echo "=== DONE ==="
 echo "Full summary at: $OUTPUT_DIR/summary.md"
 echo "Raw data at: $OUTPUT_DIR/"
+
+# ============================================================================
+# Phase 4b: Extract PEER_FIND_BREAKDOWN metrics
+# ============================================================================
+
+echo ">>> Extracting PEER_FIND_BREAKDOWN..."
+
+PEER_FIND_FILE=$(mktemp)
+
+for node_dir in "$DATA_DIR"/${PREFIX}-*/; do
+    if [[ -d "$node_dir" ]]; then
+        node_name=$(basename "$node_dir")
+        log_file="$node_dir/logs/${node_name}.log"
+        
+        if [[ -f "$log_file" ]]; then
+            # Extract peer find breakdown data
+            grep "PEER_FIND_BREAKDOWN" "$log_file" 2>/dev/null | while IFS= read -r line; do
+                total_ms=$(echo "$line" | grep -oE 'peer_find_total_ms=[0-9.]+' | cut -d'=' -f2)
+                from_mesh_ms=$(echo "$line" | grep -oE 'from_mesh_ms=[0-9.]+' | cut -d'=' -f2)
+                candidates_total=$(echo "$line" | grep -oE 'candidates_total=[0-9]+' | cut -d'=' -f2)
+                
+                if [[ -n "$total_ms" ]]; then
+                    echo "${total_ms},${from_mesh_ms:-0},${candidates_total:-0}" >> "$PEER_FIND_FILE"
+                fi
+            done
+        fi
+    fi
+done
+
+PEER_FIND_COUNT=$(wc -l < "$PEER_FIND_FILE" 2>/dev/null | tr -d ' ')
+[[ -z "$PEER_FIND_COUNT" || ! "$PEER_FIND_COUNT" =~ ^[0-9]+$ ]] && PEER_FIND_COUNT=0
+
+if [[ "$PEER_FIND_COUNT" -gt 0 ]]; then
+    echo ""
+    echo "=== PEER FINDING METRICS ==="
+    echo "Total attempts: $PEER_FIND_COUNT"
+    
+    # Calculate stats for peer_find_total_ms
+    SORTED=$(cut -d',' -f1 "$PEER_FIND_FILE" | sort -n | grep -v '^$')
+    if [[ -n "$SORTED" ]]; then
+        COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
+        MIN=$(echo "$SORTED" | head -1)
+        MAX=$(echo "$SORTED" | tail -1)
+        AVG=$(echo "$SORTED" | awk '{sum+=$1} END {printf "%.2f", sum/NR}')
+        P50_IDX=$(echo "$COUNT * 50 / 100" | bc)
+        P95_IDX=$(echo "$COUNT * 95 / 100" | bc)
+        [[ "$P50_IDX" -lt 1 ]] && P50_IDX=1
+        [[ "$P95_IDX" -lt 1 ]] && P95_IDX=1
+        P50=$(echo "$SORTED" | sed -n "${P50_IDX}p")
+        P95=$(echo "$SORTED" | sed -n "${P95_IDX}p")
+        
+        echo "peer_find_total_ms:"
+        echo "  Min: ${MIN}ms  Max: ${MAX}ms  Avg: ${AVG}ms"
+        echo "  P50: ${P50}ms  P95: ${P95}ms"
+    fi
+    
+    cp "$PEER_FIND_FILE" "$OUTPUT_DIR/peer_find_raw.csv" 2>/dev/null || true
+fi
+
+rm -f "$PEER_FIND_FILE"
+echo ""
