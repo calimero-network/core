@@ -1049,3 +1049,31 @@ Hash Compare   │████████████████████�
 3. Local network - no real latency
 
 *State sync strategy analysis: See SYNC-STRATEGY-ANALYSIS.md for full research document*
+
+---
+
+## Appendix D: Edge Case Stress Tests (January 31, 2026)
+
+Edge case benchmarks were conducted to identify production failure modes.
+
+### Summary
+
+| Scenario | Nodes | Status | Critical Finding |
+|----------|-------|--------|------------------|
+| Cold Dial Storm | 10 | ✅ Pass | P99 peer_selection: **1521ms** |
+| Churn + Reconnect | 10 | ❌ Fail | Nodes failed to recover |
+| Partition Healing | 10 | ✅ Pass | LWW resolved conflicts correctly |
+| State Sync Scale | 2 | ✅ Pass | Bloom filter scales linearly |
+
+### Top 2 Production Risks
+
+1. **Peer Selection Tail Latency**: P99 > 1.5 seconds (99% of sync time)
+2. **Churn Recovery Failure**: Restarted nodes may not rejoin mesh
+
+### Recommendations
+
+- Add peer connection caching (target: P99 < 250ms)
+- Pre-warm connections on context join
+- Implement catch-up mode for lagging nodes
+
+*Full analysis: See `EDGE-CASE-BENCHMARK-RESULTS.md`*

@@ -3516,6 +3516,63 @@ cat data/b3n10d_metrics/summary.md
 - `DEEP-SYNC-ANALYSIS.md` - Detailed analysis with all scenarios
 - `MISSING_INSTRUMENTATION.md` - Instrumentation status and remaining gaps
 - `BENCHMARK-RESULTS.md` - Raw benchmark data
+- `EDGE-CASE-BENCHMARK-RESULTS.md` - Edge case stress test results
+
+---
+
+## Appendix P: Edge Case Benchmark Results
+
+This appendix summarizes the edge case stress tests conducted to identify production risks.
+
+### Scenarios Tested
+
+| Scenario | Nodes | Description | Status |
+|----------|-------|-------------|--------|
+| Cold Dial Storm | 10 | Measure first-dial vs cached connection cost | ✅ Pass |
+| Churn + Reconnect | 10 | Restart nodes during continuous writes | ❌ Fail |
+| Partition Healing | 10 | 5/5 split with 80% disjoint + 20% hot keys | ✅ Pass |
+| State Sync Scale | 2 | 600 keys with Bloom filter forced sync | ✅ Pass |
+
+### Critical Findings
+
+#### Finding 1: peer_selection Dominates P99 Latency
+
+| Scenario | peer_selection P99 | % of total |
+|----------|-------------------|------------|
+| Cold Dial Storm | **1521ms** | 99.2% |
+| Partition Healing | **1657ms** | 99.2% |
+| State Sync Scale | **1715ms** | 95.9% |
+
+**Root Cause**: libp2p stream open + peer routing. First dial ~500-2000ms, cached ~140-300ms.
+
+#### Finding 2: Churn Recovery is Unreliable
+
+Scenario B **FAILED**: 2/3 restarted nodes did not catch up within 45 seconds.
+
+- `key_share_ms` outlier: **7743ms** during churn
+- Gossipsub mesh reformation takes 15-30 seconds
+- Sync attempts timeout before mesh forms
+
+### Production Recommendations
+
+| Priority | Change | Target Improvement |
+|----------|--------|-------------------|
+| P0 | Add peer connection caching | Reduce P99 peer_selection from 1500ms to 250ms |
+| P0 | Pre-warm connections on join | Eliminate first-dial cost |
+| P1 | Reduce sync timeout to 10s | Faster fallback to next peer |
+| P1 | Add catch-up mode for lagging nodes | 100% churn recovery |
+
+### Monitoring Alerts
+
+```promql
+# Tail latency alert
+histogram_quantile(0.99, rate(sync_phase_peer_selection_seconds_bucket[5m])) > 1.5
+
+# Churn detection
+rate(sync_failures_total[5m]) / rate(sync_attempts_total[5m]) > 0.1
+```
+
+*Full analysis: See `EDGE-CASE-BENCHMARK-RESULTS.md`*
 
 ---
 
