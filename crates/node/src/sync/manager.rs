@@ -570,7 +570,7 @@ impl SyncManager {
     ) -> StateSyncStrategy {
         let configured = self.sync_config.state_sync_strategy;
 
-        let selected = if configured.is_adaptive() {
+        let mut selected = if configured.is_adaptive() {
             StateSyncStrategy::choose_protocol(
                 local_has_data,
                 local_entity_count,
@@ -581,6 +581,24 @@ impl SyncManager {
         } else {
             configured
         };
+
+        // ========================================================
+        // SAFETY CHECK: Never use Snapshot on initialized nodes!
+        // This would overwrite local changes. Force HashComparison instead.
+        // ========================================================
+        if local_has_data {
+            match selected {
+                StateSyncStrategy::Snapshot | StateSyncStrategy::CompressedSnapshot => {
+                    warn!(
+                        %context_id,
+                        configured = %configured,
+                        "SAFETY: Snapshot strategy blocked for initialized node - using HashComparison to preserve local data"
+                    );
+                    selected = StateSyncStrategy::HashComparison;
+                }
+                _ => {}
+            }
+        }
 
         // Log strategy selection for observability
         info!(

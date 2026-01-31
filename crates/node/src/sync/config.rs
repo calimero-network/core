@@ -268,6 +268,13 @@ impl StateSyncStrategy {
     /// Choose the appropriate protocol based on tree characteristics.
     ///
     /// Only used when strategy is `Adaptive`.
+    ///
+    /// # Safety
+    ///
+    /// **CRITICAL**: Snapshot/CompressedSnapshot are ONLY used for fresh nodes
+    /// (where `local_has_data == false`). For initialized nodes, we ALWAYS use
+    /// merge-aware protocols (HashComparison, BloomFilter, etc.) to preserve
+    /// local changes via CRDT merge semantics.
     #[must_use]
     pub fn choose_protocol(
         local_has_data: bool,
@@ -276,7 +283,7 @@ impl StateSyncStrategy {
         tree_depth: usize,
         child_count: usize,
     ) -> Self {
-        // Fresh node: use snapshot
+        // Fresh node: use snapshot (safe - no local data to lose)
         if !local_has_data {
             return if remote_entity_count > 100 {
                 Self::CompressedSnapshot
@@ -285,18 +292,23 @@ impl StateSyncStrategy {
             };
         }
 
+        // ========================================================
+        // INITIALIZED NODE: NEVER use Snapshot - it would lose local changes!
+        // All protocols below use CRDT merge to preserve both sides.
+        // ========================================================
+
         // Calculate estimated divergence
         let count_diff =
             (remote_entity_count as isize - local_entity_count as isize).unsigned_abs();
         let divergence_ratio = count_diff as f32 / remote_entity_count.max(1) as f32;
 
-        // Large divergence (>50%): use snapshot
+        // Large divergence (>50%): use HashComparison with CRDT merge
+        // NOTE: We do NOT use Snapshot here because it would overwrite local data!
+        // HashComparison + CRDT merge preserves both local and remote changes.
         if divergence_ratio > DEFAULT_SNAPSHOT_DIVERGENCE_THRESHOLD && remote_entity_count > 20 {
-            return if remote_entity_count > 100 {
-                Self::CompressedSnapshot
-            } else {
-                Self::Snapshot
-            };
+            // For large divergence, HashComparison is slower but SAFE
+            // It will merge each entity using CRDT semantics
+            return Self::HashComparison;
         }
 
         // Deep tree with few differing subtrees: use subtree prefetch
@@ -605,10 +617,11 @@ mod tests {
             StateSyncStrategy::CompressedSnapshot
         );
 
-        // Large divergence → snapshot
+        // Large divergence on INITIALIZED node → HashComparison (NOT snapshot!)
+        // Snapshot would lose local data, so we use merge-aware protocol
         assert_eq!(
             StateSyncStrategy::choose_protocol(true, 10, 100, 2, 5),
-            StateSyncStrategy::Snapshot
+            StateSyncStrategy::HashComparison
         );
 
         // Deep tree with few children → subtree prefetch
