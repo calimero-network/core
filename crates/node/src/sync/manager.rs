@@ -333,9 +333,16 @@ impl SyncManager {
         context_id: ContextId,
         peer_id: Option<PeerId>,
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
+        use super::peer_finder::{PeerFinder, PeerSource};
+
         if let Some(peer_id) = peer_id {
             return self.initiate_sync(context_id, peer_id).await;
         }
+
+        // ========================================================================
+        // PEER FINDING INSTRUMENTATION
+        // ========================================================================
+        let mut peer_finder = PeerFinder::start();
 
         // CRITICAL FIX: Wait for gossipsub mesh to form after restart
         //
@@ -357,6 +364,9 @@ impl SyncManager {
         let mut peers = Vec::new();
         let mut attempt = 0;
         let mut resubscribed = false;
+
+        // Track mesh query timing
+        let mesh_query_start = Instant::now();
 
         loop {
             attempt += 1;
@@ -430,13 +440,23 @@ impl SyncManager {
             time::sleep(check_interval).await;
         }
 
+        // Record mesh query timing
+        peer_finder.record_mesh_query(mesh_query_start.elapsed(), &peers);
+
         if peers.is_empty() {
+            // Log peer find breakdown even on failure
+            let breakdown = peer_finder.finish();
+            breakdown.log(&context_id.to_string());
+
             bail!(
                 "No peers to sync with for context {} (mesh failed to form after {}s)",
                 context_id,
                 mesh_timeout.as_secs()
             );
         }
+
+        // Record filtering (currently no filtering beyond mesh check)
+        peer_finder.record_filtering(peers.len());
 
         // Check if we're uninitialized
         let context = self
@@ -459,6 +479,11 @@ impl SyncManager {
             match self.find_peer_with_state(context_id, &peers).await {
                 Ok(peer_id) => {
                     info!(%context_id, %peer_id, "Found peer with state, syncing from them");
+                    // Record peer selection
+                    peer_finder.record_selection(PeerSource::Mesh, None);
+                    let breakdown = peer_finder.finish();
+                    breakdown.log(&context_id.to_string());
+
                     return self.initiate_sync(context_id, peer_id).await;
                 }
                 Err(e) => {
@@ -472,10 +497,20 @@ impl SyncManager {
         // (for initialized nodes or fallback when we can't find a peer with state)
         debug!(%context_id, "Using random peer selection for sync");
         for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
+            // Record peer selection for the first attempt
+            peer_finder.record_selection(PeerSource::Mesh, None);
+
             if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
+                // Log breakdown on success
+                let breakdown = peer_finder.finish();
+                breakdown.log(&context_id.to_string());
                 return Ok(result);
             }
         }
+
+        // Log breakdown on failure
+        let breakdown = peer_finder.finish();
+        breakdown.log(&context_id.to_string());
 
         bail!("Failed to sync with any peer for context {}", context_id)
     }

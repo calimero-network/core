@@ -29,6 +29,7 @@ mod helpers;
 mod key;
 mod manager;
 pub mod metrics;
+pub mod peer_finder;
 mod snapshot;
 pub(crate) mod stream;
 mod tracking;
@@ -37,5 +38,9 @@ mod tree_sync;
 pub use config::{FreshNodeStrategy, StateSyncStrategy, SyncConfig};
 pub use manager::SyncManager;
 pub use metrics::{create_sync_metrics, SharedSyncMetrics, SyncMetrics};
+pub use peer_finder::{
+    new_recent_peer_cache, PeerFindBreakdown, PeerFinder, PeerQuality, PeerSource, RecentPeerCache,
+    SharedRecentPeerCache,
+};
 
 pub use key::CHALLENGE_DOMAIN;
