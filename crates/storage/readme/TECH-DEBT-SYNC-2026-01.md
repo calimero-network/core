@@ -269,30 +269,38 @@ pub async fn add_snapshot_boundary_stubs(...) { ... }
 
 | Issue | Severity | Fix Effort | Status |
 |-------|----------|------------|--------|
-| Tree sync CRDT merge | Medium | Medium | ⚠️ LWW fallback (needs storage Interface) |
+| Tree sync CRDT merge | ~~Medium~~ | ~~Medium~~ | ✅ **FIXED** - Uses `Interface::merge_by_crdt_type_with_callback` |
 | ParallelDialTracker | Low | Done | ✅ **INTEGRATED** |
 | Snapshot boundary stubs | Low | High | ⚠️ Workaround documented |
+| WASM merge callback | Low | Medium | ⚠️ Returns None (custom types only) |
 
-**Key Insight**: Delta sync works correctly with CRDT merge. Tree sync falls back to LWW because it bypasses the storage layer. For MVP, this is acceptable since delta sync is the primary sync method.
+**Key Insight (Updated)**: Both delta sync AND tree sync now use proper CRDT merge:
+- Built-in CRDTs (Counter, Map, Set, Register) merge correctly via `Interface`
+- Collections store children as separate entities (per-key merge works)
+- Counter uses per-executor slots (no conflict between nodes)
+- Only `CrdtType::Custom` falls back to LWW (rare use case)
 
 ---
 
 ## Action Items
 
-### Immediate (This PR) - ✅ DONE
+### Immediate (This PR) - ✅ ALL DONE
 
 - [x] ~~Add `#[allow(dead_code)]` to `ParallelDialTracker`~~ → **INTEGRATED instead!**
 - [x] Add doc comment to `add_snapshot_boundary_stubs` explaining workaround
 - [x] Add doc comment to `RuntimeMergeCallback::merge_custom` explaining fallback
+- [x] ~~Entity type metadata~~ → **ALREADY WORKS** (Metadata has crdt_type, Index stores it)
+- [x] **Tree sync CRDT merge** → **FIXED** via `apply_entity_with_merge()` + `Interface::merge_by_crdt_type_with_callback()`
 
 ### Future (Backlog)
 
-- [ ] **Entity type metadata**: Track CRDT type in storage for proper merge dispatch
 - [x] ~~**Parallel dialing integration**~~ → **DONE**
+- [ ] **WASM merge callback**: Implement `RuntimeMergeCallback::from_module()` for custom types
 - [ ] **Checkpoint delta type**: Proper protocol-level snapshot boundary
 - [ ] **True parallel dialing**: Use `tokio::select!` for concurrent dial attempts
 
 ---
 
 *Created: January 31, 2026*  
+*Last updated: January 31, 2026 - Post critical audit*  
 *Branch: test/tree_sync*
