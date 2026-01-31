@@ -485,6 +485,66 @@ cp "$PEER_FIND_FILE" "$OUTPUT_DIR/peer_find_raw.csv" 2>/dev/null || true
 rm -f "$PEER_FIND_FILE"
 
 echo ""
+# ============================================================================
+# Phase 4.5: Extract PEER_DIAL_BREAKDOWN metrics (Phase 2 dial optimization)
+# ============================================================================
+
+echo ">>> Extracting PEER_DIAL_BREAKDOWN..."
+
+DIAL_FILE=$(mktemp)
+
+for node_dir in "$DATA_DIR"/${PREFIX}-*/; do
+    if [[ -d "$node_dir" ]]; then
+        node_name=$(basename "$node_dir")
+        log_file="$node_dir/logs/${node_name}.log"
+        
+        if [[ -f "$log_file" ]]; then
+            grep "PEER_DIAL_BREAKDOWN" "$log_file" 2>/dev/null | while IFS= read -r line; do
+                total_dial_ms=$(echo "$line" | grep -oE 'total_dial_ms=[0-9.]+' | cut -d'=' -f2)
+                was_connected=$(echo "$line" | grep -oE 'was_connected_initially=[a-z]+' | cut -d'=' -f2)
+                reuse=$(echo "$line" | grep -oE 'reuse_connection=[a-z]+' | cut -d'=' -f2)
+                result=$(echo "$line" | grep -oE 'result=[a-z]+' | cut -d'=' -f2)
+                
+                if [[ -n "$total_dial_ms" ]]; then
+                    echo "${total_dial_ms},${was_connected:-false},${reuse:-false},${result:-unknown}" >> "$DIAL_FILE"
+                fi
+            done
+        fi
+    fi
+done
+
+echo ""
+echo "=== DIAL BREAKDOWN METRICS ==="
+echo ""
+
+DIAL_COUNT=$(wc -l < "$DIAL_FILE" 2>/dev/null | tr -d ' ')
+[[ -z "$DIAL_COUNT" || ! "$DIAL_COUNT" =~ ^[0-9]+$ ]] && DIAL_COUNT=0
+
+if [[ "$DIAL_COUNT" -gt 0 ]]; then
+    echo "Total dial attempts: $DIAL_COUNT"
+    echo ""
+    
+    DIAL_TIME_FILE=$(mktemp)
+    cut -d',' -f1 "$DIAL_FILE" > "$DIAL_TIME_FILE"
+    calc_stats "$DIAL_TIME_FILE" "total_dial_ms"
+    
+    # Reuse analysis
+    REUSED=$(grep -c ",true," "$DIAL_FILE" 2>/dev/null || echo "0")
+    echo ""
+    echo "Connection reuse: $REUSED / $DIAL_COUNT"
+    
+    echo ""
+    echo "Dial result distribution:"
+    cut -d',' -f4 "$DIAL_FILE" | sort | uniq -c | sort -rn
+    
+    rm -f "$DIAL_TIME_FILE"
+else
+    echo "No dial breakdown data found"
+fi
+
+cp "$DIAL_FILE" "$OUTPUT_DIR/dial_breakdown_raw.csv" 2>/dev/null || true
+rm -f "$DIAL_FILE"
+
 
 # ============================================================================
 # Phase 5: Generate summary file

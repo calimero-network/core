@@ -25,6 +25,7 @@
 mod blobs;
 pub mod config;
 mod delta_request;
+pub mod dial_tracker;
 mod helpers;
 mod key;
 mod manager;
@@ -36,6 +37,11 @@ mod tracking;
 mod tree_sync;
 
 pub use config::{FreshNodeStrategy, StateSyncStrategy, SyncConfig};
+pub use dial_tracker::{
+    new_connection_state, new_pool_stats, ConnectionPoolStats, ConnectionStateTracker,
+    DialBreakdown, DialResult, DialTracker, PeerConnectionState, SharedConnectionState,
+    SharedPoolStats,
+};
 pub use manager::SyncManager;
 pub use metrics::{create_sync_metrics, SharedSyncMetrics, SyncMetrics};
 pub use peer_finder::{

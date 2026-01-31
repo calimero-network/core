@@ -62,6 +62,12 @@ pub struct SyncManager {
 
     /// Cache of recently successful peers per context.
     pub(super) recent_peer_cache: super::peer_finder::SharedRecentPeerCache,
+
+    /// Connection pool statistics for dial optimization.
+    pub(super) dial_pool_stats: super::dial_tracker::SharedPoolStats,
+
+    /// Connection state tracker for RTT-based peer selection.
+    pub(super) connection_state: super::dial_tracker::SharedConnectionState,
 }
 
 impl Clone for SyncManager {
@@ -75,6 +81,8 @@ impl Clone for SyncManager {
             ctx_sync_rx: None, // Receiver can't be cloned
             metrics: self.metrics.clone(),
             recent_peer_cache: self.recent_peer_cache.clone(),
+            dial_pool_stats: self.dial_pool_stats.clone(),
+            connection_state: self.connection_state.clone(),
         }
     }
 }
@@ -98,6 +106,8 @@ impl SyncManager {
             ctx_sync_rx: Some(ctx_sync_rx),
             metrics,
             recent_peer_cache: super::peer_finder::new_recent_peer_cache(),
+            dial_pool_stats: super::dial_tracker::new_pool_stats(),
+            connection_state: super::dial_tracker::new_connection_state(),
         }
     }
 
@@ -338,7 +348,7 @@ impl SyncManager {
         context_id: ContextId,
         peer_id: Option<PeerId>,
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
-        use super::peer_finder::{PeerFindResult, PeerFindTracker, PeerSource, SourceBreakdown};
+        use super::peer_finder::{PeerFindResult, PeerFindTracker, SourceBreakdown};
 
         if let Some(peer_id) = peer_id {
             return self.initiate_sync(context_id, peer_id).await;
@@ -369,12 +379,9 @@ impl SyncManager {
         let check_interval = self.sync_config.mesh_formation_check_interval;
         let deadline = time::Instant::now() + mesh_timeout;
 
-        let mut peers = Vec::new();
+        let mut peers;
         let mut attempt = 0;
         let mut resubscribed = false;
-
-        // Track mesh query timing
-        let mesh_query_start = Instant::now();
 
         loop {
             attempt += 1;
@@ -519,13 +526,13 @@ impl SyncManager {
         // ========================================================================
         let backoff_duration = Duration::from_secs(30);
 
-        let filtered_peers = {
+        let filtered_peers: Vec<PeerId> = {
             let cache = self.recent_peer_cache.read().unwrap();
             match strategy {
                 super::peer_finder::PeerFindStrategy::HealthFiltered => {
                     cache.filter_viable(&all_candidates, backoff_duration)
                 }
-                _ => all_candidates.clone(),
+                _ => all_candidates.to_vec(),
             }
         };
 
@@ -546,14 +553,35 @@ impl SyncManager {
         // ========================================================================
         // PHASE 3: SELECTION (pick the final peer)
         // ========================================================================
+        // Optimization: Sort peers to prefer already-connected ones
+        // This reduces dial latency by favoring connection reuse
+        let sorted_peers = {
+            let conn_state = self.connection_state.read().unwrap();
+            let mut peers_with_score: Vec<_> = filtered_peers
+                .iter()
+                .map(|p| {
+                    // Score: connected peers first, then by RTT
+                    let is_connected = conn_state.is_likely_connected(p);
+                    let rtt = conn_state
+                        .get(p)
+                        .and_then(|s| s.rtt_estimate_ms)
+                        .unwrap_or(f64::MAX);
+                    // Lower score = higher priority (connected=0, disconnected=1000)
+                    let score = if is_connected { rtt } else { 1000.0 + rtt };
+                    (*p, score)
+                })
+                .collect();
+            peers_with_score
+                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            peers_with_score
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect::<Vec<_>>()
+        };
+
         let (selected_peers, peer_source) = {
             let cache = self.recent_peer_cache.read().unwrap();
-            cache.select_by_strategy(
-                strategy,
-                context_id_bytes,
-                &filtered_peers,
-                backoff_duration,
-            )
+            cache.select_by_strategy(strategy, context_id_bytes, &sorted_peers, backoff_duration)
         };
 
         debug!(
@@ -1529,6 +1557,7 @@ impl SyncManager {
         context_id: ContextId,
         chosen_peer: PeerId,
     ) -> eyre::Result<SyncProtocol> {
+        use super::dial_tracker::{DialResult, DialTracker};
         use super::metrics::{PhaseTimer, SyncPhaseTimings};
 
         // Initialize per-phase timing tracker
@@ -1536,7 +1565,7 @@ impl SyncManager {
         let sync_start = std::time::Instant::now();
 
         // =====================================================================
-        // PHASE 1: Peer Selection & Stream Setup
+        // PHASE 1: Peer Selection & Stream Setup (includes dial)
         // =====================================================================
         let phase_timer = PhaseTimer::start();
 
@@ -1562,7 +1591,64 @@ impl SyncManager {
             bail!("no owned identities found for context: {}", context.id);
         };
 
-        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+        // =====================================================================
+        // DIAL PHASE: Instrumented stream opening
+        // =====================================================================
+        // Check if we believe we're already connected
+        let was_connected = {
+            let state = self.connection_state.read().unwrap();
+            state.is_likely_connected(&chosen_peer)
+        };
+
+        let dial_start = std::time::Instant::now();
+        let stream_result = self.network_client.open_stream(chosen_peer).await;
+        let dial_ms = dial_start.elapsed().as_secs_f64() * 1000.0;
+
+        let mut stream = match stream_result {
+            Ok(s) => {
+                // Heuristic: fast dial (<50ms) suggests connection reuse
+                let reused = was_connected || dial_ms < 50.0;
+
+                let mut dial_tracker = DialTracker::new(chosen_peer, was_connected, 1);
+                dial_tracker.start_dial();
+                dial_tracker.end_dial(DialResult::Success, reused);
+
+                // Update connection state
+                {
+                    let mut state = self.connection_state.write().unwrap();
+                    state.get_mut(chosen_peer).on_success(dial_ms);
+                }
+
+                // Record in pool stats
+                let breakdown = dial_tracker.finish(&context_id.to_string());
+                {
+                    let mut stats = self.dial_pool_stats.write().unwrap();
+                    stats.record(&breakdown);
+                }
+
+                s
+            }
+            Err(e) => {
+                let mut dial_tracker = DialTracker::new(chosen_peer, was_connected, 1);
+                dial_tracker.start_dial();
+                dial_tracker.end_dial(DialResult::Error, false);
+                let breakdown = dial_tracker.finish(&context_id.to_string());
+
+                // Update connection state
+                {
+                    let mut state = self.connection_state.write().unwrap();
+                    state.get_mut(chosen_peer).on_failure();
+                }
+
+                // Record in pool stats
+                {
+                    let mut stats = self.dial_pool_stats.write().unwrap();
+                    stats.record(&breakdown);
+                }
+
+                return Err(e);
+            }
+        };
 
         timings.peer_selection_ms = phase_timer.stop();
 

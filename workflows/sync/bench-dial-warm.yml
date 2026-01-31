@@ -1,0 +1,141 @@
+# Benchmark: Warm Connection Dial Latency
+# Tests dial latency when connections are already established (back-to-back syncs)
+# Expected: Dial should be fast (<50ms) due to connection reuse
+
+name: bench-dial-warm
+nodes: 2
+dev_mode: true
+
+merod_args: "--state-sync-strategy hash-comparison"
+
+steps:
+  - name: Install Application on Node 1
+    type: install_application
+    node: dial-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: dial-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Get Node 2 identity
+    type: get_node_identity
+    node: dial-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Invite Node 2 to Context
+    type: invite_node
+    node: dial-1
+    context_id: "{{context_id}}"
+    inviter_pk: "{{pk_node1}}"
+    invitee_pk: "{{pk_node2}}"
+
+  - name: Join Context on Node 2
+    type: join_context
+    node: dial-2
+    context_id: "{{context_id}}"
+
+  - name: Wait for initial mesh formation
+    type: sleep
+    duration_ms: 3000
+
+  # Write initial data to establish connection
+  - name: Write key 1
+    type: call
+    node: dial-1
+    context_id: "{{context_id}}"
+    method: set
+    args_json: '{"key": "warmup1", "value": "value1"}'
+
+  - name: Wait for sync
+    type: sleep
+    duration_ms: 2000
+
+  # Back-to-back writes to test warm connection reuse
+  - name: Rapid write 1
+    type: call
+    node: dial-1
+    context_id: "{{context_id}}"
+    method: set
+    args_json: '{"key": "rapid1", "value": "value1"}'
+
+  - name: Short wait
+    type: sleep
+    duration_ms: 500
+
+  - name: Rapid write 2
+    type: call
+    node: dial-1
+    context_id: "{{context_id}}"
+    method: set
+    args_json: '{"key": "rapid2", "value": "value2"}'
+
+  - name: Short wait
+    type: sleep
+    duration_ms: 500
+
+  - name: Rapid write 3
+    type: call
+    node: dial-1
+    context_id: "{{context_id}}"
+    method: set
+    args_json: '{"key": "rapid3", "value": "value3"}'
+
+  - name: Short wait
+    type: sleep
+    duration_ms: 500
+
+  - name: Rapid write 4
+    type: call
+    node: dial-1
+    context_id: "{{context_id}}"
+    method: set
+    args_json: '{"key": "rapid4", "value": "value4"}'
+
+  - name: Short wait
+    type: sleep
+    duration_ms: 500
+
+  - name: Rapid write 5
+    type: call
+    node: dial-1
+    context_id: "{{context_id}}"
+    method: set
+    args_json: '{"key": "rapid5", "value": "value5"}'
+
+  - name: Wait for sync convergence
+    type: sleep
+    duration_ms: 3000
+
+  # Verify all keys synced
+  - name: Verify rapid1 on Node 2
+    type: call
+    node: dial-2
+    context_id: "{{context_id}}"
+    method: entries
+    expected_result:
+      contains:
+        - key: rapid1
+          value: value1
+
+  - name: Verify rapid5 on Node 2
+    type: call
+    node: dial-2
+    context_id: "{{context_id}}"
+    method: entries
+    expected_result:
+      contains:
+        - key: rapid5
+          value: value5
+
+  - name: Final wait for log flush
+    type: sleep
+    duration_ms: 1000
