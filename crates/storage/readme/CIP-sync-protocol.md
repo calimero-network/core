@@ -3513,6 +3513,9 @@ cat data/b3n10d_metrics/summary.md
 
 ### Related Documents
 
+- `SYNC-PERFORMANCE-INVESTIGATION.md` - **Master document**: Phase 1 (finding) + Phase 2 (dialing)
+- `PEER-FINDING-ANALYSIS.md` - Phase 1: Peer finding latency analysis
+- `DIAL-OPTIMIZATION-ANALYSIS.md` - Phase 2: Dial/connection optimization
 - `DEEP-SYNC-ANALYSIS.md` - Detailed analysis with all scenarios
 - `MISSING_INSTRUMENTATION.md` - Instrumentation status and remaining gaps
 - `BENCHMARK-RESULTS.md` - Raw benchmark data
