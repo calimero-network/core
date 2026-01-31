@@ -1456,6 +1456,479 @@ async fn test_bundle_blob_sharing_integration() {
 // integration tests. Path-based installation (which covers the same code paths
 // for bundle detection and extraction) is tested below.
 
+// Signature Verification Integration Tests
+
+/// Helper to create an unsigned bundle (no signature field in manifest)
+fn create_unsigned_bundle(
+    temp_dir: &TempDir,
+    package: &str,
+    version: &str,
+    wasm_content: &[u8],
+) -> Utf8PathBuf {
+    let bundle_path = temp_dir
+        .path()
+        .join(format!("{}-{}-unsigned.mpk", package, version));
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    // Create manifest.json without signature
+    let manifest_json = serde_json::json!({
+        "version": "1.0",
+        "package": package,
+        "appVersion": version,
+        "signerId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": wasm_content.len()
+        },
+        "migrations": []
+        // Note: no "signature" field
+    });
+
+    let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_bytes.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_bytes.as_slice())
+        .unwrap();
+
+    // Add WASM file
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(wasm_content.len() as u64);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, wasm_content).unwrap();
+
+    tar.finish().unwrap();
+    bundle_path.try_into().unwrap()
+}
+
+/// Helper to create a bundle with tampered content (signature was valid at signing,
+/// but manifest was modified after signing)
+fn create_tampered_bundle(
+    temp_dir: &TempDir,
+    package: &str,
+    version: &str,
+    wasm_content: &[u8],
+) -> Utf8PathBuf {
+    let bundle_path = temp_dir
+        .path()
+        .join(format!("{}-{}-tampered.mpk", package, version));
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    // Generate a signing key
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create the ORIGINAL manifest (what was signed)
+    let mut original_manifest = serde_json::json!({
+        "version": "1.0",
+        "package": package,
+        "appVersion": version,
+        "signerId": signer_id,
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": wasm_content.len()
+        },
+        "migrations": []
+    });
+
+    // Sign the original manifest
+    sign_manifest(&mut original_manifest, &signing_key);
+
+    // Extract the signature we just created
+    let signature = original_manifest.get("signature").unwrap().clone();
+
+    // Create a TAMPERED manifest with different appVersion
+    let tampered_manifest = serde_json::json!({
+        "version": "1.0",
+        "package": package,
+        "appVersion": "999.999.999",  // TAMPERED!
+        "signerId": signer_id,
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": wasm_content.len()
+        },
+        "migrations": [],
+        "signature": signature  // Original signature (won't match tampered content)
+    });
+
+    let manifest_bytes = serde_json::to_vec(&tampered_manifest).unwrap();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_bytes.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_bytes.as_slice())
+        .unwrap();
+
+    // Add WASM file
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(wasm_content.len() as u64);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, wasm_content).unwrap();
+
+    tar.finish().unwrap();
+    bundle_path.try_into().unwrap()
+}
+
+/// Helper to create a bundle where manifest.signerId doesn't match the signing key
+fn create_signer_id_mismatch_bundle(
+    temp_dir: &TempDir,
+    package: &str,
+    version: &str,
+    wasm_content: &[u8],
+) -> Utf8PathBuf {
+    let bundle_path = temp_dir
+        .path()
+        .join(format!("{}-{}-signer-mismatch.mpk", package, version));
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    // Generate signing key A (will be used for signing)
+    let signing_key_a = SigningKey::generate(&mut OsRng);
+
+    // Generate signing key B (its signerId will be declared in manifest)
+    let signing_key_b = SigningKey::generate(&mut OsRng);
+    let signer_id_b = derive_signer_id_did_key(signing_key_b.verifying_key().as_bytes());
+
+    // Create manifest that claims signerId from key B
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": package,
+        "appVersion": version,
+        "signerId": signer_id_b,  // Claims to be signed by key B
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": wasm_content.len()
+        },
+        "migrations": []
+    });
+
+    // But actually sign with key A (mismatch!)
+    sign_manifest(&mut manifest, &signing_key_a);
+
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_bytes.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_bytes.as_slice())
+        .unwrap();
+
+    // Add WASM file
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(wasm_content.len() as u64);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, wasm_content).unwrap();
+
+    tar.finish().unwrap();
+    bundle_path.try_into().unwrap()
+}
+
+/// Helper to create a test bundle with a specific signing key (for ApplicationId derivation tests)
+fn create_test_bundle_with_key(
+    temp_dir: &TempDir,
+    package: &str,
+    version: &str,
+    wasm_content: &[u8],
+    signing_key: &SigningKey,
+) -> Utf8PathBuf {
+    let bundle_path = temp_dir
+        .path()
+        .join(format!("{}-{}-keyed.mpk", package, version));
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest.json
+    let mut manifest_json: serde_json::Value = serde_json::to_value(&BundleManifest {
+        version: "1.0".to_string(),
+        package: package.to_string(),
+        app_version: version.to_string(),
+        signer_id: Some(signer_id),
+        min_runtime_version: "1.0.0".to_string(),
+        metadata: None,
+        interfaces: None,
+        wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
+            path: "app.wasm".to_string(),
+            hash: None,
+            size: wasm_content.len() as u64,
+        }),
+        abi: None,
+        migrations: vec![],
+        links: None,
+        signature: None,
+    })
+    .unwrap();
+
+    // Sign with the provided key
+    sign_manifest(&mut manifest_json, signing_key);
+
+    let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_bytes.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_bytes.as_slice())
+        .unwrap();
+
+    // Add WASM file
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(wasm_content.len() as u64);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, wasm_content).unwrap();
+
+    tar.finish().unwrap();
+    bundle_path.try_into().unwrap()
+}
+
+/// Test: Installation should fail when bundle manifest has no signature field.
+///
+/// All bundles must be signed. A bundle with a valid manifest
+/// but no signature field MUST be rejected during installation.
+#[tokio::test]
+async fn test_bundle_installation_fails_without_signature() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Create an unsigned bundle
+    let bundle_path =
+        create_unsigned_bundle(&temp_dir, "com.example.unsigned", "1.0.0", b"wasm content");
+
+    // Installation should fail
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail without signature"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("signature") || error_msg.contains("missing"),
+        "Error should mention missing signature, got: {}",
+        error_msg
+    );
+}
+
+/// Test: Installation should fail when bundle has been tampered after signing.
+///
+/// If the manifest content is modified after signing (e.g., appVersion changed),
+/// the signature verification MUST fail and installation MUST be rejected.
+#[tokio::test]
+async fn test_bundle_installation_fails_with_invalid_signature() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Create a tampered bundle (signed manifest was modified after signing)
+    let bundle_path =
+        create_tampered_bundle(&temp_dir, "com.example.tampered", "1.0.0", b"wasm content");
+
+    // Installation should fail due to invalid signature
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail with tampered content"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("signature") || error_msg.contains("verification"),
+        "Error should mention signature verification failure, got: {}",
+        error_msg
+    );
+}
+
+/// Test: Installation should fail when manifest.signerId doesn't match the signing key.
+///
+/// The signerId in the manifest MUST match the signerId derived from the
+/// signature.publicKey. A mismatch indicates the manifest claims a different
+/// signing authority than who actually signed it.
+#[tokio::test]
+async fn test_bundle_installation_fails_signer_id_mismatch() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Create a bundle where signerId doesn't match the signing key
+    let bundle_path = create_signer_id_mismatch_bundle(
+        &temp_dir,
+        "com.example.mismatch",
+        "1.0.0",
+        b"wasm content",
+    );
+
+    // Installation should fail
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail with signerId mismatch"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("signerId") || error_msg.contains("mismatch"),
+        "Error should mention signerId mismatch, got: {}",
+        error_msg
+    );
+}
+
+/// Test: ApplicationId should be derived from (package, signer_id).
+///
+/// This verifies that:
+/// - Same package + different signers = different ApplicationIds
+/// - Same package + same signer + different versions = same ApplicationId
+///
+/// This ensures cryptographic update authority is enforced: only bundles
+/// signed by the same signerId can update the same application.
+#[tokio::test]
+async fn test_bundle_application_id_derived_from_package_and_signer_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Generate two different signing keys
+    let signing_key_s1 = SigningKey::generate(&mut OsRng);
+    let signing_key_s2 = SigningKey::generate(&mut OsRng);
+
+    let signer_id_s1 = derive_signer_id_did_key(signing_key_s1.verifying_key().as_bytes());
+    let signer_id_s2 = derive_signer_id_did_key(signing_key_s2.verifying_key().as_bytes());
+
+    // Verify the two signerIds are different
+    assert_ne!(
+        signer_id_s1, signer_id_s2,
+        "Test setup: signerIds should be different"
+    );
+
+    let package = "com.example.appkey-test";
+
+    // Bundle A: package "com.example.appkey-test", signer S1, version "1.0.0"
+    let bundle_a = create_test_bundle_with_key(
+        &temp_dir,
+        package,
+        "1.0.0",
+        b"wasm v1 signer1",
+        &signing_key_s1,
+    );
+
+    let app_id_a = node_client
+        .install_application_from_path(bundle_a, vec![])
+        .await
+        .expect("Bundle A installation should succeed");
+
+    // Bundle B: package "com.example.appkey-test", signer S2, version "1.0.0"
+    // Same package, same version, but DIFFERENT signer
+    let bundle_b = create_test_bundle_with_key(
+        &temp_dir,
+        package,
+        "1.0.0-s2", // Slightly different version to avoid storage conflicts
+        b"wasm v1 signer2",
+        &signing_key_s2,
+    );
+
+    let app_id_b = node_client
+        .install_application_from_path(bundle_b, vec![])
+        .await
+        .expect("Bundle B installation should succeed");
+
+    // Bundle C: package "com.example.appkey-test", signer S1, version "2.0.0"
+    // Same package, same signer as A, but DIFFERENT version
+    let bundle_c = create_test_bundle_with_key(
+        &temp_dir,
+        package,
+        "2.0.0",
+        b"wasm v2 signer1",
+        &signing_key_s1,
+    );
+
+    let app_id_c = node_client
+        .install_application_from_path(bundle_c, vec![])
+        .await
+        .expect("Bundle C installation should succeed");
+
+    // ASSERTION 1: app_id_a != app_id_b (different signers = different ApplicationIds)
+    // This ensures that applications signed by different authorities are treated
+    // as completely different applications, even with the same package name.
+    assert_ne!(
+        app_id_a, app_id_b,
+        "Same package with different signers should produce different ApplicationIds.\n\
+         app_id_a (signer S1): {}\n\
+         app_id_b (signer S2): {}",
+        app_id_a, app_id_b
+    );
+
+    // ASSERTION 2: app_id_a == app_id_c (same package + signer = same ApplicationId)
+    // Version upgrades for the same AppKey should have the same ApplicationId.
+    assert_eq!(
+        app_id_a, app_id_c,
+        "Same package with same signer should produce same ApplicationId (version upgrade).\n\
+         app_id_a (v1.0.0): {}\n\
+         app_id_c (v2.0.0): {}",
+        app_id_a, app_id_c
+    );
+
+    // Verify all applications can be retrieved
+    assert!(
+        node_client.has_application(&app_id_a).unwrap(),
+        "Application A should exist"
+    );
+    assert!(
+        node_client.has_application(&app_id_b).unwrap(),
+        "Application B should exist"
+    );
+    // Note: app_id_c == app_id_a, so it's the same application (version upgrade)
+
+    // Verify the metadata shows the correct package information
+    let app_a = node_client
+        .get_application(&app_id_a)
+        .expect("Should get application A")
+        .expect("Application A should exist");
+
+    let app_b = node_client
+        .get_application(&app_id_b)
+        .expect("Should get application B")
+        .expect("Application B should exist");
+
+    let metadata_a: serde_json::Value =
+        serde_json::from_slice(&app_a.metadata).expect("Metadata A should be valid JSON");
+    let metadata_b: serde_json::Value =
+        serde_json::from_slice(&app_b.metadata).expect("Metadata B should be valid JSON");
+
+    // Both should have the same package name
+    assert_eq!(
+        metadata_a["package"], package,
+        "Application A should have correct package"
+    );
+    assert_eq!(
+        metadata_b["package"], package,
+        "Application B should have correct package"
+    );
+
+    // Note: signerId is stored in ApplicationMeta.signer_id field in the database,
+    // not in the metadata JSON blob. The ApplicationId derivation using (package, signer_id)
+    // is verified by the assertions above (different signerIds produce different ApplicationIds).
+}
+
 #[tokio::test]
 async fn test_bundle_get_application_bytes_fallback() {
     let temp_dir = TempDir::new().unwrap();
