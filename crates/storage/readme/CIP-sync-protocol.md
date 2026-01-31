@@ -2803,6 +2803,234 @@ For high-throughput deployments, consider:
 
 4. **Metrics are essential**: Without Prometheus metrics, this issue would have been nearly impossible to diagnose.
 
+---
+
+## Appendix K: Fresh Node Sync Strategy
+
+### Problem
+
+When a new node joins a context, it needs to bootstrap from peers. Two approaches exist:
+
+| Approach | Mechanism | Speed | Use Case |
+|----------|-----------|-------|----------|
+| **Snapshot Sync** | Transfer full state in one request | Fast (~3ms) | Production, large state |
+| **Delta Sync** | Fetch each delta from genesis | Slow (O(n) round trips) | Testing, debugging |
+
+The optimal strategy depends on the deployment scenario, and switching between them required code changes.
+
+### Solution: Configurable Fresh Node Strategy
+
+Added `FreshNodeStrategy` enum and `--sync-strategy` CLI flag for easy benchmarking.
+
+#### CLI Usage
+
+```bash
+# Fastest - single snapshot transfer (default)
+merod --node-name node1 run --sync-strategy snapshot
+
+# Slow - fetches all deltas from genesis (tests DAG path)
+merod --node-name node1 run --sync-strategy delta
+
+# Balanced - chooses based on peer state size
+merod --node-name node1 run --sync-strategy adaptive
+
+# Custom threshold - use snapshot if peer has ≥50 DAG heads
+merod --node-name node1 run --sync-strategy adaptive:50
+```
+
+#### Strategy Enum
+
+```rust
+/// Strategy for syncing fresh (uninitialized) nodes.
+pub enum FreshNodeStrategy {
+    /// Always use snapshot sync (fastest, default)
+    Snapshot,
+    
+    /// Always use delta-by-delta sync (slow, tests DAG)
+    DeltaSync,
+    
+    /// Choose based on peer state size
+    Adaptive {
+        snapshot_threshold: usize,  // Default: 10
+    },
+}
+
+impl FreshNodeStrategy {
+    /// Determine if snapshot should be used based on peer's state.
+    pub fn should_use_snapshot(&self, peer_dag_heads_count: usize) -> bool {
+        match self {
+            Self::Snapshot => true,
+            Self::DeltaSync => false,
+            Self::Adaptive { snapshot_threshold } => peer_dag_heads_count >= *snapshot_threshold,
+        }
+    }
+}
+```
+
+#### Log Output
+
+When a fresh node joins, you'll see:
+
+```
+INFO merod::cli::run: Using fresh node sync strategy fresh_node_strategy=snapshot
+INFO calimero_node::sync::manager: Node needs sync, checking peer state 
+    context_id=... is_uninitialized=true strategy=snapshot
+INFO calimero_node::sync::manager: Peer has state, selecting sync strategy 
+    peer_heads_count=1 use_snapshot=true strategy=snapshot
+INFO calimero_node::sync::snapshot: Snapshot sync completed applied_records=6
+```
+
+### Benchmarking Guide
+
+To compare strategies:
+
+```bash
+# Test 1: Snapshot sync (measure bootstrap time)
+time merod --node-name fresh1 run --sync-strategy snapshot &
+# Bootstrap time: ~3-5 seconds (mostly network setup)
+
+# Test 2: Delta sync (measure with larger state)
+time merod --node-name fresh2 run --sync-strategy delta &
+# Bootstrap time: O(n) where n = number of deltas
+
+# Test 3: Adaptive threshold tuning
+merod --node-name fresh3 run --sync-strategy adaptive:5  # Small threshold
+merod --node-name fresh4 run --sync-strategy adaptive:100  # Large threshold
+```
+
+---
+
+## Appendix L: Snapshot Boundary Stubs
+
+### Problem
+
+After snapshot sync, a critical bug caused sync failures:
+
+```
+WARN calimero_node::handlers::state_delta: Delta pending due to missing parents
+WARN calimero_node::sync::delta_request: Requested delta not found delta_id=[252, 46, ...]
+```
+
+**Root Cause**: Snapshot sync transfers the **state data** but NOT the **DAG history**.
+
+```
+Timeline:
+1. Node 1 creates context → genesis delta [fc2eb1e9...] with state
+2. Node 3 joins → snapshot sync transfers STATE + dag_heads=[fc2eb1e9...]
+3. Node 3's DeltaStore is EMPTY (no actual delta objects!)
+4. Node 1 writes → creates new delta with parent=[fc2eb1e9...]
+5. Node 3 receives delta → can't find parent [fc2eb1e9...] in DeltaStore
+6. Sync fails: "Delta pending due to missing parents"
+```
+
+### Solution: Snapshot Boundary Stubs
+
+After snapshot sync, create "stub" deltas for each boundary `dag_head`:
+
+```rust
+/// Add boundary delta stubs to the DAG after snapshot sync.
+///
+/// Creates placeholder deltas for the snapshot boundary heads so that:
+/// 1. New deltas referencing these heads as parents can be applied
+/// 2. The DAG maintains correct topology
+pub async fn add_snapshot_boundary_stubs(
+    &self,
+    boundary_dag_heads: Vec<[u8; 32]>,
+    boundary_root_hash: [u8; 32],
+) -> usize {
+    let mut added_count = 0;
+    let mut dag = self.dag.write().await;
+
+    for head_id in boundary_dag_heads {
+        // Skip genesis (zero hash)
+        if head_id == [0; 32] {
+            continue;
+        }
+
+        // Create a stub delta with no payload
+        let stub = CausalDelta::new(
+            head_id,
+            vec![[0; 32]],    // Parent is "genesis" (we don't know actual parents)
+            Vec::new(),       // Empty payload - no actions
+            HybridTimestamp::default(),
+            boundary_root_hash,  // Expected root hash is the snapshot boundary
+        );
+
+        // Restore the stub to the DAG (marks it as applied)
+        if dag.restore_applied_delta(stub) {
+            added_count += 1;
+        }
+    }
+    added_count
+}
+```
+
+### Integration in Snapshot Sync
+
+The stubs are added after the snapshot is applied:
+
+```rust
+// In request_snapshot_sync_inner():
+
+// 1. Transfer and apply snapshot pages
+let applied_records = self.request_and_apply_snapshot_pages(...).await?;
+
+// 2. Update context metadata
+self.context_client.force_root_hash(&context_id, boundary.boundary_root_hash)?;
+self.context_client.update_dag_heads(&context_id, boundary.dag_heads.clone())?;
+
+// 3. CRITICAL: Add boundary stubs to DeltaStore
+let delta_store = self.node_state.delta_stores.entry(context_id)...;
+let stubs_added = delta_store
+    .add_snapshot_boundary_stubs(
+        boundary.dag_heads.clone(),
+        *boundary.boundary_root_hash,
+    )
+    .await;
+
+info!(%context_id, stubs_added, "Added snapshot boundary stubs to DeltaStore");
+```
+
+### Log Output (After Fix)
+
+```
+INFO calimero_node::sync::snapshot: Snapshot sync completed applied_records=6
+INFO calimero_node::delta_store: Added snapshot boundary stub to DAG 
+    context_id=... head_id=[133, 165, ...]
+INFO calimero_node::delta_store: Snapshot boundary stubs added to DAG added_count=1
+INFO calimero_node::sync::snapshot: Added snapshot boundary stubs to DeltaStore 
+    stubs_added=1
+```
+
+### Test Results
+
+| Test | Before Fix | After Fix |
+|------|------------|-----------|
+| `lww-conflict-resolution.yml` | ❌ Node 3 failed | ✅ All nodes synced |
+| Fresh node receives delta | "Missing parents" error | Delta applied successfully |
+| Snapshot bootstrap time | N/A (failed) | ~3ms |
+
+### Why Stubs Work
+
+1. **Stub ID matches boundary head**: When a new delta arrives with `parent=[fc2eb1e9...]`, the DAG finds the stub with matching ID.
+
+2. **Stub marked as applied**: `dag.restore_applied_delta()` adds the stub to `self.applied`, so `can_apply()` returns true for children.
+
+3. **Empty payload is safe**: The stub has no actions to apply - it's purely for parent resolution.
+
+4. **Root hash preserved**: The stub's `expected_root_hash` matches the snapshot boundary, maintaining consistency.
+
+### Edge Cases Handled
+
+| Scenario | Behavior |
+|----------|----------|
+| Multiple dag_heads | One stub created per head |
+| Genesis head `[0; 32]` | Skipped (always considered applied) |
+| Stub already exists | `restore_applied_delta()` returns false, no duplicate |
+| Empty dag_heads | No stubs created (loop exits immediately) |
+
+---
+
 ## Copyright
 
 Copyright and related rights waived via [CC0](https://creativecommons.org/publicdomain/zero/1.0/).

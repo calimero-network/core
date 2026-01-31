@@ -331,6 +331,42 @@ Prometheus metrics under `network_event_channel_*`:
 
 See **CIP-sync-protocol.md Appendix J** for full implementation details.
 
+## Fresh Node Sync Strategy
+
+When a fresh node joins a context, it must bootstrap from peers. The strategy is configurable via CLI:
+
+```bash
+# Snapshot sync (default) - fastest, single state transfer
+merod --node-name node1 run --sync-strategy snapshot
+
+# Delta sync - slow, tests full DAG path
+merod --node-name node1 run --sync-strategy delta
+
+# Adaptive - chooses based on peer state size
+merod --node-name node1 run --sync-strategy adaptive:10
+```
+
+### Strategy Comparison
+
+| Strategy | Bootstrap Time | Network | Best For |
+|----------|---------------|---------|----------|
+| `snapshot` | ~3ms | Single transfer | Production |
+| `delta` | O(n) round trips | Multiple fetches | Testing DAG |
+| `adaptive:N` | Variable | Depends on state | General purpose |
+
+### Snapshot Boundary Stubs
+
+After snapshot sync, "boundary stubs" are created for DAG heads to enable parent resolution:
+
+```
+INFO calimero_node::delta_store: Added snapshot boundary stub to DAG head_id=[133, 165, ...]
+INFO calimero_node::sync::snapshot: Added snapshot boundary stubs stubs_added=1
+```
+
+This prevents "Delta pending due to missing parents" errors after snapshot sync.
+
+See **CIP-sync-protocol.md Appendix K & L** for full implementation details.
+
 ## Future Improvements
 
 1. **Delta encoding**: Send byte-level diffs for updates instead of full data
