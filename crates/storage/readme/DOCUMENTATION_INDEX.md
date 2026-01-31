@@ -42,13 +42,24 @@ Complete guide to Calimero Storage CRDT documentation.
 4. **[Network Sync](network-sync.md)** - Efficient synchronization protocols
 5. **[CIP: Sync Protocol](CIP-sync-protocol.md)** - Hybrid sync protocol proposal
 
-### Sync Performance (NEW)
-1. **[Sync Performance Investigation](SYNC-PERFORMANCE-INVESTIGATION.md)** - Master overview
-2. **[Peer Finding Analysis](PEER-FINDING-ANALYSIS.md)** - Phase 1: Finding optimization
-3. **[Dial Optimization Analysis](DIAL-OPTIMIZATION-ANALYSIS.md)** - Phase 2: Connection optimization
-4. **[Benchmark Results (Jan 2026)](BENCHMARK-RESULTS-2026-01.md)** - Latest benchmarks
-5. **[Decision Log](DECISION-LOG.md)** - Architectural decisions
-6. **[Production Monitoring](PRODUCTION-MONITORING.md)** - PromQL alerts + Grafana
+### Sync Performance (January 2026 Investigation)
+
+**Overview**:
+1. **[Branch Checkpoint](BRANCH-CHECKPOINT-2026-01-31.md)** ⭐ - Start here for summary & recommendations
+2. **[Sync Performance Investigation](SYNC-PERFORMANCE-INVESTIGATION.md)** - Master overview
+
+**Analysis**:
+3. **[Peer Finding Analysis](PEER-FINDING-ANALYSIS.md)** - Phase 1: Finding optimization  
+4. **[Dial Optimization Analysis](DIAL-OPTIMIZATION-ANALYSIS.md)** - Phase 2: Connection optimization
+5. **[Deep Sync Analysis](DEEP-SYNC-ANALYSIS.md)** - Comprehensive research
+
+**Results**:
+6. **[Benchmark Results (Jan 2026)](BENCHMARK-RESULTS-2026-01.md)** - Latest benchmarks
+7. **[Edge Case Results](EDGE-CASE-BENCHMARK-RESULTS.md)** - Churn, partition, storm tests
+
+**Operations**:
+8. **[Decision Log](DECISION-LOG.md)** - Architectural decisions
+9. **[Production Monitoring](PRODUCTION-MONITORING.md)** - PromQL alerts + Grafana
 
 ### Performance
 - **[Performance Guide](performance.md)** - Benchmarks, optimization tips
@@ -113,6 +124,8 @@ crates/storage/
 ├── TODO.md                       # Future work
 └── readme/
     ├── DOCUMENTATION_INDEX.md    # This file
+    │
+    │ # Core Documentation
     ├── collections.md            # Complete API reference
     ├── nesting.md                # Nesting patterns guide
     ├── architecture.md           # How it works internally
@@ -120,19 +133,58 @@ crates/storage/
     ├── performance.md            # Optimization guide
     ├── migration.md              # Upgrading guide
     ├── design-decisions.md       # Why we built it this way
-    ├── network-sync.md           # Network synchronization protocols
-    ├── CIP-sync-protocol.md      # Hybrid sync protocol proposal (CIP)
+    │
+    │ # Network Synchronization
+    ├── network-sync.md           # Protocol overview (developer-friendly)
+    ├── CIP-sync-protocol.md      # Standards Track: Full protocol spec
     │
     │ # Sync Performance Investigation (Jan 2026)
+    ├── BRANCH-CHECKPOINT-2026-01-31.md    # ⭐ Summary & recommendations
     ├── SYNC-PERFORMANCE-INVESTIGATION.md  # Master overview
-    ├── PEER-FINDING-ANALYSIS.md           # Phase 1 analysis
-    ├── DIAL-OPTIMIZATION-ANALYSIS.md      # Phase 2 analysis
-    ├── BENCHMARK-RESULTS-2026-01.md       # Latest benchmarks
+    ├── PEER-FINDING-ANALYSIS.md           # Phase 1: Finding
+    ├── DIAL-OPTIMIZATION-ANALYSIS.md      # Phase 2: Dialing
+    ├── DEEP-SYNC-ANALYSIS.md              # Comprehensive research
+    ├── BENCHMARK-RESULTS-2026-01.md       # Benchmark data
+    ├── EDGE-CASE-BENCHMARK-RESULTS.md     # Edge case data
     ├── DECISION-LOG.md                    # Architectural decisions
     ├── PRODUCTION-MONITORING.md           # PromQL + Grafana
-    ├── DEEP-SYNC-ANALYSIS.md              # Comprehensive analysis
-    ├── EDGE-CASE-BENCHMARK-RESULTS.md     # Edge case results
     └── MISSING_INSTRUMENTATION.md         # Instrumentation status
+```
+
+### Document Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CIP-sync-protocol.md                              │
+│                    (Standards Track - For Protocol Approval)         │
+├─────────────────────────────────────────────────────────────────────┤
+│  What: Protocol specification, message formats, phases               │
+│  Audience: Protocol reviewers, implementers                          │
+│  Updates: Only for protocol changes                                  │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    BRANCH-CHECKPOINT-2026-01-31.md                   │
+│                    (Summary & Recommendations)                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  What: Executive summary, tech debt, architecture suggestions        │
+│  Audience: Team leads, architects                                    │
+│  Updates: Per major branch checkpoint                                │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+         ┌────────────────────┴────────────────────┐
+         ▼                                         ▼
+┌─────────────────────────┐              ┌─────────────────────────┐
+│  Analysis Documents     │              │  Results Documents      │
+├─────────────────────────┤              ├─────────────────────────┤
+│  PEER-FINDING-ANALYSIS  │              │  BENCHMARK-RESULTS      │
+│  DIAL-OPTIMIZATION      │              │  EDGE-CASE-BENCHMARK    │
+│  DEEP-SYNC-ANALYSIS     │              │  DECISION-LOG           │
+├─────────────────────────┤              ├─────────────────────────┤
+│  Audience: Researchers  │              │  Audience: QA, Ops      │
+│  Updates: Investigation │              │  Updates: Per test run  │
+└─────────────────────────┘              └─────────────────────────┘
 ```
 
 ---
