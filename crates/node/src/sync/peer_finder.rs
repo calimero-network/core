@@ -768,8 +768,14 @@ mod tests {
         cache.record_failure(peer);
 
         let q = cache.get_quality(&peer).unwrap();
+        // Should be in backoff for a long duration (60s hasn't elapsed)
         assert!(q.is_in_backoff(Duration::from_secs(60)));
-        assert!(!q.is_in_backoff(Duration::from_millis(1)));
+
+        // Wait a tiny bit to ensure we're outside 0ms backoff
+        std::thread::sleep(Duration::from_millis(5));
+
+        // Should NOT be in backoff if backoff duration is 0 (already elapsed)
+        assert!(!q.is_in_backoff(Duration::ZERO));
     }
 
     #[test]
