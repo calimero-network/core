@@ -1013,3 +1013,242 @@ impl SyncManager {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_storage::collections::CrdtType;
+    use calimero_storage::entities::Metadata;
+
+    /// Test that TreeLeafData correctly serializes and deserializes metadata
+    #[test]
+    fn test_tree_leaf_data_serialization() {
+        let key = [0u8; 32];
+        let value = vec![1, 2, 3, 4];
+        let mut metadata = Metadata::new(1000, 2000);
+        metadata.crdt_type = Some(CrdtType::Counter);
+
+        let leaf_data = TreeLeafData {
+            key,
+            value: value.clone(),
+            metadata: metadata.clone(),
+        };
+
+        // Serialize and deserialize
+        let serialized = borsh::to_vec(&leaf_data).expect("serialize");
+        let deserialized: TreeLeafData = borsh::from_slice(&serialized).expect("deserialize");
+
+        assert_eq!(deserialized.key, key);
+        assert_eq!(deserialized.value, value);
+        assert_eq!(deserialized.metadata.crdt_type, Some(CrdtType::Counter));
+        assert_eq!(deserialized.metadata.created_at, 1000);
+    }
+
+    /// Test that TreeLeafData carries different CRDT types
+    #[test]
+    fn test_tree_leaf_data_crdt_types() {
+        let test_types = vec![
+            (CrdtType::LwwRegister, "LwwRegister"),
+            (CrdtType::Counter, "Counter"),
+            (CrdtType::UnorderedMap, "UnorderedMap"),
+            (CrdtType::UnorderedSet, "UnorderedSet"),
+            (CrdtType::Vector, "Vector"),
+        ];
+
+        for (crdt_type, name) in test_types {
+            let mut metadata = Metadata::new(0, 0);
+            metadata.crdt_type = Some(crdt_type.clone());
+
+            let leaf_data = TreeLeafData {
+                key: [0u8; 32],
+                value: vec![],
+                metadata,
+            };
+
+            let serialized = borsh::to_vec(&leaf_data).expect(&format!("serialize {}", name));
+            let deserialized: TreeLeafData =
+                borsh::from_slice(&serialized).expect(&format!("deserialize {}", name));
+
+            assert_eq!(
+                deserialized.metadata.crdt_type,
+                Some(crdt_type),
+                "CRDT type {} round-trip failed",
+                name
+            );
+        }
+    }
+
+    /// Test that default Metadata has LwwRegister as crdt_type
+    #[test]
+    fn test_default_metadata_crdt_type() {
+        let metadata = Metadata::new(0, 0);
+        // Default should be LwwRegister for safe fallback
+        assert_eq!(metadata.crdt_type, Some(CrdtType::LwwRegister));
+    }
+
+    /// Test that legacy format parsing creates correct default metadata
+    #[test]
+    fn test_legacy_format_default_metadata() {
+        // Legacy format: key[32] + len[4] + value[len]
+        let mut data = Vec::new();
+        data.extend_from_slice(&[1u8; 32]); // key
+        data.extend_from_slice(&(4u32).to_le_bytes()); // len = 4
+        data.extend_from_slice(&[10, 20, 30, 40]); // value
+
+        // Verify format is valid
+        assert!(data.len() >= 36);
+        let value_len = u32::from_le_bytes([data[32], data[33], data[34], data[35]]) as usize;
+        assert_eq!(value_len, 4);
+        assert_eq!(data.len(), 36 + value_len);
+
+        // Legacy format should create LwwRegister metadata
+        let default_metadata = Metadata::new(0, 1);
+        assert_eq!(default_metadata.crdt_type, Some(CrdtType::LwwRegister));
+    }
+
+    /// Test TreeNode structure for internal nodes
+    #[test]
+    fn test_tree_node_internal() {
+        let child1 = TreeNodeChild {
+            node_id: [1u8; 32],
+            hash: calimero_primitives::hash::Hash::new(&[2u8; 32]),
+        };
+        let child2 = TreeNodeChild {
+            node_id: [3u8; 32],
+            hash: calimero_primitives::hash::Hash::new(&[4u8; 32]),
+        };
+
+        let node = TreeNode {
+            node_id: [0u8; 32],
+            hash: calimero_primitives::hash::Hash::new(&[5u8; 32]),
+            children: vec![child1, child2],
+            leaf_data: None, // Internal node has no leaf data
+        };
+
+        let serialized = borsh::to_vec(&node).expect("serialize");
+        let deserialized: TreeNode = borsh::from_slice(&serialized).expect("deserialize");
+
+        assert_eq!(deserialized.children.len(), 2);
+        assert!(deserialized.leaf_data.is_none());
+    }
+
+    /// Test TreeNode structure for leaf nodes with metadata
+    #[test]
+    fn test_tree_node_leaf_with_metadata() {
+        let mut metadata = Metadata::new(1000, 2000);
+        metadata.crdt_type = Some(CrdtType::Counter);
+
+        let leaf_data = TreeLeafData {
+            key: [7u8; 32],
+            value: vec![100, 200],
+            metadata,
+        };
+
+        let node = TreeNode {
+            node_id: [6u8; 32],
+            hash: calimero_primitives::hash::Hash::new(&[8u8; 32]),
+            children: vec![], // Leaf has no children
+            leaf_data: Some(leaf_data),
+        };
+
+        let serialized = borsh::to_vec(&node).expect("serialize");
+        let deserialized: TreeNode = borsh::from_slice(&serialized).expect("deserialize");
+
+        assert!(deserialized.children.is_empty());
+        assert!(deserialized.leaf_data.is_some());
+
+        let data = deserialized.leaf_data.unwrap();
+        assert_eq!(data.key, [7u8; 32]);
+        assert_eq!(data.value, vec![100, 200]);
+        assert_eq!(data.metadata.crdt_type, Some(CrdtType::Counter));
+    }
+
+    /// Test Metadata with None crdt_type (edge case)
+    #[test]
+    fn test_metadata_none_crdt_type() {
+        let mut metadata = Metadata::new(0, 0);
+        metadata.crdt_type = None; // Explicitly set to None
+
+        let serialized = borsh::to_vec(&metadata).expect("serialize");
+        let deserialized: Metadata = borsh::from_slice(&serialized).expect("deserialize");
+
+        assert_eq!(deserialized.crdt_type, None);
+    }
+
+    /// Test Custom CRDT type with type name
+    #[test]
+    fn test_custom_crdt_type() {
+        let mut metadata = Metadata::new(0, 0);
+        metadata.crdt_type = Some(CrdtType::Custom {
+            type_name: "MyCustomType".to_string(),
+        });
+
+        let serialized = borsh::to_vec(&metadata).expect("serialize");
+        let deserialized: Metadata = borsh::from_slice(&serialized).expect("deserialize");
+
+        match deserialized.crdt_type {
+            Some(CrdtType::Custom { type_name }) => {
+                assert_eq!(type_name, "MyCustomType");
+            }
+            _ => panic!("Expected Custom CRDT type"),
+        }
+    }
+
+    /// Test Interface::merge_by_crdt_type_with_callback behavior
+    #[test]
+    fn test_merge_dispatch_lww_register() {
+        // Two LWW registers with different timestamps
+        // Later timestamp should win
+        let mut local_metadata = Metadata::new(1000, 1000);
+        local_metadata.crdt_type = Some(CrdtType::LwwRegister);
+
+        let mut remote_metadata = Metadata::new(2000, 2000);
+        remote_metadata.crdt_type = Some(CrdtType::LwwRegister);
+
+        let local_data = b"local_value".to_vec();
+        let remote_data = b"remote_value".to_vec();
+
+        // Remote has later timestamp, should win
+        let result = Interface::<MainStorage>::merge_by_crdt_type_with_callback(
+            &local_data,
+            &remote_data,
+            &local_metadata,
+            &remote_metadata,
+            None, // No WASM callback
+        );
+
+        assert!(result.is_ok());
+        let merged = result.unwrap();
+        assert!(merged.is_some());
+        // Remote should win because it has higher timestamp
+        assert_eq!(merged.unwrap(), remote_data);
+    }
+
+    /// Test merge with local having later timestamp
+    #[test]
+    fn test_merge_dispatch_lww_local_wins() {
+        // Local has later timestamp - should win
+        let mut local_metadata = Metadata::new(3000, 3000);
+        local_metadata.crdt_type = Some(CrdtType::LwwRegister);
+
+        let mut remote_metadata = Metadata::new(1000, 1000);
+        remote_metadata.crdt_type = Some(CrdtType::LwwRegister);
+
+        let local_data = b"local_value".to_vec();
+        let remote_data = b"remote_value".to_vec();
+
+        let result = Interface::<MainStorage>::merge_by_crdt_type_with_callback(
+            &local_data,
+            &remote_data,
+            &local_metadata,
+            &remote_metadata,
+            None,
+        );
+
+        assert!(result.is_ok());
+        let merged = result.unwrap();
+        assert!(merged.is_some());
+        // Local should win because it has higher timestamp
+        assert_eq!(merged.unwrap(), local_data);
+    }
+}

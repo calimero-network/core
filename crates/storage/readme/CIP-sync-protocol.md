@@ -9,6 +9,22 @@
 | Type | Standards Track |
 | Category | Core |
 | Created | 2026-01-30 |
+| Last Audit | 2026-01-31 |
+
+## Implementation Status (Audit 2026-01-31)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Protocol Negotiation | ✅ | `SyncHandshake` → `SyncHandshakeResponse` |
+| TreeLeafData with Metadata | ✅ | `crdt_type` propagated over wire |
+| Built-in CRDT Merge | ✅ | Counter, Map, Set, Register via `Interface` |
+| WASM Custom Type Merge | ❌ | `RuntimeMergeCallback::from_module()` returns `None` |
+| Collection Architecture | ✅ | Children stored as separate entities |
+| Counter Per-Executor Slots | ✅ | No conflicts between nodes |
+| Parallel Dialing | ✅ | Integrated into `perform_interval_sync()` |
+| Connection State Tracking | ✅ | RTT-based peer sorting |
+
+**Key Finding**: Built-in CRDTs work correctly. Only custom `Mergeable` types are affected by missing WASM callback. See `CRITICAL-AUDIT-2026-01.md` for details.
 
 ## Abstract
 
@@ -844,13 +860,19 @@ This CIP is backwards compatible:
 - [x] Removed `ResolutionStrategy` enum entirely (not deprecated, deleted)
 - N/A merodb uses ABI for deserialization, doesn't need storage types
 
-### Phase 3: Network Layer & Runtime Integration ✅ DONE
+### Phase 3: Network Layer & Runtime Integration ✅ DONE (with caveat)
 
-**3.1 Runtime Integration:** ✅
+**3.1 Runtime Integration:** ✅ (Built-in CRDTs only)
 - [x] `RuntimeMergeCallback` in `crates/runtime/src/merge_callback.rs`
 - [x] `MockMergeCallback` for testing (custom handlers, call recording)
 - [x] Falls back to type registry or LWW when WASM not available
-- [ ] Wire up to `SyncManager` (deferred to Phase 4)
+- [x] Wire up to `SyncManager` via `get_merge_callback()`
+
+> **⚠️ Implementation Reality (2026-01-31 Audit)**:
+> - `RuntimeMergeCallback::from_module()` returns `None` (WASM callback not implemented)
+> - Custom `CrdtType::Custom` types always fall back to LWW
+> - **Built-in CRDTs (Counter, Map, Set) work correctly** via `Interface::merge_by_crdt_type_with_callback`
+> - See `CRITICAL-AUDIT-2026-01.md` for details
 
 **3.2 Network Messages:** ✅
 - [x] `SyncHandshake` / `SyncHandshakeResponse` for protocol negotiation
@@ -866,7 +888,19 @@ This CIP is backwards compatible:
 - [x] 9 merge_callback unit tests (mock handlers, LWW, recording)
 - [x] 27 integration tests (negotiation, scenarios, serialization)
 
-### Phase 4: Integration ✅
+### Phase 4: Integration ✅ (Updated 2026-01-31)
+
+**Wire Protocol:**
+- [x] `SyncHandshake` → `SyncHandshakeResponse` with negotiated protocol
+- [x] `TreeLeafData { key, value, metadata }` carries `crdt_type` over wire
+- [x] `handle_tree_node_request` reads `EntityIndex` and includes metadata in response
+
+**Merge Dispatch:**
+- [x] `apply_entity_with_merge()` calls `Interface::merge_by_crdt_type_with_callback`
+- [x] Built-in CRDTs dispatch correctly (Counter, Map, Set, Register)
+- [x] Custom types fall back to LWW (WASM callback returns None)
+
+**Integration:**
 - [x] Wire `RuntimeMergeCallback` to `SyncManager` (`get_merge_callback()` ready for hash-based sync)
 - [x] Delta buffering during state sync (`SyncSession` in `NodeState`)
 - [x] Post-sync delta replay (triggers DAG sync for missing deltas)
@@ -878,6 +912,12 @@ This CIP is backwards compatible:
 - [x] Parent hash tracking via `HashMap<delta_id, root_hash>`
 - [x] Fixed LWW timestamp rejection in `save_internal()` for root entities
 - [x] Concurrent merge unit tests (17 tests in `concurrent_merge.rs`, 0.02s execution)
+- [x] `ParallelDialTracker` integrated into `perform_interval_sync()`
+
+> **✅ Key Insight (2026-01-31 Audit)**:
+> Collections store children as **separate entities**. Counter uses per-executor slots.
+> This means per-entry merge happens naturally during tree sync.
+> See `CRITICAL-AUDIT-2026-01.md` for architecture deep-dive.
 
 **Note on Heartbeats vs SyncHints:**
 - `HashHeartbeat` (30s interval): Lightweight divergence detection (`root_hash` + `dag_heads`)
