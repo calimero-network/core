@@ -1024,7 +1024,10 @@ impl SyncManager {
     ///
     /// This is the main entry point for hash-based incremental sync (HybridSync).
     /// It selects the optimal strategy based on configuration and tree characteristics,
-    /// then executes the sync using the provided merge callback for CRDT merges.
+    /// then executes the sync using CRDT merge semantics via `get_merge_callback()`.
+    ///
+    /// The merge callback is obtained internally by each sync strategy method, so
+    /// callers don't need to pass it explicitly.
     pub(super) async fn handle_tree_sync_with_callback(
         &self,
         context_id: ContextId,
@@ -1032,7 +1035,6 @@ impl SyncManager {
         peer_id: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
-        _merge_callback: Arc<dyn WasmMergeCallback>,
     ) -> eyre::Result<Option<SyncProtocol>> {
         // Get local state info for strategy selection
         let store_handle = self.context_client.datastore_handle();
@@ -2005,16 +2007,14 @@ impl SyncManager {
                     .await?
                 }
                 Some(SyncProtocolVersion::HybridSync { .. }) => {
-                    // Hybrid sync - try hash-based tree comparison with merge callback
+                    // Hybrid sync - try hash-based tree comparison with CRDT merge
                     info!(%context_id, "Using negotiated HybridSync (hash-based tree comparison)");
-                    let merge_callback = self.get_merge_callback();
                     self.handle_tree_sync_with_callback(
                         context_id,
                         &context,
                         chosen_peer,
                         our_identity,
                         &mut stream,
-                        merge_callback,
                     )
                     .await?
                 }

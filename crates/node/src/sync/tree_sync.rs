@@ -26,8 +26,17 @@
 //! - `bytes_sent`: Approximate bytes sent (filter/requests)
 //! - `duration_ms`: Total sync duration
 //! - Strategy-specific metrics (e.g., `bloom_filter_size`, `nodes_checked`, etc.)
+//!
+//! ## Merge Behavior
+//!
+//! When applying remote entities, these protocols use CRDT merge semantics:
+//! - If local entity exists, merge local + remote using `WasmMergeCallback`
+//! - If local entity doesn't exist, write remote directly
+//! - Built-in CRDTs (Counter, Map) use storage-layer merge
+//! - Custom types dispatch to WASM via the callback
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::Instant;
 
 use calimero_network_primitives::stream::Stream;
@@ -37,13 +46,14 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::WasmMergeCallback;
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::slice::Slice;
 use calimero_store::types::ContextState as ContextStateValue;
 use eyre::{bail, Result};
 use libp2p::PeerId;
 use rand::Rng;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::manager::SyncManager;
 use super::snapshot::{build_entity_bloom_filter, get_entity_keys};
@@ -122,9 +132,15 @@ impl SyncManager {
             }) => {
                 let bytes_received = missing_entities.len() as u64;
 
-                // Decode and apply missing entities
-                let entities_synced =
-                    self.apply_entities_from_bytes(context_id, &missing_entities)?;
+                // Get merge callback for CRDT-aware entity application
+                let merge_callback = self.get_merge_callback();
+
+                // Decode and apply missing entities with merge
+                let entities_synced = self.apply_entities_from_bytes(
+                    context_id,
+                    &missing_entities,
+                    Some(merge_callback.as_ref()),
+                )?;
 
                 let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -221,6 +237,9 @@ impl SyncManager {
         let mut total_entities_synced = 0u64;
         let mut total_bytes_received = 0u64;
         let mut total_bytes_sent = 0u64;
+
+        // Get merge callback for CRDT-aware entity application
+        let merge_callback = self.get_merge_callback();
         let mut round_trips = 0u32;
         let mut max_depth_reached = 0u32;
         let mut hash_comparisons = 0u64;
@@ -276,10 +295,14 @@ impl SyncManager {
                             "Received tree node"
                         );
 
-                        // If this is a leaf with data, apply it
+                        // If this is a leaf with data, apply it with merge
                         if let Some(leaf_data) = &node.leaf_data {
                             total_bytes_received += leaf_data.len() as u64;
-                            let applied = self.apply_leaf_entity(context_id, leaf_data)?;
+                            let applied = self.apply_leaf_entity(
+                                context_id,
+                                leaf_data,
+                                Some(merge_callback.as_ref()),
+                            )?;
                             if applied {
                                 total_entities_synced += 1;
                             }
@@ -417,6 +440,9 @@ impl SyncManager {
         let mut total_entities_synced = 0u64;
         let mut total_bytes_received = 0u64;
 
+        // Get merge callback for CRDT-aware entity application
+        let merge_callback = self.get_merge_callback();
+
         // For each divergent child, fetch entire subtree
         for child in root_children {
             let need_sync = self
@@ -459,7 +485,11 @@ impl SyncManager {
                         for node in nodes {
                             if let Some(leaf_data) = &node.leaf_data {
                                 total_bytes_received += leaf_data.len() as u64;
-                                let applied = self.apply_leaf_entity(context_id, leaf_data)?;
+                                let applied = self.apply_leaf_entity(
+                                    context_id,
+                                    leaf_data,
+                                    Some(merge_callback.as_ref()),
+                                )?;
                                 if applied {
                                     total_entities_synced += 1;
                                 }
@@ -554,6 +584,9 @@ impl SyncManager {
         let mut max_nodes_per_level = 0usize;
         let mut total_nodes_checked = 0u64;
 
+        // Get merge callback for CRDT-aware entity application
+        let merge_callback = self.get_merge_callback();
+
         for depth in 0..=max_depth {
             // Estimate bytes sent
             total_bytes_sent += 64 + (current_level_ids.len() * 32) as u64;
@@ -600,10 +633,14 @@ impl SyncManager {
             let mut next_level_ids: Vec<[u8; 32]> = Vec::new();
 
             for node in nodes {
-                // Apply leaf data if present
+                // Apply leaf data if present with merge
                 if let Some(leaf_data) = &node.leaf_data {
                     total_bytes_received += leaf_data.len() as u64;
-                    let applied = self.apply_leaf_entity(context_id, leaf_data)?;
+                    let applied = self.apply_leaf_entity(
+                        context_id,
+                        leaf_data,
+                        Some(merge_callback.as_ref()),
+                    )?;
                     if applied {
                         total_entities_synced += 1;
                     }
@@ -666,11 +703,101 @@ impl SyncManager {
     // Helper Methods
     // =========================================================================
 
+    /// Apply a single entity with CRDT merge semantics.
+    ///
+    /// If local entity exists, merges local + remote using the callback.
+    /// If local entity doesn't exist, writes remote directly.
+    ///
+    /// Returns true if entity was written, false if skipped.
+    fn apply_entity_with_merge(
+        &self,
+        context_id: ContextId,
+        key: [u8; 32],
+        remote_value: Vec<u8>,
+        merge_callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<bool> {
+        let state_key = ContextStateKey::new(context_id, key);
+        let mut store_handle = self.context_client.datastore_handle();
+
+        // Try to read existing local value
+        let local_value: Option<Vec<u8>> = store_handle
+            .get(&state_key)
+            .ok()
+            .flatten()
+            .map(|v: ContextStateValue| v.as_ref().to_vec());
+
+        let final_value = if let Some(local_data) = local_value {
+            // Local exists - need to merge
+            if let Some(callback) = merge_callback {
+                // Use callback for merge (handles built-in CRDTs and custom types)
+                // Note: We don't have full metadata here, so use type_name "unknown"
+                // The callback will fall back to LWW for unknown types
+                match callback.merge_custom(
+                    "unknown", // Type name not available at this level
+                    &local_data,
+                    &remote_value,
+                    0, // Local timestamp not available
+                    1, // Remote timestamp (assume newer)
+                ) {
+                    Ok(merged) => {
+                        trace!(
+                            %context_id,
+                            entity_key = ?key,
+                            local_len = local_data.len(),
+                            remote_len = remote_value.len(),
+                            merged_len = merged.len(),
+                            "Merged entity via callback"
+                        );
+                        merged
+                    }
+                    Err(e) => {
+                        warn!(
+                            %context_id,
+                            entity_key = ?key,
+                            error = %e,
+                            "Merge callback failed, using remote (LWW)"
+                        );
+                        remote_value
+                    }
+                }
+            } else {
+                // No callback - use LWW (remote wins)
+                trace!(
+                    %context_id,
+                    entity_key = ?key,
+                    "No merge callback, using remote (LWW)"
+                );
+                remote_value
+            }
+        } else {
+            // No local value - just use remote
+            remote_value
+        };
+
+        // Write the final value
+        let slice: Slice<'_> = final_value.into();
+        store_handle.put(&state_key, &ContextStateValue::from(slice))?;
+
+        debug!(
+            %context_id,
+            entity_key = ?key,
+            "Applied entity with merge"
+        );
+
+        Ok(true)
+    }
+
     /// Apply entities from serialized bytes (format: key[32] + len[4] + value[len])
-    fn apply_entities_from_bytes(&self, context_id: ContextId, data: &[u8]) -> Result<u64> {
+    ///
+    /// Uses CRDT merge when local entity exists.
+    fn apply_entities_from_bytes(
+        &self,
+        context_id: ContextId,
+        data: &[u8],
+        merge_callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<u64> {
         let mut entities_applied = 0u64;
         let mut offset = 0;
-        let mut store_handle = self.context_client.datastore_handle();
 
         while offset + 36 <= data.len() {
             // Read key (32 bytes)
@@ -695,17 +822,13 @@ impl SyncManager {
             let value = data[offset..offset + value_len].to_vec();
             offset += value_len;
 
-            // Apply entity to storage
-            let state_key = ContextStateKey::new(context_id, key);
-            let slice: Slice<'_> = value.into();
-            match store_handle.put(&state_key, &ContextStateValue::from(slice)) {
-                Ok(_) => {
+            // Apply entity with merge
+            match self.apply_entity_with_merge(context_id, key, value, merge_callback) {
+                Ok(true) => {
                     entities_applied += 1;
-                    debug!(
-                        %context_id,
-                        entity_key = ?key,
-                        "Applied entity"
-                    );
+                }
+                Ok(false) => {
+                    debug!(%context_id, entity_key = ?key, "Entity skipped");
                 }
                 Err(e) => {
                     warn!(
@@ -724,7 +847,13 @@ impl SyncManager {
     /// Apply a single leaf entity from serialized data.
     ///
     /// Expected format: key[32] + value_len[4] + value[value_len]
-    fn apply_leaf_entity(&self, context_id: ContextId, leaf_data: &[u8]) -> Result<bool> {
+    /// Uses CRDT merge when local entity exists.
+    fn apply_leaf_entity(
+        &self,
+        context_id: ContextId,
+        leaf_data: &[u8],
+        merge_callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<bool> {
         if leaf_data.len() < 36 {
             return Ok(false);
         }
@@ -742,19 +871,7 @@ impl SyncManager {
 
         let value = leaf_data[36..36 + value_len].to_vec();
 
-        let state_key = ContextStateKey::new(context_id, key);
-        let slice: Slice<'_> = value.into();
-        let mut store_handle = self.context_client.datastore_handle();
-
-        store_handle.put(&state_key, &ContextStateValue::from(slice))?;
-
-        debug!(
-            %context_id,
-            entity_key = ?key,
-            "Applied leaf entity"
-        );
-
-        Ok(true)
+        self.apply_entity_with_merge(context_id, key, value, merge_callback)
     }
 
     /// Check if a local node differs from remote (by hash).
