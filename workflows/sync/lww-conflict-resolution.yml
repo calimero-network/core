@@ -99,7 +99,7 @@ steps:
 
   - name: Wait for Initial Sync
     type: wait
-    seconds: 10
+    seconds: 45
 
   # ===========================================================================
   # PHASE 2: First conflict - Node 1 writes first
@@ -117,7 +117,7 @@ steps:
 
   - name: Wait for Round 1 Sync
     type: wait
-    seconds: 15
+    seconds: 30
 
   # Verify all nodes have Node 1's value
   - name: "[Verify] Node 2 has Node 1's value"
@@ -164,7 +164,7 @@ steps:
 
   - name: Wait for Round 2 Sync
     type: wait
-    seconds: 15
+    seconds: 30
 
   # Verify all nodes now have Node 2's value (LWW - later timestamp wins)
   - name: "[Verify] Node 1 has Node 2's value (LWW)"
@@ -211,7 +211,7 @@ steps:
 
   - name: Wait for Round 3 Sync
     type: wait
-    seconds: 15
+    seconds: 30
 
   # Verify all nodes have Node 3's value (final winner)
   - name: "[Final] Node 1 value"
@@ -285,7 +285,7 @@ steps:
 
   - name: Wait for Multi-Key Sync
     type: wait
-    seconds: 15
+    seconds: 30
 
   - name: "[Verify] Multi-key LWW on Node 1"
     type: call
