@@ -18,7 +18,7 @@ mod blob_protocol;
 mod get_blob_bytes;
 mod network_event;
 mod specialized_node_invite;
-mod state_delta;
+pub mod state_delta;
 mod stream_opened;
 
 impl Handler<NodeMessage> for NodeManager {
