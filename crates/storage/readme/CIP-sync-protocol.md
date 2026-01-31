@@ -2540,6 +2540,269 @@ The two-node concurrent write test (`crdt-merge.yml`) now passes:
 - Both nodes successfully sync all 20 keys
 - LWW conflict resolution works correctly (both nodes agree on winner)
 
+## Appendix J: Dedicated Network Event Channel
+
+### The Problem: Cross-Arbiter Message Loss
+
+During three-node sync testing, we discovered a critical bug: **Node 2 received 40 StateDelta messages at the network layer but only processed 12**. The remaining 28 messages (including all 20 from Node 3) were silently lost.
+
+#### Timeline of the Bug
+
+```
+23:53:00.369 - 23:53:00.499  Node 2 processes 12 StateDeltas from Node 1
+23:53:00.499                 LAST message processed by NodeManager
+23:53:00.505 - 23:53:00.546  Network dispatches 8 more StateDeltas (Node 1) - NOT HANDLED
+23:53:00.550 - 23:53:00.927  Node 2 executes its own 20 writes (WASM/ContextManager)
+23:53:00.937+               Network dispatches 20 StateDeltas from Node 3 - NEVER PROCESSED
+```
+
+#### Root Cause: Actix Cross-Arbiter Scheduling
+
+The original architecture:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     BEFORE: LazyRecipient Approach                        │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────────┐         ┌─────────────────────┐                    │
+│  │   ARBITER A     │         │     ARBITER B       │                    │
+│  │                 │         │                     │                    │
+│  │ ┌─────────────┐ │ do_send │ ┌─────────────────┐ │                    │
+│  │ │ Network     │─┼────────►│ │  NodeManager    │ │                    │
+│  │ │ Manager     │ │ (cross- │ │                 │ │                    │
+│  │ │             │ │ arbiter)│ │  ┌───────────┐  │ │                    │
+│  │ │ gossipsub ──┼─┼─────────┼─┼─►│  mailbox  │  │ │                    │
+│  │ │ events     │ │         │ │  └─────┬─────┘  │ │                    │
+│  │ └─────────────┘ │         │ │        │       │ │                    │
+│  │                 │         │ │        ▼       │ │                    │
+│  │                 │         │ │  handle(msg)   │ │                    │
+│  └─────────────────┘         │ │                 │ │                    │
+│                              │ │ ┌───────────┐  │ │                    │
+│                              │ │ │ ctx.spawn │  │ │                    │
+│                              │ │ │ (futures) │  │ │                    │
+│                              │ │ └───────────┘  │ │                    │
+│                              │ └─────────────────┘ │                    │
+│                              └─────────────────────┘                    │
+│                                                                          │
+│  PROBLEM: When NodeManager is busy with spawned futures (WASM execution),│
+│           incoming messages via do_send() are not processed promptly.    │
+│           Under high load, this leads to effective message loss.         │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+The `LazyRecipient<NetworkEvent>` sends messages across Actix arbiters using `do_send()`. When the receiving actor (NodeManager) is busy processing spawned async futures (e.g., WASM execution during local writes), incoming messages accumulate in the mailbox. Under high load with concurrent operations, this leads to messages being effectively lost.
+
+### The Solution: Dedicated MPSC Channel
+
+We replaced the `LazyRecipient` with a dedicated `tokio::sync::mpsc` channel and a bridge task:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     AFTER: Dedicated Channel Approach                     │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────────┐                                                     │
+│  │   ARBITER A     │                                                     │
+│  │                 │                                                     │
+│  │ ┌─────────────┐ │   dispatch()    ┌──────────────────┐               │
+│  │ │ Network     │─┼────────────────►│   MPSC Channel   │               │
+│  │ │ Manager     │ │   (non-block)   │                  │               │
+│  │ │             │ │                 │  - Size: 1000    │               │
+│  │ │ gossipsub   │ │                 │  - Metrics       │               │
+│  │ │ events      │ │                 │  - Backpressure  │               │
+│  │ └─────────────┘ │                 └────────┬─────────┘               │
+│  │                 │                          │                          │
+│  └─────────────────┘                          │ recv()                   │
+│                                               ▼                          │
+│                              ┌────────────────────────────┐              │
+│                              │      TOKIO TASK            │              │
+│                              │   NetworkEventBridge       │              │
+│                              │                            │              │
+│                              │   loop {                   │              │
+│                              │     event = rx.recv()      │              │
+│                              │     node_manager.do_send() │              │
+│                              │   }                        │              │
+│                              └────────────┬───────────────┘              │
+│                                           │ do_send()                    │
+│                              ┌────────────▼───────────────┐              │
+│                              │     ARBITER B              │              │
+│                              │   ┌─────────────────┐      │              │
+│                              │   │  NodeManager    │      │              │
+│                              │   │                 │      │              │
+│                              │   │  handle(msg)    │      │              │
+│                              │   │  ctx.spawn(...) │      │              │
+│                              │   └─────────────────┘      │              │
+│                              └────────────────────────────┘              │
+│                                                                          │
+│  SOLUTION: The bridge runs in its own tokio task, independent of actor   │
+│            scheduling. Messages are guaranteed delivery or explicit drop.│
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Components
+
+#### 1. NetworkEventChannel (`crates/node/src/network_event_channel.rs`)
+
+```rust
+/// Configuration for the network event channel.
+pub struct NetworkEventChannelConfig {
+    /// Maximum number of events that can be buffered (default: 1000)
+    pub channel_size: usize,
+    
+    /// Log warning when channel depth exceeds this percentage (default: 0.8)
+    pub warning_threshold: f64,
+    
+    /// Interval for logging channel statistics (default: 30s)
+    pub stats_log_interval: Duration,
+}
+
+/// Prometheus metrics for monitoring channel health
+pub struct NetworkEventChannelMetrics {
+    pub channel_depth: Gauge,           // Current events waiting
+    pub events_received: Counter,       // Total sent to channel
+    pub events_processed: Counter,      // Total received from channel
+    pub events_dropped: Counter,        // Dropped due to full channel
+    pub processing_latency: Histogram,  // Time from send to receive
+}
+```
+
+Key features:
+- **Configurable size**: Default 1000, handles burst patterns
+- **Backpressure visibility**: Warning logs at 80% capacity
+- **Metrics**: Prometheus metrics for monitoring
+- **Graceful shutdown**: Drains remaining events before exit
+
+#### 2. NetworkEventDispatcher Trait (`crates/network/primitives/src/messages.rs`)
+
+```rust
+/// Trait for dispatching network events.
+/// Allows different mechanisms (channels, Actix recipients) to be used interchangeably.
+pub trait NetworkEventDispatcher: Send + Sync {
+    /// Dispatch a network event. Returns true if successful, false if dropped.
+    fn dispatch(&self, event: NetworkEvent) -> bool;
+}
+```
+
+#### 3. NetworkEventBridge (`crates/node/src/network_event_processor.rs`)
+
+```rust
+/// Bridge that forwards events from the channel to NodeManager.
+pub struct NetworkEventBridge {
+    receiver: NetworkEventReceiver,
+    node_manager: Addr<NodeManager>,
+    shutdown: Arc<Notify>,
+}
+
+impl NetworkEventBridge {
+    pub async fn run(mut self) {
+        loop {
+            tokio::select! {
+                event = self.receiver.recv() => {
+                    match event {
+                        Some(event) => self.node_manager.do_send(event),
+                        None => break,  // Channel closed
+                    }
+                }
+                _ = self.shutdown.notified() => break,
+            }
+        }
+        self.graceful_shutdown();  // Drain remaining events
+    }
+}
+```
+
+### Why This Works
+
+1. **Independent Scheduling**: The bridge runs in its own tokio task, not competing with actor message handling for scheduling time.
+
+2. **Guaranteed Delivery or Explicit Drop**: Unlike `LazyRecipient::do_send()` which has no visibility into delivery, the channel:
+   - Returns success/failure from `try_send()`
+   - Logs warnings when dropping messages
+   - Updates `events_dropped` metric
+
+3. **Backpressure Visibility**: The metrics and logging show when the system is under pressure:
+   ```
+   WARN Network event channel approaching capacity current_depth=850 max_capacity=1000 fill_percent=85.0
+   ```
+
+4. **Same Processing Logic**: NodeManager's existing handlers and `ctx.spawn()` patterns are preserved. Only the delivery mechanism changes.
+
+### Data Flow Comparison
+
+| Step | Before (LazyRecipient) | After (Channel + Bridge) |
+|------|------------------------|--------------------------|
+| 1. Gossipsub event | NetworkManager receives | NetworkManager receives |
+| 2. Dispatch | `lazy_recipient.do_send(event)` | `channel.dispatch(event)` → `try_send()` |
+| 3. Cross-thread | Actix scheduler (unreliable under load) | mpsc channel (guaranteed or drop) |
+| 4. Receive | NodeManager's mailbox | Bridge's `rx.recv()` |
+| 5. Forward to actor | (already in actor) | `node_manager.do_send(event)` |
+| 6. Handle | `handle(msg, ctx)` | `handle(msg, ctx)` (same!) |
+
+### Test Results
+
+**Before (broken)**:
+```
+Three-node-convergence.yml: FAILED
+- Node 1: 60 keys ✓
+- Node 2: 20 keys ✗ (missing 40 keys from peers)
+- Node 3: 60 keys ✓
+```
+
+**After (fixed)**:
+```
+Three-node-convergence.yml: PASSED
+- Node 1: 60 keys ✓
+- Node 2: 60 keys ✓
+- Node 3: 60 keys ✓
+```
+
+### Metrics for Production Monitoring
+
+The channel exposes Prometheus metrics under `network_event_channel_*`:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `network_event_channel_depth` | Gauge | Current number of events in channel |
+| `network_event_channel_received_total` | Counter | Total events sent to channel |
+| `network_event_channel_processed_total` | Counter | Total events received from channel |
+| `network_event_channel_dropped_total` | Counter | Events dropped due to full channel |
+| `network_event_channel_processing_latency_seconds` | Histogram | Time from send to receive |
+
+**Alert Recommendations**:
+- Alert if `dropped_total` increases
+- Alert if `depth` stays above 800 for >1 minute
+- Monitor `processing_latency_seconds` p99
+
+### Configuration
+
+In production, the channel can be tuned via `NetworkEventChannelConfig`:
+
+```rust
+let channel_config = NetworkEventChannelConfig {
+    channel_size: 1000,        // Increase for higher throughput
+    warning_threshold: 0.8,    // Lower for earlier warnings
+    stats_log_interval: Duration::from_secs(30),
+};
+```
+
+For high-throughput deployments, consider:
+- Increasing `channel_size` to 5000-10000
+- Lowering `warning_threshold` to 0.7
+- Adding alerts on `events_dropped`
+
+### Lessons Learned
+
+1. **Actix cross-arbiter messaging is not reliable under load**: When actors are busy with spawned futures, incoming messages can be effectively lost.
+
+2. **Silent failures are dangerous**: The original `LazyRecipient::do_send()` provided no visibility into delivery failures.
+
+3. **Dedicated channels for critical paths**: High-throughput message paths should use dedicated channels with explicit backpressure handling.
+
+4. **Metrics are essential**: Without Prometheus metrics, this issue would have been nearly impossible to diagnose.
+
 ## Copyright
 
 Copyright and related rights waived via [CC0](https://creativecommons.org/publicdomain/zero/1.0/).

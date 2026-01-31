@@ -282,6 +282,55 @@ apply_actions_to::<Local>(actions)?;
 - `crates/storage/src/snapshot.rs` - Snapshot generation and application
 - `crates/storage/src/entities.rs` - `ResolutionStrategy` enum
 
+## Message Delivery Layer
+
+### Problem: Cross-Arbiter Message Loss
+
+The network synchronization protocols above depend on reliable message delivery between the network layer and node manager. In the original implementation, `LazyRecipient<NetworkEvent>` was used to send gossipsub messages across Actix arbiters. **Under high load, this caused silent message loss**.
+
+### Solution: Dedicated Channel
+
+A dedicated `tokio::sync::mpsc` channel now handles NetworkEvent delivery:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                   Message Delivery Architecture                         │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  NetworkManager ───► mpsc channel ───► Bridge ───► NodeManager         │
+│  (Arbiter A)         (size: 1000)     (tokio)    (Actix actor)        │
+│                                                                        │
+│  Features:                                                             │
+│  • Guaranteed delivery or explicit drop (never silent loss)            │
+│  • Prometheus metrics for monitoring                                   │
+│  • Backpressure warnings at 80% capacity                              │
+│  • Graceful shutdown with message draining                            │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `NetworkEventChannel` | `crates/node/src/network_event_channel.rs` | Metrics-aware mpsc channel wrapper |
+| `NetworkEventDispatcher` | `crates/network/primitives/src/messages.rs` | Trait for event dispatch |
+| `NetworkEventBridge` | `crates/node/src/network_event_processor.rs` | Tokio task bridging channel to actor |
+
+### Monitoring
+
+Prometheus metrics under `network_event_channel_*`:
+
+| Metric | Type | Alert Threshold |
+|--------|------|-----------------|
+| `depth` | Gauge | >800 for >1min |
+| `received_total` | Counter | - |
+| `processed_total` | Counter | - |
+| `dropped_total` | Counter | Any increase |
+| `processing_latency_seconds` | Histogram | p99 >100ms |
+
+See **CIP-sync-protocol.md Appendix J** for full implementation details.
+
 ## Future Improvements
 
 1. **Delta encoding**: Send byte-level diffs for updates instead of full data
