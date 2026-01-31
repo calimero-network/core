@@ -3031,6 +3031,174 @@ INFO calimero_node::sync::snapshot: Added snapshot boundary stubs to DeltaStore
 
 ---
 
+## Appendix M: State Sync Strategy Configuration
+
+### Overview
+
+`StateSyncStrategy` controls which Merkle tree comparison protocol is used when nodes need to reconcile state. This is separate from `FreshNodeStrategy` which controls bootstrap behavior.
+
+### Configuration
+
+```rust
+/// Strategy for Merkle tree state synchronization.
+pub enum StateSyncStrategy {
+    /// Auto-select based on tree characteristics (default)
+    Adaptive,
+    
+    /// Standard recursive hash comparison
+    HashComparison,
+    
+    /// Full state snapshot transfer
+    Snapshot,
+    
+    /// Compressed snapshot (zstd)
+    CompressedSnapshot,
+    
+    /// Bloom filter quick diff (for <10% divergence)
+    BloomFilter { false_positive_rate: f32 },
+    
+    /// Subtree prefetch (for deep trees)
+    SubtreePrefetch { max_depth: Option<usize> },
+    
+    /// Level-wise breadth-first (for wide shallow trees)
+    LevelWise { max_depth: Option<usize> },
+}
+```
+
+### CLI Usage
+
+```bash
+# Adaptive (default) - auto-select based on tree characteristics
+merod run --state-sync-strategy adaptive
+
+# Force specific protocols for testing/benchmarking
+merod run --state-sync-strategy hash        # Standard recursive
+merod run --state-sync-strategy snapshot    # Full transfer
+merod run --state-sync-strategy compressed  # Compressed snapshot
+merod run --state-sync-strategy bloom       # Bloom filter (1% FP)
+merod run --state-sync-strategy bloom:0.05  # Bloom filter (5% FP)
+merod run --state-sync-strategy subtree     # Subtree prefetch
+merod run --state-sync-strategy subtree:5   # Max depth 5
+merod run --state-sync-strategy level       # Level-wise
+merod run --state-sync-strategy level:3     # Max depth 3
+```
+
+### Adaptive Selection Logic
+
+When `Adaptive` is configured, the protocol is chosen based on:
+
+```
+if !local_has_data:
+    return CompressedSnapshot if remote_entities > 100 else Snapshot
+
+if divergence_ratio > 50% && remote_entities > 20:
+    return CompressedSnapshot if remote_entities > 100 else Snapshot
+
+if tree_depth > 3 && child_count < 10:
+    return SubtreePrefetch
+
+if remote_entities > 50 && divergence_ratio < 10%:
+    return BloomFilter
+
+if tree_depth <= 2 && child_count > 5:
+    return LevelWise
+
+return HashComparison  // Default
+```
+
+### Protocol Comparison
+
+| Protocol | Round Trips | Best For | Trade-offs |
+|----------|-------------|----------|------------|
+| **HashComparison** | O(depth) | General, moderate diff | Multiple round trips |
+| **Snapshot** | 1 | Fresh nodes, >50% diff | High bandwidth |
+| **CompressedSnapshot** | 1 | Large state (>100 entities) | CPU overhead |
+| **BloomFilter** | 1-2 | Large tree, <10% diff | False positives |
+| **SubtreePrefetch** | 2 | Deep trees, localized changes | Over-fetch risk |
+| **LevelWise** | O(depth) | Wide shallow trees | High message count |
+
+### Integration in SyncManager
+
+The strategy is selected and logged when divergence is detected:
+
+```rust
+// In SyncManager::handle_dag_sync
+let strategy = self.select_state_sync_strategy(
+    context_id,
+    local_has_data,
+    local_entity_count,
+    remote_entity_count,
+    tree_depth,
+    child_count,
+);
+
+info!(
+    %context_id,
+    configured = %self.sync_config.state_sync_strategy,
+    selected = %strategy,
+    "Selected state sync strategy"
+);
+```
+
+### Log Output
+
+When strategy selection occurs, you'll see:
+
+```
+INFO calimero_node::sync::manager: Selected state sync strategy
+    context_id=...
+    configured=adaptive
+    selected=hash
+    local_has_data=true
+    local_entity_count=50
+    remote_entity_count=55
+    tree_depth=3
+    child_count=5
+
+WARN calimero_node::sync::manager: Same DAG heads but different root hash - state sync needed
+    context_id=...
+    chosen_peer=12D3KooW...
+    state_sync_strategy=hash
+```
+
+### Current Implementation Status
+
+| Component | Status |
+|-----------|--------|
+| `StateSyncStrategy` enum | ✅ Implemented |
+| CLI `--state-sync-strategy` flag | ✅ Implemented |
+| Adaptive selection logic | ✅ Implemented |
+| Strategy logging | ✅ Implemented |
+| Network-level BloomFilter | ⏳ Defined in storage tests only |
+| Network-level SubtreePrefetch | ⏳ Defined in storage tests only |
+| Network-level LevelWise | ⏳ Defined in storage tests only |
+
+**Note**: The advanced network-level protocols (BloomFilter, SubtreePrefetch, LevelWise) are implemented in storage-layer tests but not yet wired to the network layer. Currently, DAG delta sync is used as fallback. The strategy is logged for observability and future implementation.
+
+### Running Isolated Strategy Tests
+
+```bash
+# Hash-Based Comparison
+cargo test -p calimero-storage --lib network_sync_hash_based_minimal_diff -- --nocapture
+
+# Snapshot Transfer
+cargo test -p calimero-storage --lib network_sync_snapshot_fresh_node -- --nocapture
+
+# Bloom Filter
+cargo test -p calimero-storage --lib network_sync_bloom_filter_efficiency -- --nocapture
+
+# Subtree Prefetch
+cargo test -p calimero-storage --lib network_sync_subtree_prefetch_efficiency -- --nocapture
+
+# Level-Wise
+cargo test -p calimero-storage --lib network_sync_level_wise_efficiency -- --nocapture
+
+# Comprehensive comparison
+cargo test -p calimero-storage --lib network_sync_comprehensive_comparison -- --nocapture
+```
+
+---
+
 ## Copyright
 
 Copyright and related rights waived via [CC0](https://creativecommons.org/publicdomain/zero/1.0/).

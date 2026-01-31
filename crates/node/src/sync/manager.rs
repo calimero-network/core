@@ -39,7 +39,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::utils::choose_stream;
 
-use super::config::SyncConfig;
+use super::config::{StateSyncStrategy, SyncConfig};
 use super::tracking::{SyncProtocol, SyncState};
 
 /// Network synchronization manager.
@@ -551,6 +551,53 @@ impl SyncManager {
         Arc::new(RuntimeMergeCallback::new())
     }
 
+    /// Select the state sync strategy to use for Merkle tree comparison.
+    ///
+    /// If the configured strategy is `Adaptive`, this method analyzes the tree
+    /// characteristics and selects the optimal protocol. Otherwise, it uses
+    /// the configured strategy directly.
+    ///
+    /// Returns the selected strategy and logs the selection decision.
+    #[must_use]
+    pub(super) fn select_state_sync_strategy(
+        &self,
+        context_id: ContextId,
+        local_has_data: bool,
+        local_entity_count: usize,
+        remote_entity_count: usize,
+        tree_depth: usize,
+        child_count: usize,
+    ) -> StateSyncStrategy {
+        let configured = self.sync_config.state_sync_strategy;
+
+        let selected = if configured.is_adaptive() {
+            StateSyncStrategy::choose_protocol(
+                local_has_data,
+                local_entity_count,
+                remote_entity_count,
+                tree_depth,
+                child_count,
+            )
+        } else {
+            configured
+        };
+
+        // Log strategy selection for observability
+        info!(
+            %context_id,
+            configured = %configured,
+            selected = %selected,
+            local_has_data,
+            local_entity_count,
+            remote_entity_count,
+            tree_depth,
+            child_count,
+            "Selected state sync strategy"
+        );
+
+        selected
+    }
+
     /// Get blob ID and application config from application or context config
     async fn get_blob_info(
         &self,
@@ -783,6 +830,23 @@ impl SyncManager {
                     );
 
                     if use_snapshot {
+                        // Also log which state sync strategy would be used if we had the protocols
+                        let state_strategy = self.select_state_sync_strategy(
+                            context_id,
+                            false, // local has no data (fresh node)
+                            0,
+                            peer_heads_count * 10, // estimate remote entities
+                            3,                     // default depth estimate
+                            peer_heads_count,
+                        );
+
+                        info!(
+                            %context_id,
+                            fresh_node_strategy = %strategy,
+                            state_sync_strategy = %state_strategy,
+                            "Fresh node using snapshot sync (state strategy logged for reference)"
+                        );
+
                         // Use snapshot sync for efficient bootstrap
                         // Note: request_snapshot_sync opens its own stream, existing stream
                         // will be closed when this function returns
@@ -926,13 +990,36 @@ impl SyncManager {
 
                     return Ok(Some(result));
                 } else {
-                    // Same heads but different root hash - may have deltas that haven't been applied yet
+                    // Same heads but different root hash - potential CRDT merge needed
+                    // This can happen when concurrent writes create the same DAG structure
+                    // but produce different Merkle tree states (e.g., different entry ordering)
+
+                    // Select state sync strategy based on tree characteristics
+                    // Note: We estimate entity count from DAG heads as a proxy
+                    let local_entity_count = context.dag_heads.len() * 10; // Rough estimate
+                    let remote_entity_count = peer_dag_heads.len() * 10;
+                    let tree_depth = 3; // Default estimate, could query from storage
+                    let child_count = context.dag_heads.len();
+
+                    let strategy = self.select_state_sync_strategy(
+                        context_id,
+                        true, // local has data
+                        local_entity_count,
+                        remote_entity_count,
+                        tree_depth,
+                        child_count,
+                    );
+
                     warn!(
                         %context_id,
                         %chosen_peer,
-                        "Same DAG heads but different root hash - requesting full sync"
+                        state_sync_strategy = %strategy,
+                        "Same DAG heads but different root hash - state sync needed"
                     );
 
+                    // Currently falls back to DAG sync as full state sync protocols
+                    // (BloomFilter, SubtreePrefetch, etc.) are not yet wired to network layer.
+                    // The selected strategy is logged for observability and future implementation.
                     let result = self
                         .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                         .await?;
