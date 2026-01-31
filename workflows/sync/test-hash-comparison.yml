@@ -1,0 +1,107 @@
+description: "Test HashComparison sync strategy"
+name: "Test Hash Comparison Sync"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: hash
+  merod_args: "--state-sync-strategy hash"
+
+steps:
+  - name: Install Application on Node 1
+    type: install_application
+    node: hash-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: hash-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: hash-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: hash-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: hash-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Wait for mesh formation
+    type: wait
+    seconds: 15
+
+  - name: Node 1 writes 5 keys
+    type: repeat
+    count: 5
+    steps:
+      - name: "N1 writes hash_key_{{iteration}}"
+        type: call
+        node: hash-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "hash_key_{{iteration}}"
+          value: "hash_value_{{iteration}}"
+
+  - name: Wait for sync
+    type: wait
+    seconds: 20
+
+  - name: N2 reads key 1
+    type: call
+    node: hash-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "hash_key_1"
+    outputs:
+      n2_k1: result
+
+  - name: N2 reads key 5
+    type: call
+    node: hash-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "hash_key_5"
+    outputs:
+      n2_k5: result
+
+  - name: Assert sync worked
+    type: json_assert
+    statements:
+      - 'json_subset({{n2_k1}}, {"output": "hash_value_1"})'
+      - 'json_subset({{n2_k5}}, {"output": "hash_value_5"})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

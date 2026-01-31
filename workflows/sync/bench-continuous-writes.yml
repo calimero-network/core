@@ -1,0 +1,185 @@
+description: "Stress test: continuous writes during sync - measures convergence under load"
+name: "Bench Continuous Writes"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: cw
+
+steps:
+  - name: Install Application on Node 1
+    type: install_application
+    node: cw-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: cw-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: cw-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: cw-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: cw-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: cw-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: cw-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: cw-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for mesh formation
+    type: wait
+    seconds: 15
+
+  # === STRESS TEST: Parallel writes from all 3 nodes ===
+  
+  - name: ">>> STRESS PHASE 1: Node 1 writes 20 keys rapidly"
+    type: repeat
+    count: 20
+    steps:
+      - name: "N1 writes stress_n1_{{iteration}}"
+        type: call
+        node: cw-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "stress_n1_{{iteration}}"
+          value: "value_from_node1_{{iteration}}"
+
+  - name: ">>> STRESS PHASE 2: Node 2 writes 20 keys (concurrent with sync)"
+    type: repeat
+    count: 20
+    steps:
+      - name: "N2 writes stress_n2_{{iteration}}"
+        type: call
+        node: cw-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "stress_n2_{{iteration}}"
+          value: "value_from_node2_{{iteration}}"
+
+  - name: ">>> STRESS PHASE 3: Node 3 writes 20 keys (concurrent with sync)"
+    type: repeat
+    count: 20
+    steps:
+      - name: "N3 writes stress_n3_{{iteration}}"
+        type: call
+        node: cw-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "stress_n3_{{iteration}}"
+          value: "value_from_node3_{{iteration}}"
+
+  - name: Wait for convergence
+    type: wait
+    seconds: 30
+
+  # === VERIFY ALL NODES CONVERGED ===
+  
+  - name: "Verify N1 has N2's keys"
+    type: call
+    node: cw-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "stress_n2_10"
+    outputs:
+      n1_has_n2_key: result
+
+  - name: "Verify N1 has N3's keys"
+    type: call
+    node: cw-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "stress_n3_10"
+    outputs:
+      n1_has_n3_key: result
+
+  - name: "Verify N2 has N1's keys"
+    type: call
+    node: cw-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "stress_n1_10"
+    outputs:
+      n2_has_n1_key: result
+
+  - name: "Verify N3 has all keys"
+    type: call
+    node: cw-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "stress_n1_20"
+    outputs:
+      n3_has_n1_key: result
+
+  - name: Assert convergence
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_has_n2_key}}, {"output": "value_from_node2_10"})'
+      - 'json_subset({{n1_has_n3_key}}, {"output": "value_from_node3_10"})'
+      - 'json_subset({{n2_has_n1_key}}, {"output": "value_from_node1_10"})'
+      - 'json_subset({{n3_has_n1_key}}, {"output": "value_from_node1_20"})'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

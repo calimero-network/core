@@ -1,0 +1,193 @@
+# ============================================================================
+# Test: Bloom Filter Divergence Repair
+# ============================================================================
+#
+# This test PROVES bloom filter sync can repair divergence when gossipsub fails.
+#
+# Scenario:
+# 1. Node 1 & Node 2 join context
+# 2. STOP Node 2 (simulates crash/network partition)
+# 3. Node 1 writes data (gossipsub broadcasts, but Node 2 is down)
+# 4. RESTART Node 2 (comes back with stale state)
+# 5. Bloom filter sync MUST detect and repair the divergence
+#
+# This is the REAL use case for bloom filter sync - catching up after failures.
+#
+# Run with:
+#   python -m merobox.cli bootstrap run --no-docker --binary-path ./target/release/merod \
+#     --merod-args="--state-sync-strategy bloom" \
+#     workflows/sync/test-bloom-divergence-repair.yml
+#
+# ============================================================================
+
+description: "Test bloom filter sync repairs divergence after node restart"
+name: "Test Bloom Filter Divergence Repair"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: bfdiv
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup - Both nodes join context
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: bfdiv-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: bfdiv-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: bfdiv-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: bfdiv-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: bfdiv-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Wait for initial mesh formation
+    type: wait
+    seconds: 15
+
+  # ===========================================================================
+  # PHASE 2: Create divergence by stopping Node 2 before writes
+  # ===========================================================================
+
+  - name: ">>> DIVERGENCE TEST: Stopping Node 2 to create divergence"
+    type: stop_node
+    nodes:
+      - bfdiv-2
+
+  - name: Wait for Node 2 to fully stop
+    type: wait
+    seconds: 3
+
+  - name: ">>> Node 1 writes while Node 2 is DOWN"
+    type: wait
+    seconds: 1
+
+  # Node 1 writes 5 keys - Node 2 will MISS these via gossipsub
+  - name: Node 1 writes keys (Node 2 is down, will miss gossip)
+    type: repeat
+    count: 5
+    steps:
+      - name: "N1 writes diverge_key_{{iteration}}"
+        type: call
+        node: bfdiv-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "diverge_key_{{iteration}}"
+          value: "diverge_value_{{iteration}}_missed_by_node2"
+
+  - name: Wait for writes to complete on Node 1
+    type: wait
+    seconds: 2
+
+  # ===========================================================================
+  # PHASE 3: Restart Node 2 - it should catch up via bloom filter sync
+  # ===========================================================================
+
+  - name: ">>> RESTART: Starting Node 2 (will need to catch up)"
+    type: start_node
+    nodes:
+      - bfdiv-2
+
+  - name: Wait for Node 2 to start and trigger sync
+    type: wait
+    seconds: 10
+
+  - name: ">>> SYNC PHASE: Bloom filter should detect and repair divergence"
+    type: wait
+    seconds: 25
+
+  # ===========================================================================
+  # PHASE 4: Verify Node 2 caught up (via bloom filter, NOT gossipsub)
+  # ===========================================================================
+
+  - name: "N2 reads key 1 (should have been synced via bloom filter)"
+    type: call
+    node: bfdiv-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "diverge_key_1"
+    outputs:
+      n2_has_k1: result
+
+  - name: "N2 reads key 3"
+    type: call
+    node: bfdiv-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "diverge_key_3"
+    outputs:
+      n2_has_k3: result
+
+  - name: "N2 reads key 5"
+    type: call
+    node: bfdiv-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "diverge_key_5"
+    outputs:
+      n2_has_k5: result
+
+  # ===========================================================================
+  # PHASE 5: Assert divergence was repaired
+  # ===========================================================================
+
+  - name: Assert bloom filter repaired divergence
+    type: json_assert
+    statements:
+      - 'json_subset({{n2_has_k1}}, {"output": "diverge_value_1_missed_by_node2"})'
+      - 'json_subset({{n2_has_k3}}, {"output": "diverge_value_3_missed_by_node2"})'
+      - 'json_subset({{n2_has_k5}}, {"output": "diverge_value_5_missed_by_node2"})'
+
+  - name: ">>> DIVERGENCE REPAIR TEST COMPLETE"
+    type: assert
+    statements:
+      - statement: "is_set({{n2_has_k1}})"
+        message: "BLOOM FILTER DIVERGENCE REPAIR: Node 2 caught up after missing gossip!"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

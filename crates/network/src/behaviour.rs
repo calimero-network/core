@@ -106,10 +106,24 @@ impl Behaviour {
 
                         kad
                     },
-                    gossipsub: gossipsub::Behaviour::new(
-                        gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        gossipsub::Config::default(),
-                    )?,
+                    gossipsub: {
+                        // Configure gossipsub with shorter backoff for faster mesh recovery
+                        // after node restarts. Default is 60 seconds which blocks reconnection.
+                        let gossipsub_config = gossipsub::ConfigBuilder::default()
+                            // Reduce prune backoff from 60s to 5s for faster restart recovery
+                            .prune_backoff(Duration::from_secs(5))
+                            // Reduce graft flood threshold for faster mesh formation
+                            .graft_flood_threshold(Duration::from_secs(5))
+                            // Standard heartbeat interval
+                            .heartbeat_interval(Duration::from_secs(1))
+                            .build()
+                            .expect("valid gossipsub config");
+
+                        gossipsub::Behaviour::new(
+                            gossipsub::MessageAuthenticity::Signed(key.clone()),
+                            gossipsub_config,
+                        )?
+                    },
                     ping: ping::Behaviour::default(),
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
                     relay: relay_behaviour,

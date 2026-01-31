@@ -14,6 +14,7 @@
 use std::collections::{hash_map, HashMap};
 use std::pin::pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
@@ -29,7 +30,7 @@ use calimero_storage::WasmMergeCallback;
 use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
-use libp2p::gossipsub::TopicHash;
+use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -336,32 +337,105 @@ impl SyncManager {
             return self.initiate_sync(context_id, peer_id).await;
         }
 
-        // CRITICAL FIX: Retry peer discovery if mesh is still forming
-        // After subscribing to a context, gossipsub needs time to form the mesh.
-        // We retry a few times with short delays to handle this gracefully.
+        // CRITICAL FIX: Wait for gossipsub mesh to form after restart
+        //
+        // After a node restarts or joins a context, gossipsub needs time to:
+        // 1. Re-subscribe to topics
+        // 2. Exchange GRAFT messages with peers
+        // 3. Form the mesh
+        //
+        // This can take 10-20 seconds depending on heartbeat intervals.
+        // We use a configurable timeout with periodic checks.
+        //
+        // MESH RECOVERY FIX: If mesh doesn't form after initial wait, force a
+        // re-subscribe to trigger gossipsub to re-negotiate the mesh. This handles
+        // asymmetric mesh state that can occur after node restarts.
+        let mesh_timeout = self.sync_config.mesh_formation_timeout;
+        let check_interval = self.sync_config.mesh_formation_check_interval;
+        let deadline = time::Instant::now() + mesh_timeout;
+
         let mut peers = Vec::new();
-        for attempt in 1..=3 {
+        let mut attempt = 0;
+        let mut resubscribed = false;
+
+        loop {
+            attempt += 1;
             peers = self
                 .network_client
                 .mesh_peers(TopicHash::from_raw(context_id))
                 .await;
 
             if !peers.is_empty() {
+                if attempt > 1 {
+                    info!(
+                        %context_id,
+                        attempt,
+                        peer_count = peers.len(),
+                        elapsed_ms = (mesh_timeout.as_millis() as u64).saturating_sub(
+                            (deadline - time::Instant::now()).as_millis() as u64
+                        ),
+                        resubscribed,
+                        "Gossipsub mesh formed successfully after waiting"
+                    );
+                }
                 break;
             }
 
-            if attempt < 3 {
+            if time::Instant::now() >= deadline {
+                warn!(
+                    %context_id,
+                    attempts = attempt,
+                    timeout_secs = mesh_timeout.as_secs(),
+                    resubscribed,
+                    "Gossipsub mesh failed to form within timeout"
+                );
+                break;
+            }
+
+            // MESH RECOVERY: If no mesh after 5 attempts (~5s), force re-subscribe
+            // This fixes asymmetric mesh state that can occur when a node restarts
+            // and the remote peer's gossipsub still thinks the old connection is valid.
+            if attempt == 5 && !resubscribed {
+                info!(
+                    %context_id,
+                    "Forcing re-subscribe to trigger mesh re-negotiation"
+                );
+                // Unsubscribe and re-subscribe to force gossipsub to re-GRAFT
+                let topic = IdentTopic::new(context_id);
+                if let Err(e) = self.network_client.unsubscribe(topic.clone()).await {
+                    debug!(%context_id, error = %e, "Unsubscribe failed (may already be unsubscribed)");
+                }
+                time::sleep(Duration::from_millis(100)).await;
+                if let Err(e) = self.network_client.subscribe(topic).await {
+                    warn!(%context_id, error = %e, "Re-subscribe failed");
+                }
+                resubscribed = true;
+            }
+
+            if attempt == 1 {
+                debug!(
+                    %context_id,
+                    timeout_secs = mesh_timeout.as_secs(),
+                    "No peers in mesh yet, waiting for gossipsub mesh formation..."
+                );
+            } else if attempt % 5 == 0 {
                 debug!(
                     %context_id,
                     attempt,
-                    "No peers found yet, mesh may still be forming, retrying..."
+                    remaining_secs = (deadline - time::Instant::now()).as_secs(),
+                    "Still waiting for gossipsub mesh to form..."
                 );
-                time::sleep(std::time::Duration::from_millis(500)).await;
             }
+
+            time::sleep(check_interval).await;
         }
 
         if peers.is_empty() {
-            bail!("No peers to sync with for context {}", context_id);
+            bail!(
+                "No peers to sync with for context {} (mesh failed to form after {}s)",
+                context_id,
+                mesh_timeout.as_secs()
+            );
         }
 
         // Check if we're uninitialized
@@ -1021,7 +1095,7 @@ impl SyncManager {
                     .cloned()
                     .collect();
 
-                if !missing_heads.is_empty() {
+                if !missing_heads.is_empty() && !self.sync_config.force_state_sync {
                     info!(
                         %context_id,
                         %chosen_peer,
@@ -1039,7 +1113,19 @@ impl SyncManager {
                     }
 
                     return Ok(Some(result));
-                } else {
+                }
+
+                // Force state sync mode OR same heads but different root hash
+                if self.sync_config.force_state_sync && !missing_heads.is_empty() {
+                    warn!(
+                        %context_id,
+                        %chosen_peer,
+                        missing_heads_count = missing_heads.len(),
+                        "BENCHMARK MODE: Bypassing DAG catchup, forcing state sync strategy"
+                    );
+                }
+
+                {
                     // Same heads but different root hash - potential CRDT merge needed
                     // This can happen when concurrent writes create the same DAG structure
                     // but produce different Merkle tree states (e.g., different entry ordering)
@@ -1092,23 +1178,27 @@ impl SyncManager {
                             )
                             .await?
                         }
-                        StateSyncStrategy::SubtreePrefetch { .. }
-                        | StateSyncStrategy::LevelWise { .. } => {
-                            // These strategies also use hash comparison as the base
-                            // with optimizations for subtree fetching or level batching.
-                            // For now, fall back to hash comparison.
-                            warn!(
-                                %context_id,
-                                %strategy,
-                                "Strategy not fully implemented, using HashComparison"
-                            );
-                            self.hash_comparison_sync(
+                        StateSyncStrategy::SubtreePrefetch { max_depth } => {
+                            self.subtree_prefetch_sync(
                                 context_id,
                                 chosen_peer,
                                 our_identity,
                                 stream,
                                 context.root_hash,
                                 peer_root_hash,
+                                max_depth,
+                            )
+                            .await?
+                        }
+                        StateSyncStrategy::LevelWise { max_depth } => {
+                            self.level_wise_sync(
+                                context_id,
+                                chosen_peer,
+                                our_identity,
+                                stream,
+                                context.root_hash,
+                                peer_root_hash,
+                                max_depth,
                             )
                             .await?
                         }
@@ -1903,6 +1993,9 @@ impl SyncManager {
     }
 
     /// Handle tree node request for hash comparison sync.
+    ///
+    /// For root requests (empty node_ids), returns a summary with all entity keys as children.
+    /// For specific node requests, returns the entity data as leaf_data.
     async fn handle_tree_node_request(
         &self,
         context_id: ContextId,
@@ -1911,7 +2004,9 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
+        use super::snapshot::get_entity_keys;
         use calimero_node_primitives::sync::{TreeNode, TreeNodeChild};
+        use calimero_store::key::ContextState as ContextStateKey;
 
         info!(
             %context_id,
@@ -1926,42 +2021,68 @@ impl SyncManager {
             .get_context(&context_id)?
             .ok_or_else(|| eyre::eyre!("Context not found"))?;
 
-        let delta_store = self.node_state.delta_stores.get(&context_id);
+        let store_handle = self.context_client.datastore_handle();
 
-        let nodes = if let Some(store) = delta_store {
-            // Get DAG heads
-            let dag_heads = store.get_heads().await;
+        let nodes = if node_ids.is_empty() {
+            // Root node request - return summary with all entity keys as children
+            let entity_keys = get_entity_keys(&store_handle, context_id)?;
 
-            // Create response based on request type
-            if node_ids.is_empty() {
-                // Root node request - return context summary
-                vec![TreeNode {
-                    node_id: [0; 32], // Root
-                    hash: context.root_hash,
-                    leaf_data: None,
-                    children: dag_heads
-                        .iter()
-                        .map(|h| TreeNodeChild {
-                            node_id: *h,
-                            hash: calimero_primitives::hash::Hash::default(),
-                        })
-                        .collect(),
-                }]
-            } else {
-                // Specific node requests - return stubs for now
-                // Full implementation would query Merkle tree storage
-                node_ids
-                    .iter()
-                    .map(|id| TreeNode {
-                        node_id: *id,
-                        hash: calimero_primitives::hash::Hash::default(),
-                        leaf_data: None,
-                        children: vec![],
-                    })
-                    .collect()
-            }
+            info!(
+                %context_id,
+                entity_count = entity_keys.len(),
+                "Returning root node with entity keys as children"
+            );
+
+            // Create children from entity keys
+            // Each entity is treated as a leaf, so hash = entity key hash
+            let children: Vec<TreeNodeChild> = entity_keys
+                .iter()
+                .map(|key| {
+                    // Use key as both node_id and hash placeholder
+                    // In a full Merkle tree, we'd compute proper hashes
+                    TreeNodeChild {
+                        node_id: *key,
+                        hash: calimero_primitives::hash::Hash::from(*key),
+                    }
+                })
+                .collect();
+
+            vec![TreeNode {
+                node_id: [0; 32], // Root
+                hash: context.root_hash,
+                leaf_data: None,
+                children,
+            }]
         } else {
-            vec![]
+            // Specific node requests - return entity data
+            let mut result_nodes = Vec::new();
+
+            for node_id in &node_ids {
+                // Look up the entity in storage
+                let state_key = ContextStateKey::new(context_id, *node_id);
+
+                let leaf_data = match store_handle.get(&state_key) {
+                    Ok(Some(value)) => {
+                        // Serialize as: key[32] + value_len[4] + value
+                        let value_bytes: Vec<u8> = value.as_ref().to_vec();
+                        let mut data = Vec::with_capacity(36 + value_bytes.len());
+                        data.extend_from_slice(node_id);
+                        data.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
+                        data.extend_from_slice(&value_bytes);
+                        Some(data)
+                    }
+                    _ => None,
+                };
+
+                result_nodes.push(TreeNode {
+                    node_id: *node_id,
+                    hash: calimero_primitives::hash::Hash::from(*node_id),
+                    leaf_data,
+                    children: vec![], // Entities are leaves, no children
+                });
+            }
+
+            result_nodes
         };
 
         let msg = StreamMessage::Message {

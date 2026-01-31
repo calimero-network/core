@@ -991,3 +991,61 @@ data/convergence-node-{1,2,3}/logs/ # Convergence
 
 *Analysis generated from benchmark data on test/tree_sync branch*
 *For questions: See CIP-sync-protocol.md for protocol specification*
+
+## Appendix C: State Sync Strategy Benchmark (January 31, 2026)
+
+### Methodology
+
+Using `--force-state-sync` flag to bypass DAG catchup and directly benchmark state sync strategies:
+
+| Parameter | Value |
+|-----------|-------|
+| Nodes | 2 |
+| Keys Written | 10 |
+| Scenario | Node 2 down → Node 1 writes → Node 2 restarts |
+| Flag | `--force-state-sync` |
+
+### Results
+
+| Strategy | Syncs (n) | Avg Duration (ms) | Avg Round Trips | Speedup vs Hash |
+|----------|-----------|-------------------|-----------------|-----------------|
+| **Bloom Filter** | 30 | **1.38** | **1.0** | **10.1x** |
+| **Level-Wise** | 34 | **2.70** | **2.0** | **5.2x** |
+| Subtree Prefetch | 36 | 13.13 | 26.4 | 1.1x |
+| Hash Comparison | 34 | 13.94 | 27.0 | 1.0x (baseline) |
+
+### Visualization
+
+```
+Round Trips per Strategy (10-key workload):
+
+Bloom Filter   │█ 1
+Level-Wise     │██ 2
+Subtree        │██████████████████████████ 26
+Hash Compare   │███████████████████████████ 27
+               └─────────────────────────────
+                0        10        20       30
+```
+
+### Analysis
+
+1. **Bloom Filter achieves 10x speedup** with O(1) round trips
+2. **Level-Wise achieves 5x speedup** with O(depth) round trips  
+3. **Hash/Subtree similar** because tree is shallow (depth=2)
+
+### Strategy Selection Guidelines
+
+| Scenario | Best Strategy | Reason |
+|----------|---------------|--------|
+| Small divergence (<10%) | **Bloom Filter** | O(1) round trips |
+| Wide shallow tree | **Level-Wise** | Batches by level |
+| Deep tree, local changes | **Subtree Prefetch** | Fetches subtrees |
+| Safety-critical | **Hash Comparison** | No false positives |
+
+### Limitations
+
+1. Small workload (10 keys) - insufficient to stress strategies
+2. Shallow tree (depth=2) - favors Level-Wise
+3. Local network - no real latency
+
+*State sync strategy analysis: See SYNC-STRATEGY-ANALYSIS.md for full research document*

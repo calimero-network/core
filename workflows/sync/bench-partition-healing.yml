@@ -1,0 +1,193 @@
+description: "Stress test: network partition healing - nodes write independently, then heal"
+name: "Bench Partition Healing"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: part
+
+steps:
+  - name: Install Application on Node 1
+    type: install_application
+    node: part-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: part-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: part-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: part-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: part-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_3: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: part-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: part-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_3}}"
+
+  - name: Wait for initial mesh formation
+    type: wait
+    seconds: 15
+
+  - name: ">>> SETUP: Write baseline keys"
+    type: call
+    node: part-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "baseline_key"
+      value: "baseline_value_before_partition"
+
+  - name: Wait for baseline sync
+    type: wait
+    seconds: 10
+
+  # === SIMULATE PARTITION: Stop Node 3 ===
+  
+  - name: ">>> PARTITION: Stopping Node 3 (simulating network partition)"
+    type: stop_node
+    nodes: part-3
+
+  - name: ">>> DIVERGENT WRITES: Node 1 writes during partition"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N1 writes partition_n1_{{iteration}}"
+        type: call
+        node: part-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "partition_n1_{{iteration}}"
+          value: "written_by_n1_during_partition_{{iteration}}"
+
+  - name: ">>> DIVERGENT WRITES: Node 2 writes during partition"
+    type: repeat
+    count: 10
+    steps:
+      - name: "N2 writes partition_n2_{{iteration}}"
+        type: call
+        node: part-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "partition_n2_{{iteration}}"
+          value: "written_by_n2_during_partition_{{iteration}}"
+
+  - name: Wait to let N1 and N2 sync
+    type: wait
+    seconds: 15
+
+  # === HEAL PARTITION: Restart Node 3 ===
+  
+  - name: ">>> HEALING: Starting Node 3 (partition healed)"
+    type: start_node
+    nodes: part-3
+
+  - name: Wait for mesh reformation and sync
+    type: wait
+    seconds: 30
+
+  # === VERIFY PARTITION HEALING ===
+  
+  - name: "Verify N3 has baseline key"
+    type: call
+    node: part-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "baseline_key"
+    outputs:
+      n3_baseline: result
+
+  - name: "Verify N3 has N1's partition writes"
+    type: call
+    node: part-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "partition_n1_5"
+    outputs:
+      n3_has_n1_partition: result
+
+  - name: "Verify N3 has N2's partition writes"
+    type: call
+    node: part-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "partition_n2_5"
+    outputs:
+      n3_has_n2_partition: result
+
+  - name: Assert partition healed correctly
+    type: json_assert
+    statements:
+      - 'json_subset({{n3_baseline}}, {"output": "baseline_value_before_partition"})'
+      - 'json_subset({{n3_has_n1_partition}}, {"output": "written_by_n1_during_partition_5"})'
+      - 'json_subset({{n3_has_n2_partition}}, {"output": "written_by_n2_during_partition_5"})'
+
+  - name: ">>> PARTITION HEALING TEST COMPLETE"
+    type: assert
+    statements:
+      - statement: "is_set({{n3_has_n2_partition}})"
+        message: "Node 3 successfully caught up after partition healing"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

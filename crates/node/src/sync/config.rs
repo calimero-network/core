@@ -47,6 +47,14 @@ pub const DEFAULT_SYNC_FREQUENCY_SECS: u64 = 10;
 /// Default maximum concurrent sync operations
 pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 30;
 
+/// Default maximum wait time for gossipsub mesh to form (20 seconds)
+/// After a node restarts or joins a context, gossipsub needs time to exchange
+/// GRAFT messages and form the mesh. This is the maximum time we'll wait.
+pub const DEFAULT_MESH_FORMATION_TIMEOUT_SECS: u64 = 20;
+
+/// Default interval between mesh formation checks (1 second)
+pub const DEFAULT_MESH_FORMATION_CHECK_INTERVAL_MS: u64 = 1000;
+
 /// Default snapshot chunk size for full resync (64 KB)
 pub const DEFAULT_SNAPSHOT_CHUNK_SIZE: usize = 64 * 1024;
 
@@ -437,6 +445,26 @@ pub struct SyncConfig {
     /// Controls which protocol is used when comparing state between nodes.
     /// Default: `Adaptive` for automatic protocol selection.
     pub state_sync_strategy: StateSyncStrategy,
+
+    /// Maximum time to wait for gossipsub mesh to form.
+    ///
+    /// After a node restarts or joins a context, gossipsub needs time to
+    /// exchange GRAFT messages with peers. This is the maximum wait time.
+    pub mesh_formation_timeout: time::Duration,
+
+    /// Interval between mesh formation checks.
+    pub mesh_formation_check_interval: time::Duration,
+
+    /// Force state sync even when DAG catchup would normally be used.
+    ///
+    /// **FOR BENCHMARKING ONLY**: When true, bypasses DAG catchup and forces
+    /// the configured `state_sync_strategy` to be used even when DAG heads differ.
+    ///
+    /// This allows benchmarking bloom filter, hash comparison, subtree prefetch,
+    /// and level-wise strategies in divergence scenarios where DAG history exists.
+    ///
+    /// Default: `false` (use DAG catchup when possible - optimal for production)
+    pub force_state_sync: bool,
 }
 
 impl Default for SyncConfig {
@@ -450,6 +478,11 @@ impl Default for SyncConfig {
             delta_sync_threshold: DEFAULT_DELTA_SYNC_THRESHOLD,
             fresh_node_strategy: FreshNodeStrategy::default(),
             state_sync_strategy: StateSyncStrategy::default(),
+            mesh_formation_timeout: time::Duration::from_secs(DEFAULT_MESH_FORMATION_TIMEOUT_SECS),
+            mesh_formation_check_interval: time::Duration::from_millis(
+                DEFAULT_MESH_FORMATION_CHECK_INTERVAL_MS,
+            ),
+            force_state_sync: false, // Default: use DAG catchup when possible
         }
     }
 }
@@ -466,6 +499,15 @@ impl SyncConfig {
     #[must_use]
     pub fn with_state_sync_strategy(mut self, strategy: StateSyncStrategy) -> Self {
         self.state_sync_strategy = strategy;
+        self
+    }
+
+    /// Enable forcing state sync even when DAG catchup would normally be used.
+    ///
+    /// **FOR BENCHMARKING ONLY**: Bypasses DAG catchup to test state sync strategies.
+    #[must_use]
+    pub fn with_force_state_sync(mut self, force: bool) -> Self {
+        self.force_state_sync = force;
         self
     }
 }

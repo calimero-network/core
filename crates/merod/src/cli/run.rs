@@ -9,7 +9,7 @@ use clap::Parser;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::auth_mode::AuthModeArg;
 use crate::cli::RootArgs;
@@ -47,6 +47,16 @@ pub struct RunCommand {
     /// - "level:3": Level-wise with max depth
     #[arg(long, default_value = "adaptive")]
     pub state_sync_strategy: String,
+
+    /// Force state sync even when DAG catchup would work.
+    ///
+    /// **FOR BENCHMARKING ONLY**: Bypasses DAG-based sync to directly test
+    /// state sync strategies (bloom, hash, subtree, level).
+    ///
+    /// Without this flag, when DAG heads differ, DAG catchup is used (optimal).
+    /// With this flag, the configured state_sync_strategy is forced.
+    #[arg(long, default_value = "false")]
+    pub force_state_sync: bool,
 }
 
 impl RunCommand {
@@ -156,6 +166,10 @@ impl RunCommand {
             .map_err(|e| eyre::eyre!("Invalid state sync strategy: {}", e))?;
         info!(%state_sync_strategy, "Using state sync strategy");
 
+        if self.force_state_sync {
+            warn!("BENCHMARK MODE: Forcing state sync, bypassing DAG catchup");
+        }
+
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.clone(),
@@ -171,6 +185,7 @@ impl RunCommand {
                 frequency: config.sync.frequency,
                 fresh_node_strategy,
                 state_sync_strategy,
+                force_state_sync: self.force_state_sync,
                 ..Default::default()
             },
             datastore: datastore_config,
