@@ -1,0 +1,260 @@
+# ============================================================================
+# Chained Deltas Test (DAG Ordering)
+# ============================================================================
+#
+# This test verifies that deltas with parent dependencies are correctly
+# ordered and applied, even when received out of order:
+#
+#   1. Node 1 creates a chain: D1 → D2 → D3 → D4 → D5
+#   2. Each delta depends on the previous (parent relationship)
+#   3. Node 2 joins late and must reconstruct the chain
+#   4. Verify the final state reflects all operations in correct order
+#
+# Tests:
+#   - DAG parent tracking
+#   - Missing delta detection
+#   - Delta ordering reconstruction
+#   - State integrity after chain application
+#
+# ============================================================================
+
+description: Chained deltas with parent dependencies - DAG ordering
+name: Chained Deltas DAG Test
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: chain-node
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup - Only Node 1 initially
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: chain-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: chain-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  # ===========================================================================
+  # PHASE 2: Node 1 builds a delta chain (each depends on previous)
+  # ===========================================================================
+
+  # Each write creates a new delta that depends on the previous
+  - name: "[Chain] D1 - First key"
+    type: call
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "chain_order"
+      value: "step1"
+
+  - name: "[Chain] D2 - Depends on D1"
+    type: call
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "chain_order"
+      value: "step2"
+
+  - name: "[Chain] D3 - Depends on D2"
+    type: call
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "chain_order"
+      value: "step3"
+
+  - name: "[Chain] D4 - Depends on D3"
+    type: call
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "chain_order"
+      value: "step4"
+
+  - name: "[Chain] D5 - Final (depends on D4)"
+    type: call
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "chain_order"
+      value: "step5_FINAL"
+
+  # Also write some independent keys to verify ordering doesn't corrupt them
+  - name: "[Independent] Write independent keys"
+    type: repeat
+    count: 10
+    steps:
+      - name: "Write ind_{{iteration}}"
+        type: call
+        node: chain-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "ind_{{iteration}}"
+          value: "independent_value_{{iteration}}"
+
+  - name: Verify Chain State on Node 1
+    type: call
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "chain_order"
+    outputs:
+      n1_chain_value: result
+
+  - name: Assert Node 1 Chain Final Value
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_chain_value}}, {"output": "step5_FINAL"})'
+
+  # ===========================================================================
+  # PHASE 3: Node 2 joins and must sync the entire chain
+  # ===========================================================================
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: chain-node-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node 2 Joins (must sync 15 deltas)
+    type: join_context
+    node: chain-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Wait for Chain Sync
+    type: wait
+    seconds: 60
+
+  # ===========================================================================
+  # PHASE 4: Verify Node 2 has correct chain state
+  # ===========================================================================
+
+  - name: "[Verify] Node 2 chain_order value"
+    type: call
+    node: chain-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "chain_order"
+    outputs:
+      n2_chain_value: result
+
+  - name: "[Verify] Node 2 has independent keys"
+    type: call
+    node: chain-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "ind_5"
+    outputs:
+      n2_ind_value: result
+
+  - name: "[Verify] Node 2 total count"
+    type: call
+    node: chain-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: len
+    outputs:
+      n2_count: result
+
+  # ===========================================================================
+  # PHASE 5: Node 2 extends the chain
+  # ===========================================================================
+
+  - name: "[Extend] Node 2 adds to chain"
+    type: call
+    node: chain-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: set
+    args:
+      key: "chain_order"
+      value: "step6_from_node2"
+
+  - name: Wait for Extension Sync
+    type: wait
+    seconds: 15
+
+  - name: "[Verify] Node 1 sees chain extension"
+    type: call
+    node: chain-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "chain_order"
+    outputs:
+      n1_extended: result
+
+  # ===========================================================================
+  # PHASE 6: Final assertions
+  # ===========================================================================
+
+  - name: Assert Chain DAG Ordering
+    type: json_assert
+    statements:
+      # Node 2 synced the chain correctly - sees final value
+      - 'json_subset({{n2_chain_value}}, {"output": "step5_FINAL"})'
+      # Independent keys not corrupted
+      - 'json_subset({{n2_ind_value}}, {"output": "independent_value_5"})'
+      # Count: 1 chain_order + 10 independent = 11 keys
+      - 'json_subset({{n2_count}}, {"output": 11})'
+      # Chain extension synced back
+      - 'json_subset({{n1_extended}}, {"output": "step6_from_node2"})'
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{n1_extended}})"
+        message: "Chained deltas applied in correct DAG order across nodes"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

@@ -1,0 +1,338 @@
+# ============================================================================
+# Network Partition Recovery Test
+# ============================================================================
+#
+# This test simulates a network partition where two nodes write independently,
+# then verifies they can recover and merge their state when reconnected.
+#
+# Scenario:
+#   1. Three nodes start synced with initial state
+#   2. Node 2 and Node 3 write independently (simulating partition)
+#   3. Wait for gossip to propagate across nodes
+#   4. Verify all nodes converge to same state (CRDT merge)
+#
+# Key Protocol Features Tested:
+#   - Hash heartbeat divergence detection
+#   - Delta sync for incremental updates
+#   - CRDT merge semantics for concurrent writes
+#   - Eventual consistency after partition heal
+#
+# ============================================================================
+
+description: Network partition recovery - nodes write independently then merge
+name: Network Partition Recovery Test
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: partition-node
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup - All nodes connected with shared context
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: partition-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: partition-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: partition-node-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: partition-node-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: partition-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: partition-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node3: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: partition-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: partition-node-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_node3}}"
+
+  - name: Wait for Initial Sync
+    type: wait
+    seconds: 10
+
+  # ===========================================================================
+  # PHASE 2: Initial shared state (pre-partition)
+  # ===========================================================================
+
+  - name: "[Pre-Partition] Node 1 writes shared key"
+    type: call
+    node: partition-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "shared_key"
+      value: "initial_value"
+
+  - name: Wait for Shared Key Propagation
+    type: wait
+    seconds: 15
+
+  - name: Verify Node 2 Has Shared Key
+    type: call
+    node: partition-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      node2_shared: result
+
+  - name: Verify Node 3 Has Shared Key
+    type: call
+    node: partition-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      node3_shared: result
+
+  - name: Assert Pre-Partition Sync
+    type: json_assert
+    statements:
+      - 'json_subset({{node2_shared}}, {"output": "initial_value"})'
+      - 'json_subset({{node3_shared}}, {"output": "initial_value"})'
+
+  # ===========================================================================
+  # PHASE 3: Simulated partition - concurrent independent writes
+  # ===========================================================================
+
+  # Each node writes its own unique keys (simulating independent operation)
+  - name: "[Partition] Node 1 writes unique keys"
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node 1 writes partition1_key_{{iteration}}"
+        type: call
+        node: partition-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "partition1_{{iteration}}"
+          value: "from_node1_during_partition"
+
+  - name: "[Partition] Node 2 writes unique keys"
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node 2 writes partition2_key_{{iteration}}"
+        type: call
+        node: partition-node-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "partition2_{{iteration}}"
+          value: "from_node2_during_partition"
+
+  - name: "[Partition] Node 3 writes unique keys"
+    type: repeat
+    count: 10
+    steps:
+      - name: "Node 3 writes partition3_key_{{iteration}}"
+        type: call
+        node: partition-node-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "partition3_{{iteration}}"
+          value: "from_node3_during_partition"
+
+  # ===========================================================================
+  # PHASE 4: Partition heal - wait for sync to complete
+  # ===========================================================================
+
+  - name: "[Recovery] Wait for Partition Heal Sync"
+    type: wait
+    seconds: 60
+
+  # ===========================================================================
+  # PHASE 5: Verify convergence - all nodes should have all keys
+  # ===========================================================================
+
+  - name: "[Verify] Node 1 has Node 2's keys"
+    type: call
+    node: partition-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "partition2_5"
+    outputs:
+      node1_has_p2: result
+
+  - name: "[Verify] Node 1 has Node 3's keys"
+    type: call
+    node: partition-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "partition3_5"
+    outputs:
+      node1_has_p3: result
+
+  - name: "[Verify] Node 2 has Node 1's keys"
+    type: call
+    node: partition-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "partition1_5"
+    outputs:
+      node2_has_p1: result
+
+  - name: "[Verify] Node 2 has Node 3's keys"
+    type: call
+    node: partition-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "partition3_5"
+    outputs:
+      node2_has_p3: result
+
+  - name: "[Verify] Node 3 has Node 1's keys"
+    type: call
+    node: partition-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "partition1_5"
+    outputs:
+      node3_has_p1: result
+
+  - name: "[Verify] Node 3 has Node 2's keys"
+    type: call
+    node: partition-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "partition2_5"
+    outputs:
+      node3_has_p2: result
+
+  # Verify total key counts
+  - name: "[Verify] Node 1 total count"
+    type: call
+    node: partition-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: len
+    outputs:
+      count_node1: result
+
+  - name: "[Verify] Node 2 total count"
+    type: call
+    node: partition-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: len
+    outputs:
+      count_node2: result
+
+  - name: "[Verify] Node 3 total count"
+    type: call
+    node: partition-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: len
+    outputs:
+      count_node3: result
+
+  # ===========================================================================
+  # PHASE 6: Assert full convergence
+  # ===========================================================================
+
+  - name: Assert Cross-Node Key Presence
+    type: json_assert
+    statements:
+      # Node 1 has others' keys
+      - 'json_subset({{node1_has_p2}}, {"output": "from_node2_during_partition"})'
+      - 'json_subset({{node1_has_p3}}, {"output": "from_node3_during_partition"})'
+      # Node 2 has others' keys
+      - 'json_subset({{node2_has_p1}}, {"output": "from_node1_during_partition"})'
+      - 'json_subset({{node2_has_p3}}, {"output": "from_node3_during_partition"})'
+      # Node 3 has others' keys
+      - 'json_subset({{node3_has_p1}}, {"output": "from_node1_during_partition"})'
+      - 'json_subset({{node3_has_p2}}, {"output": "from_node2_during_partition"})'
+
+  - name: Assert Count Convergence
+    type: json_assert
+    statements:
+      # 1 shared + 10*3 partition keys = 31 total
+      - 'json_subset({{count_node1}}, {"output": 31})'
+      - 'json_subset({{count_node2}}, {"output": 31})'
+      - 'json_subset({{count_node3}}, {"output": 31})'
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{count_node1}})"
+        message: "Network partition recovery successful - all nodes converged to 31 keys"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 300

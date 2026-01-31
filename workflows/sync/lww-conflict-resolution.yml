@@ -1,0 +1,323 @@
+# ============================================================================
+# LWW (Last-Write-Wins) Conflict Resolution Test
+# ============================================================================
+#
+# This test verifies that when multiple nodes write to the SAME key,
+# the Last-Write-Wins conflict resolution works correctly:
+#
+#   1. Node 1 writes key "conflict" = "value_from_node1"
+#   2. Wait for sync
+#   3. Node 2 overwrites key "conflict" = "value_from_node2" (newer timestamp)
+#   4. Wait for sync
+#   5. All nodes should have "value_from_node2" (the last write wins)
+#
+# Additionally tests:
+#   - Multiple rounds of conflicts on same key
+#   - Final state consistency across all nodes
+#
+# ============================================================================
+
+description: LWW conflict resolution test - last write wins on same key
+name: LWW Conflict Resolution Test
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: lww-node
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: lww-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: lww-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: lww-node-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: lww-node-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: lww-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: lww-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node3: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: lww-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: lww-node-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_node3}}"
+
+  - name: Wait for Initial Sync
+    type: wait
+    seconds: 10
+
+  # ===========================================================================
+  # PHASE 2: First conflict - Node 1 writes first
+  # ===========================================================================
+
+  - name: "[Round 1] Node 1 writes conflict_key"
+    type: call
+    node: lww-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: set
+    args:
+      key: "conflict_key"
+      value: "value_from_node1_round1"
+
+  - name: Wait for Round 1 Sync
+    type: wait
+    seconds: 15
+
+  # Verify all nodes have Node 1's value
+  - name: "[Verify] Node 2 has Node 1's value"
+    type: call
+    node: lww-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "conflict_key"
+    outputs:
+      n2_round1: result
+
+  - name: "[Verify] Node 3 has Node 1's value"
+    type: call
+    node: lww-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "conflict_key"
+    outputs:
+      n3_round1: result
+
+  - name: Assert Round 1 Sync
+    type: json_assert
+    statements:
+      - 'json_subset({{n2_round1}}, {"output": "value_from_node1_round1"})'
+      - 'json_subset({{n3_round1}}, {"output": "value_from_node1_round1"})'
+
+  # ===========================================================================
+  # PHASE 3: Second conflict - Node 2 overwrites (later timestamp wins)
+  # ===========================================================================
+
+  - name: "[Round 2] Node 2 overwrites conflict_key"
+    type: call
+    node: lww-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: set
+    args:
+      key: "conflict_key"
+      value: "value_from_node2_round2"
+
+  - name: Wait for Round 2 Sync
+    type: wait
+    seconds: 15
+
+  # Verify all nodes now have Node 2's value (LWW - later timestamp wins)
+  - name: "[Verify] Node 1 has Node 2's value (LWW)"
+    type: call
+    node: lww-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "conflict_key"
+    outputs:
+      n1_round2: result
+
+  - name: "[Verify] Node 3 has Node 2's value (LWW)"
+    type: call
+    node: lww-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "conflict_key"
+    outputs:
+      n3_round2: result
+
+  - name: Assert Round 2 LWW
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_round2}}, {"output": "value_from_node2_round2"})'
+      - 'json_subset({{n3_round2}}, {"output": "value_from_node2_round2"})'
+
+  # ===========================================================================
+  # PHASE 4: Third conflict - Node 3 overwrites (final winner)
+  # ===========================================================================
+
+  - name: "[Round 3] Node 3 overwrites conflict_key"
+    type: call
+    node: lww-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: set
+    args:
+      key: "conflict_key"
+      value: "value_from_node3_round3_FINAL"
+
+  - name: Wait for Round 3 Sync
+    type: wait
+    seconds: 15
+
+  # Verify all nodes have Node 3's value (final winner)
+  - name: "[Final] Node 1 value"
+    type: call
+    node: lww-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "conflict_key"
+    outputs:
+      n1_final: result
+
+  - name: "[Final] Node 2 value"
+    type: call
+    node: lww-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "conflict_key"
+    outputs:
+      n2_final: result
+
+  - name: "[Final] Node 3 value"
+    type: call
+    node: lww-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "conflict_key"
+    outputs:
+      n3_final: result
+
+  # ===========================================================================
+  # PHASE 5: Multiple keys conflict test
+  # ===========================================================================
+
+  - name: "[Multi-Key] Node 1 writes batch"
+    type: repeat
+    count: 5
+    steps:
+      - name: "Node 1 writes multi_{{iteration}}"
+        type: call
+        node: lww-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "multi_{{iteration}}"
+          value: "n1_v1"
+
+  - name: Wait for Multi-Key Batch 1
+    type: wait
+    seconds: 10
+
+  - name: "[Multi-Key] Node 2 overwrites all"
+    type: repeat
+    count: 5
+    steps:
+      - name: "Node 2 overwrites multi_{{iteration}}"
+        type: call
+        node: lww-node-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "multi_{{iteration}}"
+          value: "n2_v2_FINAL"
+
+  - name: Wait for Multi-Key Sync
+    type: wait
+    seconds: 15
+
+  - name: "[Verify] Multi-key LWW on Node 1"
+    type: call
+    node: lww-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "multi_3"
+    outputs:
+      multi_check: result
+
+  # ===========================================================================
+  # PHASE 6: Final assertions
+  # ===========================================================================
+
+  - name: Assert Final LWW Resolution
+    type: json_assert
+    statements:
+      # All nodes agree on Node 3's final value
+      - 'json_subset({{n1_final}}, {"output": "value_from_node3_round3_FINAL"})'
+      - 'json_subset({{n2_final}}, {"output": "value_from_node3_round3_FINAL"})'
+      - 'json_subset({{n3_final}}, {"output": "value_from_node3_round3_FINAL"})'
+      # Multi-key test - Node 2's overwrites won
+      - 'json_subset({{multi_check}}, {"output": "n2_v2_FINAL"})'
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{n1_final}})"
+        message: "LWW conflict resolution working - all nodes converge to last write"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 180

@@ -1,0 +1,262 @@
+# ============================================================================
+# Stress Test: Rapid Concurrent Writes
+# ============================================================================
+#
+# This test stresses the sync system with rapid concurrent writes from
+# multiple nodes. It verifies that:
+#   - The system handles high write volume without data loss
+#   - Message channel handles burst traffic (tests NetworkEventChannel)
+#   - CRDT merging scales under load
+#
+# Configuration:
+#   - 3 nodes
+#   - 100 writes per node = 300 total keys
+#   - No delays between writes (stress test)
+#
+# This tests the NetworkEventChannel backpressure handling.
+#
+# ============================================================================
+
+description: Stress test - rapid concurrent writes without delays
+name: Stress Test Rapid Writes
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: stress-node
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup
+  # ===========================================================================
+
+  - name: Install Application on Node 1
+    type: install_application
+    node: stress-node-1
+    path: ./workflow-examples/res/kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context on Node 1
+    type: create_context
+    node: stress-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity on Node 2
+    type: create_identity
+    node: stress-node-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity on Node 3
+    type: create_identity
+    node: stress-node-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: stress-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: stress-node-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      invitation_node3: invitation
+
+  - name: Node 2 Joins
+    type: join_context
+    node: stress-node-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{invitation_node2}}"
+
+  - name: Node 3 Joins
+    type: join_context
+    node: stress-node-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{invitation_node3}}"
+
+  - name: Wait for Initial Sync
+    type: wait
+    seconds: 10
+
+  # ===========================================================================
+  # PHASE 2: Rapid concurrent writes (100 keys per node)
+  # ===========================================================================
+
+  - name: "[Stress] Node 1 - Rapid 100 writes"
+    type: repeat
+    count: 100
+    steps:
+      - name: "stress1_{{iteration}}"
+        type: call
+        node: stress-node-1
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node1}}"
+        method: set
+        args:
+          key: "stress1_{{iteration}}"
+          value: "node1_stress_{{iteration}}"
+
+  - name: "[Stress] Node 2 - Rapid 100 writes"
+    type: repeat
+    count: 100
+    steps:
+      - name: "stress2_{{iteration}}"
+        type: call
+        node: stress-node-2
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node2}}"
+        method: set
+        args:
+          key: "stress2_{{iteration}}"
+          value: "node2_stress_{{iteration}}"
+
+  - name: "[Stress] Node 3 - Rapid 100 writes"
+    type: repeat
+    count: 100
+    steps:
+      - name: "stress3_{{iteration}}"
+        type: call
+        node: stress-node-3
+        context_id: "{{context_id}}"
+        executor_public_key: "{{pk_node3}}"
+        method: set
+        args:
+          key: "stress3_{{iteration}}"
+          value: "node3_stress_{{iteration}}"
+
+  # ===========================================================================
+  # PHASE 3: Extended wait for convergence under stress
+  # ===========================================================================
+
+  - name: Wait for Stress Convergence
+    type: wait
+    seconds: 120
+
+  # ===========================================================================
+  # PHASE 4: Verify convergence
+  # ===========================================================================
+
+  # Sample verification - check first, middle, last keys from each node
+  - name: "[Verify] Node 1 has stress2_1"
+    type: call
+    node: stress-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "stress2_1"
+    outputs:
+      n1_first: result
+
+  - name: "[Verify] Node 1 has stress3_50"
+    type: call
+    node: stress-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: get
+    args:
+      key: "stress3_50"
+    outputs:
+      n1_mid: result
+
+  - name: "[Verify] Node 2 has stress1_100"
+    type: call
+    node: stress-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: get
+    args:
+      key: "stress1_100"
+    outputs:
+      n2_last: result
+
+  - name: "[Verify] Node 3 has stress2_75"
+    type: call
+    node: stress-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: get
+    args:
+      key: "stress2_75"
+    outputs:
+      n3_sample: result
+
+  # Get total counts
+  - name: "[Verify] Node 1 total count"
+    type: call
+    node: stress-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node1}}"
+    method: len
+    outputs:
+      count_node1: result
+
+  - name: "[Verify] Node 2 total count"
+    type: call
+    node: stress-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node2}}"
+    method: len
+    outputs:
+      count_node2: result
+
+  - name: "[Verify] Node 3 total count"
+    type: call
+    node: stress-node-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{pk_node3}}"
+    method: len
+    outputs:
+      count_node3: result
+
+  # ===========================================================================
+  # PHASE 5: Assert full convergence
+  # ===========================================================================
+
+  - name: Assert Sample Key Presence
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_first}}, {"output": "node2_stress_1"})'
+      - 'json_subset({{n1_mid}}, {"output": "node3_stress_50"})'
+      - 'json_subset({{n2_last}}, {"output": "node1_stress_100"})'
+      - 'json_subset({{n3_sample}}, {"output": "node2_stress_75"})'
+
+  - name: Assert Full Convergence (300 keys each)
+    type: json_assert
+    statements:
+      - 'json_subset({{count_node1}}, {"output": 300})'
+      - 'json_subset({{count_node2}}, {"output": 300})'
+      - 'json_subset({{count_node3}}, {"output": 300})'
+
+  - name: Final Summary
+    type: assert
+    statements:
+      - statement: "is_set({{count_node3}})"
+        message: "Stress test passed - 300 rapid writes converged across 3 nodes"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 360
