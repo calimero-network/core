@@ -1,7 +1,7 @@
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
-use calimero_node::sync::SyncConfig;
+use calimero_node::sync::{FreshNodeStrategy, SyncConfig};
 use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
@@ -21,6 +21,16 @@ pub struct RunCommand {
     /// Override the authentication mode configured in config.toml
     #[arg(long, value_enum)]
     pub auth_mode: Option<AuthModeArg>,
+
+    /// Fresh node sync strategy for benchmarking.
+    ///
+    /// Controls how a node with empty state bootstraps from peers:
+    /// - "snapshot": Always use snapshot sync (fastest, default)
+    /// - "delta": Always use delta-by-delta sync (slow, tests DAG)
+    /// - "adaptive": Choose based on peer state size
+    /// - "adaptive:N": Use snapshot if peer has >= N DAG heads
+    #[arg(long, default_value = "snapshot")]
+    pub sync_strategy: String,
 }
 
 impl RunCommand {
@@ -116,6 +126,13 @@ impl RunCommand {
             None => StoreConfig::new(datastore_path),
         };
 
+        // Parse fresh node sync strategy
+        let fresh_node_strategy: FreshNodeStrategy = self
+            .sync_strategy
+            .parse()
+            .map_err(|e| eyre::eyre!("Invalid sync strategy: {}", e))?;
+        info!(%fresh_node_strategy, "Using fresh node sync strategy");
+
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.clone(),
@@ -129,7 +146,8 @@ impl RunCommand {
                 timeout: config.sync.timeout,
                 interval: config.sync.interval,
                 frequency: config.sync.frequency,
-                ..Default::default() // Use defaults for new fields
+                fresh_node_strategy,
+                ..Default::default()
             },
             datastore: datastore_config,
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),

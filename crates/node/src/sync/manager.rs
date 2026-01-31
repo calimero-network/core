@@ -751,12 +751,14 @@ impl SyncManager {
         }
 
         if is_uninitialized || has_incomplete_sync {
+            let strategy = self.sync_config.fresh_node_strategy;
             info!(
                 %context_id,
                 %chosen_peer,
                 is_uninitialized,
                 has_incomplete_sync,
-                "Node needs snapshot sync, checking if peer has state"
+                %strategy,
+                "Node needs sync, checking peer state"
             );
 
             // Query peer's state to decide sync strategy
@@ -765,38 +767,70 @@ impl SyncManager {
                 .await?;
 
             match peer_state {
-                Some((peer_root_hash, _peer_dag_heads)) if *peer_root_hash != [0; 32] => {
-                    // Peer has state - use snapshot sync for efficient bootstrap
+                Some((peer_root_hash, peer_dag_heads)) if *peer_root_hash != [0; 32] => {
+                    // Peer has state - decide strategy based on config
+                    let peer_heads_count = peer_dag_heads.len();
+                    let use_snapshot = strategy.should_use_snapshot(peer_heads_count);
+
                     info!(
                         %context_id,
                         %chosen_peer,
                         peer_root_hash = %peer_root_hash,
-                        "Peer has state, using snapshot sync for bootstrap"
+                        peer_heads_count,
+                        use_snapshot,
+                        %strategy,
+                        "Peer has state, selecting sync strategy"
                     );
 
-                    // Note: request_snapshot_sync opens its own stream, existing stream
-                    // will be closed when this function returns
-                    match self.request_snapshot_sync(context_id, chosen_peer).await {
-                        Ok(result) => {
-                            info!(
-                                %context_id,
-                                %chosen_peer,
-                                applied_records = result.applied_records,
-                                boundary_root_hash = %result.boundary_root_hash,
-                                dag_heads_count = result.dag_heads.len(),
-                                "Snapshot sync completed successfully"
-                            );
-                            return Ok(Some(SyncProtocol::SnapshotSync));
+                    if use_snapshot {
+                        // Use snapshot sync for efficient bootstrap
+                        // Note: request_snapshot_sync opens its own stream, existing stream
+                        // will be closed when this function returns
+                        match self.request_snapshot_sync(context_id, chosen_peer).await {
+                            Ok(result) => {
+                                info!(
+                                    %context_id,
+                                    %chosen_peer,
+                                    applied_records = result.applied_records,
+                                    boundary_root_hash = %result.boundary_root_hash,
+                                    dag_heads_count = result.dag_heads.len(),
+                                    "Snapshot sync completed successfully"
+                                );
+                                return Ok(Some(SyncProtocol::SnapshotSync));
+                            }
+                            Err(e) => {
+                                warn!(
+                                    %context_id,
+                                    %chosen_peer,
+                                    error = %e,
+                                    "Snapshot sync failed, will retry with another peer"
+                                );
+                                bail!("Snapshot sync failed: {}", e);
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                %context_id,
-                                %chosen_peer,
-                                error = %e,
-                                "Snapshot sync failed, will retry with another peer"
-                            );
-                            bail!("Snapshot sync failed: {}", e);
+                    } else {
+                        // Use delta sync - fetch deltas one by one from genesis
+                        info!(
+                            %context_id,
+                            %chosen_peer,
+                            peer_heads_count,
+                            "Using delta sync for fresh node bootstrap (configured strategy)"
+                        );
+
+                        let result = self
+                            .request_dag_heads_and_sync(
+                                context_id,
+                                chosen_peer,
+                                our_identity,
+                                stream,
+                            )
+                            .await?;
+
+                        if matches!(result, SyncProtocol::None) {
+                            bail!("Delta sync returned no protocol - peer may have no data");
                         }
+
+                        return Ok(Some(result));
                     }
                 }
                 Some(_) => {

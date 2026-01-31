@@ -23,7 +23,7 @@
 //! ```
 
 mod blobs;
-mod config;
+pub mod config;
 mod delta_request;
 mod helpers;
 mod key;
@@ -32,7 +32,7 @@ mod snapshot;
 pub(crate) mod stream;
 mod tracking;
 
-pub use config::SyncConfig;
+pub use config::{FreshNodeStrategy, SyncConfig};
 pub use manager::SyncManager;
 
 pub use key::CHALLENGE_DOMAIN;
