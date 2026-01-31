@@ -3,9 +3,22 @@
 //! This module provides detailed instrumentation for peer discovery
 //! to identify bottlenecks in the sync peer selection process.
 //!
+//! ## Key Distinction: Finding vs Connecting
+//!
+//! **Peer finding** is the process of identifying viable candidates.
+//! **Peer connecting (dialing)** is a separate operation tracked elsewhere.
+//!
+//! This module ONLY measures finding time, not connection time.
+//!
 //! ## Log Markers
 //!
-//! - `PEER_FIND_BREAKDOWN`: Detailed timing for each peer finding attempt
+//! - `PEER_FIND_PHASES`: Per-phase timing (candidate lookup, filtering, selection)
+//! - `PEER_FIND_BREAKDOWN`: Legacy detailed breakdown (deprecated)
+//!
+//! ## Primary KPIs (all exclude dial time)
+//!
+//! - `time_to_candidate_ms`: Time to produce candidate list (no filtering)
+//! - `time_to_viable_peer_ms`: Time to select viable peer (after filtering)
 //!
 //! ## Peer Finding Strategies
 //!
@@ -90,6 +103,117 @@ pub enum PeerSource {
     RecentCache,
     /// Unknown / not tracked
     Unknown,
+}
+
+/// Result of a peer finding attempt
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerFindResult {
+    /// Successfully found and selected a viable peer
+    Success,
+    /// Timed out waiting for candidates
+    Timeout,
+    /// No candidates found from any source
+    NoCandidates,
+    /// Candidates found but all filtered out
+    AllFiltered,
+}
+
+impl std::fmt::Display for PeerFindResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Success => write!(f, "success"),
+            Self::Timeout => write!(f, "timeout"),
+            Self::NoCandidates => write!(f, "no_candidates"),
+            Self::AllFiltered => write!(f, "all_filtered"),
+        }
+    }
+}
+
+/// Per-phase timing for peer finding (separates finding from connecting)
+///
+/// **CRITICAL**: This struct measures FINDING time only, NOT dial/connection time.
+/// Dial time is tracked separately in the SyncManager.
+#[derive(Debug, Clone, Default)]
+pub struct PeerFindPhases {
+    /// Phase 1: Time to get raw candidate list from all sources
+    /// (mesh + recent + address_book lookups, NO filtering)
+    pub candidate_lookup_ms: f64,
+
+    /// Phase 2: Time to apply filters (backoff, health, etc.)
+    pub filtering_ms: f64,
+
+    /// Phase 3: Time to select final peer from filtered list
+    pub selection_ms: f64,
+
+    // --- Counts ---
+    /// Number of raw candidates before filtering
+    pub candidates_raw: usize,
+
+    /// Number of candidates after filtering
+    pub candidates_filtered: usize,
+
+    /// Number of attempts before success (0 = first try)
+    pub attempt_count: u32,
+
+    // --- Source breakdown ---
+    /// Candidates from each source
+    pub candidates_from_mesh: usize,
+    pub candidates_from_recent: usize,
+    pub candidates_from_book: usize,
+    pub candidates_from_routing: usize,
+
+    /// Final selected peer source
+    pub peer_source: Option<PeerSource>,
+
+    /// Was the selected peer in our recent success cache?
+    pub was_recent_success: bool,
+
+    /// Result of the find operation
+    pub result: Option<PeerFindResult>,
+}
+
+impl PeerFindPhases {
+    /// Total time to find a viable peer (excludes dial time)
+    pub fn time_to_viable_peer_ms(&self) -> f64 {
+        self.candidate_lookup_ms + self.filtering_ms + self.selection_ms
+    }
+
+    /// Log this using the PEER_FIND_PHASES marker
+    pub fn log(&self, context_id: &str) {
+        let result = self
+            .result
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let source = self
+            .peer_source
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string());
+
+        info!(
+            context_id = %context_id,
+            // Primary KPIs (finding time only, NO dial)
+            time_to_candidate_ms = %format!("{:.2}", self.candidate_lookup_ms),
+            time_to_viable_peer_ms = %format!("{:.2}", self.time_to_viable_peer_ms()),
+            // Phase breakdown
+            candidate_lookup_ms = %format!("{:.2}", self.candidate_lookup_ms),
+            filtering_ms = %format!("{:.2}", self.filtering_ms),
+            selection_ms = %format!("{:.2}", self.selection_ms),
+            // Counts
+            candidates_raw = %self.candidates_raw,
+            candidates_filtered = %self.candidates_filtered,
+            attempt_count = %self.attempt_count,
+            // Source breakdown
+            from_mesh = %self.candidates_from_mesh,
+            from_recent = %self.candidates_from_recent,
+            from_book = %self.candidates_from_book,
+            from_routing = %self.candidates_from_routing,
+            // Selection info
+            peer_source = %source,
+            was_recent_success = %self.was_recent_success,
+            result = %result,
+            "PEER_FIND_PHASES"
+        );
+    }
 }
 
 impl std::fmt::Display for PeerSource {
@@ -423,12 +547,131 @@ pub fn new_recent_peer_cache() -> SharedRecentPeerCache {
     Arc::new(RwLock::new(RecentPeerCache::new()))
 }
 
+// ============================================================================
+// NEW: Phase-based tracker (separates finding from connecting)
+// ============================================================================
+
+/// Tracks peer finding phases with proper separation from dial time
+pub struct PeerFindTracker {
+    phases: PeerFindPhases,
+
+    // Phase timers
+    candidate_lookup_start: Option<Instant>,
+    filtering_start: Option<Instant>,
+    selection_start: Option<Instant>,
+}
+
+impl PeerFindTracker {
+    /// Start a new peer finding operation
+    pub fn new() -> Self {
+        Self {
+            phases: PeerFindPhases::default(),
+            candidate_lookup_start: None,
+            filtering_start: None,
+            selection_start: None,
+        }
+    }
+
+    /// Start the candidate lookup phase
+    pub fn start_candidate_lookup(&mut self) {
+        self.candidate_lookup_start = Some(Instant::now());
+    }
+
+    /// End candidate lookup, start filtering
+    pub fn end_candidate_lookup(
+        &mut self,
+        candidates: &[PeerId],
+        source_breakdown: SourceBreakdown,
+    ) {
+        if let Some(start) = self.candidate_lookup_start.take() {
+            self.phases.candidate_lookup_ms = start.elapsed().as_secs_f64() * 1000.0;
+        }
+        self.phases.candidates_raw = candidates.len();
+        self.phases.candidates_from_mesh = source_breakdown.mesh;
+        self.phases.candidates_from_recent = source_breakdown.recent;
+        self.phases.candidates_from_book = source_breakdown.book;
+        self.phases.candidates_from_routing = source_breakdown.routing;
+        self.filtering_start = Some(Instant::now());
+    }
+
+    /// End filtering, start selection
+    pub fn end_filtering(&mut self, candidates_after: usize) {
+        if let Some(start) = self.filtering_start.take() {
+            self.phases.filtering_ms = start.elapsed().as_secs_f64() * 1000.0;
+        }
+        self.phases.candidates_filtered = candidates_after;
+        self.selection_start = Some(Instant::now());
+    }
+
+    /// End selection with success
+    pub fn end_selection(&mut self, source: PeerSource, was_recent: bool) {
+        if let Some(start) = self.selection_start.take() {
+            self.phases.selection_ms = start.elapsed().as_secs_f64() * 1000.0;
+        }
+        self.phases.peer_source = Some(source);
+        self.phases.was_recent_success = was_recent;
+        self.phases.result = Some(PeerFindResult::Success);
+    }
+
+    /// Mark as failed with reason
+    pub fn mark_failed(&mut self, result: PeerFindResult) {
+        // End any open phases
+        if let Some(start) = self.candidate_lookup_start.take() {
+            self.phases.candidate_lookup_ms = start.elapsed().as_secs_f64() * 1000.0;
+        }
+        if let Some(start) = self.filtering_start.take() {
+            self.phases.filtering_ms = start.elapsed().as_secs_f64() * 1000.0;
+        }
+        if let Some(start) = self.selection_start.take() {
+            self.phases.selection_ms = start.elapsed().as_secs_f64() * 1000.0;
+        }
+        self.phases.result = Some(result);
+    }
+
+    /// Increment attempt count
+    pub fn increment_attempt(&mut self) {
+        self.phases.attempt_count += 1;
+    }
+
+    /// Finish and log the phases
+    pub fn finish(self, context_id: &str) -> PeerFindPhases {
+        self.phases.log(context_id);
+        self.phases
+    }
+
+    /// Get the phases without logging
+    pub fn into_phases(self) -> PeerFindPhases {
+        self.phases
+    }
+}
+
+impl Default for PeerFindTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Source breakdown for candidate lookup
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SourceBreakdown {
+    pub mesh: usize,
+    pub recent: usize,
+    pub book: usize,
+    pub routing: usize,
+}
+
+// ============================================================================
+// LEGACY: Old PeerFinder (kept for compatibility)
+// ============================================================================
+
 /// Builder for peer finding with instrumentation
+#[deprecated(note = "Use PeerFindTracker instead for proper phase separation")]
 pub struct PeerFinder {
     start: Instant,
     breakdown: PeerFindBreakdown,
 }
 
+#[allow(deprecated)]
 impl PeerFinder {
     /// Start a new peer finding operation
     pub fn start() -> Self {

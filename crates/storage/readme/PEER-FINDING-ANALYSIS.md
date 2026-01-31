@@ -26,17 +26,26 @@ We need to isolate and measure each component to optimize.
 
 ---
 
-## Primary KPI
+## Primary KPIs (Finding vs Connecting)
+
+**CRITICAL DISTINCTION**: This analysis measures **finding** time, not **connecting** time.
+
+| KPI | Description | Includes Dial? |
+|-----|-------------|----------------|
+| `time_to_candidate_ms` | Time to produce raw candidate list | ❌ NO |
+| `time_to_viable_peer_ms` | Time to select peer after filters | ❌ NO |
+| `dial_ms` | Time to connect to selected peer | ✅ YES (separate) |
 
 ```
-time_to_viable_peer_ms = time from "sync tick starts" → "we have at least 1 viable peer candidate"
+time_to_viable_peer_ms = candidate_lookup_ms + filtering_ms + selection_ms
 ```
 
 A peer is **viable** if:
-- ✅ Reachable (we have an address/routing path)
 - ✅ In same context/topic membership
 - ✅ Not in backoff / not recently failing
 - ✅ Likely to have needed state (recently active)
+
+**Note**: "Reachable" is NOT determined during finding - that's what dial tests.
 
 ---
 
@@ -184,36 +193,60 @@ Strategies available via `--peer-find-strategy`:
 
 ## Benchmark Results
 
-**849 peer finding samples** across multiple scenarios:
+### Executive Summary
 
-### Overall Statistics
-| Metric | P50 | P95 | P99 |
-|--------|-----|-----|-----|
-| peer_find_total_ms | 340ms | 1072ms | 4438ms |
+**CRITICAL FINDING**: Peer FINDING is NOT the bottleneck. Peer DIALING is.
 
-### By Strategy/Source
+| Phase | P50 Latency | Bottleneck? |
+|-------|-------------|-------------|
+| **Peer Finding** | **0.04 - 0.12ms** | ❌ NO |
+| **Peer Dialing** | **152 - 185ms** | ✅ YES |
 
-| Source | Count | P50 | P95 | Improvement |
-|--------|-------|-----|-----|-------------|
-| **Mesh (baseline)** | 698 | 347ms | 1071ms | - |
-| **Recent-First** | 147 | **264ms** | **893ms** | **24% faster P50, 17% faster P95** |
-| None (timeout) | 4 | - | - | - |
+The previous analysis conflated finding and dialing. With proper separation:
 
-### Key Finding
+- **Finding** (candidate lookup → filter → select) = sub-millisecond
+- **Dialing** (TCP connect → TLS → substream negotiate) = ~170ms
 
-**Recent-First (A2) shows measurable improvement:**
-- **P50: 24% faster** (264ms vs 347ms)
-- **P95: 17% faster** (893ms vs 1071ms)
+### Finding Phase Breakdown (sample run)
 
-The LRU cache of successful peers avoids the gossipsub mesh lookup overhead on subsequent syncs.
+| Phase | Time |
+|-------|------|
+| `candidate_lookup_ms` | 0.00 - 0.01ms |
+| `filtering_ms` | 0.00ms |
+| `selection_ms` | 0.03 - 0.11ms |
+| **Total Finding** | **0.04 - 0.12ms** |
+
+### Dialing Phase
+
+| Metric | P50 |
+|--------|-----|
+| `dial_ms` | 152 - 185ms |
+
+### Strategy Comparison (Finding Only)
+
+Since finding is already sub-millisecond, strategy optimization has minimal impact:
+
+| Strategy | Finding P50 | Finding Improvement |
+|----------|-------------|---------------------|
+| Baseline (mesh) | 0.08ms | - |
+| Recent-First | 0.04ms | 50% faster (but both <1ms) |
+
+**Conclusion**: Strategy choice matters little when finding is already <1ms.
+
+### Where Optimization Should Focus
+
+The **dial phase** at ~170ms is 1500x slower than finding. Optimization should target:
+
+1. **Connection reuse** - keep streams open across sync rounds
+2. **Multiplexing** - use existing connections when available
+3. **Parallel dial** - try multiple peers simultaneously
+4. **Warm connection pool** - pre-establish connections to likely peers
 
 ### Recommendation
 
-1. **Production default**: Keep `baseline` for stability
-2. **Enable `recent-first`** for applications with:
-   - High sync frequency (benefit from caching)
-   - Churn scenarios (peers restart frequently)
-3. Consider `health-filtered` for degraded networks
+1. **Production default**: Keep `baseline` - finding is fast enough
+2. **Optimize dial path**: Connection pooling and reuse
+3. **Monitor `dial_ms`**: This is the true latency indicator
 
 ## Running Instrumentation
 

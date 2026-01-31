@@ -39,8 +39,9 @@ pub use config::{FreshNodeStrategy, StateSyncStrategy, SyncConfig};
 pub use manager::SyncManager;
 pub use metrics::{create_sync_metrics, SharedSyncMetrics, SyncMetrics};
 pub use peer_finder::{
-    new_recent_peer_cache, PeerFindBreakdown, PeerFindStrategy, PeerFinder, PeerQuality,
-    PeerSource, RecentPeerCache, SharedRecentPeerCache,
+    new_recent_peer_cache, PeerFindBreakdown, PeerFindPhases, PeerFindResult, PeerFindStrategy,
+    PeerFindTracker, PeerQuality, PeerSource, RecentPeerCache, SharedRecentPeerCache,
+    SourceBreakdown,
 };
 
 pub use key::CHALLENGE_DOMAIN;

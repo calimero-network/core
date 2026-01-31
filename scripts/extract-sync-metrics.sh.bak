@@ -416,7 +416,7 @@ done
 echo ""
 
 # ============================================================================
-# Phase 4: Extract PEER_FIND_PHASES metrics (finding vs dial)
+# Phase 4: Extract PEER_FIND_BREAKDOWN metrics
 # ============================================================================
 
 echo ">>> Extracting PEER_FIND_BREAKDOWN..."

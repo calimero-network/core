@@ -338,17 +338,20 @@ impl SyncManager {
         context_id: ContextId,
         peer_id: Option<PeerId>,
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
-        use super::peer_finder::{PeerFinder, PeerSource};
+        use super::peer_finder::{PeerFindResult, PeerFindTracker, PeerSource, SourceBreakdown};
 
         if let Some(peer_id) = peer_id {
             return self.initiate_sync(context_id, peer_id).await;
         }
 
         // ========================================================================
-        // PEER FINDING INSTRUMENTATION
+        // PEER FINDING INSTRUMENTATION (separates finding from connecting)
         // ========================================================================
-        let mut peer_finder = PeerFinder::start();
+        let mut tracker = PeerFindTracker::new();
 
+        // ========================================================================
+        // PHASE 0: MESH WAIT (NOT peer finding - this is network formation)
+        // ========================================================================
         // CRITICAL FIX: Wait for gossipsub mesh to form after restart
         //
         // After a node restarts or joins a context, gossipsub needs time to:
@@ -445,13 +448,64 @@ impl SyncManager {
             time::sleep(check_interval).await;
         }
 
-        // Record mesh query timing
-        peer_finder.record_mesh_query(mesh_query_start.elapsed(), &peers);
+        // Mesh wait is complete - NOW start peer finding timing
+        // ========================================================================
+        // PHASE 1: CANDIDATE LOOKUP (peer finding starts here)
+        // ========================================================================
+        tracker.start_candidate_lookup();
 
-        if peers.is_empty() {
-            // Log peer find breakdown even on failure
-            let breakdown = peer_finder.finish();
-            breakdown.log(&context_id.to_string());
+        // The peers we already have from mesh wait are our candidates
+        // In the future, we could also query routing table, address book, etc.
+        let strategy = self.sync_config.peer_find_strategy;
+        let context_id_bytes: [u8; 32] = *context_id.as_ref();
+
+        // Get candidates from all sources based on strategy
+        let (all_candidates, source_breakdown) = {
+            let cache = self.recent_peer_cache.read().unwrap();
+            let recent = cache.get_recent(context_id_bytes);
+            let from_recent = recent.len();
+            let from_mesh = peers.len();
+
+            // Combine sources based on strategy
+            let candidates = match strategy {
+                super::peer_finder::PeerFindStrategy::RecentFirst => {
+                    let mut all = recent;
+                    for p in &peers {
+                        if !all.contains(p) {
+                            all.push(*p);
+                        }
+                    }
+                    all
+                }
+                super::peer_finder::PeerFindStrategy::ParallelFind => {
+                    let mut all = recent;
+                    for p in &peers {
+                        if !all.contains(p) {
+                            all.push(*p);
+                        }
+                    }
+                    all
+                }
+                _ => peers.clone(),
+            };
+
+            (
+                candidates,
+                SourceBreakdown {
+                    mesh: from_mesh,
+                    recent: from_recent,
+                    book: 0,
+                    routing: 0,
+                },
+            )
+        };
+
+        // End candidate lookup, start filtering
+        tracker.end_candidate_lookup(&all_candidates, source_breakdown);
+
+        if all_candidates.is_empty() {
+            tracker.mark_failed(PeerFindResult::NoCandidates);
+            let _ = tracker.finish(&context_id.to_string());
 
             bail!(
                 "No peers to sync with for context {} (mesh failed to form after {}s)",
@@ -460,26 +514,56 @@ impl SyncManager {
             );
         }
 
-        // Apply peer finding strategy
-        let strategy = self.sync_config.peer_find_strategy;
-        let context_id_bytes: [u8; 32] = *context_id.as_ref();
-        let backoff_duration = Duration::from_secs(30); // Default backoff
+        // ========================================================================
+        // PHASE 2: FILTERING (apply quality filters)
+        // ========================================================================
+        let backoff_duration = Duration::from_secs(30);
 
-        // Get selected peers using the configured strategy
-        let (selected_peers, peer_source) = {
+        let filtered_peers = {
             let cache = self.recent_peer_cache.read().unwrap();
-            cache.select_by_strategy(strategy, context_id_bytes, &peers, backoff_duration)
+            match strategy {
+                super::peer_finder::PeerFindStrategy::HealthFiltered => {
+                    cache.filter_viable(&all_candidates, backoff_duration)
+                }
+                _ => all_candidates.clone(),
+            }
         };
 
-        // Record filtering results
-        peer_finder.record_filtering(selected_peers.len());
+        // End filtering, start selection
+        tracker.end_filtering(filtered_peers.len());
+
+        if filtered_peers.is_empty() {
+            tracker.mark_failed(PeerFindResult::AllFiltered);
+            let _ = tracker.finish(&context_id.to_string());
+
+            bail!(
+                "All {} peer candidates filtered out for context {}",
+                all_candidates.len(),
+                context_id
+            );
+        }
+
+        // ========================================================================
+        // PHASE 3: SELECTION (pick the final peer)
+        // ========================================================================
+        let (selected_peers, peer_source) = {
+            let cache = self.recent_peer_cache.read().unwrap();
+            cache.select_by_strategy(
+                strategy,
+                context_id_bytes,
+                &filtered_peers,
+                backoff_duration,
+            )
+        };
 
         debug!(
             %context_id,
             %strategy,
             %peer_source,
-            candidates = selected_peers.len(),
-            "Peer finding strategy applied"
+            raw_candidates = all_candidates.len(),
+            filtered = filtered_peers.len(),
+            selected = selected_peers.len(),
+            "Peer finding phases complete (finding only, no dial)"
         );
 
         // Check if we're uninitialized
@@ -503,12 +587,31 @@ impl SyncManager {
             match self.find_peer_with_state(context_id, &selected_peers).await {
                 Ok(peer_id) => {
                     info!(%context_id, %peer_id, "Found peer with state, syncing from them");
-                    // Record peer selection
-                    peer_finder.record_selection(peer_source, None);
-                    let breakdown = peer_finder.finish();
-                    breakdown.log(&context_id.to_string());
 
+                    // Check if this peer was in recent cache
+                    let was_recent = {
+                        let cache = self.recent_peer_cache.read().unwrap();
+                        cache.get_recent(context_id_bytes).contains(&peer_id)
+                    };
+
+                    // End selection phase - PEER FINDING COMPLETE (no dial time included)
+                    tracker.end_selection(peer_source, was_recent);
+                    let phases = tracker.finish(&context_id.to_string());
+
+                    // ========================================================
+                    // DIAL PHASE (separate from peer finding)
+                    // ========================================================
+                    let dial_start = Instant::now();
                     let result = self.initiate_sync(context_id, peer_id).await;
+                    let dial_ms = dial_start.elapsed().as_secs_f64() * 1000.0;
+
+                    info!(
+                        %context_id,
+                        %peer_id,
+                        time_to_viable_peer_ms = %format!("{:.2}", phases.time_to_viable_peer_ms()),
+                        dial_ms = %format!("{:.2}", dial_ms),
+                        "PEER_DIAL_TIMING"
+                    );
 
                     // Record success/failure in cache
                     if result.is_ok() {
@@ -532,37 +635,71 @@ impl SyncManager {
         debug!(%context_id, %strategy, "Using strategy-based peer selection for sync");
         for peer_id in selected_peers.choose_multiple(&mut rand::thread_rng(), selected_peers.len())
         {
-            // Record peer selection for the first attempt
-            let quality = {
-                let cache = self.recent_peer_cache.read().unwrap();
-                cache.get_quality(peer_id).cloned()
-            };
-            peer_finder.record_selection(peer_source, quality.as_ref());
+            tracker.increment_attempt();
 
+            // Check if this peer was in recent cache
+            let was_recent = {
+                let cache = self.recent_peer_cache.read().unwrap();
+                cache.get_recent(context_id_bytes).contains(peer_id)
+            };
+
+            // End selection phase - PEER FINDING COMPLETE (no dial time included)
+            tracker.end_selection(peer_source, was_recent);
+            let phases = tracker.into_phases();
+
+            // ========================================================
+            // DIAL PHASE (separate from peer finding)
+            // ========================================================
+            let dial_start = Instant::now();
             match self.initiate_sync(context_id, *peer_id).await {
                 Ok(result) => {
+                    let dial_ms = dial_start.elapsed().as_secs_f64() * 1000.0;
+
+                    // Log phases AND dial timing separately
+                    phases.log(&context_id.to_string());
+                    info!(
+                        %context_id,
+                        %peer_id,
+                        time_to_viable_peer_ms = %format!("{:.2}", phases.time_to_viable_peer_ms()),
+                        dial_ms = %format!("{:.2}", dial_ms),
+                        result = "success",
+                        "PEER_DIAL_TIMING"
+                    );
+
                     // Record success in cache
                     {
                         let mut cache = self.recent_peer_cache.write().unwrap();
                         cache.record_success(context_id_bytes, *peer_id, peer_source);
                     }
 
-                    // Log breakdown on success
-                    let breakdown = peer_finder.finish();
-                    breakdown.log(&context_id.to_string());
                     return Ok(result);
                 }
-                Err(_) => {
+                Err(e) => {
+                    let dial_ms = dial_start.elapsed().as_secs_f64() * 1000.0;
+                    debug!(
+                        %context_id,
+                        %peer_id,
+                        dial_ms = %format!("{:.2}", dial_ms),
+                        error = %e,
+                        "Dial failed, trying next peer"
+                    );
+
                     // Record failure in cache
                     let mut cache = self.recent_peer_cache.write().unwrap();
                     cache.record_failure(*peer_id);
+
+                    // Create new tracker for next attempt
+                    tracker = PeerFindTracker::new();
+                    tracker.start_candidate_lookup();
+                    tracker.end_candidate_lookup(&selected_peers, source_breakdown);
+                    tracker.end_filtering(selected_peers.len());
                 }
             }
         }
 
-        // Log breakdown on failure
-        let breakdown = peer_finder.finish();
-        breakdown.log(&context_id.to_string());
+        // Log phases on failure
+        tracker.mark_failed(PeerFindResult::Timeout);
+        let _ = tracker.finish(&context_id.to_string());
 
         bail!("Failed to sync with any peer for context {}", context_id)
     }
