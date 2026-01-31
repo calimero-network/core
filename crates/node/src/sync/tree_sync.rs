@@ -36,16 +36,19 @@
 //! - Custom types dispatch to WASM via the callback
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
 use std::time::Instant;
 
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{
-    InitPayload, MessagePayload, StreamMessage, TreeNode, TreeNodeChild,
+    InitPayload, MessagePayload, StreamMessage, TreeLeafData, TreeNode, TreeNodeChild,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::entities::Metadata;
+use calimero_storage::index::EntityIndex;
+use calimero_storage::interface::Interface;
+use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_storage::WasmMergeCallback;
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::slice::Slice;
@@ -295,10 +298,10 @@ impl SyncManager {
                             "Received tree node"
                         );
 
-                        // If this is a leaf with data, apply it with merge
+                        // If this is a leaf with data, apply it with CRDT merge
                         if let Some(leaf_data) = &node.leaf_data {
-                            total_bytes_received += leaf_data.len() as u64;
-                            let applied = self.apply_leaf_entity(
+                            total_bytes_received += leaf_data.value.len() as u64;
+                            let applied = self.apply_leaf_from_tree_data(
                                 context_id,
                                 leaf_data,
                                 Some(merge_callback.as_ref()),
@@ -484,8 +487,8 @@ impl SyncManager {
                         // Apply all leaf entities from the subtree
                         for node in nodes {
                             if let Some(leaf_data) = &node.leaf_data {
-                                total_bytes_received += leaf_data.len() as u64;
-                                let applied = self.apply_leaf_entity(
+                                total_bytes_received += leaf_data.value.len() as u64;
+                                let applied = self.apply_leaf_from_tree_data(
                                     context_id,
                                     leaf_data,
                                     Some(merge_callback.as_ref()),
@@ -633,10 +636,10 @@ impl SyncManager {
             let mut next_level_ids: Vec<[u8; 32]> = Vec::new();
 
             for node in nodes {
-                // Apply leaf data if present with merge
+                // Apply leaf data if present with CRDT merge
                 if let Some(leaf_data) = &node.leaf_data {
-                    total_bytes_received += leaf_data.len() as u64;
-                    let applied = self.apply_leaf_entity(
+                    total_bytes_received += leaf_data.value.len() as u64;
+                    let applied = self.apply_leaf_from_tree_data(
                         context_id,
                         leaf_data,
                         Some(merge_callback.as_ref()),
@@ -703,10 +706,59 @@ impl SyncManager {
     // Helper Methods
     // =========================================================================
 
+    /// Read entity metadata from storage.
+    ///
+    /// The EntityIndex (containing Metadata with crdt_type) is stored at
+    /// Key::Index(id) which is persisted through the WASM runtime to RocksDB.
+    fn read_entity_metadata(&self, context_id: ContextId, entity_id: [u8; 32]) -> Option<Metadata> {
+        let store_handle = self.context_client.datastore_handle();
+
+        // Index is stored at Key::Index(id).to_bytes()
+        let id = calimero_storage::address::Id::from(entity_id);
+        let index_key_bytes = StorageKey::Index(id).to_bytes();
+        let state_key = ContextStateKey::new(context_id, index_key_bytes);
+
+        // Get and immediately clone the bytes to avoid lifetime issues
+        let value_bytes: Option<Vec<u8>> = store_handle
+            .get(&state_key)
+            .ok()
+            .flatten()
+            .map(|v| v.as_ref().to_vec());
+
+        match value_bytes {
+            Some(bytes) => {
+                // Deserialize as EntityIndex
+                match borsh::from_slice::<EntityIndex>(&bytes) {
+                    Ok(index) => {
+                        trace!(
+                            %context_id,
+                            ?entity_id,
+                            crdt_type = ?index.metadata.crdt_type,
+                            "Read entity metadata from storage"
+                        );
+                        Some(index.metadata.clone())
+                    }
+                    Err(e) => {
+                        warn!(
+                            %context_id,
+                            ?entity_id,
+                            error = %e,
+                            "Failed to deserialize EntityIndex"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
+    }
+
     /// Apply a single entity with CRDT merge semantics.
     ///
-    /// If local entity exists, merges local + remote using the callback.
-    /// If local entity doesn't exist, writes remote directly.
+    /// Uses entity metadata (crdt_type) to dispatch to proper CRDT merge:
+    /// - Built-in CRDTs (Counter, Map, etc.) → merge in storage layer
+    /// - Custom types → dispatch to WASM via callback
+    /// - Unknown/missing → fallback to LWW
     ///
     /// Returns true if entity was written, false if skipped.
     fn apply_entity_with_merge(
@@ -714,12 +766,13 @@ impl SyncManager {
         context_id: ContextId,
         key: [u8; 32],
         remote_value: Vec<u8>,
+        remote_metadata: &Metadata,
         merge_callback: Option<&dyn WasmMergeCallback>,
     ) -> Result<bool> {
         let state_key = ContextStateKey::new(context_id, key);
         let mut store_handle = self.context_client.datastore_handle();
 
-        // Try to read existing local value
+        // Read local entity data
         let local_value: Option<Vec<u8>> = store_handle
             .get(&state_key)
             .ok()
@@ -727,69 +780,87 @@ impl SyncManager {
             .map(|v: ContextStateValue| v.as_ref().to_vec());
 
         let final_value = if let Some(local_data) = local_value {
-            // Local exists - need to merge
-            if let Some(callback) = merge_callback {
-                // Use callback for merge (handles built-in CRDTs and custom types)
-                // Note: We don't have full metadata here, so use type_name "unknown"
-                // The callback will fall back to LWW for unknown types
-                match callback.merge_custom(
-                    "unknown", // Type name not available at this level
-                    &local_data,
-                    &remote_value,
-                    0, // Local timestamp not available
-                    1, // Remote timestamp (assume newer)
-                ) {
-                    Ok(merged) => {
-                        trace!(
-                            %context_id,
-                            entity_key = ?key,
-                            local_len = local_data.len(),
-                            remote_len = remote_value.len(),
-                            merged_len = merged.len(),
-                            "Merged entity via callback"
-                        );
-                        merged
-                    }
-                    Err(e) => {
-                        warn!(
-                            %context_id,
-                            entity_key = ?key,
-                            error = %e,
-                            "Merge callback failed, using remote (LWW)"
-                        );
-                        remote_value
-                    }
+            // Local exists - perform CRDT merge using metadata
+            let local_metadata = self
+                .read_entity_metadata(context_id, key)
+                .unwrap_or_else(|| {
+                    // Fallback: create default metadata with LwwRegister
+                    warn!(
+                        %context_id,
+                        ?key,
+                        "No local metadata found, using LwwRegister fallback"
+                    );
+                    Metadata::new(0, 0)
+                });
+
+            // Use Interface::merge_by_crdt_type_with_callback for proper dispatch
+            match Interface::<MainStorage>::merge_by_crdt_type_with_callback(
+                &local_data,
+                &remote_value,
+                &local_metadata,
+                remote_metadata,
+                merge_callback,
+            ) {
+                Ok(Some(merged)) => {
+                    let crdt_type = local_metadata.crdt_type.as_ref();
+                    debug!(
+                        %context_id,
+                        entity_key = ?key,
+                        ?crdt_type,
+                        local_len = local_data.len(),
+                        remote_len = remote_value.len(),
+                        merged_len = merged.len(),
+                        "CRDT merge completed"
+                    );
+                    merged
                 }
-            } else {
-                // No callback - use LWW (remote wins)
-                trace!(
-                    %context_id,
-                    entity_key = ?key,
-                    "No merge callback, using remote (LWW)"
-                );
-                remote_value
+                Ok(None) => {
+                    // Merge returned None (manual resolution needed) - use remote
+                    warn!(
+                        %context_id,
+                        entity_key = ?key,
+                        "CRDT merge returned None, using remote"
+                    );
+                    remote_value
+                }
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        entity_key = ?key,
+                        error = %e,
+                        "CRDT merge failed, using remote (LWW fallback)"
+                    );
+                    remote_value
+                }
             }
         } else {
             // No local value - just use remote
+            trace!(
+                %context_id,
+                entity_key = ?key,
+                "No local entity, applying remote directly"
+            );
             remote_value
         };
 
-        // Write the final value
+        // Write the final value (entity data)
         let slice: Slice<'_> = final_value.into();
         store_handle.put(&state_key, &ContextStateValue::from(slice))?;
 
         debug!(
             %context_id,
             entity_key = ?key,
-            "Applied entity with merge"
+            "Applied entity with CRDT merge"
         );
 
         Ok(true)
     }
 
-    /// Apply entities from serialized bytes (format: key[32] + len[4] + value[len])
+    /// Apply entities from serialized bytes (legacy format: key[32] + len[4] + value[len])
     ///
-    /// Uses CRDT merge when local entity exists.
+    /// This format doesn't include metadata, so we read it from local storage.
+    /// If local metadata is available, uses proper CRDT merge.
+    /// Falls back to LwwRegister merge for unknown entities.
     fn apply_entities_from_bytes(
         &self,
         context_id: ContextId,
@@ -798,6 +869,16 @@ impl SyncManager {
     ) -> Result<u64> {
         let mut entities_applied = 0u64;
         let mut offset = 0;
+
+        // Create a default metadata for remote (assumes newer timestamp)
+        // When we don't have remote metadata, assume LwwRegister as safe default
+        let default_remote_metadata = Metadata::new(
+            0,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1),
+        );
 
         while offset + 36 <= data.len() {
             // Read key (32 bytes)
@@ -822,8 +903,14 @@ impl SyncManager {
             let value = data[offset..offset + value_len].to_vec();
             offset += value_len;
 
-            // Apply entity with merge
-            match self.apply_entity_with_merge(context_id, key, value, merge_callback) {
+            // Apply entity with merge (using local metadata for CRDT type)
+            match self.apply_entity_with_merge(
+                context_id,
+                key,
+                value,
+                &default_remote_metadata,
+                merge_callback,
+            ) {
                 Ok(true) => {
                     entities_applied += 1;
                 }
@@ -844,11 +931,32 @@ impl SyncManager {
         Ok(entities_applied)
     }
 
-    /// Apply a single leaf entity from serialized data.
+    /// Apply a single leaf entity from TreeLeafData (new format with metadata).
+    ///
+    /// The TreeLeafData includes Metadata with crdt_type for proper CRDT merge.
+    fn apply_leaf_from_tree_data(
+        &self,
+        context_id: ContextId,
+        leaf_data: &TreeLeafData,
+        merge_callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<bool> {
+        self.apply_entity_with_merge(
+            context_id,
+            leaf_data.key,
+            leaf_data.value.clone(),
+            &leaf_data.metadata,
+            merge_callback,
+        )
+    }
+
+    /// Apply a single leaf entity from serialized data (legacy format).
     ///
     /// Expected format: key[32] + value_len[4] + value[value_len]
-    /// Uses CRDT merge when local entity exists.
-    fn apply_leaf_entity(
+    /// Reads local metadata for CRDT type, defaults to LwwRegister.
+    ///
+    /// Note: This function is kept for backward compatibility with old wire formats.
+    #[allow(dead_code)]
+    fn apply_leaf_entity_legacy(
         &self,
         context_id: ContextId,
         leaf_data: &[u8],
@@ -871,7 +979,16 @@ impl SyncManager {
 
         let value = leaf_data[36..36 + value_len].to_vec();
 
-        self.apply_entity_with_merge(context_id, key, value, merge_callback)
+        // Create default metadata for remote (LwwRegister, current timestamp)
+        let remote_metadata = Metadata::new(
+            0,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1),
+        );
+
+        self.apply_entity_with_merge(context_id, key, value, &remote_metadata, merge_callback)
     }
 
     /// Check if a local node differs from remote (by hash).

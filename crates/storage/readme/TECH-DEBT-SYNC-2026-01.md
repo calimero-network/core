@@ -1,99 +1,59 @@
 # Technical Debt: Sync Protocol (January 2026)
 
 **Branch**: `test/tree_sync`  
-**Status**: Known Issues - Documented for Future Work
+**Status**: Mostly Resolved - Remaining Items Documented
 
 ---
 
-## Issue 1: Tree Sync CRDT Merge - Architectural Gap
+## Issue 1: Tree Sync CRDT Merge - ✅ FIXED
 
-### Status: ⚠️ PARTIALLY INTEGRATED - LWW Fallback
+### Status: ✅ PROPERLY INTEGRATED
 
-### The Problem
+**Implemented Solution**: Option B + C hybrid - Include metadata in wire format AND query local Index.
 
-The CIP correctly states that `crdt_type` IS stored in `Metadata`. The storage layer does track entity types:
+### What Changed
 
-```rust
-// crates/storage/src/entities.rs
-pub struct Metadata {
-    pub crdt_type: Option<CrdtType>,  // ← EXISTS AND WORKING
-    // ...
-}
+1. **Wire Protocol Updated**: `TreeNode.leaf_data` is now `Option<TreeLeafData>` which includes:
+   ```rust
+   pub struct TreeLeafData {
+       pub key: [u8; 32],
+       pub value: Vec<u8>,
+       pub metadata: Metadata,  // ← Includes crdt_type!
+   }
+   ```
+
+2. **Tree Node Generation**: `handle_tree_node_request` now reads entity metadata from storage Index and includes it in the response.
+
+3. **CRDT Merge Dispatch**: `apply_entity_with_merge` now calls `Interface::merge_by_crdt_type_with_callback()` for proper CRDT dispatch:
+   - Built-in CRDTs (Counter, Map, etc.) → merge directly in storage layer
+   - Custom types → dispatch to WASM callback
+   - Unknown/missing → fallback to LWW
+
+### Current Data Flow
+
+```
+Tree Sync Path (NOW CORRECT):
+  tree_sync.rs → receive TreeLeafData with Metadata
+    → read local Index to get local Metadata
+    → Interface::merge_by_crdt_type_with_callback()
+    → proper CRDT merge based on crdt_type ✅
 ```
 
-**BUT**: Tree sync bypasses the storage layer and uses low-level store operations:
+### Key Files Changed
 
-```
-Delta Sync Path (CORRECT):
-  delta_store.rs → context_client.execute("__calimero_sync_next") 
-    → WASM runtime → storage Interface → has Metadata with crdt_type ✅
+- `crates/node/primitives/src/sync.rs` - Added `TreeLeafData` struct
+- `crates/node/src/sync/manager.rs` - Updated `handle_tree_node_request`
+- `crates/node/src/sync/tree_sync.rs` - Updated `apply_entity_with_merge`, `apply_leaf_from_tree_data`
+- `crates/storage/src/interface.rs` - Made `merge_by_crdt_type_with_callback` public
 
-Tree Sync Path (PROBLEM):
-  tree_sync.rs → context_client.datastore_handle() → store_handle.put()
-    → raw key-value store → NO metadata, NO crdt_type ❌
-```
+### Remaining Limitation
 
-### Current Behavior
+**Bloom Filter Sync**: Still uses legacy format without metadata. Falls back to LWW.
 
-```rust
-// tree_sync.rs - apply_entity_with_merge()
-fn apply_entity_with_merge(&self, key, remote_value, merge_callback) {
-    // 1. Read local raw bytes (NO METADATA)
-    let local_value = store_handle.get(&state_key)?;
-    
-    // 2. Try to merge with "unknown" type (can't determine actual type!)
-    callback.merge_custom("unknown", &local, &remote, 0, 1)?
-    
-    // 3. Callback falls back to LWW since type is unknown
-}
-```
-
-### Why This Happens
-
-| Layer | Has crdt_type? | Used By |
-|-------|----------------|---------|
-| `calimero-storage` Interface | ✅ Yes (via Index/Metadata) | Delta sync |
-| `calimero-store` raw store | ❌ No (just key-value) | Tree sync |
-
-Tree sync was designed to work at the low-level for efficiency, but this means it can't access the metadata.
-
-### Impact
-
-| Sync Method | CRDT Type Resolution | Result |
-|-------------|----------------------|--------|
-| **Delta sync** (DAG-based) | Proper (via WASM + storage Interface) | ✅ Correct merge |
-| **Tree sync** (state-based) | Unknown (raw bytes only) | ⚠️ LWW fallback |
-
-### Proper Fix Options
-
-1. **Option A: Make tree sync use storage Interface** (Recommended)
-   - Change tree_sync to construct `Action::Update` with proper metadata
-   - Call `context_client.execute("__calimero_sync_next", ...)`
-   - Same path as delta sync
-   - Effort: Medium (refactor tree_sync)
-
-2. **Option B: Include metadata in TreeNode wire format**
-   - Modify `TreeNode.leaf_data` to include serialized metadata
-   - Reconstruct `Metadata` when applying
-   - Effort: Medium (protocol change)
-
-3. **Option C: Query Index for entity type**
-   - After reading key, call `Index::get_metadata()` to get crdt_type
-   - Use that type for merge
-   - Effort: Low but assumes local type matches remote
-
-### Current Workaround
-
-The merge callback IS wired and called, providing:
-- A hook point for future proper implementation
-- Fallback to LWW (no worse than before)
-- Logging of merge attempts for debugging
-
-### Recommendation
-
-**For MVP**: Accept LWW fallback for tree sync. Delta sync (the primary sync method) works correctly.
-
-**Next iteration**: Implement Option A - refactor tree sync to use storage Interface via WASM execution, same as delta sync.
+This is acceptable because:
+- Bloom filter sync is for fast diff detection, not conflict resolution
+- The actual entity application still uses local metadata when available
+- Full CRDT merge works for new entities via tree sync
 
 ---
 

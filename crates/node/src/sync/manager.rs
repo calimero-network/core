@@ -21,11 +21,16 @@ use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::NodeClient;
-use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_node_primitives::sync::{
+    InitPayload, MessagePayload, StreamMessage, TreeLeafData, TreeNode, TreeNodeChild,
+};
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::merge_callback::RuntimeMergeCallback;
+use calimero_storage::entities::Metadata;
+use calimero_storage::index::EntityIndex;
+use calimero_storage::store::Key as StorageKey;
 use calimero_storage::WasmMergeCallback;
 use eyre::bail;
 use futures_util::stream::{self, FuturesUnordered};
@@ -2640,7 +2645,6 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use super::snapshot::get_entity_keys;
-        use calimero_node_primitives::sync::{TreeNode, TreeNodeChild};
         use calimero_store::key::ContextState as ContextStateKey;
 
         info!(
@@ -2689,22 +2693,55 @@ impl SyncManager {
                 children,
             }]
         } else {
-            // Specific node requests - return entity data
+            // Specific node requests - return entity data with metadata
             let mut result_nodes = Vec::new();
 
             for node_id in &node_ids {
-                // Look up the entity in storage
+                // Look up the entity data in storage
                 let state_key = ContextStateKey::new(context_id, *node_id);
 
                 let leaf_data = match store_handle.get(&state_key) {
                     Ok(Some(value)) => {
-                        // Serialize as: key[32] + value_len[4] + value
                         let value_bytes: Vec<u8> = value.as_ref().to_vec();
-                        let mut data = Vec::with_capacity(36 + value_bytes.len());
-                        data.extend_from_slice(node_id);
-                        data.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
-                        data.extend_from_slice(&value_bytes);
-                        Some(data)
+
+                        // Read entity metadata from Index
+                        let id = calimero_storage::address::Id::from(*node_id);
+                        let index_key_bytes = StorageKey::Index(id).to_bytes();
+                        let index_state_key = ContextStateKey::new(context_id, index_key_bytes);
+
+                        let metadata = match store_handle.get(&index_state_key) {
+                            Ok(Some(index_value)) => {
+                                match borsh::from_slice::<EntityIndex>(index_value.as_ref()) {
+                                    Ok(index) => index.metadata.clone(),
+                                    Err(e) => {
+                                        warn!(
+                                            %context_id,
+                                            ?node_id,
+                                            error = %e,
+                                            "Failed to deserialize EntityIndex, using default metadata"
+                                        );
+                                        // Default to LwwRegister if we can't read metadata
+                                        Metadata::new(0, 0)
+                                    }
+                                }
+                            }
+                            _ => {
+                                // No index found, use default LwwRegister metadata
+                                debug!(
+                                    %context_id,
+                                    ?node_id,
+                                    "No EntityIndex found, using default LwwRegister metadata"
+                                );
+                                Metadata::new(0, 0)
+                            }
+                        };
+
+                        // Create TreeLeafData with key, value, and metadata
+                        Some(TreeLeafData {
+                            key: *node_id,
+                            value: value_bytes,
+                            metadata,
+                        })
                     }
                     _ => None,
                 };

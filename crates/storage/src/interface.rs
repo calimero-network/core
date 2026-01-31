@@ -536,7 +536,25 @@ impl<S: StorageAdaptor> Interface<S> {
     }
 
     /// Merge entities with optional WASM callback for custom types.
-    fn merge_by_crdt_type_with_callback(
+    ///
+    /// This is the main entry point for CRDT merge during state synchronization.
+    /// Dispatches based on `local_metadata.crdt_type`:
+    /// - Built-in CRDTs (Counter, Map, etc.) → merge directly in storage layer
+    /// - Custom types → dispatch to WASM callback
+    /// - None/unknown → fallback to LWW
+    ///
+    /// # Arguments
+    /// * `local_data` - Local entity data (bytes)
+    /// * `remote_data` - Remote entity data (bytes)
+    /// * `local_metadata` - Local entity metadata (includes crdt_type)
+    /// * `remote_metadata` - Remote entity metadata
+    /// * `callback` - Optional WASM callback for custom types
+    ///
+    /// # Returns
+    /// * `Ok(Some(merged))` - Merged data
+    /// * `Ok(None)` - Merge not applicable
+    /// * `Err(...)` - Merge failed
+    pub fn merge_by_crdt_type_with_callback(
         local_data: &[u8],
         remote_data: &[u8],
         local_metadata: &Metadata,

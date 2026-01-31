@@ -307,11 +307,25 @@ pub struct TreeNode {
     pub node_id: [u8; 32],
     /// Node's hash (for comparison).
     pub hash: Hash,
-    /// If this is a leaf node, contains the actual key-value data.
-    /// Format: Option<(key, value)> serialized.
-    pub leaf_data: Option<Vec<u8>>,
+    /// If this is a leaf node, contains the entity data with metadata.
+    /// Includes key, value, and CRDT metadata for proper merge.
+    pub leaf_data: Option<TreeLeafData>,
     /// Child node IDs and hashes (for internal nodes).
     pub children: Vec<TreeNodeChild>,
+}
+
+/// Leaf entity data including metadata for CRDT merge.
+///
+/// This is sent over the wire during tree sync so the receiving node
+/// has the `crdt_type` needed to perform proper CRDT merge.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct TreeLeafData {
+    /// Entity key (32 bytes).
+    pub key: [u8; 32],
+    /// Entity value (serialized data).
+    pub value: Vec<u8>,
+    /// Entity metadata including crdt_type for merge dispatch.
+    pub metadata: calimero_storage::entities::Metadata,
 }
 
 /// Reference to a child tree node.
