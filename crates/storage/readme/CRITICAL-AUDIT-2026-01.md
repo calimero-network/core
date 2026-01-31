@@ -185,25 +185,27 @@ If Index doesn't exist or can't be read, we default to `LwwRegister` even if the
 | Hash comparison sync | ✅ Works (uses TreeLeafData with metadata) |
 | Subtree prefetch sync | ✅ Works (uses TreeLeafData with metadata) |
 | Level-wise sync | ✅ Works (uses TreeLeafData with metadata) |
-| Bloom filter sync | ⚠️ Legacy format (no metadata in wire protocol) |
+| Bloom filter sync | ✅ Works (uses Vec<TreeLeafData> with metadata) |
 
-### Bloom Filter Limitation
+### Bloom Filter - FIXED ✅
 
-Bloom filter sync uses legacy wire format without metadata:
+Bloom filter sync now uses `Vec<TreeLeafData>` wire format WITH metadata:
+
 ```rust
-// handle_bloom_filter_request - sends without metadata
-for (key, value) in &missing_entries {
-    serialized.extend_from_slice(key);
-    serialized.extend_from_slice(&(value.len() as u32).to_le_bytes());
-    serialized.extend_from_slice(value);  // No metadata!
+// BloomFilterResponse now carries metadata
+pub struct MessagePayload {
+    BloomFilterResponse {
+        missing_entities: Vec<TreeLeafData>,  // Includes metadata!
+        matched_count: u32,
+    }
 }
 ```
 
-**Impact**:
-- `apply_entities_from_bytes` uses `default_remote_metadata` (LwwRegister)
-- BUT: `apply_entity_with_merge` reads LOCAL metadata for CRDT type dispatch
-- So local Counter entity merges correctly (uses local CrdtType::Counter)
-- Only NEW entities (not in local) assume LwwRegister (acceptable fallback)
+**Implementation**:
+- `handle_bloom_filter_request` reads `EntityIndex` for each entity
+- Includes `crdt_type` in `TreeLeafData.metadata`
+- `bloom_filter_sync` calls `apply_leaf_from_tree_data` with full metadata
+- All CRDT types dispatch correctly now
 
 ---
 
@@ -336,16 +338,19 @@ Tree Sync Path (HashComparison, SubtreePrefetch, LevelWise):
   apply_leaf_from_tree_data → uses leaf_data.metadata
   apply_entity_with_merge → Interface::merge_by_crdt_type_with_callback(local_meta, remote_meta) ✅
 
-Bloom Filter Path:
-  handle_bloom_filter_request → sends key+value (no metadata)
-  apply_entities_from_bytes → creates default_remote_metadata (LwwRegister)
-  apply_entity_with_merge → reads LOCAL metadata for crdt_type dispatch ✅
+Bloom Filter Path (FIXED):
+  handle_bloom_filter_request → reads EntityIndex → includes metadata in TreeLeafData ✅
+  bloom_filter_sync → iterates Vec<TreeLeafData> with metadata ✅
+  apply_leaf_from_tree_data → uses leaf_data.metadata ✅
+  apply_entity_with_merge → Interface::merge_by_crdt_type_with_callback(local_meta, remote_meta) ✅
 ```
 
-### Unit Tests Added
+### Unit Tests Added (12 total in tree_sync.rs)
 
 - `test_tree_leaf_data_serialization` - TreeLeafData round-trips with metadata
 - `test_tree_leaf_data_crdt_types` - All CRDT types serialize correctly
 - `test_merge_dispatch_lww_register` - Remote wins with later timestamp
 - `test_merge_dispatch_lww_local_wins` - Local wins with later timestamp
-- 10 total new tests in `crates/node/src/sync/tree_sync.rs`
+- `test_bloom_filter_response_includes_metadata` - BloomFilterResponse carries CRDT type
+- `test_bloom_filter_response_custom_crdt_type` - Custom type name preserved
+- Plus 6 more structural tests

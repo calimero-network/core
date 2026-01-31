@@ -288,9 +288,9 @@ pub enum MessagePayload<'a> {
     },
     /// Response to BloomFilterRequest containing entities missing from requester.
     BloomFilterResponse {
-        /// Serialized entities that were NOT in the requester's bloom filter.
-        /// Format: Vec<(key, value)> serialized with borsh.
-        missing_entities: Vec<u8>,
+        /// Entities that were NOT in the requester's bloom filter.
+        /// Each entry includes key, value, AND metadata for proper CRDT merge.
+        missing_entities: Vec<TreeLeafData>,
         /// Count of entities that matched the filter (for diagnostics).
         matched_count: u32,
     },

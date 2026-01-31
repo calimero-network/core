@@ -133,17 +133,33 @@ impl SyncManager {
                     },
                 ..
             }) => {
-                let bytes_received = missing_entities.len() as u64;
+                // Calculate bytes received (sum of all entity values)
+                let bytes_received: u64 =
+                    missing_entities.iter().map(|e| e.value.len() as u64).sum();
 
                 // Get merge callback for CRDT-aware entity application
                 let merge_callback = self.get_merge_callback();
 
-                // Decode and apply missing entities with merge
-                let entities_synced = self.apply_entities_from_bytes(
-                    context_id,
-                    &missing_entities,
-                    Some(merge_callback.as_ref()),
-                )?;
+                // Apply each entity with proper CRDT merge using included metadata
+                let mut entities_synced = 0u64;
+                for leaf_data in &missing_entities {
+                    match self.apply_leaf_from_tree_data(
+                        context_id,
+                        leaf_data,
+                        Some(merge_callback.as_ref()),
+                    ) {
+                        Ok(true) => entities_synced += 1,
+                        Ok(false) => {} // Already up to date
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                key = ?leaf_data.key,
+                                error = %e,
+                                "Failed to apply bloom filter entity"
+                            );
+                        }
+                    }
+                }
 
                 let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -861,6 +877,10 @@ impl SyncManager {
     /// This format doesn't include metadata, so we read it from local storage.
     /// If local metadata is available, uses proper CRDT merge.
     /// Falls back to LwwRegister merge for unknown entities.
+    ///
+    /// NOTE: This is kept for backward compatibility with older wire formats.
+    /// The preferred method is to use TreeLeafData which includes metadata.
+    #[allow(dead_code)]
     fn apply_entities_from_bytes(
         &self,
         context_id: ContextId,
@@ -1250,5 +1270,109 @@ mod tests {
         assert!(merged.is_some());
         // Local should win because it has higher timestamp
         assert_eq!(merged.unwrap(), local_data);
+    }
+
+    /// Test BloomFilterResponse wire format includes metadata
+    #[test]
+    fn test_bloom_filter_response_includes_metadata() {
+        use calimero_node_primitives::sync::MessagePayload;
+
+        // Create entities with different CRDT types
+        let mut counter_metadata = Metadata::new(1000, 2000);
+        counter_metadata.crdt_type = Some(CrdtType::Counter);
+
+        let mut map_metadata = Metadata::new(3000, 4000);
+        map_metadata.crdt_type = Some(CrdtType::UnorderedMap);
+
+        let entities = vec![
+            TreeLeafData {
+                key: [1u8; 32],
+                value: vec![10, 20, 30],
+                metadata: counter_metadata.clone(),
+            },
+            TreeLeafData {
+                key: [2u8; 32],
+                value: vec![40, 50],
+                metadata: map_metadata.clone(),
+            },
+        ];
+
+        // Create BloomFilterResponse with entities
+        let response = MessagePayload::BloomFilterResponse {
+            missing_entities: entities.clone(),
+            matched_count: 5,
+        };
+
+        // Serialize and deserialize
+        let serialized = borsh::to_vec(&response).expect("serialize");
+        let deserialized: MessagePayload = borsh::from_slice(&serialized).expect("deserialize");
+
+        // Verify structure preserved
+        match deserialized {
+            MessagePayload::BloomFilterResponse {
+                missing_entities,
+                matched_count,
+            } => {
+                assert_eq!(matched_count, 5);
+                assert_eq!(missing_entities.len(), 2);
+
+                // Verify first entity (Counter)
+                assert_eq!(missing_entities[0].key, [1u8; 32]);
+                assert_eq!(missing_entities[0].value, vec![10, 20, 30]);
+                assert_eq!(
+                    missing_entities[0].metadata.crdt_type,
+                    Some(CrdtType::Counter)
+                );
+
+                // Verify second entity (UnorderedMap)
+                assert_eq!(missing_entities[1].key, [2u8; 32]);
+                assert_eq!(missing_entities[1].value, vec![40, 50]);
+                assert_eq!(
+                    missing_entities[1].metadata.crdt_type,
+                    Some(CrdtType::UnorderedMap)
+                );
+            }
+            _ => panic!("Expected BloomFilterResponse"),
+        }
+    }
+
+    /// Test BloomFilterResponse preserves Custom CRDT type name
+    #[test]
+    fn test_bloom_filter_response_custom_crdt_type() {
+        use calimero_node_primitives::sync::MessagePayload;
+
+        let mut custom_metadata = Metadata::new(0, 0);
+        custom_metadata.crdt_type = Some(CrdtType::Custom {
+            type_name: "MyCustomCRDT".to_string(),
+        });
+
+        let entities = vec![TreeLeafData {
+            key: [3u8; 32],
+            value: vec![1, 2, 3],
+            metadata: custom_metadata,
+        }];
+
+        let response = MessagePayload::BloomFilterResponse {
+            missing_entities: entities,
+            matched_count: 0,
+        };
+
+        let serialized = borsh::to_vec(&response).expect("serialize");
+        let deserialized: MessagePayload = borsh::from_slice(&serialized).expect("deserialize");
+
+        match deserialized {
+            MessagePayload::BloomFilterResponse {
+                missing_entities, ..
+            } => {
+                assert_eq!(missing_entities.len(), 1);
+                match &missing_entities[0].metadata.crdt_type {
+                    Some(CrdtType::Custom { type_name }) => {
+                        assert_eq!(type_name, "MyCustomCRDT");
+                    }
+                    _ => panic!("Expected Custom CRDT type"),
+                }
+            }
+            _ => panic!("Expected BloomFilterResponse"),
+        }
     }
 }

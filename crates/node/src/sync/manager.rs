@@ -2781,6 +2781,10 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use super::snapshot::get_entities_not_in_bloom;
+        use calimero_storage::entities::Metadata;
+        use calimero_storage::index::EntityIndex;
+        use calimero_storage::store::Key as StorageKey;
+        use calimero_store::key::ContextState as ContextStateKey;
 
         info!(
             %context_id,
@@ -2818,26 +2822,57 @@ impl SyncManager {
         let missing_count = missing_entries.len() as u32;
         let matched = total_entities.saturating_sub(missing_count);
 
-        // Serialize entities: key (32 bytes) + value_len (4 bytes) + value
-        let mut serialized: Vec<u8> = Vec::new();
+        // Build TreeLeafData for each entity WITH metadata
+        let mut missing_entities_with_metadata: Vec<TreeLeafData> = Vec::new();
         for (key, value) in &missing_entries {
-            serialized.extend_from_slice(key);
-            serialized.extend_from_slice(&(value.len() as u32).to_le_bytes());
-            serialized.extend_from_slice(value);
+            // Read entity metadata from Index (same pattern as handle_tree_node_request)
+            let id = calimero_storage::address::Id::from(*key);
+            let index_key_bytes = StorageKey::Index(id).to_bytes();
+            let index_state_key = ContextStateKey::new(context_id, index_key_bytes);
+
+            let metadata = match store_handle.get(&index_state_key) {
+                Ok(Some(index_value)) => {
+                    match borsh::from_slice::<EntityIndex>(index_value.as_ref()) {
+                        Ok(index) => index.metadata.clone(),
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                ?key,
+                                error = %e,
+                                "Failed to deserialize EntityIndex for bloom filter, using default"
+                            );
+                            Metadata::new(0, 0)
+                        }
+                    }
+                }
+                _ => {
+                    debug!(
+                        %context_id,
+                        ?key,
+                        "No EntityIndex found for bloom filter entity, using default"
+                    );
+                    Metadata::new(0, 0)
+                }
+            };
+
+            missing_entities_with_metadata.push(TreeLeafData {
+                key: *key,
+                value: value.clone(),
+                metadata,
+            });
         }
 
         info!(
             %context_id,
             missing_count,
             matched,
-            serialized_bytes = serialized.len(),
-            "Bloom filter check complete, returning missing ENTITIES"
+            "Bloom filter check complete, returning missing ENTITIES with metadata"
         );
 
         let msg = StreamMessage::Message {
             sequence_id: 0,
             payload: MessagePayload::BloomFilterResponse {
-                missing_entities: serialized,
+                missing_entities: missing_entities_with_metadata,
                 matched_count: matched,
             },
             next_nonce: nonce,
