@@ -465,6 +465,19 @@ pub struct SyncConfig {
     ///
     /// Default: `false` (use DAG catchup when possible - optimal for production)
     pub force_state_sync: bool,
+
+    /// Strategy for finding viable sync peers.
+    ///
+    /// Controls how candidates are selected for reconciliation:
+    /// - `Baseline` (A0): Current mesh-only approach
+    /// - `MeshFirst` (A1): Only mesh peers, fail if empty
+    /// - `RecentFirst` (A2): Try LRU cache first, then mesh
+    /// - `AddressBookFirst` (A3): Try persisted peers first
+    /// - `ParallelFind` (A4): Query all sources in parallel
+    /// - `HealthFiltered` (A5): Exclude peers with recent failures
+    ///
+    /// Default: `Baseline` for production
+    pub peer_find_strategy: super::peer_finder::PeerFindStrategy,
 }
 
 impl Default for SyncConfig {
@@ -482,7 +495,8 @@ impl Default for SyncConfig {
             mesh_formation_check_interval: time::Duration::from_millis(
                 DEFAULT_MESH_FORMATION_CHECK_INTERVAL_MS,
             ),
-            force_state_sync: false, // Default: use DAG catchup when possible
+            force_state_sync: false,
+            peer_find_strategy: super::peer_finder::PeerFindStrategy::default(),
         }
     }
 }
@@ -508,6 +522,18 @@ impl SyncConfig {
     #[must_use]
     pub fn with_force_state_sync(mut self, force: bool) -> Self {
         self.force_state_sync = force;
+        self
+    }
+
+    /// Set the peer finding strategy.
+    ///
+    /// Controls how viable sync peers are discovered and selected.
+    #[must_use]
+    pub fn with_peer_find_strategy(
+        mut self,
+        strategy: super::peer_finder::PeerFindStrategy,
+    ) -> Self {
+        self.peer_find_strategy = strategy;
         self
     }
 }

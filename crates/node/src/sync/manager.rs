@@ -59,6 +59,9 @@ pub struct SyncManager {
 
     /// Prometheus metrics for sync operations.
     pub(super) metrics: super::metrics::SharedSyncMetrics,
+
+    /// Cache of recently successful peers per context.
+    pub(super) recent_peer_cache: super::peer_finder::SharedRecentPeerCache,
 }
 
 impl Clone for SyncManager {
@@ -71,6 +74,7 @@ impl Clone for SyncManager {
             node_state: self.node_state.clone(),
             ctx_sync_rx: None, // Receiver can't be cloned
             metrics: self.metrics.clone(),
+            recent_peer_cache: self.recent_peer_cache.clone(),
         }
     }
 }
@@ -93,6 +97,7 @@ impl SyncManager {
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
             metrics,
+            recent_peer_cache: super::peer_finder::new_recent_peer_cache(),
         }
     }
 
@@ -455,8 +460,27 @@ impl SyncManager {
             );
         }
 
-        // Record filtering (currently no filtering beyond mesh check)
-        peer_finder.record_filtering(peers.len());
+        // Apply peer finding strategy
+        let strategy = self.sync_config.peer_find_strategy;
+        let context_id_bytes: [u8; 32] = *context_id.as_ref();
+        let backoff_duration = Duration::from_secs(30); // Default backoff
+
+        // Get selected peers using the configured strategy
+        let (selected_peers, peer_source) = {
+            let cache = self.recent_peer_cache.read().unwrap();
+            cache.select_by_strategy(strategy, context_id_bytes, &peers, backoff_duration)
+        };
+
+        // Record filtering results
+        peer_finder.record_filtering(selected_peers.len());
+
+        debug!(
+            %context_id,
+            %strategy,
+            %peer_source,
+            candidates = selected_peers.len(),
+            "Peer finding strategy applied"
+        );
 
         // Check if we're uninitialized
         let context = self
@@ -471,40 +495,68 @@ impl SyncManager {
             // Trying random peers can result in querying other uninitialized nodes
             info!(
                 %context_id,
-                peer_count = peers.len(),
+                peer_count = selected_peers.len(),
                 "Node is uninitialized, selecting peer with state for bootstrapping"
             );
 
             // Try to find a peer with actual state
-            match self.find_peer_with_state(context_id, &peers).await {
+            match self.find_peer_with_state(context_id, &selected_peers).await {
                 Ok(peer_id) => {
                     info!(%context_id, %peer_id, "Found peer with state, syncing from them");
                     // Record peer selection
-                    peer_finder.record_selection(PeerSource::Mesh, None);
+                    peer_finder.record_selection(peer_source, None);
                     let breakdown = peer_finder.finish();
                     breakdown.log(&context_id.to_string());
 
-                    return self.initiate_sync(context_id, peer_id).await;
+                    let result = self.initiate_sync(context_id, peer_id).await;
+
+                    // Record success/failure in cache
+                    if result.is_ok() {
+                        let mut cache = self.recent_peer_cache.write().unwrap();
+                        cache.record_success(context_id_bytes, peer_id, peer_source);
+                    } else {
+                        let mut cache = self.recent_peer_cache.write().unwrap();
+                        cache.record_failure(peer_id);
+                    }
+
+                    return result;
                 }
                 Err(e) => {
-                    warn!(%context_id, error = %e, "Failed to find peer with state, falling back to random selection");
-                    // Fall through to random selection
+                    warn!(%context_id, error = %e, "Failed to find peer with state, falling back to strategy selection");
+                    // Fall through to strategy-based selection
                 }
             }
         }
 
-        // Normal sync: try all peers until we find one that works
-        // (for initialized nodes or fallback when we can't find a peer with state)
-        debug!(%context_id, "Using random peer selection for sync");
-        for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
+        // Normal sync: try peers based on strategy order
+        debug!(%context_id, %strategy, "Using strategy-based peer selection for sync");
+        for peer_id in selected_peers.choose_multiple(&mut rand::thread_rng(), selected_peers.len())
+        {
             // Record peer selection for the first attempt
-            peer_finder.record_selection(PeerSource::Mesh, None);
+            let quality = {
+                let cache = self.recent_peer_cache.read().unwrap();
+                cache.get_quality(peer_id).cloned()
+            };
+            peer_finder.record_selection(peer_source, quality.as_ref());
 
-            if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
-                // Log breakdown on success
-                let breakdown = peer_finder.finish();
-                breakdown.log(&context_id.to_string());
-                return Ok(result);
+            match self.initiate_sync(context_id, *peer_id).await {
+                Ok(result) => {
+                    // Record success in cache
+                    {
+                        let mut cache = self.recent_peer_cache.write().unwrap();
+                        cache.record_success(context_id_bytes, *peer_id, peer_source);
+                    }
+
+                    // Log breakdown on success
+                    let breakdown = peer_finder.finish();
+                    breakdown.log(&context_id.to_string());
+                    return Ok(result);
+                }
+                Err(_) => {
+                    // Record failure in cache
+                    let mut cache = self.recent_peer_cache.write().unwrap();
+                    cache.record_failure(*peer_id);
+                }
             }
         }
 

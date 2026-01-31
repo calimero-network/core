@@ -6,13 +6,70 @@
 //! ## Log Markers
 //!
 //! - `PEER_FIND_BREAKDOWN`: Detailed timing for each peer finding attempt
+//!
+//! ## Peer Finding Strategies
+//!
+//! - `A0_Baseline`: Current mesh-only approach
+//! - `A1_MeshFirst`: Only gossipsub mesh peers, no fallback
+//! - `A2_RecentFirst`: LRU cache → mesh → routing
+//! - `A3_AddressBookFirst`: Persisted peers → mesh → routing
+//! - `A4_ParallelFind`: Query all sources in parallel
+//! - `A5_HealthFiltered`: Exclude peers with recent failures
 
 use std::collections::{HashMap, VecDeque};
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
 use tracing::{debug, info};
+
+/// Peer finding strategy for A/B testing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeerFindStrategy {
+    /// A0: Current baseline - mesh only, wait for formation
+    #[default]
+    Baseline,
+    /// A1: Mesh-first - only mesh peers, fail if empty
+    MeshFirst,
+    /// A2: Recent-first - try LRU cache of successful peers first
+    RecentFirst,
+    /// A3: Address-book-first - try persisted known peers first
+    AddressBookFirst,
+    /// A4: Parallel find - query all sources simultaneously
+    ParallelFind,
+    /// A5: Health-filtered - exclude peers with recent failures
+    HealthFiltered,
+}
+
+impl std::fmt::Display for PeerFindStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Baseline => write!(f, "baseline"),
+            Self::MeshFirst => write!(f, "mesh-first"),
+            Self::RecentFirst => write!(f, "recent-first"),
+            Self::AddressBookFirst => write!(f, "address-book-first"),
+            Self::ParallelFind => write!(f, "parallel"),
+            Self::HealthFiltered => write!(f, "health-filtered"),
+        }
+    }
+}
+
+impl FromStr for PeerFindStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "baseline" | "a0" => Ok(Self::Baseline),
+            "mesh-first" | "mesh" | "a1" => Ok(Self::MeshFirst),
+            "recent-first" | "recent" | "a2" => Ok(Self::RecentFirst),
+            "address-book-first" | "address-book" | "book" | "a3" => Ok(Self::AddressBookFirst),
+            "parallel" | "parallel-find" | "a4" => Ok(Self::ParallelFind),
+            "health-filtered" | "health" | "a5" => Ok(Self::HealthFiltered),
+            _ => Err(format!("Unknown peer find strategy: {}", s)),
+        }
+    }
+}
 
 /// Maximum number of recent peers to cache per context
 const RECENT_PEER_CACHE_SIZE: usize = 10;
@@ -266,6 +323,95 @@ impl RecentPeerCache {
             })
             .copied()
             .collect()
+    }
+
+    /// Select peers using the specified strategy
+    ///
+    /// Returns (selected_peers, source) where source indicates where peers came from
+    pub fn select_by_strategy(
+        &self,
+        strategy: PeerFindStrategy,
+        context_id: [u8; 32],
+        mesh_peers: &[PeerId],
+        backoff_duration: Duration,
+    ) -> (Vec<PeerId>, PeerSource) {
+        match strategy {
+            PeerFindStrategy::Baseline | PeerFindStrategy::MeshFirst => {
+                // A0/A1: Use mesh peers directly
+                (mesh_peers.to_vec(), PeerSource::Mesh)
+            }
+            PeerFindStrategy::RecentFirst => {
+                // A2: Try recent successful peers first, then mesh
+                let recent = self.get_recent(context_id);
+                let viable_recent: Vec<_> = recent
+                    .into_iter()
+                    .filter(|p| mesh_peers.contains(p)) // Must also be in mesh
+                    .filter(|p| {
+                        self.quality
+                            .get(p)
+                            .map(|q| !q.is_in_backoff(backoff_duration))
+                            .unwrap_or(true)
+                    })
+                    .collect();
+
+                if !viable_recent.is_empty() {
+                    (viable_recent, PeerSource::RecentCache)
+                } else {
+                    (mesh_peers.to_vec(), PeerSource::Mesh)
+                }
+            }
+            PeerFindStrategy::AddressBookFirst => {
+                // A3: Would use persisted address book - for now, same as baseline
+                // TODO: Integrate with libp2p address book
+                (mesh_peers.to_vec(), PeerSource::Mesh)
+            }
+            PeerFindStrategy::ParallelFind => {
+                // A4: Combine all sources (recent + mesh), deduplicated
+                let recent = self.get_recent(context_id);
+                let mut all_peers: Vec<_> = recent;
+                for peer in mesh_peers {
+                    if !all_peers.contains(peer) {
+                        all_peers.push(*peer);
+                    }
+                }
+                let viable = self.filter_viable(&all_peers, backoff_duration);
+                if viable
+                    .iter()
+                    .any(|p| self.get_recent(context_id).contains(p))
+                {
+                    (viable, PeerSource::RecentCache)
+                } else {
+                    (viable, PeerSource::Mesh)
+                }
+            }
+            PeerFindStrategy::HealthFiltered => {
+                // A5: Filter out peers with recent failures
+                let viable = self.filter_viable(mesh_peers, backoff_duration);
+                // Sort by quality - peers with recent success first
+                let mut sorted: Vec<_> = viable
+                    .into_iter()
+                    .map(|p| {
+                        let score = self
+                            .quality
+                            .get(&p)
+                            .map(|q| {
+                                if q.was_recently_successful(300) {
+                                    1000 - q.failure_count as i32
+                                } else {
+                                    -(q.failure_count as i32)
+                                }
+                            })
+                            .unwrap_or(0);
+                        (p, score)
+                    })
+                    .collect();
+                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                (
+                    sorted.into_iter().map(|(p, _)| p).collect(),
+                    PeerSource::Mesh,
+                )
+            }
+        }
     }
 }
 

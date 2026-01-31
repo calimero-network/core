@@ -1,7 +1,7 @@
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
-use calimero_node::sync::{FreshNodeStrategy, StateSyncStrategy, SyncConfig};
+use calimero_node::sync::{FreshNodeStrategy, PeerFindStrategy, StateSyncStrategy, SyncConfig};
 use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
@@ -57,6 +57,18 @@ pub struct RunCommand {
     /// With this flag, the configured state_sync_strategy is forced.
     #[arg(long, default_value = "false")]
     pub force_state_sync: bool,
+
+    /// Peer finding strategy for benchmarking.
+    ///
+    /// Controls how viable sync peers are discovered and selected:
+    /// - "baseline" or "a0": Current mesh-only approach (default)
+    /// - "mesh-first" or "a1": Only mesh peers, fail if empty
+    /// - "recent-first" or "a2": Try LRU cache first, then mesh
+    /// - "address-book-first" or "a3": Try persisted peers first
+    /// - "parallel" or "a4": Query all sources in parallel
+    /// - "health-filtered" or "a5": Exclude peers with recent failures
+    #[arg(long, default_value = "baseline")]
+    pub peer_find_strategy: String,
 }
 
 impl RunCommand {
@@ -170,6 +182,13 @@ impl RunCommand {
             warn!("BENCHMARK MODE: Forcing state sync, bypassing DAG catchup");
         }
 
+        // Parse peer find strategy
+        let peer_find_strategy: PeerFindStrategy = self
+            .peer_find_strategy
+            .parse()
+            .map_err(|e| eyre::eyre!("Invalid peer find strategy: {}", e))?;
+        info!(%peer_find_strategy, "Using peer find strategy");
+
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.clone(),
@@ -186,6 +205,7 @@ impl RunCommand {
                 fresh_node_strategy,
                 state_sync_strategy,
                 force_state_sync: self.force_state_sync,
+                peer_find_strategy,
                 ..Default::default()
             },
             datastore: datastore_config,
