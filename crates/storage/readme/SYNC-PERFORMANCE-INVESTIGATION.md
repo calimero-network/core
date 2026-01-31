@@ -106,6 +106,23 @@ The dialing phase includes:
 - Muxer negotiation
 - Substream opening
 
+### Optimizations Implemented
+
+#### 1. RTT-Based Peer Sorting
+Peers are sorted to prefer already-connected peers first, then by RTT estimate.
+
+#### 2. Connection State Tracking
+`ConnectionStateTracker` maintains per-peer state with exponential moving average RTT.
+
+#### 3. Parallel Dialing Support
+`ParallelDialTracker` enables trying multiple peers simultaneously for P99 reduction.
+
+#### 4. Churn Recovery Mode
+Configurable catch-up mode that detects lagging nodes and increases sync frequency.
+
+#### 5. Production Monitoring
+Comprehensive PromQL alerts and Grafana dashboard queries. See `PRODUCTION-MONITORING.md`.
+
 ### Instrumentation Added
 
 #### Log Marker: `PEER_DIAL_BREAKDOWN`
@@ -197,6 +214,7 @@ peers_with_score.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 | `crates/storage/readme/CIP-sync-protocol.md` | Master sync protocol specification |
 | `crates/storage/readme/PEER-FINDING-ANALYSIS.md` | Phase 1 analysis and results |
 | `crates/storage/readme/DIAL-OPTIMIZATION-ANALYSIS.md` | Phase 2 analysis and roadmap |
+| `crates/storage/readme/PRODUCTION-MONITORING.md` | PromQL alerts and Grafana dashboards |
 | `crates/storage/readme/DEEP-SYNC-ANALYSIS.md` | Comprehensive benchmark analysis |
 | `crates/storage/readme/SYNC-STRATEGY-ANALYSIS.md` | State sync strategy comparison |
 | `crates/storage/readme/EDGE-CASE-BENCHMARK-RESULTS.md` | Edge case test results |

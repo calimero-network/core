@@ -478,7 +478,38 @@ pub struct SyncConfig {
     ///
     /// Default: `Baseline` for production
     pub peer_find_strategy: super::peer_finder::PeerFindStrategy,
+
+    /// Enable aggressive catch-up mode for lagging nodes.
+    ///
+    /// When enabled, nodes that detect they are behind will:
+    /// - Increase sync frequency temporarily (2x normal)
+    /// - Retry failed syncs immediately instead of waiting
+    /// - Prefer peers with highest root hash diversity
+    ///
+    /// Default: `true` for reliable churn recovery
+    pub enable_catchup_mode: bool,
+
+    /// Number of consecutive sync failures before entering catch-up mode.
+    ///
+    /// After this many failures, the node assumes it's lagging and switches
+    /// to more aggressive sync behavior.
+    ///
+    /// Default: 3
+    pub catchup_mode_threshold: u32,
+
+    /// Maximum retry attempts per peer before moving to next peer.
+    ///
+    /// Controls how many times we retry a failing peer before trying someone else.
+    ///
+    /// Default: 2
+    pub max_retries_per_peer: u32,
 }
+
+/// Default number of failures before entering catch-up mode.
+pub const DEFAULT_CATCHUP_MODE_THRESHOLD: u32 = 3;
+
+/// Default max retries per peer.
+pub const DEFAULT_MAX_RETRIES_PER_PEER: u32 = 2;
 
 impl Default for SyncConfig {
     fn default() -> Self {
@@ -497,6 +528,9 @@ impl Default for SyncConfig {
             ),
             force_state_sync: false,
             peer_find_strategy: super::peer_finder::PeerFindStrategy::default(),
+            enable_catchup_mode: true,
+            catchup_mode_threshold: DEFAULT_CATCHUP_MODE_THRESHOLD,
+            max_retries_per_peer: DEFAULT_MAX_RETRIES_PER_PEER,
         }
     }
 }

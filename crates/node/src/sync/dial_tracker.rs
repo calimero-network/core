@@ -354,9 +354,126 @@ pub fn new_connection_state() -> SharedConnectionState {
     Arc::new(RwLock::new(ConnectionStateTracker::new()))
 }
 
+// ============================================================================
+// Parallel Dialing Support
+// ============================================================================
+
+/// Configuration for parallel dialing
+#[derive(Debug, Clone, Copy)]
+pub struct ParallelDialConfig {
+    /// Maximum concurrent dial attempts
+    pub max_concurrent: usize,
+
+    /// Timeout for individual dial attempt
+    pub dial_timeout_ms: u64,
+
+    /// Whether to cancel remaining dials on first success
+    pub cancel_on_success: bool,
+}
+
+impl Default for ParallelDialConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent: 3,
+            dial_timeout_ms: 5000,
+            cancel_on_success: true,
+        }
+    }
+}
+
+/// Result of a parallel dial operation
+#[derive(Debug)]
+pub struct ParallelDialResult {
+    /// The peer that succeeded (if any)
+    pub success_peer: Option<PeerId>,
+
+    /// Time to first success (ms)
+    pub time_to_success_ms: Option<f64>,
+
+    /// Total attempts made
+    pub attempts: usize,
+
+    /// Per-peer results
+    pub peer_results: Vec<(PeerId, DialResult, f64)>,
+}
+
+impl ParallelDialResult {
+    /// Check if any dial succeeded
+    pub fn succeeded(&self) -> bool {
+        self.success_peer.is_some()
+    }
+
+    /// Get the winning peer's dial time
+    pub fn winning_dial_ms(&self) -> Option<f64> {
+        self.time_to_success_ms
+    }
+}
+
+/// Tracks parallel dial attempts
+pub struct ParallelDialTracker {
+    config: ParallelDialConfig,
+    start: Instant,
+    results: Vec<(PeerId, DialResult, f64)>,
+    first_success: Option<(PeerId, f64)>,
+}
+
+impl ParallelDialTracker {
+    /// Create a new parallel dial tracker
+    pub fn new(config: ParallelDialConfig) -> Self {
+        Self {
+            config,
+            start: Instant::now(),
+            results: Vec::new(),
+            first_success: None,
+        }
+    }
+
+    /// Record a dial result
+    pub fn record(&mut self, peer_id: PeerId, result: DialResult, dial_ms: f64) {
+        self.results.push((peer_id, result, dial_ms));
+
+        if result == DialResult::Success && self.first_success.is_none() {
+            let elapsed = self.start.elapsed().as_secs_f64() * 1000.0;
+            self.first_success = Some((peer_id, elapsed));
+        }
+    }
+
+    /// Finish and get results
+    pub fn finish(self, context_id: &str) -> ParallelDialResult {
+        let result = ParallelDialResult {
+            success_peer: self.first_success.map(|(p, _)| p),
+            time_to_success_ms: self.first_success.map(|(_, t)| t),
+            attempts: self.results.len(),
+            peer_results: self.results,
+        };
+
+        // Log parallel dial summary
+        info!(
+            context_id = %context_id,
+            success = %result.succeeded(),
+            attempts = %result.attempts,
+            time_to_success_ms = %result.time_to_success_ms.map(|t| format!("{:.2}", t)).unwrap_or_else(|| "N/A".to_string()),
+            "PARALLEL_DIAL_RESULT"
+        );
+
+        result
+    }
+
+    /// Get config
+    pub fn config(&self) -> &ParallelDialConfig {
+        &self.config
+    }
+
+    /// Check if we should cancel remaining dials
+    pub fn should_cancel(&self) -> bool {
+        self.config.cancel_on_success && self.first_success.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_dial_breakdown() {
@@ -413,5 +530,78 @@ mod tests {
         let rtt = tracker.get(&peer).unwrap().rtt_estimate_ms.unwrap();
         // 100 * 0.8 + 150 * 0.2 = 80 + 30 = 110
         assert!((rtt - 110.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_connection_state_failure_tracking() {
+        let mut tracker = ConnectionStateTracker::new();
+        let peer = PeerId::random();
+
+        // Initially no state
+        assert!(!tracker.is_likely_connected(&peer));
+
+        // After success, should be connected
+        tracker.get_mut(peer).on_success(100.0);
+        assert!(tracker.is_likely_connected(&peer));
+
+        // After failure, should not be connected
+        tracker.get_mut(peer).on_failure();
+        assert!(!tracker.is_likely_connected(&peer));
+    }
+
+    #[test]
+    fn test_peers_by_rtt() {
+        let mut tracker = ConnectionStateTracker::new();
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+        let peer3 = PeerId::random();
+
+        tracker.get_mut(peer1).on_success(200.0);
+        tracker.get_mut(peer2).on_success(50.0);
+        tracker.get_mut(peer3).on_success(100.0);
+
+        let sorted = tracker.peers_by_rtt();
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted[0].0, peer2); // Fastest
+        assert_eq!(sorted[2].0, peer1); // Slowest
+    }
+
+    #[test]
+    fn test_parallel_dial_tracker() {
+        let config = ParallelDialConfig::default();
+        let mut tracker = ParallelDialTracker::new(config);
+
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+
+        // First dial fails
+        tracker.record(peer1, DialResult::Timeout, 5000.0);
+        assert!(!tracker.should_cancel());
+
+        // Second dial succeeds
+        tracker.record(peer2, DialResult::Success, 100.0);
+        assert!(tracker.should_cancel());
+
+        let result = tracker.finish("test-context");
+        assert!(result.succeeded());
+        assert_eq!(result.success_peer, Some(peer2));
+        assert_eq!(result.attempts, 2);
+    }
+
+    #[test]
+    fn test_parallel_dial_no_success() {
+        let config = ParallelDialConfig::default();
+        let mut tracker = ParallelDialTracker::new(config);
+
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+
+        tracker.record(peer1, DialResult::Timeout, 5000.0);
+        tracker.record(peer2, DialResult::Refused, 100.0);
+
+        let result = tracker.finish("test-context");
+        assert!(!result.succeeded());
+        assert_eq!(result.success_peer, None);
+        assert_eq!(result.attempts, 2);
     }
 }
