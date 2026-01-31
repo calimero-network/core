@@ -5,82 +5,95 @@
 
 ---
 
-## Issue 1: Merge Callback ~~Entity Type Limitation~~ ✅ INTEGRATED
+## Issue 1: Tree Sync CRDT Merge - Architectural Gap
 
-### Status: ✅ INTEGRATED (January 31, 2026)
+### Status: ⚠️ PARTIALLY INTEGRATED - LWW Fallback
 
-### What's Now Working
+### The Problem
 
-The merge callback infrastructure is **fully wired and integrated**:
-
-```
-SyncManager::get_merge_callback()
-    → RuntimeMergeCallback::new()
-        → WasmMergeCallback trait
-
-Tree Sync Methods (bloom_filter, hash_comparison, subtree_prefetch, level_wise):
-    → self.get_merge_callback()
-    → apply_entity_with_merge(context_id, key, remote_value, Some(callback))
-        → Read local value if exists
-        → Call callback.merge_custom(type_name, local, remote, ts)
-        → Write merged result
-```
-
-### Merge Flow
+The CIP correctly states that `crdt_type` IS stored in `Metadata`. The storage layer does track entity types:
 
 ```rust
-// crates/node/src/sync/tree_sync.rs - apply_entity_with_merge()
-
-fn apply_entity_with_merge(&self, context_id, key, remote_value, merge_callback) {
-    // 1. Read existing local value
-    let local_value = store_handle.get(&state_key)?;
-    
-    // 2. If local exists, merge
-    let final_value = if let Some(local_data) = local_value {
-        if let Some(callback) = merge_callback {
-            // Use CRDT merge via callback
-            callback.merge_custom("unknown", &local_data, &remote_value, 0, 1)?
-        } else {
-            // No callback - LWW
-            remote_value
-        }
-    } else {
-        // No local - just use remote
-        remote_value
-    };
-    
-    // 3. Write final value
-    store_handle.put(&state_key, &final_value)?;
+// crates/storage/src/entities.rs
+pub struct Metadata {
+    pub crdt_type: Option<CrdtType>,  // ← EXISTS AND WORKING
+    // ...
 }
 ```
 
-### Remaining Limitation
+**BUT**: Tree sync bypasses the storage layer and uses low-level store operations:
 
-**The `RuntimeMergeCallback` cannot dispatch to actual WASM** because:
+```
+Delta Sync Path (CORRECT):
+  delta_store.rs → context_client.execute("__calimero_sync_next") 
+    → WASM runtime → storage Interface → has Metadata with crdt_type ✅
 
-1. **Entity type not available**: We pass `"unknown"` as type_name since storage doesn't track which CRDT type each entity is
-2. **`from_module()` returns `None`**: The WASM integration is stubbed
+Tree Sync Path (PROBLEM):
+  tree_sync.rs → context_client.datastore_handle() → store_handle.put()
+    → raw key-value store → NO metadata, NO crdt_type ❌
+```
 
-The callback falls back to:
-1. Type registry lookup (works for built-in CRDTs if type name matches)
-2. LWW (if type not found)
+### Current Behavior
 
-### Impact (Reduced)
+```rust
+// tree_sync.rs - apply_entity_with_merge()
+fn apply_entity_with_merge(&self, key, remote_value, merge_callback) {
+    // 1. Read local raw bytes (NO METADATA)
+    let local_value = store_handle.get(&state_key)?;
+    
+    // 2. Try to merge with "unknown" type (can't determine actual type!)
+    callback.merge_custom("unknown", &local, &remote, 0, 1)?
+    
+    // 3. Callback falls back to LWW since type is unknown
+}
+```
 
-| Data Type | State Sync Behavior | Correct? |
-|-----------|---------------------|----------|
-| Built-in CRDTs (Counter, Map) | LWW (type name "unknown") | ⚠️ Suboptimal |
-| Custom `#[derive(Mergeable)]` | LWW | ⚠️ Expected |
-| Unknown types | LWW | ✅ Expected |
+### Why This Happens
 
-**Note**: The merge callback IS being called now, it just can't determine the actual type. This is still better than before (direct PUT with no merge consideration at all).
+| Layer | Has crdt_type? | Used By |
+|-------|----------------|---------|
+| `calimero-storage` Interface | ✅ Yes (via Index/Metadata) | Delta sync |
+| `calimero-store` raw store | ❌ No (just key-value) | Tree sync |
 
-### Future Fix (Backlog)
+Tree sync was designed to work at the low-level for efficiency, but this means it can't access the metadata.
 
-To get full CRDT semantics:
-1. Store entity type metadata in storage
-2. Pass actual type name to `merge_custom()`
-3. Implement `RuntimeMergeCallback::from_module()` for custom types
+### Impact
+
+| Sync Method | CRDT Type Resolution | Result |
+|-------------|----------------------|--------|
+| **Delta sync** (DAG-based) | Proper (via WASM + storage Interface) | ✅ Correct merge |
+| **Tree sync** (state-based) | Unknown (raw bytes only) | ⚠️ LWW fallback |
+
+### Proper Fix Options
+
+1. **Option A: Make tree sync use storage Interface** (Recommended)
+   - Change tree_sync to construct `Action::Update` with proper metadata
+   - Call `context_client.execute("__calimero_sync_next", ...)`
+   - Same path as delta sync
+   - Effort: Medium (refactor tree_sync)
+
+2. **Option B: Include metadata in TreeNode wire format**
+   - Modify `TreeNode.leaf_data` to include serialized metadata
+   - Reconstruct `Metadata` when applying
+   - Effort: Medium (protocol change)
+
+3. **Option C: Query Index for entity type**
+   - After reading key, call `Index::get_metadata()` to get crdt_type
+   - Use that type for merge
+   - Effort: Low but assumes local type matches remote
+
+### Current Workaround
+
+The merge callback IS wired and called, providing:
+- A hook point for future proper implementation
+- Fallback to LWW (no worse than before)
+- Logging of merge attempts for debugging
+
+### Recommendation
+
+**For MVP**: Accept LWW fallback for tree sync. Delta sync (the primary sync method) works correctly.
+
+**Next iteration**: Implement Option A - refactor tree sync to use storage Interface via WASM execution, same as delta sync.
 
 ---
 
@@ -296,9 +309,11 @@ pub async fn add_snapshot_boundary_stubs(...) { ... }
 
 | Issue | Severity | Fix Effort | Status |
 |-------|----------|------------|--------|
-| Merge callback | Medium | Done | ✅ **INTEGRATED** (type name TBD) |
+| Tree sync CRDT merge | Medium | Medium | ⚠️ LWW fallback (needs storage Interface) |
 | ParallelDialTracker | Low | Done | ✅ **INTEGRATED** |
-| Snapshot boundary stubs | Low | High | ⚠️ Keep workaround |
+| Snapshot boundary stubs | Low | High | ⚠️ Workaround documented |
+
+**Key Insight**: Delta sync works correctly with CRDT merge. Tree sync falls back to LWW because it bypasses the storage layer. For MVP, this is acceptable since delta sync is the primary sync method.
 
 ---
 
