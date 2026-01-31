@@ -239,8 +239,13 @@ impl NodeClient {
         metadata: Vec<u8>,
         package: &str,
         version: &str,
+        signer_id: Option<&str>,
         is_bundle: bool,
     ) -> eyre::Result<ApplicationId> {
+        // For bundles: signer_id is required
+        // For non-bundles: signer_id is optional (backwards compatibility)
+        let signer_id_str = signer_id.unwrap_or("");
+
         let application = types::ApplicationMeta::new(
             key::BlobMeta::new(*blob_id),
             size,
@@ -249,6 +254,7 @@ impl NodeClient {
             key::BlobMeta::new(BlobId::from([0; 32])),
             package.to_owned().into_boxed_str(),
             version.to_owned().into_boxed_str(),
+            signer_id_str.to_owned().into_boxed_str(),
         );
 
         let application_id = if is_bundle {
@@ -350,6 +356,7 @@ impl NodeClient {
             metadata,
             package,
             version,
+            None, // signer_id: None for non-bundle installations
             false, // is_bundle: false for single WASM
         )
     }
@@ -509,6 +516,7 @@ impl NodeClient {
             };
 
             // Install application with bundle blob_id and extracted metadata
+            // TODO: Wire in signer_id from manifest verification (install_flow task)
             return self.install_application(
                 &bundle_blob_id,
                 stored_size,
@@ -516,6 +524,7 @@ impl NodeClient {
                 bundle_metadata, // Use metadata extracted from bundle manifest
                 package,
                 version,
+                None, // signer_id: to be wired from manifest verification
                 true, // is_bundle: true for bundles
             );
         }
@@ -536,8 +545,16 @@ impl NodeClient {
             )
             .await?;
 
-        self.install_application(&blob_id, size, &uri, metadata, package, version, false)
-        // is_bundle: false for single WASM
+        self.install_application(
+            &blob_id,
+            size,
+            &uri,
+            metadata,
+            package,
+            version,
+            None, // signer_id: None for non-bundle installations
+            false, // is_bundle: false for single WASM
+        )
     }
 
     /// Install a bundle archive (.mpk - Mero Package Kit) containing WASM, ABI, and migrations
@@ -693,6 +710,7 @@ impl NodeClient {
         };
 
         // Install application with bundle blob_id and extracted metadata
+        // TODO: Wire in signer_id from manifest verification (install_flow task)
         let application_id = self.install_application(
             &bundle_blob_id,
             stored_size,
@@ -700,6 +718,7 @@ impl NodeClient {
             bundle_metadata, // Use metadata extracted from bundle manifest
             package,
             version,
+            None, // signer_id: to be wired from manifest verification
             true, // is_bundle: true for bundles
         )?;
 
@@ -946,6 +965,7 @@ impl NodeClient {
         };
 
         // Install application with extracted metadata
+        // TODO: Wire in signer_id from manifest verification (install_flow task)
         self.install_application(
             blob_id,
             size,
@@ -953,9 +973,9 @@ impl NodeClient {
             bundle_metadata,
             package,
             version,
-            true,
+            None, // signer_id: to be wired from manifest verification
+            true, // is_bundle: true for bundles
         )
-        // is_bundle: true for bundles
     }
 
     /// Find duplicate artifact in other versions by hash and relative path
