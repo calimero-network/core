@@ -176,11 +176,34 @@ If Index doesn't exist or can't be read, we default to `LwwRegister` even if the
 |---------|--------|
 | Protocol Negotiation (SyncHandshake) | ✅ Works |
 | TreeLeafData includes metadata | ✅ Works |
-| Interface::merge_by_crdt_type_with_callback | ✅ Works (but dispatches to LWW) |
+| handle_tree_node_request reads EntityIndex | ✅ Works |
+| apply_entity_with_merge → Interface::merge_by_crdt_type_with_callback | ✅ Works |
+| Collection children as separate entities | ✅ Works |
+| Counter per-executor slots (no conflict) | ✅ Works |
 | Delta sync (DAG-based) | ✅ Works (goes through WASM) |
 | Snapshot sync | ✅ Works (no merge needed) |
-| Bloom filter sync | ⚠️ LWW only |
-| Hash comparison sync | ⚠️ LWW only |
+| Hash comparison sync | ✅ Works (uses TreeLeafData with metadata) |
+| Subtree prefetch sync | ✅ Works (uses TreeLeafData with metadata) |
+| Level-wise sync | ✅ Works (uses TreeLeafData with metadata) |
+| Bloom filter sync | ⚠️ Legacy format (no metadata in wire protocol) |
+
+### Bloom Filter Limitation
+
+Bloom filter sync uses legacy wire format without metadata:
+```rust
+// handle_bloom_filter_request - sends without metadata
+for (key, value) in &missing_entries {
+    serialized.extend_from_slice(key);
+    serialized.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    serialized.extend_from_slice(value);  // No metadata!
+}
+```
+
+**Impact**:
+- `apply_entities_from_bytes` uses `default_remote_metadata` (LwwRegister)
+- BUT: `apply_entity_with_merge` reads LOCAL metadata for CRDT type dispatch
+- So local Counter entity merges correctly (uses local CrdtType::Counter)
+- Only NEW entities (not in local) assume LwwRegister (acceptable fallback)
 
 ---
 
@@ -297,4 +320,32 @@ crdt_type → dispatch based on type:
 
 ### Status: ✅ Acceptable for Production
 
-The core CRDT functionality works. WASM callback for custom types is future work.
+The core CRDT functionality works correctly:
+
+1. **HashComparison/SubtreePrefetch/LevelWise sync**: Use `TreeLeafData` which includes metadata → proper CRDT dispatch ✅
+2. **BloomFilter sync**: Uses legacy format BUT reads LOCAL metadata for dispatch → proper CRDT dispatch ✅
+3. **Collection children**: Stored as separate entities with own IDs → per-entry merge ✅
+4. **Counter**: Uses per-executor slots → different nodes = different entity IDs = no conflict ✅
+5. **WASM callback**: Returns `None` → custom types use LWW (acceptable, rare use case)
+
+### Code Paths Verified
+
+```
+Tree Sync Path (HashComparison, SubtreePrefetch, LevelWise):
+  handle_tree_node_request → reads EntityIndex → includes metadata in TreeLeafData
+  apply_leaf_from_tree_data → uses leaf_data.metadata
+  apply_entity_with_merge → Interface::merge_by_crdt_type_with_callback(local_meta, remote_meta) ✅
+
+Bloom Filter Path:
+  handle_bloom_filter_request → sends key+value (no metadata)
+  apply_entities_from_bytes → creates default_remote_metadata (LwwRegister)
+  apply_entity_with_merge → reads LOCAL metadata for crdt_type dispatch ✅
+```
+
+### Unit Tests Added
+
+- `test_tree_leaf_data_serialization` - TreeLeafData round-trips with metadata
+- `test_tree_leaf_data_crdt_types` - All CRDT types serialize correctly
+- `test_merge_dispatch_lww_register` - Remote wins with later timestamp
+- `test_merge_dispatch_lww_local_wins` - Local wins with later timestamp
+- 10 total new tests in `crates/node/src/sync/tree_sync.rs`
