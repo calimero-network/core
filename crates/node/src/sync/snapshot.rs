@@ -314,6 +314,50 @@ impl SyncManager {
             .update_dag_heads(&context_id, boundary.dag_heads.clone())?;
         self.clear_sync_in_progress_marker(context_id)?;
 
+        // CRITICAL: Add boundary delta stubs to the DeltaStore
+        // This ensures that new deltas referencing the boundary heads as parents
+        // can be applied without requiring the actual boundary delta payloads.
+        if !boundary.dag_heads.is_empty() {
+            // Get or create the delta store for this context
+            let our_identities = self
+                .context_client
+                .get_context_members(&context_id, Some(true));
+            if let Some(Ok((our_identity, _))) =
+                crate::utils::choose_stream(our_identities, &mut rand::thread_rng()).await
+            {
+                let delta_store = self
+                    .node_state
+                    .delta_stores
+                    .entry(context_id)
+                    .or_insert_with(|| {
+                        crate::delta_store::DeltaStore::new(
+                            *boundary.boundary_root_hash,
+                            self.context_client.clone(),
+                            context_id,
+                            our_identity,
+                        )
+                    });
+
+                let stubs_added = delta_store
+                    .add_snapshot_boundary_stubs(
+                        boundary.dag_heads.clone(),
+                        *boundary.boundary_root_hash,
+                    )
+                    .await;
+
+                info!(
+                    %context_id,
+                    stubs_added,
+                    "Added snapshot boundary stubs to DeltaStore for future delta parent resolution"
+                );
+            } else {
+                warn!(
+                    %context_id,
+                    "Could not find our identity to create DeltaStore - boundary stubs not added"
+                );
+            }
+        }
+
         info!(%context_id, applied_records, "Snapshot sync completed");
 
         Ok(SnapshotSyncResult {

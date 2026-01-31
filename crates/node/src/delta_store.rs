@@ -449,6 +449,65 @@ impl DeltaStore {
         Ok(loaded_count)
     }
 
+    /// Add boundary delta stubs to the DAG after snapshot sync.
+    ///
+    /// When a node joins via snapshot sync, it receives the state but not the DAG history.
+    /// This method creates "stub" deltas for the snapshot boundary heads so that:
+    /// 1. New deltas that reference these heads as parents can be applied
+    /// 2. The DAG maintains correct topology
+    ///
+    /// The stubs have no payload (empty actions) and are marked as already applied.
+    pub async fn add_snapshot_boundary_stubs(
+        &self,
+        boundary_dag_heads: Vec<[u8; 32]>,
+        boundary_root_hash: [u8; 32],
+    ) -> usize {
+        let mut added_count = 0;
+        let mut dag = self.dag.write().await;
+
+        for head_id in boundary_dag_heads {
+            // Skip genesis (zero hash)
+            if head_id == [0; 32] {
+                continue;
+            }
+
+            // Create a stub delta with no payload
+            let stub = CausalDelta::new(
+                head_id,
+                vec![[0; 32]], // Parent is "genesis" (since we don't know actual parents)
+                Vec::new(),    // Empty payload - no actions
+                calimero_storage::logical_clock::HybridTimestamp::default(),
+                boundary_root_hash, // Expected root hash is the snapshot boundary
+            );
+
+            // Restore the stub to the DAG (marks it as applied)
+            if dag.restore_applied_delta(stub) {
+                added_count += 1;
+                info!(
+                    context_id = %self.applier.context_id,
+                    ?head_id,
+                    "Added snapshot boundary stub to DAG"
+                );
+            }
+        }
+
+        // Also track the expected root hash for merge detection
+        if added_count > 0 {
+            let mut head_hashes = self.head_root_hashes.write().await;
+            for head_id in dag.get_heads().iter() {
+                let _previous = head_hashes.insert(*head_id, boundary_root_hash);
+            }
+        }
+
+        info!(
+            context_id = %self.applier.context_id,
+            added_count,
+            "Snapshot boundary stubs added to DAG"
+        );
+
+        added_count
+    }
+
     /// Add a delta with optional event data to the store
     ///
     /// If events are provided and the delta goes pending, events are persisted
