@@ -1,0 +1,676 @@
+{
+  "bounties": [
+    {
+      "title": "Security: JWT host validation uses spoofable X-Forwarded-Host header",
+      "description": "In `crates/auth/src/auth/token/jwt.rs`, function `validate_node_host` trusts the X-Forwarded-Host header without verification. Attackers can spoof this header to bypass host validation. Fix by validating against a trusted proxy configuration or removing header-based validation entirely.",
+      "pathHint": "crates/auth/src/auth/token/jwt.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "critical"
+    },
+    {
+      "title": "Security: Auth bypass for requests with 'auth:' host prefix",
+      "description": "In `crates/auth/src/auth/token/jwt.rs` line 125, requests with host starting with 'auth:' bypass validation entirely. This could allow attackers to bypass token validation by crafting requests with this host pattern. Remove or properly authenticate this bypass.",
+      "pathHint": "crates/auth/src/auth/token/jwt.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "critical"
+    },
+    {
+      "title": "Security: WASM memory access uses unsafe unchecked slicing",
+      "description": "In `crates/runtime/src/logic.rs`, functions `read_guest_memory_slice` and `read_guest_memory_slice_mut` use `data_unchecked()` without bounds validation. Malicious WASM code could trigger out-of-bounds access. Add proper bounds checking before slicing guest memory.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 90,
+      "category": "security",
+      "severity": "critical"
+    },
+    {
+      "title": "Security: CORS allows any origin with private network access",
+      "description": "In `crates/server/src/lib.rs` lines 181-193, CORS is configured with `allow_origin(Any)` and `allow_private_network(true)`. This allows any website to make authenticated requests to the API. Implement proper origin whitelisting from configuration.",
+      "pathHint": "crates/server/src/lib.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Security: Mock TEE attestation can be enabled in production config",
+      "description": "In `crates/config/src/lib.rs`, `accept_mock_tee` boolean defaults to false but can be enabled via config. There's no environment check to prevent enabling in production. Add safeguards to reject mock attestation in release builds or when certain env vars indicate production.",
+      "pathHint": "crates/config/src/lib.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Security: Missing input length validation in server handlers",
+      "description": "Multiple admin handlers in `crates/server/src/admin/handlers/` accept JSON payloads without size limits on string fields. For example, `InstallApplicationRequest` doesn't validate URL length. Add input validation to all request types to prevent DoS via oversized payloads.",
+      "pathHint": "crates/server/src/admin/handlers",
+      "estimatedMinutes": 90,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Security: Secrets stored with predictable static keys",
+      "description": "In `crates/auth/src/secrets.rs`, JWT secrets are stored under predictable keys like 'system:secrets:jwt_auth'. An attacker with read access to storage could locate and target these keys. Consider using derived/hashed key names.",
+      "pathHint": "crates/auth/src/secrets.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Concurrency: RwLock poisoning not properly handled in encryption layer",
+      "description": "In `crates/store/encryption/src/lib.rs`, RwLock acquisition returns generic error on poisoning (lines 98-99, 137-138). This loses context about what went wrong. Implement proper poison handling strategy - either recover, propagate specific error, or panic with context.",
+      "pathHint": "crates/store/encryption/src/lib.rs",
+      "estimatedMinutes": 60,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "Concurrency: Potential deadlock in context lock acquisition pattern",
+      "description": "In `crates/context/src/lib.rs`, `ContextMeta::lock()` uses try_lock_owned followed by async lock. If multiple actors contend for locks in different orders across contexts, deadlock could occur. Implement consistent lock ordering or use a lock-free approach.",
+      "pathHint": "crates/context/src/lib.rs",
+      "estimatedMinutes": 75,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "Bug: unchecked arithmetic in duration serialization",
+      "description": "In `crates/config/src/lib.rs` line 329, `duration.as_millis() as u64` can overflow if duration exceeds u64::MAX milliseconds. Use checked conversion and return error for invalid durations.",
+      "pathHint": "crates/config/src/lib.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: VM memory panic when memory not initialized",
+      "description": "In `crates/runtime/src/logic.rs` line 277, `host_functions()` panics with expect() if memory not initialized. This should return a proper error instead of panicking, as callers may not have control over initialization order.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Server lib.rs is monolithic, needs refactoring",
+      "description": "The file `crates/server/src/lib.rs` has a TODO comment acknowledging it's too long (line 49-50). Split the `start()` function into smaller functions: one for listener setup, one for service registration, one for auth setup. This improves testability and maintainability.",
+      "pathHint": "crates/server/src/lib.rs",
+      "estimatedMinutes": 90,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Inconsistent error types across crates",
+      "description": "Error handling is inconsistent: some crates use eyre::Result, some use custom error types, some use string errors. Standardize on typed errors in public APIs across auth, server, and context crates. Start with `crates/auth/src/lib.rs` AuthError and propagate pattern.",
+      "pathHint": "crates/auth/src/lib.rs",
+      "estimatedMinutes": 90,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: WebSocket timestamp uses expect() for system time",
+      "description": "In `crates/server/src/ws.rs` line 113, `unix_timestamp()` uses `expect()` for system time conversion. On systems with misconfigured clocks (time before UNIX epoch), this panics. Use a fallback or return an error.",
+      "pathHint": "crates/server/src/ws.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "Design: SDK macros have excessive complexity",
+      "description": "In `crates/sdk/macros/src/logic/method.rs`, functions are marked with `#[expect(clippy::too_many_lines)]`. Refactor these macro implementations into smaller, testable helper functions. The Method parsing logic should be split from code generation.",
+      "pathHint": "crates/sdk/macros/src/logic/method.rs",
+      "estimatedMinutes": 90,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Missing timeout on blob operations in WASM runtime",
+      "description": "In `crates/runtime/src/logic/host_functions/blobs.rs`, blob read/write operations use `block_on()` without timeout. A slow or hung blob operation blocks the executor indefinitely. Add configurable timeouts to blob operations.",
+      "pathHint": "crates/runtime/src/logic/host_functions/blobs.rs",
+      "estimatedMinutes": 60,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Performance: Blocking I/O on async runtime in blob operations",
+      "description": "In `crates/runtime/src/logic/host_functions/blobs.rs`, `block_on()` is called within async context (lines 245, 300, 306, 479, 501). This blocks the tokio runtime. Refactor to use proper async/await or spawn_blocking.",
+      "pathHint": "crates/runtime/src/logic/host_functions/blobs.rs",
+      "estimatedMinutes": 75,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Tests: Missing tests for JWT token rotation edge cases",
+      "description": "In `crates/auth/src/auth/token/jwt.rs`, the `refresh_token_pair` function has complex key rotation logic for client tokens, but no tests verify behavior when storage fails mid-rotation, or when concurrent refresh requests occur.",
+      "pathHint": "crates/auth/src/auth/token/jwt.rs",
+      "estimatedMinutes": 60,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Tests: Critical WASM host functions lack integration tests",
+      "description": "In `crates/runtime/src/logic/host_functions/`, many host functions (governance, context, utility) have no integration tests verifying end-to-end behavior with actual WASM modules. Add integration tests covering the execution flow.",
+      "pathHint": "crates/runtime/src/logic/host_functions",
+      "estimatedMinutes": 90,
+      "category": "tests",
+      "severity": "high"
+    },
+    {
+      "title": "Bug: Error swallowed in execute handler xcall processing",
+      "description": "In `crates/context/src/handlers/execute.rs` lines 343-344, `.unwrap_or_default()` silently swallows errors when fetching target context members for xcalls. This hides failures. Log the error and potentially fail the operation.",
+      "pathHint": "crates/context/src/handlers/execute.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Context config missing todo implementations",
+      "description": "In `crates/context/config/src/client/env/config/types/starknet.rs` line 290 and ethereum.rs lines 128, 288, `todo!()` is used for RevealOpenInvitation handling. These will panic at runtime. Implement proper handling or return explicit errors.",
+      "pathHint": "crates/context/config/src/client/env/config/types",
+      "estimatedMinutes": 75,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "title": "Observability: Missing request ID in server error responses",
+      "description": "Server handlers in `crates/server/src/admin/handlers/` log errors but don't include correlation IDs. Add request ID generation and propagation through handlers for debugging production issues.",
+      "pathHint": "crates/server/src/admin",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Security: Unsafe Send/Sync implementation for EncryptedDatabase",
+      "description": "In `crates/store/encryption/src/lib.rs` lines 216-217, Send and Sync are implemented with `unsafe impl` without documenting the safety invariants. Add safety documentation explaining why these bounds are valid.",
+      "pathHint": "crates/store/encryption/src/lib.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Missing graceful shutdown in node manager",
+      "description": "In `crates/node/src/lib.rs`, `NodeManager` starts periodic tasks but has no graceful shutdown handling. When the actor stops, background tasks may continue or panic. Implement proper cancellation tokens and cleanup.",
+      "pathHint": "crates/node/src/lib.rs",
+      "estimatedMinutes": 75,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Unbounded channel for blob writes can cause OOM",
+      "description": "In `crates/runtime/src/logic/host_functions/blobs.rs` line 105, `mpsc::unbounded_channel()` is used for blob data. A malicious WASM app could write unlimited data causing OOM. Use bounded channel with backpressure.",
+      "pathHint": "crates/runtime/src/logic/host_functions/blobs.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "title": "Design: VMLimits defaults allow very large allocations",
+      "description": "In `crates/runtime/src/logic.rs`, default VMLimits allow 1GiB register capacity and 100MiB per register. These defaults may be too permissive for production. Review and document appropriate limits, add configuration support.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Tests: Missing fuzz tests for WASM input parsing",
+      "description": "The WASM host functions in `crates/runtime/src/logic/host_functions/` parse untrusted guest memory but have no fuzz tests. Add cargo-fuzz targets for memory parsing functions to catch edge cases.",
+      "pathHint": "crates/runtime/src/logic/host_functions",
+      "estimatedMinutes": 90,
+      "category": "tests",
+      "severity": "high"
+    },
+    {
+      "title": "Bug: Application install doesn't validate hash before installation",
+      "description": "In `crates/server/src/admin/handlers/applications/install_application.rs`, the optional hash parameter is passed through but there's no clear validation that download matches hash before committing. Verify hash validation happens in the install path.",
+      "pathHint": "crates/server/src/admin/handlers/applications/install_application.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Secret rotation task runs forever without health check",
+      "description": "In `crates/auth/src/secrets.rs` line 238, `start_rotation_task` spawns an infinite loop without any health monitoring or restart capability. Add health check endpoint and recovery mechanism if rotation fails repeatedly.",
+      "pathHint": "crates/auth/src/secrets.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Concurrency: Race in context cache refresh",
+      "description": "In `crates/context/src/lib.rs` function `get_or_fetch_context`, the cache refresh in Occupied branch reads from DB and updates cache non-atomically. Concurrent requests could see inconsistent state. Use compare-and-swap or lock.",
+      "pathHint": "crates/context/src/lib.rs",
+      "estimatedMinutes": 60,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: CLI default connection uses hardcoded localhost URL",
+      "description": "In `crates/meroctl/src/cli.rs` line 200, default connection falls back to hardcoded 'http://127.0.0.1:2528'. This should be configurable via environment variable or warn the user clearly.",
+      "pathHint": "crates/meroctl/src/cli.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Network dial doesn't handle existing pending dials",
+      "description": "In `crates/network/src/handlers/commands/dial.rs` line 23, there's a TODO about awaiting existing receiver when dial is already pending. Implement proper handling to avoid duplicate dial attempts.",
+      "pathHint": "crates/network/src/handlers/commands/dial.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Docs: Missing cursor rules file for AI-assisted development",
+      "description": "The repository lacks a `.cursorrules` or `.cursor/rules` file that would help Cursor AI understand project conventions, important files, and coding standards. Create this file with Rust conventions, key modules, and testing requirements.",
+      "pathHint": ".cursorrules",
+      "estimatedMinutes": 45,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Metrics path hardcoded without config",
+      "description": "In `crates/server/src/metrics.rs` line 17, the metrics path '/metrics' is hardcoded with a TODO to source from config. Implement configurable metrics endpoint path.",
+      "pathHint": "crates/server/src/metrics.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Store layer interface uses Box instead of impl Iterator",
+      "description": "In `crates/store/src/layer.rs`, the ReadLayer trait has a TODO about returning Iterator. The current design forces boxing. Consider associated types or GATs for zero-cost iteration.",
+      "pathHint": "crates/store/src/layer.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Admin service JSON serialization uses unwrap",
+      "description": "In `crates/server/src/admin/service.rs` line 403, `to_json_string().unwrap()` is called on response serialization. If a response type has non-serializable fields, this panics. Use proper error handling.",
+      "pathHint": "crates/server/src/admin/service.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Tests: SSE handlers lack test coverage",
+      "description": "In `crates/server/src/sse/handlers.rs`, the SSE event streaming logic has no tests. Add tests for subscription management, event filtering, and connection lifecycle.",
+      "pathHint": "crates/server/src/sse/handlers.rs",
+      "estimatedMinutes": 75,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Proposal handlers in single large file",
+      "description": "In `crates/server/src/admin/handlers/proposals.rs` line 23, there's a TODO to split into separate files. The file handles multiple proposal-related endpoints. Refactor into separate files per endpoint.",
+      "pathHint": "crates/server/src/admin/handlers/proposals.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Runtime error conversion may panic",
+      "description": "In `crates/runtime/src/errors.rs` lines 217-220, there's a TODO noting the From implementation should use TryFrom to avoid panicking. Refactor to use TryFrom and handle conversion failures gracefully.",
+      "pathHint": "crates/runtime/src/errors.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: WASM module lacks validation before execution",
+      "description": "In `crates/runtime/src/lib.rs` lines 99-107, there are TODOs about validating WASM (no memory import, no _start function) and applying transformations. Implement these security validations before running untrusted code.",
+      "pathHint": "crates/runtime/src/lib.rs",
+      "estimatedMinutes": 90,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Bug: Storage delta serialization has no size limit",
+      "description": "In `crates/context/src/handlers/execute.rs` when deserializing StorageDelta from artifact (line 709), there's no size limit. A malicious delta could cause OOM. Add size limit validation before deserialization.",
+      "pathHint": "crates/context/src/handlers/execute.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Observability: Host function errors not logged consistently",
+      "description": "In `crates/runtime/src/logic/errors.rs` lines 27-29, there's a TODO about whether to panic on host errors. Currently errors may not be logged before being converted. Add consistent error logging before conversion.",
+      "pathHint": "crates/runtime/src/logic/errors.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Blob reference counting not implemented",
+      "description": "In `crates/store/src/types/blobs.rs` line 10 and `application.rs` line 10, there are TODOs about implementing proper reference counting for blob entries. Implement ref counting to allow safe garbage collection.",
+      "pathHint": "crates/store/src/types/blobs.rs",
+      "estimatedMinutes": 75,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Tests: Merod init command too complex without tests",
+      "description": "In `crates/merod/src/cli/init.rs` line 257, the function is marked with too_many_lines. This complex initialization has no unit tests. Add tests for config generation and validation paths.",
+      "pathHint": "crates/merod/src/cli/init.rs",
+      "estimatedMinutes": 75,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Sync protocol DAG reconstruction not implemented",
+      "description": "In `crates/dag/readme/integration.md` line 414, there's a `todo!()` for DAG reconstruction. If this code path is reachable, it will panic. Implement proper DAG reconstruction or return error.",
+      "pathHint": "crates/dag",
+      "estimatedMinutes": 90,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "title": "Design: Parent request protocol not implemented",
+      "description": "In `crates/node/README.md` lines 217, 382, parent request protocol is marked as TODO. This affects state synchronization when deltas are missing parents. Implement or document workaround.",
+      "pathHint": "crates/node",
+      "estimatedMinutes": 90,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "Security: Sync protocol root_hash transmitted in cleartext",
+      "description": "In `crates/node/primitives/src/sync.rs` line 112, there's a TODO noting root_hash shouldn't be cleartext. Evaluate if this leaks sensitive state information and implement encryption if needed.",
+      "pathHint": "crates/node/primitives/src/sync.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Application source uses Box instead of Cow",
+      "description": "In `crates/store/src/types/application.rs` lines 14-15, there are TODOs to use Cow for source and metadata. This would reduce allocations. Implement the Cow-based types.",
+      "pathHint": "crates/store/src/types/application.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Concurrency: Network peer dial lacks rate limiting",
+      "description": "The network dial command in `crates/network/src/handlers/commands/dial.rs` doesn't implement rate limiting. A flood of dial requests could exhaust resources. Add rate limiting per peer.",
+      "pathHint": "crates/network/src/handlers/commands",
+      "estimatedMinutes": 60,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Identity public key exposed in server primitives comment",
+      "description": "In `crates/server/primitives/src/admin.rs` lines 997-998, comments note ContextIdentity is an implementation detail that should be PublicKey. Fix the API to use PublicKey type instead.",
+      "pathHint": "crates/server/primitives/src/admin.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Tests: WebSocket connection lifecycle needs tests",
+      "description": "In `crates/server/src/ws.rs`, the WebSocket connection handling including ping/pong, subscription management, and cleanup has no dedicated tests. Add integration tests for connection lifecycle.",
+      "pathHint": "crates/server/src/ws.rs",
+      "estimatedMinutes": 75,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Open invitation salt generation in wrong place",
+      "description": "In `crates/server/src/admin/handlers/context/invite_to_context_open_invitation.rs` line 18, there's a TODO about finding the best place to generate salt. Audit and move salt generation to appropriate security boundary.",
+      "pathHint": "crates/server/src/admin/handlers/context/invite_to_context_open_invitation.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Client keys handler has undecided context ID approach",
+      "description": "In `crates/auth/src/api/handlers/client_keys.rs` line 134, there's a TODO about deciding final approach for context ID and Identity. Document and implement the decided approach.",
+      "pathHint": "crates/auth/src/api/handlers/client_keys.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Near wallet provider has undecided function behavior",
+      "description": "In `crates/auth/src/providers/impls/near_wallet.rs` line 341, there's a TODO about deciding what to do with the function. Audit and implement proper behavior or remove dead code.",
+      "pathHint": "crates/auth/src/providers/impls/near_wallet.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Storage collections macro expects wrong crate path",
+      "description": "In `crates/storage/src/collections.rs` line 49, there's a fixme noting the macro expects calimero_storage in deps. Fix the macro to use correct crate path for better ergonomics.",
+      "pathHint": "crates/storage/src/collections.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Tests: Storage layer temporal handling needs coverage",
+      "description": "In `crates/store/src/layer/temporal.rs` line 146, there's a TODO about handling keys already in inner layer. Add tests to verify correct iteration behavior with temporal layers.",
+      "pathHint": "crates/store/src/layer/temporal.rs",
+      "estimatedMinutes": 60,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Event macro has revisit TODOs for quick fixes",
+      "description": "In `crates/sdk/macros/src/event.rs` lines 42, 51, there are TODO comments about quick fixes that need revisiting. Audit and properly implement event macro handling.",
+      "pathHint": "crates/sdk/macros/src/event.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "Design: State macro source text unreliable",
+      "description": "In `crates/sdk/macros/src/state.rs` line 160, there's a TODO noting source text is unreliable. Fix the macro to not depend on source text for correctness.",
+      "pathHint": "crates/sdk/macros/src/state.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: SDK macros missing crate customization",
+      "description": "In `crates/sdk/macros/src/lib.rs` line 56, there's a TODO to permit `#[app::logic(crate = \"calimero_sdk\")]`. Implement crate path customization for better library integration.",
+      "pathHint": "crates/sdk/macros/src/lib.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Slice path compaction not using utility function",
+      "description": "In `crates/store/src/slice.rs` line 40, there's a TODO to use `calimero_primitives::utils::compact_path`. Implement the proper path handling for consistency.",
+      "pathHint": "crates/store/src/slice.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "Tests: Meroctl context join needs alias handling test",
+      "description": "In `crates/meroctl/src/cli/context/join_by_open_invitation.rs` line 46, there's a TODO about whether to add alias on join. Add tests and document expected behavior.",
+      "pathHint": "crates/meroctl/src/cli/context/join_by_open_invitation.rs",
+      "estimatedMinutes": 45,
+      "category": "tests",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Utility compact_path function needs refactoring",
+      "description": "In `crates/primitives/src/utils.rs` line 33, there's a TODO to refactor for readability. The function handles path compression but is hard to follow. Refactor with clear documentation.",
+      "pathHint": "crates/primitives/src/utils.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Context primitives missing TryFrom implementations",
+      "description": "In `crates/primitives/src/context.rs` line 166, there's a TODO to add TryFrom implementations between InvitationPayload types. Implement these conversions for better type safety.",
+      "pathHint": "crates/primitives/src/context.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Primitives need macro-generated newtypes",
+      "description": "In `crates/primitives/src/context.rs` lines 23-24 and `application.rs` lines 17-18, there are TODOs about defining macros for Hash newtypes. Create macro to reduce boilerplate across ID types.",
+      "pathHint": "crates/primitives/src",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Tests: SDK macro invalid generics behavior undefined",
+      "description": "In `crates/sdk/tests/macros/invalid_generics.rs` line 4, there's a TODO questioning what happens with specific lifetime patterns. Add explicit tests and document expected behavior.",
+      "pathHint": "crates/sdk/tests/macros/invalid_generics.rs",
+      "estimatedMinutes": 45,
+      "category": "tests",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Context config client exhaustive structs allowed",
+      "description": "In `crates/context/config/src/client/config.rs` line 1, exhaustive_structs is allowed with TODO. Review and either remove the allow or document why exhaustive structs are acceptable.",
+      "pathHint": "crates/context/config/src/client/config.rs",
+      "estimatedMinutes": 30,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Node blob client caching TODO",
+      "description": "In `crates/node/primitives/src/client/blob.rs` lines 25-28, there are TODOs about caching blobs immediately after adding. Implement caching strategy to avoid re-fetching.",
+      "pathHint": "crates/node/primitives/src/client/blob.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Design: DAG pruning not implemented",
+      "description": "In `crates/node/README.md` line 396, DAG pruning is marked as TODO. Without pruning, the DAG grows unbounded. Implement pruning strategy to manage storage growth.",
+      "pathHint": "crates/node",
+      "estimatedMinutes": 90,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "Tests: Storage documentation references TODO.md",
+      "description": "In `crates/storage/README.md` and related docs, there are references to a TODO.md file for future work. Create this TODO.md file or remove dangling references.",
+      "pathHint": "crates/storage",
+      "estimatedMinutes": 45,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Runtime store revisit value return behavior",
+      "description": "In `crates/runtime/src/store.rs` line 40, there's a TODO to revisit whether to return value by default. Document the decision and implement consistently.",
+      "pathHint": "crates/runtime/src/store.rs",
+      "estimatedMinutes": 30,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Context config env location note",
+      "description": "In `crates/context/config/src/client/env.rs` line 28, there's a TODO about appropriately locating code when crates are broken up. Document intended structure.",
+      "pathHint": "crates/context/config/src/client/env.rs",
+      "estimatedMinutes": 30,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Runtime fetch function usage unclear",
+      "description": "In `crates/runtime/src/logic/host_functions/utility.rs` line 82, there's a TODO clarifying why fetch can't be directly called by applications. Add documentation explaining security rationale.",
+      "pathHint": "crates/runtime/src/logic/host_functions/utility.rs",
+      "estimatedMinutes": 30,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Design: SDK event downcast experiment",
+      "description": "In `crates/sdk/src/event.rs` line 291, there's a TODO about experimenting with downcast_ref. Evaluate and implement if beneficial.",
+      "pathHint": "crates/sdk/src/event.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Context manager DashMap consideration",
+      "description": "In `crates/context/src/lib.rs` lines 57-58, there are TODOs about using DashMap and TimedSizedCache for contexts. Evaluate and implement for better concurrent access.",
+      "pathHint": "crates/context/src/lib.rs",
+      "estimatedMinutes": 75,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Design: Runtime runtimes cache for compiled modules",
+      "description": "In `crates/context/src/lib.rs` lines 75-76, there's a TODO about introducing TimedSizedCache for compiled runtimes. Implement caching to avoid recompilation overhead.",
+      "pathHint": "crates/context/src/lib.rs",
+      "estimatedMinutes": 75,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Docs: Storage performance benchmarks not implemented",
+      "description": "In `crates/storage/readme/architecture.md` line 455, benchmarks are noted as TODO. Implement and document actual performance benchmarks for storage operations.",
+      "pathHint": "crates/storage/readme",
+      "estimatedMinutes": 90,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Execution outcome artifact not optional",
+      "description": "In `crates/runtime/src/logic.rs` line 332, there's a TODO asking why artifact is not an Option. Evaluate and change to Option for cleaner semantics when no artifact is produced.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Design: SDK destroy attribute for error suppression",
+      "description": "In `crates/sdk/macros/src/errors.rs` line 58 and logic/arg.rs line 64, there are TODOs about adding #[app::destroy] attribute. Implement this attribute for controlled cleanup.",
+      "pathHint": "crates/sdk/macros/src",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Tests: SDK macro tests need organization",
+      "description": "In `crates/sdk/tests/macros.rs` line 12, there's a TODO about organizing tests into pass/fail directories. Reorganize tests for better maintainability.",
+      "pathHint": "crates/sdk/tests",
+      "estimatedMinutes": 45,
+      "category": "tests",
+      "severity": "low"
+    },
+    {
+      "title": "Bug: Runtime imports memory injection TODO",
+      "description": "In `crates/runtime/src/logic/imports.rs` line 25, there's a TODO about custom memory injection. Evaluate and implement if needed for better memory isolation.",
+      "pathHint": "crates/runtime/src/logic/imports.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Bug: Blob read handle stream position tracking unclear",
+      "description": "In `crates/runtime/src/logic/host_functions/blobs.rs` lines 42-43, there's a TODO to clarify 'automatic position tracking'. Add documentation explaining the tracking mechanism.",
+      "pathHint": "crates/runtime/src/logic/host_functions/blobs.rs",
+      "estimatedMinutes": 30,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Blob handle insert needs verification",
+      "description": "In `crates/runtime/src/logic/host_functions/blobs.rs` lines 372-374, there's a TODO about whether to drop or ignore the insert return value. Verify correct behavior and document.",
+      "pathHint": "crates/runtime/src/logic/host_functions/blobs.rs",
+      "estimatedMinutes": 30,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Tests: Blob create assertion TODO",
+      "description": "In `crates/runtime/src/logic/host_functions/blobs.rs` line 117, there's a TODO about adding assertion for bytes written. Add the assertion and test.",
+      "pathHint": "crates/runtime/src/logic/host_functions/blobs.rs",
+      "estimatedMinutes": 30,
+      "category": "tests",
+      "severity": "low"
+    },
+    {
+      "title": "Design: Sys types UTF-8 string validation",
+      "description": "In `crates/sys/src/types/location/guest.rs` line 26 and event/guest.rs line 17, there are TODOs about testing if expect pulls in format code. Verify and document behavior.",
+      "pathHint": "crates/sys/src/types",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "low"
+    }
+  ]
+}
