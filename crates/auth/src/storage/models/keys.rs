@@ -234,6 +234,10 @@ pub struct KeyMetadata {
     pub created_at: u64,
     /// When the key was revoked
     pub revoked_at: Option<u64>,
+    /// When the key was last used (for idle timeout tracking)
+    /// Defaults to created_at if not set (for backward compatibility with existing keys)
+    #[serde(default)]
+    pub last_activity: Option<u64>,
 }
 
 impl Default for KeyMetadata {
@@ -245,14 +249,135 @@ impl Default for KeyMetadata {
 impl KeyMetadata {
     /// Create new key metadata
     pub fn new() -> Self {
+        let now = Utc::now().timestamp() as u64;
         Self {
-            created_at: Utc::now().timestamp() as u64,
+            created_at: now,
             revoked_at: None,
+            last_activity: Some(now),
         }
     }
 
     /// Revoke the key
     pub fn revoke(&mut self) {
         self.revoked_at = Some(Utc::now().timestamp() as u64);
+    }
+
+    /// Update the last activity timestamp
+    pub fn touch(&mut self) {
+        self.last_activity = Some(Utc::now().timestamp() as u64);
+    }
+
+    /// Get the last activity timestamp, falling back to created_at for backward compatibility
+    pub fn get_last_activity(&self) -> u64 {
+        self.last_activity.unwrap_or(self.created_at)
+    }
+
+    /// Check if the key has been idle for longer than the specified timeout
+    ///
+    /// # Arguments
+    ///
+    /// * `idle_timeout_secs` - The idle timeout in seconds (0 means disabled)
+    ///
+    /// # Returns
+    ///
+    /// * `bool` - true if the key is idle (exceeded timeout), false otherwise
+    pub fn is_idle(&self, idle_timeout_secs: u64) -> bool {
+        if idle_timeout_secs == 0 {
+            return false; // Idle timeout disabled
+        }
+        let now = Utc::now().timestamp() as u64;
+        let last_activity = self.get_last_activity();
+        now.saturating_sub(last_activity) > idle_timeout_secs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_key_metadata_new() {
+        let metadata = KeyMetadata::new();
+        assert!(metadata.revoked_at.is_none());
+        assert!(metadata.last_activity.is_some());
+        // last_activity should be approximately equal to created_at
+        assert_eq!(metadata.last_activity.unwrap(), metadata.created_at);
+    }
+
+    #[test]
+    fn test_key_metadata_touch() {
+        let mut metadata = KeyMetadata::new();
+        let original_activity = metadata.get_last_activity();
+        // Touch should update the last_activity
+        metadata.touch();
+        // Since we can't easily test time changes, just verify it's set
+        assert!(metadata.last_activity.is_some());
+        assert!(metadata.get_last_activity() >= original_activity);
+    }
+
+    #[test]
+    fn test_key_metadata_get_last_activity_with_value() {
+        let mut metadata = KeyMetadata::new();
+        metadata.last_activity = Some(12345);
+        assert_eq!(metadata.get_last_activity(), 12345);
+    }
+
+    #[test]
+    fn test_key_metadata_get_last_activity_fallback() {
+        let mut metadata = KeyMetadata::new();
+        metadata.last_activity = None;
+        // Should fall back to created_at
+        assert_eq!(metadata.get_last_activity(), metadata.created_at);
+    }
+
+    #[test]
+    fn test_key_metadata_is_idle_disabled() {
+        let mut metadata = KeyMetadata::new();
+        // Set last_activity to a very old timestamp
+        metadata.last_activity = Some(1);
+        // With idle_timeout of 0, should never be idle
+        assert!(!metadata.is_idle(0));
+    }
+
+    #[test]
+    fn test_key_metadata_is_idle_not_expired() {
+        let metadata = KeyMetadata::new();
+        // Just created, with a 30 minute timeout, should not be idle
+        assert!(!metadata.is_idle(30 * 60));
+    }
+
+    #[test]
+    fn test_key_metadata_is_idle_expired() {
+        let mut metadata = KeyMetadata::new();
+        // Set last_activity to 2 hours ago
+        let now = Utc::now().timestamp() as u64;
+        metadata.last_activity = Some(now.saturating_sub(2 * 60 * 60));
+        // With a 30 minute timeout, should be idle
+        assert!(metadata.is_idle(30 * 60));
+    }
+
+    #[test]
+    fn test_key_metadata_backward_compatibility() {
+        // Simulate a key from before idle timeout was added (no last_activity)
+        let metadata = KeyMetadata {
+            created_at: 1000,
+            revoked_at: None,
+            last_activity: None,
+        };
+        // get_last_activity should return created_at
+        assert_eq!(metadata.get_last_activity(), 1000);
+    }
+
+    #[test]
+    fn test_key_is_valid_and_not_idle() {
+        let key = Key::new_root_key_with_permissions(
+            "test_pub_key".to_string(),
+            "near".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        assert!(key.is_valid());
+        // Newly created key should not be idle
+        assert!(!key.metadata.is_idle(30 * 60));
     }
 }

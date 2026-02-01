@@ -321,6 +321,9 @@ impl TokenManager {
     }
 
     /// Verify a JWT token from request headers
+    ///
+    /// This method validates the token, checks for idle timeout, and updates the
+    /// last activity timestamp to implement sliding window session management.
     pub async fn verify_token_from_headers(
         &self,
         headers: &HeaderMap,
@@ -354,7 +357,7 @@ impl TokenManager {
         }
 
         // Verify the key exists and is valid
-        let key = self
+        let mut key = self
             .key_manager
             .get_key(&claims.sub)
             .await
@@ -363,6 +366,29 @@ impl TokenManager {
 
         if !key.is_valid() {
             return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
+        }
+
+        // Check for idle timeout - if the session has been inactive for too long, reject it
+        if key.metadata.is_idle(self.config.idle_timeout) {
+            tracing::debug!(
+                "Session for key {} has exceeded idle timeout of {} seconds",
+                claims.sub,
+                self.config.idle_timeout
+            );
+            return Err(AuthError::InvalidToken(
+                "Session has expired due to inactivity".to_string(),
+            ));
+        }
+
+        // Update last activity timestamp (sliding window expiration)
+        key.metadata.touch();
+        if let Err(e) = self.key_manager.set_key(&claims.sub, &key).await {
+            // Log the error but don't fail the request - activity tracking is best-effort
+            tracing::warn!(
+                "Failed to update last activity for key {}: {}",
+                claims.sub,
+                e
+            );
         }
 
         Ok(AuthResponse {

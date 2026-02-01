@@ -59,6 +59,11 @@ pub struct JwtConfig {
     /// Refresh token expiry time in seconds (default: 30 days)
     #[serde(default = "default_refresh_token_expiry")]
     pub refresh_token_expiry: u64,
+
+    /// Idle timeout in seconds - sessions are revoked after this period of inactivity
+    /// (default: 30 minutes, set to 0 to disable idle timeout)
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout: u64,
 }
 
 fn default_access_token_expiry() -> u64 {
@@ -67,6 +72,10 @@ fn default_access_token_expiry() -> u64 {
 
 fn default_refresh_token_expiry() -> u64 {
     30 * 24 * 3600 // 30 days
+}
+
+fn default_idle_timeout() -> u64 {
+    30 * 60 // 30 minutes
 }
 
 /// Storage configuration
