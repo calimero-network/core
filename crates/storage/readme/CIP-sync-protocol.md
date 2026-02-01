@@ -424,39 +424,83 @@ impl SyncManager {
 ### 4. Sync State Machine
 
 ```
-                    ┌─────────────────┐
-                    │     IDLE        │
-                    └────────┬────────┘
-                             │ sync_trigger()
-                             ▼
-                    ┌─────────────────┐
-                    │   NEGOTIATING   │
-                    └────────┬────────┘
-                             │ protocol_selected()
-                             ▼
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-        ▼                    ▼                    ▼
-┌───────────────┐   ┌───────────────┐   ┌───────────────┐
-│ DELTA_SYNCING │   │ STATE_SYNCING │   │ HASH_SYNCING  │
-└───────┬───────┘   └───────┬───────┘   └───────┬───────┘
-        │                   │                   │
-        │   sync_complete() │                   │
-        └───────────────────┼───────────────────┘
-                            ▼
-                   ┌─────────────────┐
-                   │   VERIFYING     │
-                   └────────┬────────┘
-                            │ verification_passed()
-                            ▼
-                   ┌─────────────────┐
-                   │   APPLYING      │
-                   └────────┬────────┘
-                            │ apply_complete()
-                            ▼
-                   ┌─────────────────┐
-                   │     IDLE        │
-                   └─────────────────┘
+SYNC STATE MACHINE
+==================
+
+    ┌──────────────────────────────────────────────────────────────────┐
+    │                           IDLE                                    │
+    │  Waiting for sync trigger (timer, hint, or manual request)       │
+    └──────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ Trigger: divergence detected,
+                                    │          periodic timer, or
+                                    │          fresh node join
+                                    ▼
+    ┌──────────────────────────────────────────────────────────────────┐
+    │                        NEGOTIATING                                │
+    │  Exchange SyncHandshake with peer:                               │
+    │  - Our root hash, entity count, DAG heads                        │
+    │  - Peer's root hash, entity count, DAG heads                     │
+    │  - Agree on protocol based on divergence                         │
+    └──────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    │               │               │
+                    ▼               ▼               ▼
+    ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+    │   DELTA SYNC     │ │   HASH SYNC      │ │   STATE SYNC     │
+    │                  │ │                  │ │   (Snapshot)     │
+    │ When: Few deltas │ │ When: Unknown    │ │ When: Fresh node │
+    │ missing, DAG     │ │ divergence,      │ │ or massive       │
+    │ heads known      │ │ 1-50% different  │ │ divergence       │
+    │                  │ │                  │ │                  │
+    │ How: Request     │ │ How: Compare     │ │ How: Transfer    │
+    │ specific deltas  │ │ tree hashes,     │ │ entire state     │
+    │ by ID            │ │ fetch differing  │ │ (compressed,     │
+    │                  │ │ leaves only      │ │ paginated)       │
+    │                  │ │                  │ │                  │
+    │ Cost: O(missing) │ │ Cost: O(log n)   │ │ Cost: O(n)       │
+    └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
+             │                    │                    │
+             └────────────────────┼────────────────────┘
+                                  │
+                                  ▼
+    ┌──────────────────────────────────────────────────────────────────┐
+    │                        VERIFYING                                  │
+    │  Compare resulting root hash with expected                       │
+    │  (For CRDT merge: hash may differ - that's OK)                   │
+    └──────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+    ┌──────────────────────────────────────────────────────────────────┐
+    │                        APPLYING                                   │
+    │  - Delta sync: replay operations via WASM                        │
+    │  - Hash sync: CRDT merge differing entities                      │
+    │  - State sync: apply snapshot + create checkpoint delta          │
+    └──────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+    ┌──────────────────────────────────────────────────────────────────┐
+    │                           IDLE                                    │
+    │  Sync complete. Root hashes now match (eventually consistent).   │
+    └──────────────────────────────────────────────────────────────────┘
+```
+
+**Protocol Selection Decision Tree:**
+
+```
+Is local state empty?
+    │
+    ├─ YES ──► STATE SYNC (Snapshot)
+    │          Fastest way to bootstrap
+    │
+    └─ NO ──► Do we know which deltas are missing?
+                  │
+                  ├─ YES, and < 50 missing ──► DELTA SYNC
+                  │                            Fetch by ID
+                  │
+                  └─ NO or too many ──► HASH SYNC
+                                        Compare trees to find differences
 ```
 
 ### 5. Delta Handling During Sync
