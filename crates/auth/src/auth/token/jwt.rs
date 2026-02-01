@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::http::HeaderMap;
 use base64::Engine;
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -460,13 +460,37 @@ impl TokenManager {
                     new_client_id
                 );
 
-                // First store the key with the new ID to ensure we don't lose it
+                // Generate tokens FIRST, before any key mutations.
+                // This ensures that if token generation fails, we haven't modified any keys
+                // and the user's original key remains valid (no lockout scenario).
+                let access_token = self
+                    .generate_token(
+                        new_client_id.clone(),
+                        key.permissions.clone(),
+                        Duration::seconds(self.config.access_token_expiry as i64),
+                        claims.node_url.clone(),
+                    )
+                    .await?;
+
+                let refresh_token = self
+                    .generate_token(
+                        new_client_id.clone(),
+                        key.permissions.clone(),
+                        Duration::seconds(self.config.refresh_token_expiry as i64),
+                        claims.node_url.clone(),
+                    )
+                    .await?;
+
+                // Tokens generated successfully - now perform key rotation.
+                // Store the new key first to ensure we don't lose access.
                 if let Err(e) = self.key_manager.set_key(&new_client_id, &key).await {
                     tracing::error!(
                         "Failed to store new client key {} during rotation: {}",
                         new_client_id,
                         e
                     );
+                    // Token generation succeeded but key storage failed.
+                    // Return error - user's old key is still valid, so no lockout.
                     return Err(AuthError::StorageError(format!(
                         "Failed to store new client key during rotation: {e}"
                     )));
@@ -474,42 +498,18 @@ impl TokenManager {
 
                 tracing::debug!("Successfully stored new client key: {}", new_client_id);
 
-                // Generate new tokens with the new ID first (before deleting old key)
-                let token_result = self
-                    .generate_token_pair(
-                        new_client_id.clone(),
-                        key.permissions,
-                        claims.node_url.clone(),
-                    )
-                    .await;
-
-                // Only delete the old key if token generation was successful
-                match token_result {
-                    Ok(tokens) => {
-                        // Now safely delete the old key
-                        if let Err(e) = self.key_manager.delete_key(&claims.sub).await {
-                            // Log the error but don't fail the refresh - tokens are already generated
-                            tracing::warn!(
-                                "Failed to delete old client key {} after successful rotation: {}",
-                                claims.sub,
-                                e
-                            );
-                        }
-                        Ok(tokens)
-                    }
-                    Err(e) => {
-                        // Token generation failed, clean up the new key we created
-                        if let Err(cleanup_err) = self.key_manager.delete_key(&new_client_id).await
-                        {
-                            tracing::error!(
-                                "Failed to cleanup new client key {} after token generation failure: {}",
-                                new_client_id,
-                                cleanup_err
-                            );
-                        }
-                        Err(e)
-                    }
+                // Now safely delete the old key
+                if let Err(e) = self.key_manager.delete_key(&claims.sub).await {
+                    // Log the error but don't fail the refresh - tokens are already generated
+                    // and new key is stored. User can use the new tokens.
+                    tracing::warn!(
+                        "Failed to delete old client key {} after successful rotation: {}",
+                        claims.sub,
+                        e
+                    );
                 }
+
+                Ok((access_token, refresh_token))
             }
         }
     }
