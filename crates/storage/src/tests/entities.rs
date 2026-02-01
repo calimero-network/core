@@ -277,10 +277,133 @@ mod element__traits {
 
 #[cfg(test)]
 mod metadata__constructor {
+    use super::*;
 
     #[test]
-    #[ignore]
     fn new() {
-        todo!()
+        let metadata = Metadata::new(1000, 2000);
+        assert_eq!(metadata.created_at, 1000);
+        assert_eq!(*metadata.updated_at, 2000);
+        assert_eq!(metadata.crdt_type, None);
+    }
+
+    #[test]
+    fn with_crdt_type() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::Counter);
+        assert_eq!(metadata.created_at, 1000);
+        assert_eq!(*metadata.updated_at, 2000);
+        assert_eq!(metadata.crdt_type, Some(CrdtType::Counter));
+    }
+}
+
+#[cfg(test)]
+mod metadata__crdt_type {
+    use super::*;
+
+    #[test]
+    fn is_builtin_crdt__counter() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::Counter);
+        assert!(metadata.is_builtin_crdt());
+    }
+
+    #[test]
+    fn is_builtin_crdt__lww_register() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::LwwRegister);
+        assert!(metadata.is_builtin_crdt());
+    }
+
+    #[test]
+    fn is_builtin_crdt__rga() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::Rga);
+        assert!(metadata.is_builtin_crdt());
+    }
+
+    #[test]
+    fn is_builtin_crdt__unordered_map() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::UnorderedMap);
+        assert!(metadata.is_builtin_crdt());
+    }
+
+    #[test]
+    fn is_builtin_crdt__unordered_set() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::UnorderedSet);
+        assert!(metadata.is_builtin_crdt());
+    }
+
+    #[test]
+    fn is_builtin_crdt__vector() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::Vector);
+        assert!(metadata.is_builtin_crdt());
+    }
+
+    #[test]
+    fn is_builtin_crdt__custom() {
+        let metadata = Metadata::with_crdt_type(
+            1000,
+            2000,
+            CrdtType::Custom {
+                type_name: "MyCRDT".to_string(),
+            },
+        );
+        assert!(!metadata.is_builtin_crdt());
+    }
+
+    #[test]
+    fn is_builtin_crdt__none() {
+        let metadata = Metadata::new(1000, 2000);
+        assert!(!metadata.is_builtin_crdt());
+    }
+}
+
+#[cfg(test)]
+mod metadata__serialization {
+    use super::*;
+    use borsh::{BorshDeserialize, BorshSerialize};
+
+    #[test]
+    fn serialize_deserialize__with_crdt_type() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::Counter);
+        let serialized = borsh::to_vec(&metadata).unwrap();
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&serialized).unwrap();
+        assert_eq!(metadata.created_at, deserialized.created_at);
+        assert_eq!(metadata.updated_at, deserialized.updated_at);
+        assert_eq!(metadata.crdt_type, deserialized.crdt_type);
+        assert_eq!(deserialized.crdt_type, Some(CrdtType::Counter));
+    }
+
+    #[test]
+    fn serialize_deserialize__without_crdt_type() {
+        let metadata = Metadata::new(1000, 2000);
+        let serialized = borsh::to_vec(&metadata).unwrap();
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&serialized).unwrap();
+        assert_eq!(metadata.created_at, deserialized.created_at);
+        assert_eq!(metadata.updated_at, deserialized.updated_at);
+        assert_eq!(deserialized.crdt_type, None);
+    }
+
+    #[test]
+    fn serialize_deserialize__custom_crdt() {
+        let metadata = Metadata::with_crdt_type(
+            1000,
+            2000,
+            CrdtType::Custom {
+                type_name: "MyCustomCRDT".to_string(),
+            },
+        );
+        let serialized = borsh::to_vec(&metadata).unwrap();
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&serialized).unwrap();
+        assert_eq!(metadata.crdt_type, deserialized.crdt_type);
+        match deserialized.crdt_type {
+            Some(CrdtType::Custom { type_name }) => {
+                assert_eq!(type_name, "MyCustomCRDT");
+            }
+            _ => panic!("Expected Custom CRDT type"),
+        }
+    }
+
+    #[test]
+    fn default__has_none_crdt_type() {
+        let metadata = Metadata::default();
+        assert_eq!(metadata.crdt_type, None);
     }
 }
