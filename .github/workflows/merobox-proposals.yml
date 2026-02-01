@@ -59,25 +59,20 @@ jobs:
   download-contracts:
     name: Download Contracts
     runs-on: ubuntu-24.04-8cpu
-    outputs:
-      cache-key: ${{ steps.cache-key.outputs.key }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Generate cache key
-        id: cache-key
-        run: echo "key=${{ runner.os }}-proposals-contracts-${{ github.sha }}" >> $GITHUB_OUTPUT
-
       - name: Download Contracts
         run: ./scripts/download-contracts.sh
 
-      - name: Cache contracts
-        uses: actions/cache@v4
+      - name: Upload contracts artifact
+        uses: actions/upload-artifact@v4
         with:
-          path: |
-            contracts
-          key: ${{ steps.cache-key.outputs.key }}
+          name: contracts
+          path: contracts
+          retention-days: 1
+          if-no-files-found: error
 
   near:
     name: Test NEAR Proposals
@@ -87,12 +82,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore contracts
-        uses: actions/cache@v4
+      - name: Download contracts artifact
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            contracts
-          key: ${{ needs.download-contracts.outputs.cache-key }}
+          name: contracts
+          path: contracts
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -174,12 +168,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore contracts
-        uses: actions/cache@v4
+      - name: Download contracts artifact
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            contracts
-          key: ${{ needs.download-contracts.outputs.cache-key }}
+          name: contracts
+          path: contracts
 
       - name: Install DFX for ICP
         uses: dfinity/setup-dfx@main
@@ -268,12 +261,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore contracts
-        uses: actions/cache@v4
+      - name: Download contracts artifact
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            contracts
-          key: ${{ needs.download-contracts.outputs.cache-key }}
+          name: contracts
+          path: contracts
 
       - name: Install Foundry for Ethereum
         uses: foundry-rs/foundry-toolchain@v1
