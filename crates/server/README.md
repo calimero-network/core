@@ -122,6 +122,8 @@ merod --node-name my-node init --auth-mode embedded --auth-storage memory
 - For the embedded auth build, ensure the environment exposes the frontend assets:
   - `CALIMERO_AUTH_FRONTEND_SRC` pointing to a release archive or local build, or
   - `CALIMERO_AUTH_FRONTEND_PATH` pointing to a prebuilt directory.
+  - When pulling from a release asset, set `CALIMERO_AUTH_FRONTEND_ASSET` if the
+    asset name differs from the default `auth-frontend.zip`.
 - When running integration suites, exercise at least one smoke test in each mode to
   confirm `/auth` endpoints are reachable in embedded mode and that the proxy mode
   continues to rely on the external service.

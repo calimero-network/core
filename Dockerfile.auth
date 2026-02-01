@@ -25,6 +25,7 @@ COPY tools ./tools
 ARG CALIMERO_AUTH_FRONTEND_SRC # the url or absolute path to the webui (archive or directory)
 ARG CALIMERO_AUTH_FRONTEND_REPO # the git repository hosting the webui (for a git release asset)
 ARG CALIMERO_AUTH_FRONTEND_VERSION # the version of the webui to use (for a git release asset)
+ARG CALIMERO_AUTH_FRONTEND_ASSET # the release asset name to download
 ARG CALIMERO_AUTH_FRONTEND_FETCH # invalidate the cache, fetch the webui (for a git release asset)
 # CALIMERO_AUTH_FRONTEND_FETCH_TOKEN # GitHub token to use for fetching the webui (for a git release asset)
 
