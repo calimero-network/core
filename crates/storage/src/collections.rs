@@ -54,21 +54,35 @@ use crate::interface::{Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
 
-/// Compute the ID for a key.
+/// Domain separator for map entry IDs to prevent collision with collection IDs.
+/// This ensures that a map entry with key "X" never collides with a nested collection
+/// with field name "X" in the same parent.
+const DOMAIN_SEPARATOR_ENTRY: &[u8] = b"__calimero_entry__";
+
+/// Domain separator for collection IDs to prevent collision with map entry IDs.
+/// This ensures that a nested collection with field name "X" never collides with a
+/// map entry with key "X" in the same parent.
+const DOMAIN_SEPARATOR_COLLECTION: &[u8] = b"__calimero_collection__";
+
+/// Compute the ID for a key in a map.
+/// Uses domain separation to prevent collision with collection IDs.
 fn compute_id(parent: Id, key: &[u8]) -> Id {
     let mut hasher = Sha256::new();
     hasher.update(parent.as_bytes());
+    hasher.update(DOMAIN_SEPARATOR_ENTRY);
     hasher.update(key);
     Id::new(hasher.finalize().into())
 }
 
 /// Compute a deterministic collection ID from parent ID and field name.
 /// This ensures the same collection gets the same ID across all nodes.
+/// Uses domain separation to prevent collision with map entry IDs.
 fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
     let mut hasher = Sha256::new();
     if let Some(parent) = parent_id {
         hasher.update(parent.as_bytes());
     }
+    hasher.update(DOMAIN_SEPARATOR_COLLECTION);
     hasher.update(field_name.as_bytes());
     Id::new(hasher.finalize().into())
 }
