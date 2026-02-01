@@ -19,7 +19,7 @@ This CIP proposes a hybrid synchronization protocol that combines delta-based (C
 1. **Automatically selects** the optimal sync strategy based on divergence characteristics
 2. **Maintains node liveness** during sync operations via delta buffering
 3. **Ensures cryptographic verification** of synchronized state
-4. **Implements hybrid merge dispatch** where built-in CRDTs merge in storage layer (fast, ~100ns) and custom Mergeable types dispatch to WASM (flexible, ~10μs)
+4. **Implements hybrid merge dispatch** where built-in CRDTs merge in the storage layer; custom Mergeable types dispatch to WASM
 
 ## Motivation
 
@@ -263,88 +263,39 @@ pub struct SyncHints {
 
 #### 3.2 Receiver Decision Logic
 
-When a node receives a delta with hints, it can immediately determine its sync strategy:
+When a node receives a delta with hints, it MUST determine its sync strategy according to this algorithm:
+
+**Normative Algorithm:**
+
+1. If `local.root_hash == hints.root_hash` → `AlreadySynced` (no action needed)
+2. If any parent deltas are missing:
+   - Calculate `gap = hints.delta_height - local.delta_height`
+   - If `gap > DELTA_SYNC_THRESHOLD` → request state-based sync (too far behind)
+   - Otherwise → request missing parent deltas by ID
+3. If bloom filter is present:
+   - Estimate missing deltas from bloom filter
+   - If `missing_estimate > DELTA_SYNC_THRESHOLD` → request state-based sync
+4. If `entity_count` divergence > 50% → request state-based sync (HashComparison)
+5. Otherwise → apply the delta
+
+**Decision Outputs:**
 
 ```rust
-impl SyncManager {
-    fn on_delta_received(&mut self, msg: DeltaWithHints) -> SyncDecision {
-        let hints = &msg.hints;
-        
-        // 1. Check if we're already in sync
-        if self.root_hash == hints.root_hash {
-            return SyncDecision::AlreadySynced;
-        }
-        
-        // 2. Check if we have the parent deltas
-        let missing_parents: Vec<[u8; 32]> = msg.delta.parents
-            .iter()
-            .filter(|p| !self.dag_store.has_delta(p))
-            .copied()
-            .collect();
-        
-        if !missing_parents.is_empty() {
-            // Missing parents - how many?
-            let our_height = self.dag_store.height();
-            let gap = hints.delta_height.saturating_sub(our_height);
-            
-            if gap > DELTA_SYNC_THRESHOLD {
-                // Too far behind - request snapshot instead of chasing deltas
-                return SyncDecision::RequestSnapshot {
-                    peer: msg.sender,
-                    reason: SyncReason::TooFarBehind { gap },
-                };
-            }
-            
-            // Small gap - request missing parent deltas first
-            return SyncDecision::RequestMissingDeltas {
-                delta_ids: missing_parents,
-            };
-        }
-        
-        // 3. Use bloom filter to estimate missing deltas
-        if let Some(ref bloom) = hints.delta_bloom_filter {
-            let missing_estimate = self.estimate_missing_from_bloom(bloom);
-            
-            if missing_estimate > DELTA_SYNC_THRESHOLD {
-                return SyncDecision::RequestSnapshot {
-                    peer: msg.sender,
-                    reason: SyncReason::TooManyMissing { estimate: missing_estimate },
-                };
-            }
-        }
-        
-        // 4. Entity count divergence check
-        let our_count = self.entity_count();
-        let count_diff = (our_count as i64 - hints.entity_count as i64).abs();
-        let divergence = count_diff as f32 / hints.entity_count.max(1) as f32;
-        
-        if divergence > 0.5 {
-            return SyncDecision::RequestHashSync {
-                peer: msg.sender,
-                reason: SyncReason::SignificantDivergence { ratio: divergence },
-            };
-        }
-        
-        // 5. All parents present - safe to apply
-        SyncDecision::ApplyDelta(msg.delta)
-    }
-}
-
 pub enum SyncDecision {
     AlreadySynced,
     ApplyDelta(CausalDelta),
     RequestMissingDeltas { delta_ids: Vec<[u8; 32]> },
     RequestHashSync { peer: PeerId, reason: SyncReason },
-    RequestSnapshot { peer: PeerId, reason: SyncReason },
 }
 
 pub enum SyncReason {
     TooFarBehind { gap: u64 },
     TooManyMissing { estimate: usize },
     SignificantDivergence { ratio: f32 },
-    FreshNode,
 }
 ```
+
+> **Note**: Implementations MUST define a configurable threshold for "too many missing deltas" (`DELTA_SYNC_THRESHOLD`). Default value is out of scope for this CIP.
 
 #### 3.3 Lightweight Hints (Minimal Overhead)
 
@@ -360,7 +311,7 @@ pub struct LightweightHints {
 }
 ```
 
-**Overhead:** Only 40 bytes per delta propagation.
+**Overhead:** Approximately 40 bytes per delta propagation *(non-normative)*.
 
 #### 3.4 Proactive Sync Triggers
 
@@ -393,25 +344,7 @@ pub enum GossipMode {
 }
 ```
 
-**State Announcements** allow nodes to periodically broadcast their state summary, enabling peers to detect divergence even without active delta propagation:
-
-```rust
-impl SyncManager {
-    /// Periodic state announcement (e.g., every 30 seconds)
-    fn announce_state(&self) {
-        let announcement = SyncHints {
-            root_hash: self.root_hash,
-            entity_count: self.entity_count(),
-            delta_height: self.dag_store.height(),
-            recent_delta_count: self.recent_delta_count(),
-            delta_bloom_filter: Some(self.dag_store.bloom_filter()),
-            oldest_pending_parent: None,
-        };
-        
-        self.network.gossip(GossipMessage::StateAnnouncement(announcement));
-    }
-}
-```
+**State Announcements:** Nodes MAY periodically broadcast `StateAnnouncement { hints: SyncHints }` at an implementation-defined interval to enable proactive divergence detection. This allows peers to detect divergence even without active delta propagation.
 
 ### 4. Sync State Machine
 
@@ -440,16 +373,16 @@ SYNC STATE MACHINE
                     │               │               │
                     ▼               ▼               ▼
     ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-    │   DELTA SYNC     │ │   HASH SYNC      │ │   STATE SYNC     │
-    │                  │ │                  │ │   (Snapshot)     │
-    │ When: Few deltas │ │ When: Unknown    │ │ When: Fresh node │
-    │ missing, DAG     │ │ divergence,      │ │ or massive       │
-    │ heads known      │ │ 1-50% different  │ │ divergence       │
+    │   DELTA SYNC     │ │  STATE-BASED     │ │   SNAPSHOT       │
+    │                  │ │  (Entity Xfer)   │ │   (Fresh Only)   │
+    │ When: Few deltas │ │ When: Divergence │ │ When: Local      │
+    │ missing, DAG     │ │ detected, need   │ │ state is EMPTY   │
+    │ heads known      │ │ tree comparison  │ │ (fresh node)     │
     │                  │ │                  │ │                  │
     │ How: Request     │ │ How: Compare     │ │ How: Transfer    │
-    │ specific deltas  │ │ tree hashes,     │ │ entire state     │
-    │ by ID            │ │ fetch differing  │ │ (compressed,     │
-    │                  │ │ leaves only      │ │ paginated)       │
+    │ specific deltas  │ │ tree hashes,     │ │ entire state,    │
+    │ by ID            │ │ CRDT merge       │ │ direct apply     │
+    │                  │ │ differing leaves │ │ (no merge)       │
     │                  │ │                  │ │                  │
     │ Cost: O(missing) │ │ Cost: O(log n)   │ │ Cost: O(n)       │
     └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
@@ -467,8 +400,8 @@ SYNC STATE MACHINE
     ┌──────────────────────────────────────────────────────────────────┐
     │                        APPLYING                                   │
     │  - Delta sync: replay operations via WASM                        │
-    │  - Hash sync: CRDT merge differing entities                      │
-    │  - State sync: apply snapshot + create checkpoint delta          │
+    │  - State-based: CRDT merge differing entities (Invariant I5)     │
+    │  - Snapshot (fresh only): direct apply after verification        │
     └──────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -483,17 +416,20 @@ SYNC STATE MACHINE
 ```
 Is local state empty?
     │
-    ├─ YES ──► STATE SYNC (Snapshot)
-    │          Fastest way to bootstrap
+    ├─ YES ──► SNAPSHOT (direct apply allowed)
+    │          Fastest way to bootstrap fresh node
     │
     └─ NO ──► Do we know which deltas are missing?
                   │
-                  ├─ YES, and < 50 missing ──► DELTA SYNC
-                  │                            Fetch by ID
+                  ├─ YES, and < threshold ──► DELTA SYNC
+                  │                           Fetch by ID
                   │
-                  └─ NO or too many ──► HASH SYNC
-                                        Compare trees to find differences
+                  └─ NO or too many ──► STATE-BASED SYNC
+                                        (HashComparison/Bloom/etc.)
+                                        MUST use CRDT merge (Invariant I5)
 ```
+
+> **CRITICAL**: Snapshot MUST NOT be selected for initialized nodes. Doing so would violate Invariant I5 (No Silent Data Loss).
 
 ### 5. Delta Handling During Sync
 
@@ -632,29 +568,14 @@ if local.has_state {
 
 > ⚠️ **INVARIANT I5**: An initialized node MUST NOT blindly overwrite state with a snapshot.
 
+**Normative Rule:**
+
+Initialized nodes MUST NOT clear local state when applying a snapshot response. Instead, implementations MUST merge each received entity with the corresponding local entity using CRDT merge semantics.
+
 **Violation consequences:**
 - Data loss (local updates discarded)
 - Convergence failure (nodes diverge permanently)
 - CRDT invariants broken
-
-```rust
-// ❌ INCORRECT: Overwrites local state
-fn apply_snapshot_wrong(snapshot: Snapshot) {
-    clear_local_state();
-    for entity in snapshot.entities {
-        write(entity);  // Loses local concurrent updates!
-    }
-}
-
-// CORRECT: Merges with local state
-fn apply_snapshot_correct(snapshot: Snapshot) {
-    for entity in snapshot.entities {
-        let local = read_local(entity.id);
-        let merged = crdt_merge(local, entity);  // Preserves both
-        write(merged);
-    }
-}
-```
 
 ### 7. Root Hash Semantics
 
@@ -678,6 +599,10 @@ Root hash expectations vary by protocol and scenario:
 - Post-CRDT-merge state
 - Post-bidirectional-sync state
 - After concurrent operations
+
+**DeltaSync Mismatch Handling:**
+
+If a delta's expected root hash does not match the local root at apply-time, implementations MUST treat the apply as a merge scenario and reconcile via state-based merge (e.g., HashComparison) rather than rejecting the delta.
 
 ### 8. Cryptographic Verification
 
@@ -888,7 +813,7 @@ This CIP is backwards compatible:
 ### 2. Replay Attacks
 
 **Risk**: Peer replays old deltas during sync.
-**Mitigation**: HLC timestamps prevent accepting stale data.
+**Mitigation**: Replay risk is mitigated by causal parent verification (Invariant I8) and rejection of already-applied delta IDs. HLC MAY be used as an additional staleness signal but MUST NOT be the only replay defense.
 
 ### 3. Resource Exhaustion
 
@@ -1067,11 +992,10 @@ The merge architecture has two categories of types:
 │                             │   │   │      WASM Module          │   │
 │   Merge in Storage Layer    │   │   │                           │   │
 │   No WASM needed            │   │   │  impl Mergeable for       │   │
-│   ~100ns per merge          │   │   │  MyGameState { ... }      │   │
+│                             │   │   │  MyGameState { ... }      │   │
 │                             │   │   └───────────────────────────┘   │
 │                             │   │                                   │
-│                             │   │   ⚠️ Requires WASM callback      │
-│                             │   │   ⚠️ ~10μs per merge             │
+│                             │   │   Requires WASM callback          │
 └─────────────────────────────┘   └───────────────────────────────────┘
 ```
 
@@ -1142,17 +1066,19 @@ pub struct Metadata {
 
 ### Merge Decision Table
 
-| Type | Where Merged | WASM? | Performance | Example |
-|------|--------------|-------|-------------|---------|
-| Counter | Storage | ❌ No | ~100ns | `scores: Counter` |
-| UnorderedMap | Storage | ❌ No | ~100ns | `items: UnorderedMap<K,V>` |
-| Vector | Storage | ❌ No | ~100ns | `log: Vector<Event>` |
-| Rga | Storage | ❌ No | ~100ns | `text: RGA` |
-| UnorderedSet | Storage | ❌ No | ~100ns | `tags: UnorderedSet<String>` |
-| LwwRegister | Storage | ❌ No | ~100ns | `name: LwwRegister<String>` |
-| Custom | WASM | Yes | ~10μs | `game: MyGameState` |
-| Root State | WASM | Yes | ~10μs | `#[app::state] MyApp` |
-| Unknown (None) | Storage (LWW) | ❌ No | ~100ns | Legacy data only |
+| Type | Where Merged | WASM Required? | Example |
+|------|--------------|----------------|---------|
+| Counter | Storage | No | `scores: Counter` |
+| UnorderedMap | Storage | No | `items: UnorderedMap<K,V>` |
+| Vector | Storage | No | `log: Vector<Event>` |
+| Rga | Storage | No | `text: RGA` |
+| UnorderedSet | Storage | No | `tags: UnorderedSet<String>` |
+| LwwRegister | Storage | No | `name: LwwRegister<String>` |
+| Custom | WASM | Yes | `game: MyGameState` |
+| Root State | WASM | Yes | `#[app::state] MyApp` |
+| Unknown (None) | Storage (LWW fallback) | No | Legacy data |
+
+> **Rationale**: Dispatch SHOULD prefer storage-layer merges for built-in CRDTs to minimize overhead.
 
 > ⚠️ **All state types MUST be mergeable!** Non-CRDT scalars must be wrapped:
 > - `name: String` → `name: LwwRegister<String>`
@@ -1207,178 +1133,36 @@ pub enum MergeError {
 }
 ```
 
-### Hybrid Merge Implementation
+### Merge Dispatch Requirements
 
-```rust
-impl<S: StorageAdaptor> Interface<S> {
-    /// Merge entity with hybrid dispatch
-    pub fn merge_entity(
-        local_data: &[u8],
-        remote_data: &[u8],
-        metadata: &Metadata,
-        wasm_callback: Option<&dyn WasmMergeCallback>,
-    ) -> Result<Vec<u8>, MergeError> {
-        match &metadata.crdt_type {
-            // ════════════════════════════════════════════════════════
-            // BUILT-IN CRDTs: Merge directly in storage layer
-            // ════════════════════════════════════════════════════════
-            
-            Some(CrdtType::Counter) => {
-                let mut local: Counter = borsh::from_slice(local_data)
-                    .map_err(|e| MergeError::SerializationError(e.to_string()))?;
-                let remote: Counter = borsh::from_slice(remote_data)
-                    .map_err(|e| MergeError::SerializationError(e.to_string()))?;
-                
-                local.merge(&remote)
-                    .map_err(|e| MergeError::CrdtMergeError(e.to_string()))?;
-                
-                borsh::to_vec(&local)
-                    .map_err(|e| MergeError::SerializationError(e.to_string()))
-            }
-            
-            Some(CrdtType::UnorderedMap) => {
-                // Per-key merge with recursive CRDT support
-                merge_unordered_map(local_data, remote_data, wasm_callback)
-            }
-            
-            Some(CrdtType::Vector) => {
-                merge_vector(local_data, remote_data, wasm_callback)
-            }
-            
-            Some(CrdtType::Rga) => {
-                let mut local: ReplicatedGrowableArray = borsh::from_slice(local_data)?;
-                let remote: ReplicatedGrowableArray = borsh::from_slice(remote_data)?;
-                local.merge(&remote)?;
-                Ok(borsh::to_vec(&local)?)
-            }
-            
-            Some(CrdtType::UnorderedSet) => {
-                let mut local: UnorderedSet<_> = borsh::from_slice(local_data)?;
-                let remote: UnorderedSet<_> = borsh::from_slice(remote_data)?;
-                local.merge(&remote)?;
-                Ok(borsh::to_vec(&local)?)
-            }
-            
-            Some(CrdtType::LwwRegister) => {
-                let mut local: LwwRegister<_> = borsh::from_slice(local_data)?;
-                let remote: LwwRegister<_> = borsh::from_slice(remote_data)?;
-                local.merge(&remote)?;
-                Ok(borsh::to_vec(&local)?)
-            }
-            
-            // ════════════════════════════════════════════════════════
-            // CUSTOM TYPES: Dispatch to WASM
-            // ════════════════════════════════════════════════════════
-            // ONLY for user-defined #[app::state] types.
-            // NOT for built-in wrappers like UserStorage/FrozenStorage
-            // (those use their underlying collection's CrdtType).
-            // All custom types MUST implement Mergeable in WASM.
-            
-            Some(CrdtType::Custom { type_name }) => {
-                // App-defined type - MUST call WASM for merge
-                let callback = wasm_callback.ok_or_else(|| {
-                    MergeError::WasmCallbackRequired {
-                        type_name: type_name.clone(),
-                    }
-                })?;
-                
-                callback.merge(local_data, remote_data, type_name)
-            }
-            
-            // ════════════════════════════════════════════════════════
-            // FALLBACK: No type info - use LWW
-            // ════════════════════════════════════════════════════════
-            
-            None => {
-                // Legacy data or unknown type - LWW fallback
-                lww_merge(local_data, remote_data, metadata)
-            }
-        }
-    }
-}
+**Merge dispatch requirement:**
 
-/// LWW merge fallback
-fn lww_merge(
-    local_data: &[u8],
-    remote_data: &[u8],
-    metadata: &Metadata,
-) -> Result<Vec<u8>, MergeError> {
-    // Compare timestamps - remote wins if newer or equal
-    let local_ts = metadata.updated_at();
-    // Assume remote timestamp is in the remote metadata
-    // For now, remote wins on tie (consistent with existing behavior)
-    Ok(remote_data.to_vec())
-}
-```
+On conflict, implementations MUST dispatch merge based on `metadata.crdt_type`. Built-in CRDTs MUST merge deterministically without WASM. `CrdtType::Custom` MUST invoke WASM merge callbacks.
+
+**Fallback requirement:**
+
+If `crdt_type` is absent (`None`), implementations MAY fall back to LWW for backward compatibility, but MUST surface this as an observability signal (log/metric) to prevent silent data loss.
+
+**Type propagation requirement:**
+
+Implementations MUST persist and transfer `crdt_type` with entity data (Invariant I10).
+
+**Construction requirement:**
+
+Entities created for built-in CRDTs MUST store the correct `crdt_type`. For `#[app::state]` root entities, `crdt_type` MUST be `Custom { type_name }`.
 
 ### Root State Merging
 
-The root state (`#[app::state] struct MyApp`) is **always custom**:
+The root state (`#[app::state] struct MyApp`) is **always a custom type**. When root entities conflict, implementations MUST invoke the WASM `merge_root_state()` callback.
 
-```rust
-#[app::state]
-struct MyApp {
-    // These are built-in CRDTs
-    counter: Counter,
-    map: UnorderedMap<String, String>,
-    
-    // This is a custom type
-    game: MyGameState,
-}
+### Collection Type Initialization
 
-// The ROOT STRUCT itself is custom - needs WASM merge
-impl Mergeable for MyApp {
-    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        // App defines how to merge the overall state
-        self.counter.merge(&other.counter)?;
-        self.map.merge(&other.map)?;
-        self.game.merge(&other.game)?;  // Custom merge
-        Ok(())
-    }
-}
-```
+Built-in CRDT collections MUST set `crdt_type` on creation:
+- `Counter::new()` → `CrdtType::Counter`
+- `UnorderedMap::new()` → `CrdtType::UnorderedMap`
+- etc.
 
-When the ROOT entities conflict (same ID, different content), we MUST call WASM:
-
-```rust
-fn merge_root_state(
-    local: &[u8],
-    remote: &[u8],
-    wasm_callback: &dyn WasmMergeCallback,
-) -> Result<Vec<u8>, MergeError> {
-    // Root state is always custom - must use WASM
-    wasm_callback.merge_root_state(local, remote)
-}
-```
-
-### Collections Auto-Set Type
-
-```rust
-// Counter sets its type on creation
-impl<S: StorageAdaptor> Counter<S> {
-    pub fn new() -> Self {
-        let mut element = Element::new();
-        element.metadata_mut().crdt_type = Some(CrdtType::Counter);
-        Self { element, counts: BTreeMap::new() }
-    }
-}
-
-// UnorderedMap sets its type on creation
-impl<K, V, S: StorageAdaptor> UnorderedMap<K, V, S> {
-    pub fn new() -> Self {
-        let mut element = Element::new();
-        element.metadata_mut().crdt_type = Some(CrdtType::UnorderedMap);
-        Self { element, entries: BTreeMap::new(), _phantom: PhantomData }
-    }
-}
-
-// Custom types set via macro
-#[app::state]  // Macro generates:
-struct MyApp { /*...*/ }
-// element.metadata_mut().crdt_type = Some(CrdtType::Custom {
-//     type_name: "MyApp".to_string(),
-// });
-```
+Custom types defined via `#[app::state]` MUST have `CrdtType::Custom { type_name: "..." }` set by the macro.
 
 ### Enforcing CRDT-Only State (Compile-Time)
 
@@ -1470,67 +1254,6 @@ fn merge_entity(local: &Entity, remote: &Entity) -> Result<Vec<u8>> {
 
 **No ABI required!** The Merkle tree is self-describing - every entity carries its type.
 
-### Performance Analysis
-
-```
-Merge Benchmark (1000 entities):
-
-Built-in CRDTs (Counter, Map, etc.):
-├── Conflicts: 100 entities
-├── Merge time: 100 × 100ns = 10μs total
-└── WASM calls: 0
-
-Custom Mergeable Types:
-├── Conflicts: 10 entities
-├── Merge time: 10 × 10μs = 100μs total
-└── WASM calls: 10
-
-Root State Conflicts:
-├── Conflicts: 1 (rare - only on concurrent root updates)
-├── Merge time: 1 × 10μs = 10μs
-└── WASM calls: 1
-
-Total: ~120μs for 111 conflicts
-Network RTT: ~50ms
-
-Merge overhead: 0.24% of sync time
-```
-
-### Sync API with WASM Callback
-
-```rust
-impl SyncManager {
-    /// Sync state with hybrid merge support
-    pub async fn sync_with_peer(&self, peer: PeerId) -> Result<SyncResult> {
-        let foreign_state = self.fetch_state(peer).await?;
-        
-        // Create WASM callback if we have a loaded module
-        let wasm_callback: Option<Box<dyn WasmMergeCallback>> = 
-            self.wasm_module.as_ref().map(|m| {
-                Box::new(WasmMergeCallbackImpl::new(m)) as Box<dyn WasmMergeCallback>
-            });
-        
-        // Compare trees with hybrid merge
-        let (local_actions, remote_actions) = Interface::compare_trees_full_with_merge(
-            self.root_id,
-            &foreign_state.index,
-            &foreign_state.data,
-            wasm_callback.as_deref(),
-        )?;
-        
-        // Apply merged actions
-        for action in local_actions {
-            Interface::apply_action(&action)?;
-        }
-        
-        // Send remote's needed actions
-        self.send_actions(peer, remote_actions).await?;
-        
-        Ok(SyncResult::Completed)
-    }
-}
-```
-
 ### Migration Path
 
 | Phase | Change | Backwards Compatible? |
@@ -1551,7 +1274,6 @@ impl SyncManager {
 |--------|--------------------------|----------------------|
 | Built-in CRDT merge | LWW only (data loss!) | Proper CRDT merge |
 | Custom type merge | Not supported | Via WASM callback |
-| Performance | N/A | ~100ns built-in, ~10μs custom |
 | WASM dependency | Required for all | Only for custom types |
 | Type safety | None | Compile-time for built-in |
 | Extensibility | None | App can define merge logic |
@@ -1839,7 +1561,7 @@ impl Drop for SyncTransaction {
 
 **Problem**: Node sends tampered data.
 
-**Solution**: Cryptographic verification (already implemented)
+**Solution**: Cryptographic verification (REQUIRED by §8)
 
 | Attack | Defense |
 |--------|---------|
