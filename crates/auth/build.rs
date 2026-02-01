@@ -19,15 +19,7 @@ const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
 const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "latest";
 const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "master";
-const CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL: &str =
-    "https://github.com/{repo}/releases/latest/download/{asset}";
-const CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL: &str =
-    "https://github.com/{repo}/releases/download/{version}/{asset}";
 const CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL: &str = "https://github.com/{repo}/releases/latest";
-const CALIMERO_AUTH_FRONTEND_REF_ARCHIVE_URL: &str =
-    "https://github.com/{repo}/archive/refs/heads/{ref}.zip";
-const CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL: &str =
-    "https://github.com/{repo}/archive/refs/tags/{version}.zip";
 
 fn main() {
     if let Err(e) = try_main() {
@@ -70,37 +62,21 @@ fn try_main() -> eyre::Result<()> {
             let default_ref = option_env!("CALIMERO_AUTH_FRONTEND_REF")
                 .unwrap_or(CALIMERO_AUTH_FRONTEND_DEFAULT_REF);
 
-            let mut resolved_version = None;
-            let mut resolved_asset = None;
-            let mut resolved_ref = None;
-            let release_url_template = if let Some(asset) = asset {
-                resolved_asset = Some(asset);
+            let release_url = if let Some(asset) = asset {
                 if version == "latest" {
-                    CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL
+                    format!("https://github.com/{repo}/releases/latest/download/{asset}")
                 } else {
-                    CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL
+                    format!("https://github.com/{repo}/releases/download/{version}/{asset}")
                 }
             } else if version == "latest" {
                 if let Some(tag) = resolve_latest_release_tag(repo)? {
-                    resolved_version = Some(tag);
-                    CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL
+                    format!("https://github.com/{repo}/archive/refs/tags/{tag}.zip")
                 } else {
-                    resolved_ref = Some(default_ref);
-                    CALIMERO_AUTH_FRONTEND_REF_ARCHIVE_URL
+                    format!("https://github.com/{repo}/archive/refs/heads/{default_ref}.zip")
                 }
             } else {
-                CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL
+                format!("https://github.com/{repo}/archive/refs/tags/{version}.zip")
             };
-
-            let version_value = resolved_version.as_deref().unwrap_or(version);
-
-            let release_url = replace(release_url_template.into(), |var| match var {
-                "repo" => Some(repo),
-                "version" => Some(version_value),
-                "asset" => resolved_asset,
-                "ref" => resolved_ref,
-                _ => None,
-            });
 
             release_url.into()
         }
@@ -152,19 +128,12 @@ fn try_main() -> eyre::Result<()> {
 }
 
 fn resolve_latest_release_tag(repo: &str) -> eyre::Result<Option<String>> {
-    let latest_release_url =
-        replace(
-            CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL.into(),
-            |var| match var {
-                "repo" => Some(repo),
-                _ => None,
-            },
-        );
+    let latest_release_url = CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL.replace("{repo}", repo);
     let client = ReqwestClient::builder()
         .user_agent(USER_AGENT)
         .redirect(Policy::limited(5))
         .build()?;
-    let response = client.get(&*latest_release_url).send()?;
+    let response = client.get(latest_release_url).send()?;
     let final_url = response.url();
 
     let tag = final_url
@@ -191,43 +160,4 @@ fn target_dir() -> eyre::Result<PathBuf> {
     }
 
     eyre::bail!("failed to resolve target dir");
-}
-
-#[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
-fn replace<'a: 'b, 'b>(str: Cow<'a, str>, replace: impl Fn(&str) -> Option<&str>) -> Cow<'b, str> {
-    let mut idx = 0;
-    let mut buf = str.as_ref();
-    let mut out = String::new();
-
-    while let Some(start) = buf[idx..].find('{') {
-        let start = start + 1;
-
-        let Some(end) = buf[idx + start..].find(['{', '}']) else {
-            break;
-        };
-
-        if buf.as_bytes()[idx + start + end] == b'{' {
-            idx += start + end;
-            continue;
-        }
-
-        let var = &buf[idx + start..idx + start + end];
-
-        if let Some(sub) = replace(var) {
-            out.push_str(&buf[..idx + start - 1]);
-            out.push_str(sub);
-            buf = &buf[idx + start + end + 1..];
-            idx = 0;
-        } else {
-            idx += start + end;
-        }
-    }
-
-    if out.is_empty() {
-        return str;
-    }
-
-    out.push_str(buf);
-
-    out.into()
 }
