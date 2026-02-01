@@ -85,7 +85,7 @@ pub mod exports {
 pub use calimero_storage_macros::{AtomicUnit, Collection};
 
 // Re-export commonly used types
-pub use entities::{Data, Element};
+pub use entities::{CrdtType, Data, Element, Metadata};
 pub use error::StorageError;
 pub use interface::Interface;
 
