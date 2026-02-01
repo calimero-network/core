@@ -33,6 +33,17 @@ where
     pub fn new() -> Self {
         Self::new_internal()
     }
+
+    /// Create a new map collection with a deterministic ID derived from parent ID and field name.
+    /// This ensures maps get the same ID across all nodes when created with the same
+    /// parent and field name.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this map
+    pub fn new_with_field_name(parent_id: Option<crate::address::Id>, field_name: &str) -> Self {
+        Self::new_with_field_name_internal(parent_id, field_name)
+    }
 }
 
 impl<K, V, S> UnorderedMap<K, V, S>
@@ -45,6 +56,16 @@ where
     pub(super) fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
+        }
+    }
+
+    /// Create a new map collection with deterministic ID (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        Self {
+            inner: Collection::new_with_field_name(parent_id, field_name),
         }
     }
 
@@ -945,5 +966,54 @@ mod tests {
         assert_eq!(old_val, "value3");
         assert_eq!(map.get("key3").unwrap(), None); // Key should be gone
         assert_eq!(map.len().unwrap(), 2); // Length should decrease
+    }
+
+    #[test]
+    fn test_deterministic_map_ids() {
+        crate::env::reset_for_testing();
+
+        // Create two maps with the same field name - they should have the same IDs
+        let map1_val = UnorderedMap::new_with_field_name(None, "items");
+        let map2_val = UnorderedMap::new_with_field_name(None, "items");
+
+        assert_eq!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map2_val),
+            "Maps with same field name should have same ID"
+        );
+
+        // Different field names should produce different IDs
+        let map3_val = UnorderedMap::new_with_field_name(None, "products");
+        assert_ne!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map3_val),
+            "Maps with different field names should have different IDs"
+        );
+    }
+
+    #[test]
+    fn test_deterministic_map_with_parent_id() {
+        crate::env::reset_for_testing();
+
+        let parent_id = Some(crate::address::Id::new([42u8; 32]));
+
+        // Same parent + same field name = same ID
+        let map1_val = UnorderedMap::new_with_field_name(parent_id, "nested_map");
+        let map2_val = UnorderedMap::new_with_field_name(parent_id, "nested_map");
+
+        assert_eq!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map2_val),
+            "Maps with same parent and field name should have same ID"
+        );
+
+        // Different parent = different ID (even with same field name)
+        let parent_id2 = Some(crate::address::Id::new([43u8; 32]));
+        let map3_val = UnorderedMap::new_with_field_name(parent_id2, "nested_map");
+        assert_ne!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map3_val),
+            "Maps with different parents should have different IDs"
+        );
     }
 }
