@@ -69,7 +69,7 @@ fn try_main() -> eyre::Result<()> {
                     format!("https://github.com/{repo}/releases/download/{version}/{asset}")
                 }
             } else if version == "latest" {
-                if let Some(tag) = resolve_latest_release_tag(repo)? {
+                if let Some(tag) = resolve_latest_release_tag(repo, token)? {
                     format!("https://github.com/{repo}/archive/refs/tags/{tag}.zip")
                 } else {
                     format!("https://github.com/{repo}/archive/refs/heads/{default_ref}.zip")
@@ -127,13 +127,19 @@ fn try_main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn resolve_latest_release_tag(repo: &str) -> eyre::Result<Option<String>> {
+fn resolve_latest_release_tag(repo: &str, token: Option<&str>) -> eyre::Result<Option<String>> {
     let latest_release_url = CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL.replace("{repo}", repo);
     let client = ReqwestClient::builder()
         .user_agent(USER_AGENT)
         .redirect(Policy::limited(5))
         .build()?;
-    let response = client.get(latest_release_url).send()?;
+    let mut request = client.get(latest_release_url);
+
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request.send()?;
     let final_url = response.url();
 
     let tag = final_url
