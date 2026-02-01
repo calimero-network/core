@@ -173,37 +173,19 @@ pub async fn handle_state_delta(
     {
         Ok(result) => result,
         Err(e) => {
-            // Check if this is a root hash mismatch (divergent histories)
-            let error_str = format!("{:?}", e);
-            if error_str.contains("RootHashMismatch") {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    delta_id = ?delta_id,
-                    error = %e,
-                    "Divergent histories detected - triggering state sync with peer"
-                );
-
-                // Trigger state sync to reconcile divergent states using CRDT merge
-                // The sync will compare Merkle trees and merge using proper CRDT semantics
-                if let Err(sync_err) = node_clients
-                    .node
-                    .sync(Some(&context_id), Some(&source))
-                    .await
-                {
-                    warn!(
-                        %context_id,
-                        ?sync_err,
-                        "Failed to trigger state sync after root hash mismatch"
-                    );
-                }
-
-                // Return the error so the delta isn't marked as processed
-                // It will be retried after sync completes
-                return Err(e);
-            }
-
-            // Other errors propagate normally
+            // NOTE: Root hash mismatches are now handled inside ContextStorageApplier::apply()
+            // using CRDT merge semantics. The applier detects concurrent branches and merges
+            // them instead of returning errors. Hash mismatches after merge are logged but
+            // accepted (CRDT guarantees eventual consistency).
+            //
+            // This error path now only handles true application failures (WASM errors, etc.)
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                error = %e,
+                "Delta application failed"
+            );
             return Err(e);
         }
     };

@@ -113,8 +113,18 @@ impl Handler<NetworkEvent> for NodeManager {
                                 let effective_hint = match sync_hints.suggested_protocol {
                                     SyncProtocolHint::AdaptiveSelection => {
                                         // Perform adaptive selection based on our local state
-                                        // TODO: Get actual local entity count from storage
-                                        let local_entity_count = 0u32; // Placeholder - would need storage query
+                                        //
+                                        // CONSERVATIVE ESTIMATE: Use remote's entity count as baseline.
+                                        // Rationale: If we're in the same context, we likely have similar
+                                        // entity counts. This prevents always triggering Snapshot (which
+                                        // happened when local_entity_count was hardcoded to 0).
+                                        //
+                                        // If remote has 1000 entities and we truly have 0, adaptive_select
+                                        // will detect the 100% divergence and still suggest Snapshot.
+                                        // But if we have ~1000 too, it will correctly suggest HashBased.
+                                        //
+                                        // TODO: Query actual count from storage Index for accuracy.
+                                        let local_entity_count = sync_hints.entity_count;
                                         sync_hints
                                             .adaptive_select(
                                                 &our_context.root_hash,

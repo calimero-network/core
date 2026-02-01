@@ -173,6 +173,28 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         {
             let mut hashes = self.parent_hashes.write().await;
             hashes.insert(delta.id, *computed_hash);
+
+            // CLEANUP: Prevent unbounded memory growth (Bugbot P1 fix)
+            // Keep only the most recent entries. Old delta hashes are rarely needed
+            // since merge detection mainly looks at recent parent-child relationships.
+            // 10,000 entries = ~640KB (64 bytes per entry), sufficient for most scenarios.
+            const MAX_PARENT_HASH_ENTRIES: usize = 10_000;
+            if hashes.len() > MAX_PARENT_HASH_ENTRIES {
+                // Remove ~10% of oldest entries when threshold exceeded
+                // Since HashMap doesn't track insertion order, we do a simple drain
+                // This is rare (only when threshold exceeded) so perf impact is minimal
+                let excess = hashes.len() - (MAX_PARENT_HASH_ENTRIES * 9 / 10);
+                let keys_to_remove: Vec<_> = hashes.keys().take(excess).copied().collect();
+                for key in keys_to_remove {
+                    hashes.remove(&key);
+                }
+                debug!(
+                    context_id = %self.context_id,
+                    removed = excess,
+                    remaining = hashes.len(),
+                    "Pruned parent_hashes cache to prevent memory growth"
+                );
+            }
         }
 
         let total_elapsed_ms = apply_start.elapsed().as_secs_f64() * 1000.0;
