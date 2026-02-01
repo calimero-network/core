@@ -86,8 +86,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: contracts
-          path: .
-          merge-multiple: true
+          path: contracts
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -173,8 +172,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: contracts
-          path: .
-          merge-multiple: true
+          path: contracts
 
       - name: Install DFX for ICP
         uses: dfinity/setup-dfx@main
@@ -267,8 +265,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: contracts
-          path: .
-          merge-multiple: true
+          path: contracts
 
       - name: Install Foundry for Ethereum
         uses: foundry-rs/foundry-toolchain@v1
