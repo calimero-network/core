@@ -16,7 +16,7 @@ const USER_AGENT: &str = "calimero-auth-build";
 const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
 const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "latest";
-const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "main";
+const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "master";
 const CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL: &str =
     "https://github.com/{repo}/releases/latest/download/{asset}";
 const CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL: &str =

@@ -125,7 +125,7 @@ merod --node-name my-node init --auth-mode embedded --auth-storage memory
   - When pulling from GitHub, set `CALIMERO_AUTH_FRONTEND_ASSET` to use a
     release asset; otherwise the build downloads a source archive from the tag
     in `CALIMERO_AUTH_FRONTEND_VERSION` or from the branch in
-    `CALIMERO_AUTH_FRONTEND_REF` (defaults to `main`) when version is `latest`.
+    `CALIMERO_AUTH_FRONTEND_REF` (defaults to `master`) when version is `latest`.
 - When running integration suites, exercise at least one smoke test in each mode to
   confirm `/auth` endpoints are reachable in embedded mode and that the proxy mode
   continues to rely on the external service.
