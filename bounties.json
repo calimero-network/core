@@ -1,0 +1,508 @@
+{
+  "bounties": [
+    {
+      "title": "Fix overly permissive CORS configuration allowing all origins",
+      "description": "In `crates/server/src/lib.rs` lines 181-192, CORS is configured with `allow_origin(Any)` and `allow_headers(Any)`, which allows any origin to make requests. This is a significant security vulnerability that could enable CSRF attacks. Implement proper origin validation with a configurable whitelist of allowed origins.",
+      "pathHint": "crates/server/src/lib.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "critical"
+    },
+    {
+      "title": "Fix token host validation bypass via spoofable header",
+      "description": "In `crates/auth/src/auth/token/jwt.rs` line 125, token host validation is bypassed if `request_host.starts_with(\"auth:\")`. An attacker could spoof the Host header to start with 'auth:' and bypass token validation. Remove this bypass or implement proper internal service authentication.",
+      "pathHint": "crates/auth/src/auth/token/jwt.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "critical"
+    },
+    {
+      "title": "Add WASM module validation for memory imports and _start function",
+      "description": "In `crates/runtime/src/lib.rs` lines 99-107, there are TODO comments indicating missing WASM validation: no check for memory imports, no _start function validation, and no memory section removal. Malicious WASM could exploit these gaps. Implement the prepare step to validate and transform WASM modules before execution.",
+      "pathHint": "crates/runtime/src/lib.rs",
+      "estimatedMinutes": 90,
+      "category": "security",
+      "severity": "critical"
+    },
+    {
+      "title": "Add bounds checking to unsafe guest memory access functions",
+      "description": "In `crates/runtime/src/logic.rs` lines 434-476, `read_guest_memory_slice` and `read_guest_memory_slice_mut` use `data_unchecked()` without explicit bounds validation before accessing the slice. While Wasmer provides some guards, add explicit bounds checks to prevent potential out-of-bounds access from malicious WASM guests.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Implement Send/Sync safety documentation for EncryptedDatabase unsafe impls",
+      "description": "In `crates/store/encryption/src/lib.rs` lines 216-217, `unsafe impl Send` and `unsafe impl Sync` are used with a minimal comment. Document the safety invariants that make these implementations correct, and add compile-time assertions if possible. Incorrect Send/Sync can cause data races.",
+      "pathHint": "crates/store/encryption/src/lib.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Add rate limiting to authentication endpoints",
+      "description": "The auth service in `crates/auth/src/` lacks rate limiting on authentication endpoints like `/auth/challenge`, `/auth/verify`, and `/auth/refresh`. This makes the service vulnerable to brute force attacks. Implement rate limiting middleware with configurable thresholds.",
+      "pathHint": "crates/auth/src/server.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Add input size limits to deserialization in state delta handling",
+      "description": "In `crates/node/src/handlers/state_delta.rs`, artifact deserialization at line 269 (`borsh::from_slice`) has no size limits. An attacker could send a maliciously large payload causing OOM. Add configurable maximum payload sizes and validate before deserialization.",
+      "pathHint": "crates/node/src/handlers/state_delta.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Add timeout to request_missing_deltas recursive fetch",
+      "description": "In `crates/node/src/handlers/state_delta.rs` lines 767-853, the recursive delta fetching has no overall timeout or maximum depth. A malicious peer could create an infinite loop. Add overall timeout and maximum recursion depth limits.",
+      "pathHint": "crates/node/src/handlers/state_delta.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Replace expect() in SharedKey::new with proper error handling",
+      "description": "In `crates/crypto/src/lib.rs` line 21, `SharedKey::new` uses `.expect()` which will panic if the public key decompression fails. This could be triggered by a malformed public key from untrusted input. Return Result instead and propagate the error.",
+      "pathHint": "crates/crypto/src/lib.rs",
+      "estimatedMinutes": 30,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Refactor server module to reduce function complexity",
+      "description": "In `crates/server/src/lib.rs` line 50, there's a clippy allow for `too_many_lines` with TODO comment. The `start` function handles multiple services and is difficult to maintain/test. Split into separate service initialization functions for admin, jsonrpc, ws, sse, and metrics.",
+      "pathHint": "crates/server/src/lib.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "Add proper error types to context manager instead of generic InternalError",
+      "description": "In `crates/context/src/handlers/execute.rs`, many error paths return `ExecuteError::InternalError` which loses context about the actual failure. Create specific error variants for different failure modes (storage errors, application errors, network errors) to improve debugging and error handling.",
+      "pathHint": "crates/context/src/handlers/execute.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "Fix BTreeMap cache without eviction in ContextManager",
+      "description": "In `crates/context/src/lib.rs` lines 57-68, contexts and applications are cached in BTreeMaps without eviction. Comments mention using DashMap or TimedSizedCache but it's not implemented. Long-running nodes will accumulate unbounded memory. Implement LRU cache with size limits.",
+      "pathHint": "crates/context/src/lib.rs",
+      "estimatedMinutes": 75,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "title": "Add graceful shutdown handling to WebSocket connections",
+      "description": "In `crates/server/src/ws.rs`, when the server shuts down, WebSocket connections may not be properly drained. Add graceful shutdown that sends close frames to all connected clients and waits for acknowledgment before terminating.",
+      "pathHint": "crates/server/src/ws.rs",
+      "estimatedMinutes": 45,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "Fix potential deadlock in delta_stores DashMap access",
+      "description": "In `crates/node/src/handlers/state_delta.rs` lines 379-395, delta_stores entry is accessed without timeout. If the store's internal mutex is held for too long, it could block other context operations. Add timeout and handle the case where the lock cannot be acquired.",
+      "pathHint": "crates/node/src/handlers/state_delta.rs",
+      "estimatedMinutes": 45,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "Implement consistent error handling pattern across all crates",
+      "description": "The codebase mixes different error handling patterns: some crates use `eyre::Result`, others use custom error types, and many use `.unwrap()` (2154 instances found). Create a project-wide error handling guide and refactor critical paths to use consistent Result types with proper error propagation.",
+      "pathHint": "crates/",
+      "estimatedMinutes": 90,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "Add connection pool limits to network client",
+      "description": "In `crates/network/src/lib.rs`, the network manager doesn't implement connection limits. Under load, unbounded connections could exhaust file descriptors. Add configurable limits for maximum concurrent connections per peer and total connections.",
+      "pathHint": "crates/network/src/lib.rs",
+      "estimatedMinutes": 60,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "title": "Fix missing validation of path parameter in install command",
+      "description": "In `crates/meroctl/src/cli/app/install.rs`, the path parameter is passed directly to file operations without validation. While `canonicalize_utf8()` is used, there's no check for path traversal before that. Add explicit path validation to prevent directory traversal attacks.",
+      "pathHint": "crates/meroctl/src/cli/app/install.rs",
+      "estimatedMinutes": 35,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Add request body size limits to all HTTP endpoints",
+      "description": "While `crates/auth/src/auth/security.rs` has a `create_body_limit_layer` function, it's not consistently applied across all server endpoints. Audit all HTTP handlers and ensure body size limits are applied to prevent DoS attacks via large payloads.",
+      "pathHint": "crates/server/src/",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Implement proper key rotation for JWT secrets",
+      "description": "In `crates/auth/src/auth/token/jwt.rs`, JWT secrets are fetched from SecretManager but there's no mechanism for key rotation without service restart. Implement graceful key rotation that supports multiple active keys during transition.",
+      "pathHint": "crates/auth/src/auth/token/jwt.rs",
+      "estimatedMinutes": 75,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Add tests for security-critical authentication flows",
+      "description": "The auth crate lacks comprehensive tests for token validation, key rotation, and authentication bypass scenarios. Add property-based tests for JWT validation, fuzz tests for input parsing, and unit tests for all error paths.",
+      "pathHint": "crates/auth/src/",
+      "estimatedMinutes": 90,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Fix inconsistent storage key validation across storage operations",
+      "description": "In `crates/runtime/src/logic/host_functions/storage.rs`, key length is validated against `max_storage_key_size`, but this validation is duplicated in each function. Extract to a shared validation function and ensure consistent error handling.",
+      "pathHint": "crates/runtime/src/logic/host_functions/storage.rs",
+      "estimatedMinutes": 35,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Add comprehensive integration tests for state delta synchronization",
+      "description": "The DAG-based state synchronization in `crates/node/src/handlers/state_delta.rs` has limited test coverage. Add integration tests for: cascading delta application, missing parent recovery, concurrent delta handling, and malformed delta rejection.",
+      "pathHint": "crates/node/tests/",
+      "estimatedMinutes": 90,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Implement backpressure for WebSocket message queue",
+      "description": "In `crates/server/src/ws.rs` line 602, `WS_COMMAND_CHANNEL_BUFFER_SIZE` is set to 32. If events arrive faster than they can be sent, the channel will block. Implement proper backpressure with dropped old messages or client disconnection for slow consumers.",
+      "pathHint": "crates/server/src/ws.rs",
+      "estimatedMinutes": 45,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "Add health check endpoint with dependency status",
+      "description": "The server lacks a comprehensive health check endpoint that reports status of all dependencies (database, network, authentication). Add `/health` and `/ready` endpoints following Kubernetes probe conventions.",
+      "pathHint": "crates/server/src/",
+      "estimatedMinutes": 45,
+      "category": "improvement",
+      "severity": "medium"
+    },
+    {
+      "title": "Document unsafe blocks in runtime crate with safety invariants",
+      "description": "The runtime crate has multiple unsafe blocks in `logic.rs`, `logic/imports.rs`, and `memory.rs`. Each unsafe block should have SAFETY comments documenting the invariants that make it safe. Audit and document all unsafe usage.",
+      "pathHint": "crates/runtime/src/",
+      "estimatedMinutes": 60,
+      "category": "docs",
+      "severity": "medium"
+    },
+    {
+      "title": "Fix mem::forget usage flagged as potentially unsafe",
+      "description": "In `crates/runtime/src/logic.rs` line 2, there's an allow for `clippy::mem_forget` with 'Safe for now' reason. Review all mem::forget usages and either document why they're safe or refactor to avoid them.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 45,
+      "category": "bug-risk",
+      "severity": "medium"
+    },
+    {
+      "title": "Add structured logging with request correlation IDs",
+      "description": "The codebase uses tracing but lacks consistent request/correlation IDs across service boundaries. Add request ID middleware and propagate IDs through all log entries for easier debugging of distributed operations.",
+      "pathHint": "crates/server/src/",
+      "estimatedMinutes": 60,
+      "category": "improvement",
+      "severity": "medium"
+    },
+    {
+      "title": "Implement retry logic for external blockchain calls",
+      "description": "In `crates/relayer/src/main.rs`, blockchain RPC calls don't have retry logic for transient failures. Implement exponential backoff with jitter for failed RPC calls, with configurable retry limits.",
+      "pathHint": "crates/relayer/src/main.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Add panic handler for WASM execution to prevent node crashes",
+      "description": "In `crates/runtime/src/lib.rs`, WASM execution could panic and crash the node. Implement catch_unwind around WASM execution and convert panics to proper error responses.",
+      "pathHint": "crates/runtime/src/lib.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Fix event handler execution not being atomic with delta application",
+      "description": "In `crates/node/src/handlers/state_delta.rs` lines 194-228, event handlers are executed after delta application but failures don't roll back the delta. This can leave the system in an inconsistent state. Consider transactional handler execution.",
+      "pathHint": "crates/node/src/handlers/state_delta.rs",
+      "estimatedMinutes": 75,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Add timeout handling for cross-context calls",
+      "description": "In `crates/context/src/handlers/execute.rs` lines 326-396, cross-context calls (xcalls) don't have timeout limits. A slow or non-responsive target context could block execution indefinitely. Add configurable timeout for xcalls.",
+      "pathHint": "crates/context/src/handlers/execute.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Implement proper cleanup on connection termination in SSE",
+      "description": "Review `crates/server/src/sse/` for proper resource cleanup when SSE connections are terminated. Ensure subscriptions are removed, channels are closed, and no resources are leaked.",
+      "pathHint": "crates/server/src/sse/",
+      "estimatedMinutes": 45,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "Add input validation for alias substitution in payload",
+      "description": "In `crates/context/src/handlers/execute.rs` lines 920-956, `substitute_aliases_in_payload` performs string substitution without validating the substituted values. Malicious aliases could inject unexpected data. Add validation for substituted values.",
+      "pathHint": "crates/context/src/handlers/execute.rs",
+      "estimatedMinutes": 35,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Refactor SDK macros to provide better compile-time error messages",
+      "description": "In `crates/sdk/macros/src/lib.rs`, proc macro errors could be more descriptive. Improve error messages to point to specific code locations and provide actionable suggestions for fixing issues.",
+      "pathHint": "crates/sdk/macros/src/",
+      "estimatedMinutes": 60,
+      "category": "improvement",
+      "severity": "medium"
+    },
+    {
+      "title": "Add metrics for WASM execution time and memory usage",
+      "description": "The runtime crate lacks observability for WASM execution. Add prometheus metrics for: execution duration, memory usage, number of host calls, and error rates per method.",
+      "pathHint": "crates/runtime/src/",
+      "estimatedMinutes": 60,
+      "category": "improvement",
+      "severity": "medium"
+    },
+    {
+      "title": "Fix potential race condition in WebSocket connection registration",
+      "description": "In `crates/server/src/ws.rs` lines 190-205, connection registration uses a loop with random ID generation that could theoretically loop forever if IDs collide. Add maximum retry limit and proper error handling.",
+      "pathHint": "crates/server/src/ws.rs",
+      "estimatedMinutes": 30,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "Add documentation for storage CRDT types and merge semantics",
+      "description": "The storage crate implements CRDTs but the merge semantics and consistency guarantees are not well documented. Add comprehensive documentation for UnorderedMap, Vector, Counter, and LWW Register explaining their conflict resolution behavior.",
+      "pathHint": "crates/storage/src/collections/",
+      "estimatedMinutes": 60,
+      "category": "docs",
+      "severity": "medium"
+    },
+    {
+      "title": "Implement proper versioning for state schema evolution",
+      "description": "The storage system lacks a clear migration strategy for schema changes. Add version fields to stored state and implement a migration framework that can handle schema evolution without data loss.",
+      "pathHint": "crates/storage/src/",
+      "estimatedMinutes": 90,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Add fuzz tests for WASM input parsing",
+      "description": "The runtime accepts arbitrary WASM modules but lacks fuzz testing. Add cargo-fuzz targets for module compilation, method invocation, and host function calls to find potential crashes or security issues.",
+      "pathHint": "crates/runtime/",
+      "estimatedMinutes": 90,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Fix inconsistent use of blocking operations in async context",
+      "description": "The codebase mixes blocking and async operations inconsistently. In `crates/context/src/handlers/execute.rs` line 903, `spawn_blocking` is used, but other places may block the executor. Audit and fix all blocking operations in async contexts.",
+      "pathHint": "crates/",
+      "estimatedMinutes": 75,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "Add tests for edge cases in VMLimits boundary conditions",
+      "description": "In `crates/runtime/src/logic.rs`, VMLimits defines boundaries for registers, logs, events, etc. Add tests that verify behavior exactly at boundaries (e.g., max_registers-1, max_registers, max_registers+1) to ensure limits are enforced correctly.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 45,
+      "category": "tests",
+      "severity": "medium"
+    },
+    {
+      "title": "Implement circuit breaker for external service calls",
+      "description": "External calls to blockchain RPCs and other services lack circuit breaker patterns. When external services are unhealthy, the system continues making failing calls. Implement circuit breaker with half-open state.",
+      "pathHint": "crates/relayer/src/",
+      "estimatedMinutes": 60,
+      "category": "improvement",
+      "severity": "medium"
+    },
+    {
+      "title": "Add validation for config file paths to prevent path traversal",
+      "description": "In `crates/merod/src/cli/init.rs` and other CLI commands, file paths from config are used without traversal validation. Add path normalization and validation to prevent accessing files outside expected directories.",
+      "pathHint": "crates/merod/src/cli/",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Refactor duplicate validation logic in storage host functions",
+      "description": "In `crates/runtime/src/logic/host_functions/`, key and value length validation is duplicated across storage_read, storage_write, storage_remove. Extract to a shared validator to ensure consistent behavior and reduce maintenance burden.",
+      "pathHint": "crates/runtime/src/logic/host_functions/",
+      "estimatedMinutes": 35,
+      "category": "code-quality",
+      "severity": "low"
+    },
+    {
+      "title": "Add documentation for authentication provider system",
+      "description": "The auth crate has a flexible provider system in `crates/auth/src/providers/` but lacks documentation explaining how to add new providers, the provider lifecycle, and required interface methods.",
+      "pathHint": "crates/auth/src/providers/",
+      "estimatedMinutes": 45,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Consolidate error types across primitives crate",
+      "description": "The primitives crate has multiple error types (InvalidPublicKey, HashError, etc.) that could be consolidated into a unified error hierarchy. This would simplify error handling across the codebase.",
+      "pathHint": "crates/primitives/src/",
+      "estimatedMinutes": 45,
+      "category": "code-quality",
+      "severity": "low"
+    },
+    {
+      "title": "Add examples directory with documented sample applications",
+      "description": "The SDK macros in `crates/sdk/macros/src/lib.rs` have doc comments but lack runnable examples. Create an examples directory with complete sample applications demonstrating state, logic, events, and private data usage.",
+      "pathHint": "crates/sdk/",
+      "estimatedMinutes": 60,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Improve error messages in config parsing",
+      "description": "Config parsing in `crates/config/src/` and `crates/auth/src/config.rs` uses generic error messages. Improve to include file paths, line numbers, and field names for easier debugging of configuration issues.",
+      "pathHint": "crates/config/src/",
+      "estimatedMinutes": 35,
+      "category": "improvement",
+      "severity": "low"
+    },
+    {
+      "title": "Add benchmarks for critical storage operations",
+      "description": "The storage crate lacks performance benchmarks. Add criterion benchmarks for CRDT operations, merge conflicts, and serialization to catch performance regressions and guide optimization.",
+      "pathHint": "crates/storage/",
+      "estimatedMinutes": 60,
+      "category": "tests",
+      "severity": "low"
+    },
+    {
+      "title": "Clean up unused dependencies in workspace Cargo.toml",
+      "description": "The workspace Cargo.toml lists many dependencies. Audit for unused dependencies using `cargo machete` or similar tools and remove to reduce compile times and attack surface.",
+      "pathHint": "Cargo.toml",
+      "estimatedMinutes": 30,
+      "category": "ci",
+      "severity": "low"
+    },
+    {
+      "title": "Add documentation for DAG-based state synchronization protocol",
+      "description": "The DAG synchronization in `crates/node/src/handlers/state_delta.rs` and `crates/dag/` is complex but lacks protocol documentation. Document the sync protocol, message formats, and invariants.",
+      "pathHint": "crates/dag/",
+      "estimatedMinutes": 60,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Standardize logging levels across all crates",
+      "description": "Logging levels are inconsistent across crates - some use debug for important info, others use info for routine events. Create a logging guide and standardize levels: error for failures, warn for potential issues, info for operations, debug for details.",
+      "pathHint": "crates/",
+      "estimatedMinutes": 60,
+      "category": "code-quality",
+      "severity": "low"
+    },
+    {
+      "title": "Add CI check for outdated dependencies",
+      "description": "Add a CI workflow that runs `cargo outdated` and alerts on dependencies with security advisories using `cargo audit`. This helps maintain security and stay current with upstream fixes.",
+      "pathHint": ".github/workflows/",
+      "estimatedMinutes": 30,
+      "category": "ci",
+      "severity": "low"
+    },
+    {
+      "title": "Implement proper Display traits for all error types",
+      "description": "Some error types use thiserror's transparent which loses context. Review all error types and implement proper Display messages that include all relevant context for debugging.",
+      "pathHint": "crates/",
+      "estimatedMinutes": 45,
+      "category": "code-quality",
+      "severity": "low"
+    },
+    {
+      "title": "Add pre-commit hook for formatting and lint checks",
+      "description": "The `.husky/pre-commit` file exists but may not be comprehensive. Ensure it runs `cargo fmt --check`, `cargo clippy`, and basic tests before allowing commits to catch issues early.",
+      "pathHint": ".husky/pre-commit",
+      "estimatedMinutes": 30,
+      "category": "ci",
+      "severity": "low"
+    },
+    {
+      "title": "Document the crate dependency graph and layering rules",
+      "description": "The workspace has 40+ crates with complex dependencies. Create a diagram showing the crate dependency graph and document which crates can depend on which to prevent layering violations.",
+      "pathHint": "docs/",
+      "estimatedMinutes": 60,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Add compile-time checks for reserved method names in SDK",
+      "description": "In `crates/sdk/macros/src/reserved.rs`, reserved names are checked at runtime during macro expansion. Move these checks to compile-time with clearer error messages about why certain names are reserved.",
+      "pathHint": "crates/sdk/macros/src/reserved.rs",
+      "estimatedMinutes": 45,
+      "category": "improvement",
+      "severity": "low"
+    },
+    {
+      "title": "Add integration tests for file watcher in meroctl",
+      "description": "The watch functionality in `crates/meroctl/src/cli/app/install.rs` lacks tests. Add integration tests verifying file change detection, debouncing, and error handling for removed files.",
+      "pathHint": "crates/meroctl/src/cli/app/",
+      "estimatedMinutes": 45,
+      "category": "tests",
+      "severity": "low"
+    },
+    {
+      "title": "Improve test isolation in storage tests",
+      "description": "Storage tests in `crates/storage/src/tests/` use `SimpleMockStorage` but some may share state. Review tests for proper isolation and ensure each test starts with a clean state.",
+      "pathHint": "crates/storage/src/tests/",
+      "estimatedMinutes": 45,
+      "category": "tests",
+      "severity": "low"
+    },
+    {
+      "title": "Add API versioning support for JSON-RPC endpoints",
+      "description": "The JSON-RPC service in `crates/server/src/jsonrpc/` lacks versioning. Add version prefix to endpoints (e.g., /v1/rpc) and implement backward compatibility strategy for API evolution.",
+      "pathHint": "crates/server/src/jsonrpc/",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Document env var configuration options comprehensively",
+      "description": "Environment variables are used throughout (e.g., RUST_LOG, PORT, NODE_PATH_PREFIX) but aren't documented in one place. Create a comprehensive env var reference in documentation.",
+      "pathHint": "docs/",
+      "estimatedMinutes": 45,
+      "category": "docs",
+      "severity": "low"
+    },
+    {
+      "title": "Add proper cleanup for blob handles in runtime",
+      "description": "In `crates/runtime/src/logic.rs` lines 196-199, blob handles are tracked but there's no explicit cleanup on execution finish. Ensure all blob handles are properly closed when WASM execution completes.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 35,
+      "category": "bug-risk",
+      "severity": "low"
+    },
+    {
+      "title": "Add typed configuration for all server components",
+      "description": "Server configuration in `crates/server/src/config.rs` could benefit from stronger typing. Replace Option<SomeConfig> patterns with explicit enable/disable configuration structs.",
+      "pathHint": "crates/server/src/config.rs",
+      "estimatedMinutes": 45,
+      "category": "code-quality",
+      "severity": "low"
+    }
+  ]
+}
