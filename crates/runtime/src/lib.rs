@@ -1,3 +1,5 @@
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -16,7 +18,7 @@ mod memory;
 pub mod store;
 
 pub use constraint::Constraint;
-use errors::{FunctionCallError, VMRuntimeError};
+use errors::{FunctionCallError, HostError, Location, PanicContext, VMRuntimeError};
 use logic::{ContextHost, Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
 use memory::WasmerTunables;
 use store::Storage;
@@ -162,11 +164,74 @@ impl Module {
 
         let imports = logic.imports(&mut store);
 
-        let instance = match Instance::new(&mut store, &self.module, &imports) {
+        // Wrap WASM execution in catch_unwind to prevent panics from crashing the node.
+        // This catches any unhandled panics during instance creation, memory access,
+        // or function execution and converts them to proper error responses.
+        let execution_result = catch_unwind(AssertUnwindSafe(|| {
+            Self::execute_wasm(
+                &mut store,
+                &self.module,
+                &imports,
+                &mut logic,
+                method,
+                &context_id,
+            )
+        }));
+
+        // Determine the error to pass to finish() based on execution result
+        let err = match execution_result {
+            Ok(Ok(err)) => err,
+            Ok(Err(e)) => return Err(e),
+            Err(panic_payload) => {
+                // Extract panic message from the payload
+                let message = extract_panic_message(&panic_payload);
+                error!(
+                    %context_id,
+                    method,
+                    panic_message = %message,
+                    "WASM execution panicked"
+                );
+                Some(FunctionCallError::HostError(HostError::Panic {
+                    context: PanicContext::Guest,
+                    message,
+                    location: Location::Unknown,
+                }))
+            }
+        };
+
+        let outcome = logic.finish(err);
+        if outcome.returns.is_ok() {
+            info!(%context_id, method, "WASM method execution completed");
+            debug!(
+                %context_id,
+                method,
+                has_return = outcome.returns.as_ref().is_ok_and(Option::is_some),
+                logs_count = outcome.logs.len(),
+                events_count = outcome.events.len(),
+                "WASM execution outcome"
+            );
+        }
+
+        Ok(outcome)
+    }
+
+    /// Execute the WASM function within a catch_unwind boundary.
+    /// This method is separated to allow catch_unwind to capture any panics.
+    /// Returns `Ok(Some(error))` if execution failed with an error,
+    /// `Ok(None)` if execution succeeded, or `Err` for critical runtime errors.
+    fn execute_wasm(
+        store: &mut Store,
+        module: &wasmer::Module,
+        imports: &wasmer::Imports,
+        logic: &mut VMLogic<'_>,
+        method: &str,
+        context_id: &ContextId,
+    ) -> RuntimeResult<Option<FunctionCallError>> {
+        let instance = match Instance::new(store, module, imports) {
             Ok(instance) => instance,
             Err(err) => {
                 error!(%context_id, method, error=?err, "Failed to instantiate WASM module");
-                return Ok(logic.finish(Some(err.into())));
+                return Ok(Some(err.into()));
             }
         };
 
@@ -175,7 +240,7 @@ impl Module {
             // todo! test memory returns MethodNotFound
             Err(err) => {
                 error!(%context_id, method, error=?err, "Failed to get WASM memory");
-                return Ok(logic.finish(Some(err.into())));
+                return Ok(Some(err.into()));
             }
         };
 
@@ -184,9 +249,9 @@ impl Module {
         // Note: This is optional and failures are non-fatal (especially for JS apps).
         if let Ok(register_fn) = instance
             .exports
-            .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
+            .get_typed_function::<(), ()>(store, "__calimero_register_merge")
         {
-            match register_fn.call(&mut store) {
+            match register_fn.call(store) {
                 Ok(()) => {
                     debug!(%context_id, "Successfully registered CRDT merge function");
                 }
@@ -206,22 +271,22 @@ impl Module {
             Ok(function) => function,
             Err(err) => {
                 error!(%context_id, method, error=?err, "Method not found in WASM module");
-                return Ok(logic.finish(Some(err.into())));
+                return Ok(Some(err.into()));
             }
         };
 
-        let signature = function.ty(&store);
+        let signature = function.ty(store);
 
         if !(signature.params().is_empty() && signature.results().is_empty()) {
             error!(%context_id, method, "Invalid method signature");
-            return Ok(logic.finish(Some(FunctionCallError::MethodResolutionError(
+            return Ok(Some(FunctionCallError::MethodResolutionError(
                 errors::MethodResolutionError::InvalidSignature {
                     name: method.to_owned(),
                 },
-            ))));
+            )));
         }
 
-        if let Err(err) = function.call(&mut store, &[]) {
+        if let Err(err) = function.call(store, &[]) {
             let traces = err
                 .trace()
                 .iter()
@@ -260,27 +325,54 @@ impl Module {
             );
 
             return match err.downcast::<VMLogicError>() {
-                Ok(err) => Ok(logic.finish(Some(err.try_into()?))),
-                Err(err) => Ok(logic.finish(Some(err.into()))),
+                Ok(err) => Ok(Some(err.try_into()?)),
+                Err(err) => Ok(Some(err.into())),
             };
         }
 
-        let outcome = logic.finish(None);
-        info!(%context_id, method, "WASM method execution completed");
-        debug!(
-            %context_id,
-            method,
-            has_return = outcome.returns.is_ok(),
-            logs_count = outcome.logs.len(),
-            events_count = outcome.events.len(),
-            "WASM execution outcome"
-        );
+        Ok(None)
+    }
+}
 
-        Ok(outcome)
+/// Extracts a human-readable message from a panic payload.
+/// Panics can carry either a `&'static str` or a `String` as their message.
+fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<unknown panic>".to_owned()
     }
 }
 
 #[cfg(test)]
 mod integration_tests_package_usage {
     use {eyre as _, owo_colors as _, rand as _};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_panic_message_with_str() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("test panic message");
+        let message = extract_panic_message(&payload);
+        assert_eq!(message, "test panic message");
+    }
+
+    #[test]
+    fn test_extract_panic_message_with_string() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("owned panic message"));
+        let message = extract_panic_message(&payload);
+        assert_eq!(message, "owned panic message");
+    }
+
+    #[test]
+    fn test_extract_panic_message_with_unknown_type() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
+        let message = extract_panic_message(&payload);
+        assert_eq!(message, "<unknown panic>");
+    }
 }
