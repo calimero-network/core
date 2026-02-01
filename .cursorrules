@@ -1,0 +1,317 @@
+# Calimero Network Core - AI Contributor Guidelines
+
+This file provides guidance for AI tools working with the Calimero Network codebase.
+
+## Project Overview
+
+Calimero Network is a framework for building distributed, peer-to-peer applications with CRDT-powered sync. The codebase is primarily Rust, targeting WebAssembly for apps and native binaries for infrastructure.
+
+## Repository Structure
+
+- `crates/` - Core Rust crates (calimero-sdk, calimero-storage, calimero-node, etc.)
+- `apps/` - Example WASM applications (kv-store, blobs, etc.)
+- `tools/` - Development tools (merodb, calimero-abi)
+- `contracts/` - Cross-chain smart contracts
+- `scripts/` - Build and deployment scripts
+
+Each folder in the project is a separate crate/module, not a monolithic project.
+
+## Rust Style Guide
+
+### Formatting
+
+Always run `cargo fmt` before committing. The project uses rustfmt with:
+- Edition 2024
+- Reorder imports enabled
+- Use try shorthand enabled
+
+### Import Organization (StdExternalCrate Pattern)
+
+Organize imports in this order, with blank lines between groups:
+
+```rust
+// 1. Standard library
+use std::collections::HashMap;
+use std::sync::Arc;
+
+// 2. External crates
+use eyre::Result as EyreResult;
+use tokio::sync::RwLock;
+
+// 3. Symbols from local crate & parent module
+use crate::common;
+use super::Shared;
+
+// 4. Local modules definition
+mod config;
+mod types;
+
+// 5. Symbols from local modules (optional)
+use config::ContextConfig;
+```
+
+### Import Granularity
+
+Use module-level granularity. Do NOT group imports from the same crate:
+
+```rust
+// CORRECT:
+use core::future::Future;
+use core::pin::Pin;
+use std::thread;
+use std::time::Duration;
+
+// INCORRECT:
+use core::{future::Future, pin::Pin};
+use std::{thread, time::Duration};
+```
+
+### Module Organization
+
+Do NOT use `mod.rs` pattern. Export modules from named files:
+
+```
+crates/meroctl/src/cli/app.rs      # Contains: mod get; mod install; mod list;
+crates/meroctl/src/cli/app/get.rs
+crates/meroctl/src/cli/app/install.rs
+crates/meroctl/src/cli/app/list.rs
+```
+
+### Error Handling
+
+- Use the `eyre` crate: `use eyre::Result as EyreResult;`
+- Avoid panic points (`.unwrap()`, `.expect()`, `assert!`, `panic!`)
+- Only use `.unwrap()` when you have maximum confidence it will never panic, and add a comment explaining why
+- Use `.map_err()` to convert errors to appropriate types
+- Prefer `?` operator for error propagation
+
+### Code Efficiency
+
+- Limit unnecessary `.clone()` calls
+- Use short-circuiting if statements:
+
+```rust
+// PREFERRED:
+if !some_condition {
+    return Err(YourError::Something);
+}
+// Continue with main code path...
+
+// AVOID:
+if some_condition {
+    // lots of code
+} else {
+    return Err(YourError::Something);
+}
+```
+
+- Use `let..else` for deep conditionals:
+
+```rust
+// PREFERRED:
+let Ok(val) = thing else {
+    return Err(error);
+};
+// Continue with val...
+
+// AVOID:
+if let Ok(val) = thing {
+    // lots of code
+} else {
+    return Err(error);
+}
+```
+
+### Naming Conventions
+
+- Types: `PascalCase`
+- Enum variants: `PascalCase`
+- Struct fields: `snake_case`
+- Functions/methods: `snake_case`
+- Local variables: `snake_case`
+- Macros: `snake_case`
+- Constants: `SCREAMING_SNAKE_CASE`
+
+### Code Organization
+
+- Break large functions into smaller parts
+- Place reusable functions in `commons.rs` or similar
+- Put shared structs in `primitives` crates/files
+- Prefer imports over fully qualified names
+- Use functional patterns when they improve readability
+
+## Testing
+
+### Test Structure
+
+- Place tests in `#[cfg(test)]` modules at the bottom of files
+- Use `#[tokio::test]` for async tests
+- Organize test sections with comment headers:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // Basic Functionality Tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_basic_operation() {
+        // test code
+    }
+
+    // ============================================================
+    // Error Handling Tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_error_case() {
+        // test code
+    }
+}
+```
+
+### Test Helpers
+
+- Create test helper structs for complex test setups
+- Use descriptive names for test functions: `test_<component>_<behavior>`
+- Test both success and error paths
+
+## Commit Message Format
+
+Follow conventional commits:
+
+```
+<type>(<scope>): <short summary>
+```
+
+### Types (mandatory)
+
+| Type       | Description                                    |
+|------------|------------------------------------------------|
+| `build`    | Changes affecting build system or dependencies |
+| `ci`       | Changes to CI configuration files and scripts  |
+| `docs`     | Documentation only changes                     |
+| `feat`     | A new feature                                  |
+| `fix`      | A bug fix                                      |
+| `perf`     | Performance improvement                        |
+| `refactor` | Code change with no bug fix or new feature     |
+| `test`     | Adding or correcting tests                     |
+| `chore`    | Other changes (config, tooling, etc.)          |
+| `style`    | Formatting changes (no code logic changes)     |
+| `revert`   | Reverting a previous commit                    |
+
+### Summary Guidelines
+
+- Use imperative, present tense ("change" not "changed")
+- Don't capitalize first letter
+- No period at the end
+- Keep it concise
+
+### Examples
+
+```
+feat(storage): add vector CRDT type
+fix(runtime): validate guest memory bounds
+docs(sdk): update event handler documentation
+refactor(node): simplify delta sync logic
+```
+
+## Common Patterns
+
+### Async Code
+
+The project uses `tokio` for async runtime:
+
+```rust
+use tokio::sync::{Mutex, RwLock};
+
+#[tokio::main]
+async fn main() -> EyreResult<()> {
+    // ...
+}
+```
+
+### Serialization
+
+Use `borsh` for binary serialization (WASM-compatible):
+
+```rust
+use borsh::{BorshDeserialize, BorshSerialize};
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct MyType {
+    field: u32,
+}
+```
+
+Use `serde` for JSON/config serialization:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct Config {
+    name: String,
+}
+```
+
+### CRDT Storage
+
+When working with storage types, understand they are CRDTs:
+
+```rust
+use calimero_storage::collections::{UnorderedMap, Vector, Counter};
+```
+
+### SDK Application Pattern
+
+WASM apps use the SDK macros:
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::UnorderedMap;
+
+#[app::state]
+pub struct AppState {
+    data: UnorderedMap<String, String>,
+}
+
+#[app::logic]
+impl AppState {
+    #[app::init]
+    pub fn init() -> Self {
+        Self {
+            data: UnorderedMap::new(),
+        }
+    }
+
+    pub fn set(&mut self, key: String, value: String) {
+        self.data.insert(key, value);
+    }
+}
+```
+
+## Dependencies
+
+- Sort `Cargo.toml` dependencies alphabetically
+- Use workspace dependencies when available (defined in root `Cargo.toml`)
+- Prefer `rustls-tls` feature over native TLS when available
+
+## Pre-commit Checks
+
+The project runs these checks on commit:
+- `cargo fmt --check` for Rust files
+- Markdown formatting for `.md`/`.mdx` files
+
+Always run `cargo fmt` before committing Rust changes.
+
+## Pull Request Guidelines
+
+- Title PRs clearly describing the work done
+- Reference related issues in the PR description
+- Include a description, test plan, and documentation update section
+- Focus PRs on either functionality or style, not both
+- Update README if changes affect it
