@@ -409,7 +409,11 @@ pub async fn sse_handler(
             drop(headers.insert("X-SSE-Reconnect", header_value));
         }
         Err(err) => {
-            error!(%session_id, %err, "Failed to create X-SSE-Reconnect header, closing SSE connection");
+            error!(
+                %session_id,
+                %err,
+                "Failed to create X-SSE-Reconnect header; continuing SSE connection without it"
+            );
         }
     }
 
