@@ -1,5 +1,7 @@
 # RFC: Network Event Delivery Architecture
 
+> **📖 Part of the Sync Protocol documentation.** See [SYNC-PROTOCOL-INDEX.md](./SYNC-PROTOCOL-INDEX.md) for the full index.
+
 **Date**: January 31, 2026  
 **Status**: Discussion Draft  
 **Authors**: Calimero Team  

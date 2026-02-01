@@ -1,5 +1,7 @@
 # Network Synchronization Protocols
 
+> **📖 Part of the Sync Protocol documentation.** See [SYNC-PROTOCOL-INDEX.md](./SYNC-PROTOCOL-INDEX.md) for the full index.
+
 This document describes the Merkle tree synchronization protocols implemented for efficient state synchronization between distributed nodes.
 
 ## Overview

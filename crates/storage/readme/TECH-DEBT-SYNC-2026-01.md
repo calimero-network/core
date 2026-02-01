@@ -1,5 +1,7 @@
 # Technical Debt: Sync Protocol (January 2026)
 
+> **📖 Part of the Sync Protocol documentation.** See [SYNC-PROTOCOL-INDEX.md](./SYNC-PROTOCOL-INDEX.md) for the full index.
+
 **Branch**: `test/tree_sync`  
 **Status**: ✅ CODE COMPLETE
 

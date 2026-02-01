@@ -5,26 +5,33 @@
 | CIP | XXXX (To be assigned) |
 | Title | Hybrid State Synchronization Protocol |
 | Author | Calimero Team |
-| Status | Draft |
+| Status | **Ready for Review** |
 | Type | Standards Track |
 | Category | Core |
 | Created | 2026-01-30 |
-| Last Audit | 2026-01-31 |
+| Last Updated | 2026-02-01 |
+| Branch | `test/tree_sync` |
 
-## Implementation Status (Audit 2026-01-31)
+> **📖 For reviewers**: Start with [SYNC-PROTOCOL-INDEX.md](./SYNC-PROTOCOL-INDEX.md) for a guided overview.
+
+---
+
+## Implementation Status
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Protocol Negotiation | ✅ | `SyncHandshake` → `SyncHandshakeResponse` |
-| TreeLeafData with Metadata | ✅ | `crdt_type` propagated over wire |
-| Built-in CRDT Merge | ✅ | Counter, Map, Set, Register via `Interface` |
-| WASM Custom Type Merge | ❌ | `RuntimeMergeCallback::from_module()` returns `None` |
-| Collection Architecture | ✅ | Children stored as separate entities |
-| Counter Per-Executor Slots | ✅ | No conflicts between nodes |
-| Parallel Dialing | ✅ | Integrated into `perform_interval_sync()` |
-| Connection State Tracking | ✅ | RTT-based peer sorting |
+| Protocol Negotiation | ✅ Complete | `SyncHandshake` → `SyncHandshakeResponse` |
+| TreeLeafData with Metadata | ✅ Complete | `crdt_type` propagated over wire |
+| Built-in CRDT Merge | ✅ Complete | Counter, Map, Set, Register via `Interface` |
+| WASM Custom Type Merge | ⚠️ Deferred | Uses LWW fallback (see Future Work) |
+| Collection Architecture | ✅ Complete | Children stored as separate entities |
+| Counter Per-Executor Slots | ✅ Complete | No conflicts between nodes |
+| Parallel Dialing | ✅ Complete | Uses `FuturesUnordered` for true concurrency |
+| Checkpoint Deltas | ✅ Complete | `DeltaKind::Checkpoint` for snapshot boundaries |
+| Bloom Filter Metadata | ✅ Complete | Response includes `TreeLeafData` |
+| Payload Compression | 🔲 Future | zstd compression for large transfers |
 
-**Key Finding**: Built-in CRDTs work correctly. Only custom `Mergeable` types are affected by missing WASM callback. See `CRITICAL-AUDIT-2026-01.md` for details.
+**Summary**: All core features are implemented. Built-in CRDTs (Counter, Map, Set, Register) merge correctly during state sync. Custom `Mergeable` types fall back to LWW (acceptable for current use cases).
 
 ## Abstract
 

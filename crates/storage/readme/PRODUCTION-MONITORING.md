@@ -1,5 +1,7 @@
 # Production Monitoring for Sync Performance
 
+> **📖 Part of the Sync Protocol documentation.** See [SYNC-PROTOCOL-INDEX.md](./SYNC-PROTOCOL-INDEX.md) for the full index.
+
 **Status**: Recommended alerts and dashboards for sync operations.
 
 ---
