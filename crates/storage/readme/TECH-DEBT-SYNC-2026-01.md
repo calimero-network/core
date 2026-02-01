@@ -293,6 +293,71 @@ The `from_module()` returning `None` is **not a bug**. Here's why:
 
 ---
 
+## Future Optimizations (Backlog)
+
+### Payload Compression
+
+**Status**: 🔲 NOT IMPLEMENTED
+
+Currently, all sync payloads are serialized with Borsh but **not compressed**. This can become a bottleneck for large state transfers.
+
+#### Payloads That Need Compression
+
+| Payload | Size Risk | Compression Value | Priority |
+|---------|-----------|-------------------|----------|
+| `BloomFilterResponse.missing_entities` | **HIGH** (MBs) | **HIGH** | P1 |
+| `TreeNodeResponse` leaf data | Medium | Medium | P2 |
+| Snapshot payloads | **VERY HIGH** | **CRITICAL** | P0 |
+| Bloom filter bits | Low (~1-10KB) | Low | P3 |
+
+#### Recommended Approach
+
+Add **zstd compression** (fast, good ratio) with a threshold:
+
+```rust
+pub enum CompressionType {
+    None,
+    Zstd { level: u8 },
+    Lz4,
+}
+
+pub struct CompressedPayload {
+    pub compression: CompressionType,
+    pub uncompressed_size: u32,
+    pub data: Vec<u8>,
+}
+
+impl CompressedPayload {
+    pub fn compress(data: &[u8], threshold: usize) -> Self {
+        if data.len() < threshold {
+            return Self { compression: CompressionType::None, data: data.to_vec() };
+        }
+        // Use zstd level 3 (good balance of speed/ratio)
+        let compressed = zstd::encode_all(data, 3).unwrap();
+        Self { compression: CompressionType::Zstd { level: 3 }, data: compressed }
+    }
+}
+```
+
+#### Implementation Notes
+
+1. **Threshold**: Only compress payloads > 1KB (compression overhead not worth it for small data)
+2. **Level**: zstd level 3 is a good default (fast, ~3x compression for typical JSON/Borsh)
+3. **Backward compatibility**: Include `compression` field so old nodes can detect and reject
+4. **Metrics**: Add `sync_payload_compressed_bytes` and `sync_compression_ratio` metrics
+
+#### Expected Impact
+
+| Scenario | Before | After (zstd) |
+|----------|--------|--------------|
+| 10K entities sync | ~5MB | ~1.5MB |
+| Snapshot 100K keys | ~50MB | ~15MB |
+| Network time (100Mbps) | 400ms | 120ms |
+
+**Separate PR required** - this is a performance optimization, not a correctness fix.
+
+---
+
 *Created: January 31, 2026*  
 *Last updated: February 1, 2026 - CODE COMPLETE*  
 *Branch: test/tree_sync*
