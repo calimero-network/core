@@ -119,6 +119,126 @@
       "estimatedMinutes": 45,
       "category": "design-flaw",
       "severity": "medium"
+    },
+    {
+      "title": "NetworkClient methods panic on mailbox drop instead of returning errors",
+      "description": "All methods in NetworkClient use `.expect(\"Mailbox not to be dropped\")` on both send and receive operations. If the NetworkManager actor is shut down, this causes panics throughout the codebase. Replace with proper error handling returning `Result` types.",
+      "pathHint": "crates/network/primitives/src/client.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "InMemoryDB unsafe Send/Sync implementations may cause data races",
+      "description": "The `InMemoryDB` struct has manual `unsafe impl Send` and `unsafe impl Sync` with TODO comments indicating this is temporary. The inner `Slice` type may not be thread-safe, potentially causing data races in multi-threaded test scenarios.",
+      "pathHint": "crates/store/src/db/memory.rs",
+      "estimatedMinutes": 60,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "Unsafe transmute in create_context extends VacantEntry lifetime incorrectly",
+      "description": "In `Prepared::new()`, there's an unsafe transmute to convert a VacantEntry to a 'static lifetime with a comment claiming it's safe. However, if the BTreeMap is modified before the entry is used, this can cause use-after-free. Refactor to avoid the transmute.",
+      "pathHint": "crates/context/src/handlers/create_context.rs",
+      "estimatedMinutes": 60,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "title": "WebSocket connection ID collision possible with random generation",
+      "description": "In `handle_socket()`, connection IDs are generated using `random()` in a loop until unique. With high connection churn, this could theoretically loop indefinitely or cause ID reuse after connection cleanup. Use a monotonic counter or UUIDs instead.",
+      "pathHint": "crates/server/src/ws.rs",
+      "estimatedMinutes": 30,
+      "category": "design-flaw",
+      "severity": "low"
+    },
+    {
+      "title": "Session expiry check uses Relaxed ordering causing stale reads",
+      "description": "The `is_expired()` method loads `last_activity` with `Ordering::Relaxed`, which may see stale values on multi-core systems. The `touch()` method uses `SeqCst` but the reader uses `Relaxed`, creating inconsistency. Use matching orderings for both read and write.",
+      "pathHint": "crates/server/src/sse/session.rs",
+      "estimatedMinutes": 30,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "SharedKey ECDH uses ed25519 directly instead of X25519 conversion",
+      "description": "The `SharedKey::new()` performs ECDH by directly multiplying ed25519 signing key scalar with public key point. While this works, it's non-standard and may have subtle security implications. The proper approach is to convert to X25519 keys first using established transformations.",
+      "pathHint": "crates/crypto/src/lib.rs",
+      "estimatedMinutes": 75,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "Gossipsub uses default config without message validation or flood limits",
+      "description": "The gossipsub Behaviour is initialized with `gossipsub::Config::default()` without configuring message validation, flood publishing limits, or score parameters. This allows peers to flood the mesh with invalid or duplicate messages causing DoS.",
+      "pathHint": "crates/network/src/behaviour.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "decode_snapshot_records advances offset incorrectly causing infinite loop",
+      "description": "In `decode_snapshot_records()`, the offset is advanced by re-serializing the decoded record (`borsh::to_vec(&record)?.len()`), which may differ from the original serialized size. This can cause infinite loops or skip records. Track the actual bytes consumed during deserialization.",
+      "pathHint": "crates/node/src/sync/snapshot.rs",
+      "estimatedMinutes": 45,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "title": "JSON-RPC handler logs request args potentially exposing sensitive data",
+      "description": "The `handle_request()` function logs `args=%exec_request.args_json` at INFO level. If arguments contain sensitive data (private keys, secrets, PII), they will appear in logs. Sanitize or redact sensitive fields before logging.",
+      "pathHint": "crates/server/src/jsonrpc.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "title": "SystemTime::now() can panic or return incorrect values during NTP adjustments",
+      "description": "Multiple files use `SystemTime::now().duration_since(UNIX_EPOCH).expect()` which can panic if system time is before UNIX epoch (during misconfiguration or NTP adjustments). Use a fallback value or handle the error gracefully.",
+      "pathHint": "crates/server/src/ws.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "cleanup_stale_keys during snapshot sync doesn't handle concurrent writes",
+      "description": "The `request_and_apply_snapshot_pages` method collects existing keys, applies new keys, then deletes stale keys. If concurrent writes occur (despite the documented assumption), new keys written during sync would be deleted. Add explicit locking or use a database transaction.",
+      "pathHint": "crates/node/src/sync/snapshot.rs",
+      "estimatedMinutes": 60,
+      "category": "concurrency",
+      "severity": "medium"
+    },
+    {
+      "title": "Hash bs58 encoding can panic if MAX_STR_LEN constant is incorrect",
+      "description": "The `From<[u8; BYTES_LEN]> for Hash` implementation uses `.expect()` on bs58 encoding, which panics if MAX_STR_LEN is wrong. While unlikely, this should return a Result or use a compile-time assertion to guarantee correctness.",
+      "pathHint": "crates/primitives/src/hash.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "from_utf8_unchecked in Hash::as_str assumes bs58 cache is valid UTF-8",
+      "description": "The `as_str()` method uses `from_utf8_unchecked` with a safety comment. However, if the bs58_cache is corrupted (memory safety issue elsewhere), this becomes UB. Replace with `from_utf8().expect()` for defense in depth without meaningful performance impact.",
+      "pathHint": "crates/primitives/src/hash.rs",
+      "estimatedMinutes": 20,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "title": "idle_connection_timeout of 30s may close connections during slow sync",
+      "description": "The swarm config sets `idle_connection_timeout(Duration::from_secs(30))`. During large snapshot syncs or slow networks, connections can timeout mid-transfer, requiring restart. Make this configurable or increase default for sync operations.",
+      "pathHint": "crates/network/src/behaviour.rs",
+      "estimatedMinutes": 30,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Context creation retries only 5 times with fixed seed causing guaranteed failure",
+      "description": "In `Prepared::new()`, if a seed is provided and the context already exists, the function bails after one try. But if seed is None, it retries 5 times with random IDs. With a fixed seed, collision is deterministic and retrying is pointless. Improve error messaging and handling.",
+      "pathHint": "crates/context/src/handlers/create_context.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "low"
     }
   ]
 }
