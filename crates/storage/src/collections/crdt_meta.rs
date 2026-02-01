@@ -12,24 +12,8 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// Identifies the specific CRDT type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CrdtType {
-    /// Last-Write-Wins Register
-    LwwRegister,
-    /// Grow-only Counter
-    Counter,
-    /// Replicated Growable Array (text CRDT)
-    Rga,
-    /// Unordered Map (add-wins set semantics for keys)
-    UnorderedMap,
-    /// Unordered Set (add-wins semantics)
-    UnorderedSet,
-    /// Vector (ordered list with operational transformation)
-    Vector,
-    /// Custom user-defined CRDT (with #[derive(CrdtState)])
-    Custom(String),
-}
+// Re-export CrdtType from entities module (canonical definition)
+pub use crate::entities::CrdtType;
 
 /// Storage strategy for a CRDT type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
