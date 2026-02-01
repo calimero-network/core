@@ -446,6 +446,8 @@ impl InitCommand {
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {
                 client: client_config,
+                max_concurrent_executions:
+                    calimero_context::config::DEFAULT_MAX_CONCURRENT_EXECUTIONS,
             },
         );
 
