@@ -403,14 +403,15 @@ pub async fn sse_handler(
     }
 
     // Add reconnect status header
-    drop(
-        headers.insert(
-            "X-SSE-Reconnect",
-            if is_reconnect { "true" } else { "false" }
-                .try_into()
-                .unwrap(),
-        ),
-    );
+    let reconnect_value = if is_reconnect { "true" } else { "false" };
+    match reconnect_value.try_into() {
+        Ok(header_value) => {
+            drop(headers.insert("X-SSE-Reconnect", header_value));
+        }
+        Err(err) => {
+            error!(%session_id, %err, "Failed to create X-SSE-Reconnect header, closing SSE connection");
+        }
+    }
 
     response
 }
