@@ -1,7 +1,7 @@
 # Technical Debt: Sync Protocol (January 2026)
 
 **Branch**: `test/tree_sync`  
-**Status**: Mostly Resolved - Remaining Items Documented
+**Status**: ✅ CODE COMPLETE
 
 ---
 
@@ -46,14 +46,13 @@ Tree Sync Path (NOW CORRECT):
 - `crates/node/src/sync/tree_sync.rs` - Updated `apply_entity_with_merge`, `apply_leaf_from_tree_data`
 - `crates/storage/src/interface.rs` - Made `merge_by_crdt_type_with_callback` public
 
-### Remaining Limitation
+### All Sync Strategies Complete
 
-**Bloom Filter Sync**: Still uses legacy format without metadata. Falls back to LWW.
-
-This is acceptable because:
-- Bloom filter sync is for fast diff detection, not conflict resolution
-- The actual entity application still uses local metadata when available
-- Full CRDT merge works for new entities via tree sync
+All tree sync strategies now use `TreeLeafData` with metadata:
+- ✅ HashComparison
+- ✅ BloomFilter (fixed in aa70ee48)
+- ✅ SubtreePrefetch  
+- ✅ LevelWise
 
 ---
 
@@ -297,12 +296,13 @@ pub async fn add_snapshot_boundary_stubs(...) { ... }
 
 ## Summary Table
 
-| Issue | Severity | Fix Effort | Status |
-|-------|----------|------------|--------|
-| Tree sync CRDT merge | ~~Medium~~ | ~~Medium~~ | ✅ **FIXED** - Uses `Interface::merge_by_crdt_type_with_callback` |
-| ParallelDialTracker | Low | Done | ✅ **INTEGRATED** |
-| Snapshot boundary stubs | Low | High | ⚠️ Workaround documented |
-| WASM merge callback | ~~Low~~ | ~~Medium~~ | ✅ **NOT NEEDED** - Registry already works |
+| Issue | Status |
+|-------|--------|
+| Tree sync CRDT merge | ✅ FIXED |
+| Bloom filter metadata | ✅ FIXED |
+| True parallel dialing | ✅ DONE |
+| WASM merge callback | ✅ NOT NEEDED |
+| Snapshot boundary stubs | ⚠️ Workaround (future CIP) |
 
 **Key Insight (Updated)**: Both delta sync AND tree sync now use proper CRDT merge:
 - Built-in CRDTs (Counter, Map, Set, Register) merge correctly via `Interface`
@@ -353,5 +353,5 @@ The `from_module()` returning `None` is **not a bug**. Here's why:
 ---
 
 *Created: January 31, 2026*  
-*Last updated: January 31, 2026 - Post critical audit*  
+*Last updated: February 1, 2026 - CODE COMPLETE*  
 *Branch: test/tree_sync*
