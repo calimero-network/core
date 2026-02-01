@@ -366,13 +366,13 @@ impl DeltaStore {
             };
 
             // Reconstruct the delta
-            let dag_delta = CausalDelta {
-                id: stored_delta.delta_id,
-                parents: stored_delta.parents,
-                payload: actions,
-                hlc: stored_delta.hlc,
-                expected_root_hash: stored_delta.expected_root_hash,
-            };
+            let dag_delta = CausalDelta::new(
+                stored_delta.delta_id,
+                stored_delta.parents,
+                actions,
+                stored_delta.hlc,
+                stored_delta.expected_root_hash,
+            );
 
             // Store root hash mapping for merge detection
             {
@@ -492,7 +492,26 @@ impl DeltaStore {
     ///
     /// Consider a proper "checkpoint delta" type in the DAG protocol that
     /// represents snapshot boundaries as first-class citizens.
-    pub async fn add_snapshot_boundary_stubs(
+    /// Add checkpoint deltas for snapshot boundary
+    ///
+    /// Checkpoints are proper protocol-level deltas that mark snapshot boundaries.
+    /// Unlike the old "stub" approach, checkpoints are first-class DAG citizens
+    /// with `DeltaKind::Checkpoint`.
+    ///
+    /// # Why Checkpoints Exist
+    ///
+    /// Snapshot sync transfers state without delta history. When new deltas arrive
+    /// referencing pre-snapshot parents, the DAG would reject them ("parent not found").
+    /// Checkpoints provide the parent IDs so new deltas can be accepted.
+    ///
+    /// # Properties
+    ///
+    /// - `kind`: `DeltaKind::Checkpoint` (not `Regular`)
+    /// - `payload`: Empty (no operations to replay)
+    /// - `parents`: Genesis `[0; 32]` (actual history unknown)
+    /// - `expected_root_hash`: Snapshot's root hash
+    /// - Marked as "already applied" via `restore_applied_delta()`
+    pub async fn add_snapshot_checkpoints(
         &self,
         boundary_dag_heads: Vec<[u8; 32]>,
         boundary_root_hash: [u8; 32],
@@ -506,22 +525,16 @@ impl DeltaStore {
                 continue;
             }
 
-            // Create a stub delta with no payload
-            let stub = CausalDelta::new(
-                head_id,
-                vec![[0; 32]], // Parent is "genesis" (since we don't know actual parents)
-                Vec::new(),    // Empty payload - no actions
-                calimero_storage::logical_clock::HybridTimestamp::default(),
-                boundary_root_hash, // Expected root hash is the snapshot boundary
-            );
+            // Create a proper checkpoint delta
+            let checkpoint = CausalDelta::checkpoint(head_id, boundary_root_hash);
 
-            // Restore the stub to the DAG (marks it as applied)
-            if dag.restore_applied_delta(stub) {
+            // Restore the checkpoint to the DAG (marks it as applied)
+            if dag.restore_applied_delta(checkpoint) {
                 added_count += 1;
                 info!(
                     context_id = %self.applier.context_id,
                     ?head_id,
-                    "Added snapshot boundary stub to DAG"
+                    "Added snapshot checkpoint to DAG"
                 );
             }
         }
@@ -537,10 +550,21 @@ impl DeltaStore {
         info!(
             context_id = %self.applier.context_id,
             added_count,
-            "Snapshot boundary stubs added to DAG"
+            "Snapshot checkpoints added to DAG"
         );
 
         added_count
+    }
+
+    /// Deprecated: Use `add_snapshot_checkpoints` instead
+    #[deprecated(since = "0.12.0", note = "Use add_snapshot_checkpoints instead")]
+    pub async fn add_snapshot_boundary_stubs(
+        &self,
+        boundary_dag_heads: Vec<[u8; 32]>,
+        boundary_root_hash: [u8; 32],
+    ) -> usize {
+        self.add_snapshot_checkpoints(boundary_dag_heads, boundary_root_hash)
+            .await
     }
 
     /// Add a delta with optional event data to the store
@@ -871,13 +895,13 @@ impl DeltaStore {
                         }
                     };
 
-                    let dag_delta = CausalDelta {
-                        id: stored_delta.delta_id,
-                        parents: stored_delta.parents,
-                        payload: actions,
-                        hlc: stored_delta.hlc,
-                        expected_root_hash: stored_delta.expected_root_hash,
-                    };
+                    let dag_delta = CausalDelta::new(
+                        stored_delta.delta_id,
+                        stored_delta.parents,
+                        actions,
+                        stored_delta.hlc,
+                        stored_delta.expected_root_hash,
+                    );
 
                     // Add to DAG and track any cascaded deltas
                     let mut dag = self.dag.write().await;

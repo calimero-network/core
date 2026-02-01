@@ -339,8 +339,8 @@ impl SyncManager {
                         )
                     });
 
-                let stubs_added = delta_store
-                    .add_snapshot_boundary_stubs(
+                let checkpoints_added = delta_store
+                    .add_snapshot_checkpoints(
                         boundary.dag_heads.clone(),
                         *boundary.boundary_root_hash,
                     )
@@ -348,8 +348,8 @@ impl SyncManager {
 
                 info!(
                     %context_id,
-                    stubs_added,
-                    "Added snapshot boundary stubs to DeltaStore for future delta parent resolution"
+                    checkpoints_added,
+                    "Added snapshot checkpoints to DAG for future delta parent resolution"
                 );
             } else {
                 warn!(

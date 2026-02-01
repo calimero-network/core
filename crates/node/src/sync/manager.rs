@@ -2209,13 +2209,13 @@ impl SyncManager {
                             let storage_delta: calimero_storage::delta::CausalDelta =
                                 borsh::from_slice(&delta)?;
 
-                            let dag_delta = calimero_dag::CausalDelta {
-                                id: storage_delta.id,
-                                parents: storage_delta.parents,
-                                payload: storage_delta.actions,
-                                hlc: storage_delta.hlc,
-                                expected_root_hash: storage_delta.expected_root_hash,
-                            };
+                            let dag_delta = calimero_dag::CausalDelta::new(
+                                storage_delta.id,
+                                storage_delta.parents,
+                                storage_delta.actions,
+                                storage_delta.hlc,
+                                storage_delta.expected_root_hash,
+                            );
 
                             if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
                                 warn!(

@@ -125,13 +125,7 @@ pub async fn handle_state_delta(
         }
     };
 
-    let delta = calimero_dag::CausalDelta {
-        id: delta_id,
-        parents: parent_ids,
-        payload: actions,
-        hlc,
-        expected_root_hash: *root_hash,
-    };
+    let delta = calimero_dag::CausalDelta::new(delta_id, parent_ids, actions, hlc, *root_hash);
 
     let our_identity = choose_owned_identity(&node_clients.context, &context_id).await?;
 
@@ -900,13 +894,13 @@ async fn request_missing_deltas(
                     );
 
                     // Convert to DAG delta
-                    let dag_delta = calimero_dag::CausalDelta {
-                        id: storage_delta.id,
-                        parents: storage_delta.parents.clone(),
-                        payload: storage_delta.actions,
-                        hlc: storage_delta.hlc,
-                        expected_root_hash: storage_delta.expected_root_hash,
-                    };
+                    let dag_delta = calimero_dag::CausalDelta::new(
+                        storage_delta.id,
+                        storage_delta.parents.clone(),
+                        storage_delta.actions,
+                        storage_delta.hlc,
+                        storage_delta.expected_root_hash,
+                    );
 
                     // Store for later (don't add to DAG yet!)
                     fetched_deltas.push((dag_delta, missing_id));

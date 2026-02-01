@@ -111,13 +111,13 @@ impl SyncManager {
                         }
 
                         // Convert to DAG delta format
-                        let dag_delta = calimero_dag::CausalDelta {
-                            id: parent_delta.id,
-                            parents: parent_delta.parents,
-                            payload: parent_delta.actions,
-                            hlc: parent_delta.hlc,
-                            expected_root_hash: parent_delta.expected_root_hash,
-                        };
+                        let dag_delta = calimero_dag::CausalDelta::new(
+                            parent_delta.id,
+                            parent_delta.parents,
+                            parent_delta.actions,
+                            parent_delta.hlc,
+                            parent_delta.expected_root_hash,
+                        );
 
                         // Write deltas to DeltaStore. If parents are missing, DeltaStore marks it 'Pending'.
                         // There's no need for topological order insert.

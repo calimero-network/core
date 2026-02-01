@@ -23,6 +23,29 @@ use tracing::{info, warn};
 /// The value selected as ~96 KB.
 pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
 
+/// Type of delta - regular operation or checkpoint (snapshot boundary)
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub enum DeltaKind {
+    /// Regular delta with operations to apply
+    Regular,
+    /// Checkpoint delta representing a snapshot boundary
+    ///
+    /// Checkpoints are created after snapshot sync to mark a known-good state.
+    /// They have no payload to apply but provide parent IDs for future deltas.
+    ///
+    /// # Properties
+    /// - `payload` is empty (no operations)
+    /// - `expected_root_hash` is the snapshot's root hash
+    /// - Treated as "already applied" by the DAG
+    Checkpoint,
+}
+
+impl Default for DeltaKind {
+    fn default() -> Self {
+        Self::Regular
+    }
+}
+
 /// A causal delta with parent references
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct CausalDelta<T> {
@@ -40,6 +63,10 @@ pub struct CausalDelta<T> {
 
     /// Expected root hash after applying this delta
     pub expected_root_hash: [u8; 32],
+
+    /// Kind of delta (regular or checkpoint)
+    #[serde(default)]
+    pub kind: DeltaKind,
 }
 
 impl<T> CausalDelta<T> {
@@ -56,7 +83,34 @@ impl<T> CausalDelta<T> {
             payload,
             hlc,
             expected_root_hash,
+            kind: DeltaKind::Regular,
         }
+    }
+
+    /// Create a checkpoint delta for snapshot boundary
+    ///
+    /// Checkpoints mark the boundary after a snapshot sync. They have:
+    /// - The DAG head IDs from the snapshot as their ID
+    /// - Genesis as parent (since we don't know actual history)
+    /// - Empty payload (no operations to apply)
+    /// - The snapshot's root hash as expected_root_hash
+    pub fn checkpoint(id: [u8; 32], expected_root_hash: [u8; 32]) -> Self
+    where
+        T: Default,
+    {
+        Self {
+            id,
+            parents: vec![[0; 32]], // Genesis parent
+            payload: T::default(),  // Empty payload
+            hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
+            expected_root_hash,
+            kind: DeltaKind::Checkpoint,
+        }
+    }
+
+    /// Returns true if this is a checkpoint (snapshot boundary) delta
+    pub fn is_checkpoint(&self) -> bool {
+        self.kind == DeltaKind::Checkpoint
     }
 
     /// Convenience constructor for tests that uses a default HLC
@@ -68,6 +122,7 @@ impl<T> CausalDelta<T> {
             payload,
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
             expected_root_hash: [0; 32],
+            kind: DeltaKind::Regular,
         }
     }
 }

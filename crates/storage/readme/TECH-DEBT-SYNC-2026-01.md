@@ -158,9 +158,9 @@ Benefits:
 
 ---
 
-## Issue 3: Snapshot Boundary Stubs
+## Issue 3: Snapshot Boundary - ✅ PROPER CHECKPOINT DELTAS
 
-### Status: ⚠️ WORKAROUND (Acceptable)
+### Status: ✅ FIXED (February 1, 2026)
 
 ### The Problem
 
@@ -168,129 +168,70 @@ After snapshot sync, the node has:
 - ✅ Full state (all entities from snapshot)
 - ❌ No delta history (DAG is empty)
 
-When new deltas arrive, they reference parents:
-```
-New Delta {
-    id: abc123,
-    parents: [xyz789, def456],  // <-- These don't exist!
-    actions: [...],
-}
-```
+When new deltas arrive, they reference parents that don't exist → DAG rejects them.
 
-DAG rejects delta: "Parent not found"
+### The Solution: Checkpoint Deltas
 
-### The Solution: Boundary Stubs
+**Proper protocol-level fix**: Added `DeltaKind` enum to `CausalDelta`:
 
 ```rust
-// crates/node/src/delta_store.rs:473-522
+// crates/dag/src/lib.rs
 
-pub async fn add_snapshot_boundary_stubs(&self, boundary_dag_heads, boundary_root_hash) {
-    for head_id in boundary_dag_heads {
-        let stub = CausalDelta::new(
-            head_id,
-            vec![[0; 32]],          // Parent = genesis (fake!)
-            Vec::new(),              // Empty payload (no actions)
-            HybridTimestamp::default(),
-            boundary_root_hash,      // Expected root hash
-        );
-        
-        dag.restore_applied_delta(stub);  // Mark as already applied
+pub enum DeltaKind {
+    /// Regular delta with operations to apply
+    Regular,
+    /// Checkpoint delta representing a snapshot boundary
+    Checkpoint,
+}
+
+pub struct CausalDelta<T> {
+    pub id: [u8; 32],
+    pub parents: Vec<[u8; 32]>,
+    pub payload: T,
+    pub hlc: HybridTimestamp,
+    pub expected_root_hash: [u8; 32],
+    pub kind: DeltaKind,  // NEW!
+}
+
+impl<T> CausalDelta<T> {
+    /// Create a checkpoint delta for snapshot boundary
+    pub fn checkpoint(id: [u8; 32], expected_root_hash: [u8; 32]) -> Self
+    where T: Default {
+        Self {
+            id,
+            parents: vec![[0; 32]],  // Genesis parent
+            payload: T::default(),   // Empty payload
+            hlc: HybridTimestamp::default(),
+            expected_root_hash,
+            kind: DeltaKind::Checkpoint,
+        }
     }
 }
 ```
 
-This creates "fake" deltas that:
-1. Have the correct ID (matches what new deltas reference as parent)
-2. Have no payload (empty actions)
-3. Are marked as "already applied"
-4. Point to genesis as their parent
-
-### Why It's a Workaround
-
-```
-Ideal DAG structure:                    Actual after snapshot:
-                                        
-   [genesis]                              [genesis]
-      │                                      │
-      ▼                                      │
-   [delta-1]                                 │ (missing)
-      │                                      │
-      ▼                                      │
-   [delta-2]                            [stub-xyz789]  ← Fake! No payload
-      │                                      │
-      ▼                                      │
-   [delta-3]  ← boundary                [stub-def456]  ← Fake! No payload
-      │                                      │
-      ▼                                      ▼
-   [new-delta] arrives               [new-delta] arrives
-                                     Parent found! ✅
-```
-
-### Potential Issues
-
-1. **DAG history is incomplete**: Can't replay deltas before boundary
-2. **Parent hash mismatch**: Stub's expected_root_hash may not match actual
-3. **Audit trail gap**: No way to verify pre-snapshot history
-
-### Why It's Acceptable
-
-1. **Snapshot sync is for bootstrap**: Node doesn't need historical deltas
-2. **DAG is not a ledger**: We don't require full history replay
-3. **New deltas work correctly**: Only parent ID matching matters
-4. **Alternative is worse**: Fetching all historical deltas defeats purpose of snapshot
-
-### Alternative Designs (Not Implemented)
-
-1. **DAG bypass for snapshot**: Store snapshot state without DAG involvement
-   - Requires separate state path
-   - Complicates "which state is authoritative?"
-
-2. **Historical delta fetch**: After snapshot, backfill delta history
-   - Defeats purpose of snapshot (bandwidth)
-   - May not be available (old deltas pruned)
-
-3. **Checkpoint DAG**: Special "checkpoint" delta type that represents snapshot
-   - Cleaner than stubs
-   - Requires protocol change
-
-### Why This Is NOT In This PR
-
-A proper checkpoint delta type would require:
-1. **DAG protocol change**: Add `DeltaKind` enum to `CausalDelta`
-2. **Wire format change**: Affects Borsh serialization (breaking change)
-3. **Storage schema change**: New delta type in database
-4. **Network protocol change**: All nodes must understand new type
-
-This is a **separate CIP** with its own review cycle. The current stub approach is:
-- ✅ **Functional**: New deltas after snapshot work correctly
-- ✅ **Safe**: No data loss or corruption
-- ⚠️ **Architecturally impure**: But acceptable for production
-
-### Recommendation
-
-**Keep the workaround** with clear documentation:
+### Usage
 
 ```rust
-/// Creates placeholder deltas for DAG parent resolution after snapshot sync.
-///
-/// # Why This Exists
-///
-/// Snapshot sync transfers state without delta history. When new deltas
-/// arrive referencing pre-snapshot parents, the DAG would reject them.
-/// These stubs provide the parent IDs so new deltas can be accepted.
-///
-/// # Limitations
-///
-/// - Stubs have no payload (can't replay history)
-/// - Parent chain terminates at stubs (can't traverse further back)
-/// - This is a WORKAROUND, not a principled solution
-///
-/// # Future Work
-///
-/// Consider a proper "checkpoint delta" type that represents snapshot
-/// boundaries in the DAG protocol itself.
-pub async fn add_snapshot_boundary_stubs(...) { ... }
+// crates/node/src/delta_store.rs
+
+pub async fn add_snapshot_checkpoints(
+    &self,
+    boundary_dag_heads: Vec<[u8; 32]>,
+    boundary_root_hash: [u8; 32],
+) -> usize {
+    for head_id in boundary_dag_heads {
+        let checkpoint = CausalDelta::checkpoint(head_id, boundary_root_hash);
+        dag.restore_applied_delta(checkpoint);
+    }
+}
 ```
+
+### Benefits
+
+1. **Protocol-level**: Checkpoints are first-class DAG citizens
+2. **Self-documenting**: `kind: Checkpoint` vs `kind: Regular`
+3. **Backward compatible**: `#[serde(default)]` handles old deltas
+4. **Proper API**: `CausalDelta::checkpoint()` vs struct literal hack
 
 ---
 
@@ -302,7 +243,7 @@ pub async fn add_snapshot_boundary_stubs(...) { ... }
 | Bloom filter metadata | ✅ FIXED |
 | True parallel dialing | ✅ DONE |
 | WASM merge callback | ✅ NOT NEEDED |
-| Snapshot boundary stubs | ⚠️ Workaround (future CIP) |
+| Snapshot checkpoints | ✅ FIXED (DeltaKind::Checkpoint) |
 
 **Key Insight (Updated)**: Both delta sync AND tree sync now use proper CRDT merge:
 - Built-in CRDTs (Counter, Map, Set, Register) merge correctly via `Interface`
@@ -319,7 +260,7 @@ pub async fn add_snapshot_boundary_stubs(...) { ... }
 ### Immediate (This PR) - ✅ ALL DONE
 
 - [x] ~~Add `#[allow(dead_code)]` to `ParallelDialTracker`~~ → **INTEGRATED instead!**
-- [x] Add doc comment to `add_snapshot_boundary_stubs` explaining workaround
+- [x] ~~Add doc comment to `add_snapshot_boundary_stubs`~~ → **REPLACED with `add_snapshot_checkpoints`**
 - [x] Add doc comment to `RuntimeMergeCallback::merge_custom` explaining fallback
 - [x] ~~Entity type metadata~~ → **ALREADY WORKS** (Metadata has crdt_type, Index stores it)
 - [x] **Tree sync CRDT merge** → **FIXED** via `apply_entity_with_merge()` + `Interface::merge_by_crdt_type_with_callback()`
@@ -329,7 +270,7 @@ pub async fn add_snapshot_boundary_stubs(...) { ... }
 - [x] ~~**Parallel dialing integration**~~ → **DONE**
 - [x] ~~**WASM merge callback**~~ → **NOT NEEDED** (see below)
 - [x] ~~**True parallel dialing**~~ → **DONE** (uses `FuturesUnordered`)
-- [ ] **Checkpoint delta type**: Separate CIP required (protocol-level change)
+- [x] ~~**Checkpoint delta type**~~ → **DONE** (`DeltaKind::Checkpoint`)
 
 ### Why `RuntimeMergeCallback::from_module()` is NOT Needed
 
