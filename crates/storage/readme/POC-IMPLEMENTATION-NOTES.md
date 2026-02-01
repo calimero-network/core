@@ -173,6 +173,42 @@ Not in scope for this branch:
 
 ---
 
+### Bug 10: Adaptive Selection Always Returns Snapshot (P0) - Bugbot
+
+**Discovery**: Bugbot flagged that `AdaptiveSelection` always triggered expensive Snapshot sync.
+
+**Root Cause**: `local_entity_count` was hardcoded to `0` in `network_event.rs`. The `adaptive_select()` function returns `Snapshot` when `local_entity_count == 0` (interprets as "empty node needs bootstrap").
+
+**Fix**: Use remote's `entity_count` as conservative estimate. If we're in the same context, counts are likely similar. True divergence (remote=1000, local=0) still triggers Snapshot correctly.
+
+**Files**: `crates/node/src/handlers/network_event.rs`
+
+---
+
+### Bug 11: Dead Code - RootHashMismatch Handler (P2) - Bugbot
+
+**Discovery**: Bugbot flagged unreachable code checking for `RootHashMismatch`.
+
+**Root Cause**: The `apply()` function never returns `ApplyError::RootHashMismatch`. Hash mismatches are handled inside `ContextStorageApplier` using CRDT merge semantics, not error returns.
+
+**Fix**: Removed dead code path. Hash divergence is now expected behavior (CRDT merge produces new merged state).
+
+**Files**: `crates/node/src/handlers/state_delta.rs`
+
+---
+
+### Bug 12: parent_hashes HashMap Unbounded Growth (P1) - Bugbot
+
+**Discovery**: Bugbot flagged that `parent_hashes` HashMap grows without limit.
+
+**Root Cause**: Every applied delta adds 64 bytes to `parent_hashes`. Unlike `head_root_hashes` (which has `retain()` to prune non-heads), `parent_hashes` only grew.
+
+**Fix**: Added `MAX_PARENT_HASH_ENTRIES` (10,000) limit. When exceeded, prunes ~10% oldest entries. 10,000 entries = ~640KB, sufficient for merge detection which mainly needs recent parent-child relationships.
+
+**Files**: `crates/node/src/delta_store.rs`
+
+---
+
 ## Performance Findings
 
 ### Key Finding: Peer Selection Dominates
