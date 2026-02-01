@@ -87,6 +87,7 @@ members = [
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
+    "./apps/sync-test",
 
     "./tools/calimero-abi",
     "./tools/merodb",

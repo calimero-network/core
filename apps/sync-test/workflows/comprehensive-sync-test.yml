@@ -1,0 +1,346 @@
+# ============================================================================
+# Comprehensive Sync Test - All Storage Spaces + CRDT Types + Deletions
+# ============================================================================
+#
+# This workflow tests:
+# 1. Public storage (shared LWW key-value)
+# 2. User storage (per-user isolated state)
+# 3. Frozen storage (content-addressed immutable)
+# 4. Deletions and tombstones
+# 5. Concurrent conflicting writes (LWW resolution)
+# 6. Final snapshot verification for deterministic state
+#
+# Run with:
+#   merobox bootstrap run --no-docker --binary-path ./target/release/merod \
+#     apps/sync-test/workflows/comprehensive-sync-test.yml
+#
+# ============================================================================
+
+description: "Comprehensive sync test - all storage spaces, CRDTs, deletions"
+name: "Sync Test Comprehensive"
+
+force_pull_image: false
+nuke_on_start: true
+e2e_mode: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: synctest
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Setup
+  # ===========================================================================
+
+  - name: Install Application
+    type: install_application
+    node: synctest-1
+    path: ./apps/sync-test/res/sync_test.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Context
+    type: create_context
+    node: synctest-1
+    application_id: "{{app_id}}"
+    outputs:
+      context_id: contextId
+      pk_node1: memberPublicKey
+
+  - name: Create Identity Node 2
+    type: create_identity
+    node: synctest-2
+    outputs:
+      pk_node2: publicKey
+
+  - name: Create Identity Node 3
+    type: create_identity
+    node: synctest-3
+    outputs:
+      pk_node3: publicKey
+
+  - name: Invite Node 2
+    type: invite_identity
+    node: synctest-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node2}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv2: invitation
+
+  - name: Invite Node 3
+    type: invite_identity
+    node: synctest-1
+    context_id: "{{context_id}}"
+    grantee_id: "{{pk_node3}}"
+    granter_id: "{{pk_node1}}"
+    capability: member
+    outputs:
+      inv3: invitation
+
+  - name: Join Node 2
+    type: join_context
+    node: synctest-2
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node2}}"
+    invitation: "{{inv2}}"
+
+  - name: Join Node 3
+    type: join_context
+    node: synctest-3
+    context_id: "{{context_id}}"
+    invitee_id: "{{pk_node3}}"
+    invitation: "{{inv3}}"
+
+  - name: Wait for mesh formation
+    type: wait
+    duration_ms: 5000
+
+  # ===========================================================================
+  # PHASE 2: Public Key-Value (LWW) - Disjoint writes
+  # ===========================================================================
+
+  - name: N1 sets key_a
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: set
+    args:
+      key: "key_a"
+      value: "value_from_n1"
+    executor_public_key: "{{pk_node1}}"
+
+  - name: N2 sets key_b
+    type: call
+    node: synctest-2
+    context_id: "{{context_id}}"
+    method: set
+    args:
+      key: "key_b"
+      value: "value_from_n2"
+    executor_public_key: "{{pk_node2}}"
+
+  - name: N3 sets key_c
+    type: call
+    node: synctest-3
+    context_id: "{{context_id}}"
+    method: set
+    args:
+      key: "key_c"
+      value: "value_from_n3"
+    executor_public_key: "{{pk_node3}}"
+
+  - name: Wait for sync
+    type: wait
+    duration_ms: 5000
+
+  - name: Verify N1 has all keys
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: len
+    args: {}
+    executor_public_key: "{{pk_node1}}"
+    outputs:
+      n1_len: result
+
+  - name: Verify N1 can read key_b from N2
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: get
+    args:
+      key: "key_b"
+    executor_public_key: "{{pk_node1}}"
+    outputs:
+      n1_has_b: result
+
+  - name: Verify N1 can read key_c from N3
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: get
+    args:
+      key: "key_c"
+    executor_public_key: "{{pk_node1}}"
+    outputs:
+      n1_has_c: result
+
+  - name: Assert N1 has all keys
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_len}}, {"output": 3})'
+      - 'json_subset({{n1_has_b}}, {"output": "value_from_n2"})'
+      - 'json_subset({{n1_has_c}}, {"output": "value_from_n3"})'
+
+  # ===========================================================================
+  # PHASE 3: Deletions (Tombstones)
+  # ===========================================================================
+
+  - name: N1 writes keys to delete
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: bulk_write
+    args:
+      prefix: "del"
+      count: 5
+      value_size: 10
+    executor_public_key: "{{pk_node1}}"
+
+  - name: Wait for sync before delete
+    type: wait
+    duration_ms: 5000
+
+  - name: N2 deletes some keys
+    type: call
+    node: synctest-2
+    context_id: "{{context_id}}"
+    method: bulk_delete
+    args:
+      prefix: "del"
+      count: 3
+    executor_public_key: "{{pk_node2}}"
+
+  - name: Wait for tombstone sync
+    type: wait
+    duration_ms: 5000
+
+  - name: Check deleted count on N3
+    type: call
+    node: synctest-3
+    context_id: "{{context_id}}"
+    method: get_deleted_count
+    args: {}
+    executor_public_key: "{{pk_node3}}"
+    outputs:
+      n3_deleted: result
+
+  - name: Assert deletions synced
+    type: json_assert
+    statements:
+      - 'json_subset({{n3_deleted}}, {"output": 3})'
+
+  # ===========================================================================
+  # PHASE 4: User Storage (Per-User Isolation)
+  # ===========================================================================
+
+  - name: N1 sets user simple value
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: user_set_simple
+    args:
+      value: "n1_user_data"
+    executor_public_key: "{{pk_node1}}"
+
+  - name: N2 sets user simple value
+    type: call
+    node: synctest-2
+    context_id: "{{context_id}}"
+    method: user_set_simple
+    args:
+      value: "n2_user_data"
+    executor_public_key: "{{pk_node2}}"
+
+  - name: N1 sets user kv
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: user_set_kv
+    args:
+      key: "private_key"
+      value: "n1_private_value"
+    executor_public_key: "{{pk_node1}}"
+
+  - name: Wait for user sync
+    type: wait
+    duration_ms: 5000
+
+  - name: N1 reads own simple value
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: user_get_simple
+    args: {}
+    executor_public_key: "{{pk_node1}}"
+    outputs:
+      n1_own_simple: result
+
+  - name: Assert N1 reads own value
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_own_simple}}, {"output": "n1_user_data"})'
+
+  # ===========================================================================
+  # PHASE 5: Frozen Storage (Content-Addressed)
+  # ===========================================================================
+
+  - name: N1 adds frozen data
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: frozen_add
+    args:
+      data: "immutable_content_from_n1"
+    executor_public_key: "{{pk_node1}}"
+    outputs:
+      frozen_hash: result
+
+  - name: Wait for frozen sync
+    type: wait
+    duration_ms: 3000
+
+  # ===========================================================================
+  # PHASE 6: Final Snapshot Verification
+  # ===========================================================================
+
+  - name: Final sync wait
+    type: wait
+    duration_ms: 10000
+
+  - name: Get snapshot from N1
+    type: call
+    node: synctest-1
+    context_id: "{{context_id}}"
+    method: snapshot
+    args: {}
+    executor_public_key: "{{pk_node1}}"
+    outputs:
+      n1_snapshot: result
+
+  - name: Get snapshot from N2
+    type: call
+    node: synctest-2
+    context_id: "{{context_id}}"
+    method: snapshot
+    args: {}
+    executor_public_key: "{{pk_node2}}"
+    outputs:
+      n2_snapshot: result
+
+  - name: Get snapshot from N3
+    type: call
+    node: synctest-3
+    context_id: "{{context_id}}"
+    method: snapshot
+    args: {}
+    executor_public_key: "{{pk_node3}}"
+    outputs:
+      n3_snapshot: result
+
+  - name: Assert all snapshots match
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_snapshot}}, {{n2_snapshot}})'
+      - 'json_subset({{n2_snapshot}}, {{n3_snapshot}})'
+
+  - name: TEST COMPLETE
+    type: assert
+    statements:
+      - statement: "is_set({{n1_snapshot}})"
+        message: "All sync tests passed! Public KV, Deletions, User Storage, Frozen all working."

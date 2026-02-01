@@ -10258,6 +10258,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-test"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-storage-macros",
+ "hex",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

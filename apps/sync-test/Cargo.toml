@@ -1,0 +1,24 @@
+[package]
+name = "sync-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
+calimero-storage = { path = "../../crates/storage" }
+calimero-storage-macros = { path = "../../crates/storage-macros" }
+hex = "0.4"
+thiserror = "2.0"
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
