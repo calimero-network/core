@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use cached_path::Cache;
 use cached_path::Options;
 use eyre::bail;
-use eyre::Context;
 use eyre::OptionExt;
 use reqwest::Url;
 use reqwest_compat::blocking::Client as ReqwestCompatClient;
@@ -17,11 +16,15 @@ const USER_AGENT: &str = "calimero-auth-build";
 const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
 const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "latest";
-const CALIMERO_AUTH_FRONTEND_ASSET: &str = "auth-frontend.zip";
+const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "main";
 const CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL: &str =
     "https://github.com/{repo}/releases/latest/download/{asset}";
 const CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL: &str =
     "https://github.com/{repo}/releases/download/{version}/{asset}";
+const CALIMERO_AUTH_FRONTEND_REF_ARCHIVE_URL: &str =
+    "https://github.com/{repo}/archive/refs/heads/{ref}.zip";
+const CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL: &str =
+    "https://github.com/{repo}/archive/refs/tags/{version}.zip";
 
 fn main() {
     if let Err(e) = try_main() {
@@ -60,19 +63,33 @@ fn try_main() -> eyre::Result<()> {
                 option_env!("CALIMERO_AUTH_FRONTEND_REPO").unwrap_or(CALIMERO_AUTH_FRONTEND_REPO);
             let version = option_env!("CALIMERO_AUTH_FRONTEND_VERSION")
                 .unwrap_or(CALIMERO_AUTH_FRONTEND_VERSION);
-            let asset =
-                option_env!("CALIMERO_AUTH_FRONTEND_ASSET").unwrap_or(CALIMERO_AUTH_FRONTEND_ASSET);
+            let asset = option_env!("CALIMERO_AUTH_FRONTEND_ASSET");
+            let default_ref = option_env!("CALIMERO_AUTH_FRONTEND_REF")
+                .unwrap_or(CALIMERO_AUTH_FRONTEND_DEFAULT_REF);
 
-            let release_url_template = if version == "latest" {
-                CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL
+            let (release_url_template, asset, reference) = if let Some(asset) = asset {
+                let template = if version == "latest" {
+                    CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL
+                } else {
+                    CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL
+                };
+
+                (template, Some(asset), None)
+            } else if version == "latest" {
+                (
+                    CALIMERO_AUTH_FRONTEND_REF_ARCHIVE_URL,
+                    None,
+                    Some(default_ref),
+                )
             } else {
-                CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL
+                (CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL, None, None)
             };
 
             let release_url = replace(release_url_template.into(), |var| match var {
                 "repo" => Some(repo),
                 "version" => Some(version),
-                "asset" => Some(asset),
+                "asset" => asset,
+                "ref" => reference,
                 _ => None,
             });
 
