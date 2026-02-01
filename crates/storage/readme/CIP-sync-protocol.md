@@ -65,6 +65,8 @@ These invariants MUST hold for any compliant implementation:
 **I2. Eventual Consistency**
 > Given no new operations, all connected nodes will converge to identical root hashes within O(log N) sync rounds.
 
+*Note: This bound assumes random or round-robin peer selection in a connected overlay network; exact convergence speed is topology-dependent.*
+
 **I3. Merge Determinism**
 > For any two values V1, V2 and metadata M1, M2: `merge(V1, V2, M1, M2)` always produces the same output.
 
@@ -100,6 +102,12 @@ These invariants MUST hold for any compliant implementation:
 
 **I12. SyncProtocol::None Behavior**
 > When `SyncProtocol::None` is selected (root hashes match), responder MUST acknowledge without data transfer. This is distinguishable from negotiation failure.
+
+---
+
+### Non-Normative Sections
+
+Appendices and code examples are illustrative and non-normative unless explicitly stated otherwise. Normative requirements are expressed using **MUST / MUST NOT / SHOULD** keywords in the main specification.
 
 ---
 
@@ -435,7 +443,7 @@ Is local state empty?
 
 #### 5.1 Delta Buffer
 
-During state-based sync (snapshot, hash comparison), incoming deltas MUST be buffered:
+During state-based sync (HashComparison, BloomFilter, SubtreePrefetch, LevelWise), and during Snapshot sync on initialized nodes, incoming deltas MUST be buffered:
 
 ```rust
 pub struct SyncContext {
@@ -823,7 +831,7 @@ This CIP is backwards compatible:
 ### 4. Split-Brain
 
 **Risk**: Network partition causes divergent states.
-**Mitigation**: Deterministic conflict resolution (LWW, configurable per-entity).
+**Mitigation**: Deterministic conflict resolution via CRDT merge semantics (with LWW only as an explicit per-entity fallback when `crdt_type` is absent).
 
 ## Acceptance Criteria
 
@@ -1291,8 +1299,10 @@ fn merge_entity(local: &Entity, remote: &Entity) -> Result<Vec<u8>> {
 | **BloomFilterSync** | Entities > 50, divergence < 10% | Large trees with tiny diff | Small trees, high divergence |
 | **SubtreePrefetchSync** | Depth > 3, divergence < 20% | Deep hierarchies, localized changes | Shallow trees, scattered changes |
 | **LevelWiseSync** | Depth ≤ 2 | Wide shallow trees | Deep hierarchies |
-| **SnapshotSync** | Fresh node OR divergence > 50% | Bootstrap, major divergence | Tiny diffs (wasteful) |
-| **CompressedSnapshotSync** | Entities > 100, fresh node | Large state bootstrap | Small state, low bandwidth |
+| **SnapshotSync** | Fresh node ONLY¹ | Bootstrap | Initialized nodes (violates I5) |
+| **CompressedSnapshotSync** | Fresh node ONLY, entities > 100 | Large state bootstrap | Initialized nodes |
+
+> ¹ For initialized nodes with >50% divergence, state-based sync (HashComparison/Bloom/Subtree/LevelWise) MUST be used instead (Invariant I5).
 
 ### Protocol Selection Flowchart
 
