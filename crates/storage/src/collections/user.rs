@@ -170,7 +170,9 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::Custom("UserStorage".to_owned())
+        CrdtType::Custom {
+            type_name: "UserStorage".to_owned(),
+        }
     }
     fn storage_strategy() -> StorageStrategy {
         StorageStrategy::Structured

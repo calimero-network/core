@@ -24,7 +24,9 @@ pub use rga::ReplicatedGrowableArray;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
-pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy};
+pub use crdt_meta::{CrdtMeta, Decomposable, Mergeable, StorageStrategy};
+// Re-export CrdtType from entities (canonical definition)
+pub use crate::entities::CrdtType;
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;
@@ -59,6 +61,17 @@ fn compute_id(parent: Id, key: &[u8]) -> Id {
     let mut hasher = Sha256::new();
     hasher.update(parent.as_bytes());
     hasher.update(key);
+    Id::new(hasher.finalize().into())
+}
+
+/// Compute a deterministic collection ID from parent ID and field name.
+/// This ensures the same collection gets the same ID across all nodes.
+fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
+    let mut hasher = Sha256::new();
+    if let Some(parent) = parent_id {
+        hasher.update(parent.as_bytes());
+    }
+    hasher.update(field_name.as_bytes());
     Id::new(hasher.finalize().into())
 }
 
@@ -115,6 +128,32 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new(id: Option<Id>) -> Self {
         let id = id.unwrap_or_else(|| Id::random());
+
+        let mut this = Self {
+            children_ids: RefCell::new(None),
+            storage: Element::new(Some(id)),
+            _priv: PhantomData,
+        };
+
+        if id.is_root() {
+            let _ignored = <Interface<S>>::save(&mut this).expect("save");
+        } else {
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+        }
+
+        this
+    }
+
+    /// Creates a new collection with a deterministic ID derived from parent ID and field name.
+    /// This ensures collections get the same ID across all nodes when created with the same
+    /// parent and field name.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this collection
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    pub(crate) fn new_with_field_name(parent_id: Option<Id>, field_name: &str) -> Self {
+        let id = compute_collection_id(parent_id, field_name);
 
         let mut this = Self {
             children_ids: RefCell::new(None),
