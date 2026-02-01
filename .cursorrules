@@ -1,0 +1,268 @@
+# Calimero Core - AI Contributor Guidance
+
+This file provides guidance for AI tools contributing to the Calimero Core repository.
+
+## Project Overview
+
+Calimero is a decentralized infrastructure platform with WebAssembly runtime, peer-to-peer networking, and blockchain integrations. The codebase is primarily Rust with multiple crates organized as a workspace.
+
+## Rust Style Preferences
+
+### Formatting
+
+- Always run `cargo fmt` before committing
+- Rust edition: 2021 (workspace default), rustfmt uses edition 2024
+- Rust toolchain: 1.88.0 (pinned in rust-toolchain.toml)
+
+### Import Organization (StdExternalCrate Pattern)
+
+Organize imports in this order, with blank lines between groups:
+
+1. Standard library (`std::`, `core::`)
+2. External crates
+3. Symbols from local crate & parent module (`crate::`, `super::`)
+4. Local module definitions (`mod`)
+5. Symbols from local modules (optional)
+
+```rust
+// Standard library
+use std::collections::HashMap;
+use std::sync::Arc;
+
+// External crates
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+
+// Local crate & parent module
+use crate::{common, Node};
+use super::Shared;
+
+// Local modules definition
+mod config;
+mod types;
+
+// Symbols from local modules
+use config::ContextConfig;
+```
+
+### Import Granularity (Module-Level)
+
+Do NOT group imports from the same crate. Use separate import statements:
+
+```rust
+// CORRECT
+use core::future::{pending, Future};
+use core::pin::Pin;
+use std::thread;
+use std::time::Duration;
+
+// INCORRECT - Do not use nested braces across modules
+use core::{
+    future::{pending, Future},
+    pin::Pin,
+};
+```
+
+### Module Organization
+
+Do NOT use `mod.rs` pattern. Export modules from files named according to context:
+
+```
+crates/meroctl/src/cli/app.rs      # Contains: mod get; mod install; mod list;
+crates/meroctl/src/cli/app/get.rs
+crates/meroctl/src/cli/app/install.rs
+crates/meroctl/src/cli/app/list.rs
+```
+
+### Naming Conventions
+
+- Types: `PascalCase`
+- Enum variants: `PascalCase`
+- Struct fields: `snake_case`
+- Functions/methods: `snake_case`
+- Local variables: `snake_case`
+- Macros: `snake_case`
+- Constants: `SCREAMING_SNAKE_CASE`
+
+### Error Handling
+
+- Use the `eyre` crate for error handling:
+  ```rust
+  use eyre::Result as EyreResult;
+  ```
+- Use `.map_err()` to convert errors to appropriate types
+- Avoid `.unwrap()` and `.expect()` unless absolutely certain they cannot panic
+- If unwrapping is necessary, add a comment explaining why it's safe
+- Panics are only acceptable for fatal, unrecoverable errors
+
+### Code Style
+
+- Prefer short-circuiting returns to reduce nesting:
+  ```rust
+  // Preferred
+  if !some_condition {
+      return Err(YourError::Something);
+  }
+  // Continue with main code path...
+
+  // Avoid
+  if some_condition {
+      // lots of code
+  } else {
+      return Err(YourError::Something);
+  }
+  ```
+
+- Use `let..else` for early returns:
+  ```rust
+  let Ok(val) = thing else {
+      return Err(SomeError);
+  };
+  // Continue with val...
+  ```
+
+- Prefer imports over fully qualified names:
+  ```rust
+  // Preferred
+  use std::fs::File;
+  File::open("data.txt")
+
+  // Avoid
+  std::fs::File::open("data.txt")
+  ```
+
+- Minimize unnecessary `.clone()` calls
+- Use functional patterns when they improve readability
+
+## Test Expectations
+
+### Unit Tests
+
+- Place unit tests in `#[cfg(test)]` modules at the bottom of the file
+- Use `#[tokio::test]` for async tests
+- Tests can also live in separate `tests/` directories
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_functionality() {
+        // ...
+    }
+
+    #[tokio::test]
+    async fn test_async_operation() {
+        // ...
+    }
+}
+```
+
+### Running Tests
+
+```bash
+cargo test -- --nocapture
+```
+
+## Commit Format
+
+Use conventional commit format:
+
+```
+<type>(<scope>): <short summary>
+```
+
+### Allowed Types
+
+| Type       | Description                                    |
+|------------|------------------------------------------------|
+| `build`    | Changes affecting build system or dependencies |
+| `ci`       | Changes to CI configuration files and scripts  |
+| `docs`     | Documentation only changes                     |
+| `feat`     | A new feature                                  |
+| `fix`      | A bug fix                                      |
+| `perf`     | Performance improvement                        |
+| `refactor` | Code change with no bug fix or new feature     |
+| `test`     | Adding or correcting tests                     |
+| `chore`    | Other changes (config, tooling, etc.)          |
+| `style`    | Formatting changes                             |
+| `revert`   | Revert a previous commit                       |
+
+### Summary Rules
+
+- Use imperative, present tense (e.g., "add" not "added")
+- Don't capitalize first letter
+- No period at the end
+- Keep it concise
+
+Examples:
+- `feat(runtime): add wasm memory bounds checking`
+- `fix(network): resolve peer connection timeout`
+- `docs: update contributing guide`
+
+## Crate Organization
+
+### Directory Structure
+
+```
+/workspace/
+├── apps/           # Example/test WebAssembly applications
+├── crates/         # Core library crates
+│   ├── auth/       # Authentication
+│   ├── config/     # Configuration
+│   ├── context/    # Context management
+│   ├── crypto/     # Cryptography utilities
+│   ├── meroctl/    # CLI tool
+│   ├── merod/      # Node daemon
+│   ├── network/    # P2P networking (libp2p)
+│   ├── node/       # Node orchestration
+│   ├── primitives/ # Shared primitive types
+│   ├── runtime/    # WebAssembly runtime (wasmer)
+│   ├── sdk/        # SDK for app development
+│   ├── server/     # HTTP/WebSocket server
+│   ├── storage/    # CRDT-based storage
+│   └── store/      # Key-value store abstraction
+├── tools/          # Development tools
+└── workflows/      # Test workflow definitions
+```
+
+### Key Patterns
+
+- **Primitives crates**: Shared types go in `*-primitives` crates (e.g., `calimero-context-primitives`)
+- **Config crates**: Configuration types often in separate `*-config` crates
+- **Each folder is conceptually separate**: Treat each crate as its own project
+
+### Common Dependencies
+
+- `borsh` - Binary serialization for storage
+- `eyre` - Error handling
+- `tokio` - Async runtime
+- `libp2p` - P2P networking
+- `wasmer` - WebAssembly runtime
+- `serde` / `serde_json` - JSON serialization
+- `clap` - CLI argument parsing
+
+## CI Checks
+
+Before submitting, ensure:
+
+1. **Format**: `cargo fmt --check`
+2. **Clippy**: `cargo clippy -- -A warnings`
+3. **Tests**: `cargo test`
+4. **License check**: `cargo deny check licenses sources`
+
+## Pull Request Template
+
+PRs should include:
+
+1. **Description**: What changed and why
+2. **Test plan**: How to verify the changes
+3. **Documentation update**: What docs need updating
+
+## Additional Notes
+
+- Cargo.toml dependencies should be sorted alphabetically
+- Use workspace dependencies when possible (defined in root Cargo.toml)
+- Profile configurations: `dev`, `release`, `app-release`, `profiling`, `app-profiling`
+- Allowed licenses: MIT, Apache-2.0, BSD variants, ISC, and others (see deny.toml)
