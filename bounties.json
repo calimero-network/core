@@ -1,0 +1,124 @@
+{
+  "bounties": [
+    {
+      "title": "Race condition in JWT token rotation during refresh",
+      "description": "In `refresh_token_pair()`, when rotating client tokens, a new key is stored before token generation. If token generation fails, cleanup attempts to delete the new key but the original key was already removed. This can leave users locked out with no valid key. The key operations need to be atomic or use a proper rollback strategy.",
+      "pathHint": "crates/auth/src/auth/token/jwt.rs",
+      "estimatedMinutes": 60,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "DeltaStore async methods hold RwLock across await points causing potential deadlock",
+      "description": "Multiple methods like `add_delta_internal()` acquire write locks on `self.dag` and `self.head_root_hashes` separately across await points. When cascaded deltas trigger further operations, this can lead to deadlock or lock ordering violations. Refactor to minimize lock scope or use a single lock for related state.",
+      "pathHint": "crates/node/src/delta_store.rs",
+      "estimatedMinutes": 75,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "Context cache may serve stale dag_heads after network sync updates",
+      "description": "The `get_or_fetch_context()` method refreshes dag_heads from database when cache is stale, but the check `cached.meta.dag_heads != meta.dag_heads` doesn't account for concurrent modifications between the check and update. This race can cause deltas to use wrong parents, breaking DAG consistency.",
+      "pathHint": "crates/context/src/lib.rs",
+      "estimatedMinutes": 60,
+      "category": "concurrency",
+      "severity": "high"
+    },
+    {
+      "title": "Missing validation of parent IDs in CausalDelta allows malformed DAG",
+      "description": "The `add_delta()` method in DagStore doesn't validate that parent IDs are valid 32-byte hashes or that they form a valid DAG structure. A malicious peer could send deltas with circular references or self-referential parents, potentially causing infinite loops in `apply_pending()` or corrupting DAG topology.",
+      "pathHint": "crates/dag/src/lib.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Unsafe memory access in runtime logic without bounds checking",
+      "description": "The `read_guest_memory_slice()` and `read_guest_memory_typed()` functions use `data_unchecked()` and `data_unchecked_mut()` without validating that the pointer/length are within bounds. A malicious WASM module could provide out-of-bounds pointers, causing undefined behavior.",
+      "pathHint": "crates/runtime/src/logic.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "critical"
+    },
+    {
+      "title": "CSP configuration defaults allow unsafe-inline and unsafe-eval",
+      "description": "The default Content Security Policy in `default_csp_script_src()` includes `'unsafe-inline'` and `'unsafe-eval'`, which defeats much of CSP's XSS protection. Additionally, `connect_src` allows `http:` which enables mixed content attacks. These should use nonces/hashes instead and restrict to HTTPS.",
+      "pathHint": "crates/auth/src/config.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Node host validation can be bypassed with auth: prefix",
+      "description": "In `validate_node_host()`, requests with host starting with `auth:` skip validation entirely. An attacker could set a forged X-Forwarded-Host header to `auth:malicious.com` to bypass token-to-host binding. The internal service check should use a more robust mechanism.",
+      "pathHint": "crates/auth/src/auth/token/jwt.rs",
+      "estimatedMinutes": 45,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Event handlers execute sequentially but may be documented as parallel-safe",
+      "description": "The `execute_event_handlers_parsed()` function processes events sequentially with detailed comments about parallelization safety. However, the sequential execution combined with `.await` on each handler means slow handlers block subsequent events. If handlers are truly commutative as documented, parallelize with `join_all()`.",
+      "pathHint": "crates/node/src/handlers/state_delta.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "Delta persistence not atomic - crash between put operations corrupts state",
+      "description": "In `add_delta_internal()`, the delta is persisted with multiple separate `handle.put()` calls for the delta and context metadata. A crash between these operations leaves the database in an inconsistent state. Use a transaction or batch write to ensure atomicity.",
+      "pathHint": "crates/node/src/delta_store.rs",
+      "estimatedMinutes": 60,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "Sync timeout divided by 3 or 6 can truncate to zero for short timeouts",
+      "description": "Multiple places divide `sync_timeout` by small integers (e.g., `timeout / 3`, `timeout / 6`) for sub-operations. If configured timeout is small (e.g., 2 seconds), division can result in sub-second or near-zero timeouts causing spurious failures. Add minimum bounds or use saturating arithmetic.",
+      "pathHint": "crates/node/src/sync/manager.rs",
+      "estimatedMinutes": 30,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "title": "Missing error propagation in apply_pending causes silent delta loss",
+      "description": "In `DagStore::apply_pending()`, errors from `apply_delta()` are propagated immediately, but if a delta in the middle of the ready list fails, previously successful deltas are committed while later ones remain pending. The function should either be atomic (all-or-nothing) or handle partial failures explicitly.",
+      "pathHint": "crates/dag/src/lib.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "high"
+    },
+    {
+      "title": "Replace unsafe ptr::from_mut with safe RefCell borrowing pattern",
+      "description": "The `children_cache()` method uses unsafe `ptr::from_mut` to extend the lifetime of a mutable reference from RefCell. This violates Rust's aliasing rules if the RefCell is borrowed elsewhere. Refactor to return a guard type or use safer interior mutability patterns.",
+      "pathHint": "crates/storage/src/collections.rs",
+      "estimatedMinutes": 60,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "title": "Snapshot sync doesn't verify received state matches expected root hash",
+      "description": "During snapshot sync, records are applied without verifying the resulting state matches the peer's claimed `boundary_root_hash`. A malicious peer could send corrupted or partial state. Add verification step that computes and compares root hash after applying all records.",
+      "pathHint": "crates/node/src/sync/snapshot.rs",
+      "estimatedMinutes": 60,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "title": "Introduce proper error type for DeltaStore and propagate throughout",
+      "description": "DeltaStore methods return `eyre::Result` with string-formatted errors, making programmatic error handling difficult. Create a dedicated `DeltaStoreError` enum with variants for each failure mode (persistence, application, missing parents) and propagate through all call sites.",
+      "pathHint": "crates/node/src/delta_store.rs",
+      "estimatedMinutes": 75,
+      "category": "design-flaw",
+      "severity": "medium"
+    },
+    {
+      "title": "SyncManager clone loses ctx_sync_rx causing silent sync failures",
+      "description": "The `Clone` impl for `SyncManager` sets `ctx_sync_rx: None` because receivers can't be cloned. If a cloned instance is used, it will miss all sync requests sent via the channel. Either prevent cloning or document this behavior prominently with runtime detection.",
+      "pathHint": "crates/node/src/sync/manager.rs",
+      "estimatedMinutes": 45,
+      "category": "design-flaw",
+      "severity": "medium"
+    }
+  ]
+}
