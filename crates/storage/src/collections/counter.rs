@@ -184,9 +184,7 @@ impl<const ALLOW_DECREMENT: bool> Counter<ALLOW_DECREMENT, MainStorage> {
     pub fn new() -> Self {
         Self::new_internal()
     }
-}
 
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S> {
     /// Creates a new counter with a deterministic ID derived from parent ID and field name.
     /// This ensures counters get the same ID across all nodes when created with the same
     /// parent and field name.
