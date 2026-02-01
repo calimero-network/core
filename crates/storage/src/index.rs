@@ -273,6 +273,63 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(Self::get_index(id)?.map(|index| (index.full_hash, index.own_hash)))
     }
 
+    /// Persists metadata for an entity during state synchronization.
+    ///
+    /// This is a PUBLIC API specifically for tree sync operations where:
+    /// - Entities are applied without going through the normal parent-child flow
+    /// - CRDT metadata (crdt_type, timestamps) must be preserved for future merges
+    ///
+    /// If an index already exists, it updates the metadata while preserving:
+    /// - `parent_id` (structural relationship)
+    /// - `children` (structural relationship)
+    ///
+    /// If no index exists, creates a minimal index with the metadata.
+    ///
+    /// # Arguments
+    /// * `id` - Entity ID (derived from entity key hash)
+    /// * `data` - Entity data bytes (used to compute own_hash)
+    /// * `metadata` - CRDT metadata including crdt_type
+    ///
+    /// # Returns
+    /// The computed own_hash for the entity
+    ///
+    /// # Errors
+    /// Returns `StorageError` if index cannot be saved.
+    pub fn persist_metadata_for_sync(
+        id: Id,
+        data: &[u8],
+        metadata: Metadata,
+    ) -> Result<[u8; 32], StorageError> {
+        let own_hash: [u8; 32] = Sha256::digest(data).into();
+
+        let mut index = Self::get_index(id)?.unwrap_or_else(|| EntityIndex {
+            id,
+            parent_id: None,
+            children: None,
+            full_hash: own_hash, // For leaf entities, full_hash == own_hash
+            own_hash,
+            metadata: metadata.clone(),
+            deleted_at: None,
+        });
+
+        // Update metadata (preserves structural relationships)
+        index.metadata = metadata;
+        index.own_hash = own_hash;
+        // Recalculate full_hash in case children exist
+        index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
+
+        Self::save_index(&index)?;
+
+        tracing::debug!(
+            %id,
+            own_hash = ?hex::encode(own_hash),
+            crdt_type = ?index.metadata.crdt_type,
+            "Persisted metadata for sync"
+        );
+
+        Ok(own_hash)
+    }
+
     /// Loads entity index from storage.
     pub(crate) fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
         match S::storage_read(Key::Index(id)) {

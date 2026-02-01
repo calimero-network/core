@@ -679,8 +679,10 @@ impl SyncManager {
         phases.log(&context_id.to_string());
 
         // ========================================================
-        // TRUE PARALLEL DIAL PHASE (using FuturesUnordered)
+        // TRUE PARALLEL DIAL PHASE (using FuturesUnordered with refill)
         // ========================================================
+        // FIX: Previously only tried first N peers. Now uses sliding window
+        // to try ALL peers until success or exhaustion.
         use super::dial_tracker::{DialResult, ParallelDialConfig, ParallelDialTracker};
 
         let parallel_config = ParallelDialConfig {
@@ -689,36 +691,39 @@ impl SyncManager {
             cancel_on_success: true,
         };
 
-        let mut parallel_tracker = ParallelDialTracker::new(parallel_config);
+        let mut parallel_tracker = ParallelDialTracker::new(parallel_config.clone());
         let dial_start = Instant::now();
 
-        // Select peers to dial in parallel
-        let peers_to_dial: Vec<_> = selected_peers
-            .iter()
-            .take(parallel_config.max_concurrent)
-            .copied()
-            .collect();
+        // Track which peers we've tried
+        let mut next_peer_index = 0usize;
+        let all_peers = selected_peers.clone();
+
+        // Helper to create a dial future for a peer
+        let create_dial_future = |peer_id: PeerId| {
+            let attempt_start = Instant::now();
+            async move {
+                let result = self.initiate_sync(context_id, peer_id).await;
+                let dial_ms = attempt_start.elapsed().as_secs_f64() * 1000.0;
+                (peer_id, result, dial_ms)
+            }
+        };
+
+        // Initial batch: dial up to max_concurrent peers
+        let initial_batch_size = parallel_config.max_concurrent.min(all_peers.len());
+        let mut dial_futures = FuturesUnordered::new();
+        for peer_id in all_peers.iter().take(initial_batch_size) {
+            dial_futures.push(create_dial_future(*peer_id));
+        }
+        next_peer_index = initial_batch_size;
 
         info!(
             %context_id,
-            peer_count = peers_to_dial.len(),
-            "Starting TRUE parallel dial to peers"
+            initial_batch = initial_batch_size,
+            total_candidates = all_peers.len(),
+            "Starting TRUE parallel dial with sliding window"
         );
 
-        // Create a FuturesUnordered to race all dial attempts concurrently
-        let mut dial_futures: FuturesUnordered<_> = peers_to_dial
-            .iter()
-            .map(|&peer_id| {
-                let attempt_start = Instant::now();
-                async move {
-                    let result = self.initiate_sync(context_id, peer_id).await;
-                    let dial_ms = attempt_start.elapsed().as_secs_f64() * 1000.0;
-                    (peer_id, result, dial_ms)
-                }
-            })
-            .collect();
-
-        // Race all dial attempts - first success wins, others are dropped
+        // Race dial attempts with sliding window refill
         let mut last_error = None;
         let mut attempts = 0u32;
 
@@ -729,6 +734,10 @@ impl SyncManager {
                 Ok(sync_result) => {
                     // SUCCESS! First successful dial wins
                     parallel_tracker.record(peer_id, DialResult::Success, dial_ms);
+
+                    // Calculate remaining before dropping
+                    let concurrent_remaining = dial_futures.len();
+                    let untried_remaining = all_peers.len().saturating_sub(next_peer_index);
 
                     // Drop remaining futures (they'll be cancelled)
                     drop(dial_futures);
@@ -741,7 +750,8 @@ impl SyncManager {
                         time_to_viable_peer_ms = %format!("{:.2}", phases.time_to_viable_peer_ms()),
                         dial_ms = %format!("{:.2}", dial_ms),
                         total_attempts = parallel_result.attempts,
-                        concurrent_cancelled = peers_to_dial.len().saturating_sub(attempts as usize),
+                        peers_tried = attempts,
+                        peers_remaining = concurrent_remaining + untried_remaining,
                         result = "success",
                         "TRUE_PARALLEL_DIAL_SUCCESS"
                     );
@@ -757,37 +767,58 @@ impl SyncManager {
                 Err(e) => {
                     parallel_tracker.record(peer_id, DialResult::Error, dial_ms);
 
-                    debug!(
-                        %context_id,
-                        %peer_id,
-                        dial_ms = %format!("{:.2}", dial_ms),
-                        error = %e,
-                        attempt = attempts,
-                        remaining = dial_futures.len(),
-                        "Parallel dial attempt failed, waiting for others"
-                    );
-
                     // Record failure in cache
                     {
                         let mut cache = self.recent_peer_cache.write().unwrap();
                         cache.record_failure(peer_id);
                     }
 
+                    // SLIDING WINDOW REFILL: Add next peer to the pool if available
+                    if next_peer_index < all_peers.len() {
+                        let next_peer = all_peers[next_peer_index];
+                        next_peer_index += 1;
+                        dial_futures.push(create_dial_future(next_peer));
+
+                        debug!(
+                            %context_id,
+                            %peer_id,
+                            %next_peer,
+                            dial_ms = %format!("{:.2}", dial_ms),
+                            error = %e,
+                            attempt = attempts,
+                            active_dials = dial_futures.len(),
+                            remaining_candidates = all_peers.len() - next_peer_index,
+                            "Dial failed, refilling pool with next peer"
+                        );
+                    } else {
+                        debug!(
+                            %context_id,
+                            %peer_id,
+                            dial_ms = %format!("{:.2}", dial_ms),
+                            error = %e,
+                            attempt = attempts,
+                            active_dials = dial_futures.len(),
+                            "Dial failed, no more candidates to add"
+                        );
+                    }
+
                     last_error = Some(e);
-                    // Continue to next future (others are still racing)
+                    // Continue to next future
                 }
             }
         }
 
-        // All parallel attempts failed
+        // All peers exhausted without success
         let total_dial_ms = dial_start.elapsed().as_secs_f64() * 1000.0;
         let parallel_result = parallel_tracker.finish(&context_id.to_string());
 
         warn!(
             %context_id,
             attempts = parallel_result.attempts,
+            total_peers_tried = attempts,
+            total_peers_available = all_peers.len(),
             total_dial_ms = %format!("{:.2}", total_dial_ms),
-            "All parallel dial attempts failed"
+            "All parallel dial attempts exhausted"
         );
 
         match last_error {
@@ -1050,6 +1081,11 @@ impl SyncManager {
     ///
     /// The merge callback is obtained internally by each sync strategy method, so
     /// callers don't need to pass it explicitly.
+    ///
+    /// # Arguments
+    /// * `peer_root_hash` - The peer's root hash from handshake (for tree comparison).
+    ///   CRITICAL: This must be the actual peer's hash, not the local hash, or tree
+    ///   comparison will short-circuit incorrectly!
     pub(super) async fn handle_tree_sync_with_callback(
         &self,
         context_id: ContextId,
@@ -1057,6 +1093,7 @@ impl SyncManager {
         peer_id: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
+        peer_root_hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<SyncProtocol>> {
         // Get local state info for strategy selection
         let store_handle = self.context_client.datastore_handle();
@@ -1087,9 +1124,8 @@ impl SyncManager {
 
         // Get root hashes for tree sync methods
         let local_root_hash = context.root_hash;
-        // For remote root hash, we'd ideally get this from handshake, but for now use local
-        // as the tree sync methods will handle the actual comparison
-        let remote_root_hash = local_root_hash; // Will be updated during actual sync
+        // Use the peer's root hash from handshake (critical for correct tree comparison!)
+        let remote_root_hash = peer_root_hash;
 
         // Execute based on selected strategy
         let result = match strategy {
@@ -2037,6 +2073,7 @@ impl SyncManager {
                         chosen_peer,
                         our_identity,
                         &mut stream,
+                        peer_root_hash, // Pass peer's root hash for correct tree comparison!
                     )
                     .await?
                 }

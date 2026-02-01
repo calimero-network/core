@@ -19,12 +19,12 @@ fn test_full_capability_nodes_negotiate_hybrid() {
     let caps_a = SyncCapabilities::full();
     let caps_b = SyncCapabilities::full();
 
-    // Full capability nodes should prefer HybridSync
+    // Full capability nodes should prefer HybridSync v2
     let negotiated = caps_a.negotiate(&caps_b);
     assert!(negotiated.is_some());
     assert!(matches!(
         negotiated.unwrap(),
-        SyncProtocolVersion::HybridSync { version: 1 }
+        SyncProtocolVersion::HybridSync { version: 2 }
     ));
 }
 
@@ -276,7 +276,7 @@ fn test_handshake_roundtrip() {
 #[test]
 fn test_handshake_response_roundtrip() {
     let response = SyncHandshakeResponse {
-        negotiated_protocol: Some(SyncProtocolVersion::HybridSync { version: 1 }),
+        negotiated_protocol: Some(SyncProtocolVersion::HybridSync { version: 2 }),
         capabilities: SyncCapabilities::minimal(),
         root_hash: Hash::from([50; 32]),
         dag_heads: vec![[10; 32]],
@@ -289,7 +289,7 @@ fn test_handshake_response_roundtrip() {
     assert!(decoded.negotiated_protocol.is_some());
     assert!(matches!(
         decoded.negotiated_protocol.unwrap(),
-        SyncProtocolVersion::HybridSync { version: 1 }
+        SyncProtocolVersion::HybridSync { version: 2 }
     ));
     assert!(!decoded.capabilities.supports_compression);
 }

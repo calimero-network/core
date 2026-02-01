@@ -45,8 +45,9 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::address::Id as StorageId;
 use calimero_storage::entities::Metadata;
-use calimero_storage::index::EntityIndex;
+use calimero_storage::index::{EntityIndex, Index};
 use calimero_storage::interface::Interface;
 use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_storage::WasmMergeCallback;
@@ -860,13 +861,31 @@ impl SyncManager {
         };
 
         // Write the final value (entity data)
-        let slice: Slice<'_> = final_value.into();
+        let slice: Slice<'_> = final_value.clone().into();
         store_handle.put(&state_key, &ContextStateValue::from(slice))?;
+
+        // CRITICAL: Also persist metadata for CRDT semantics on future merges
+        // Without this, subsequent tree syncs would fall back to LWW because
+        // crdt_type would be missing from the EntityIndex.
+        let entity_id = StorageId::new(key);
+        if let Err(e) = Index::<MainStorage>::persist_metadata_for_sync(
+            entity_id,
+            &final_value,
+            remote_metadata.clone(),
+        ) {
+            warn!(
+                %context_id,
+                entity_key = ?key,
+                error = %e,
+                "Failed to persist metadata for sync (CRDT semantics may be lost)"
+            );
+        }
 
         debug!(
             %context_id,
             entity_key = ?key,
-            "Applied entity with CRDT merge"
+            crdt_type = ?remote_metadata.crdt_type,
+            "Applied entity with CRDT merge and persisted metadata"
         );
 
         Ok(true)

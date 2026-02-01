@@ -44,11 +44,16 @@ pub struct SyncCapabilities {
 
 impl SyncCapabilities {
     /// Create capabilities with all features enabled.
+    ///
+    /// NOTE: HybridSync v2 includes breaking wire protocol changes:
+    /// - TreeLeafData now includes Metadata (with crdt_type)
+    /// - BufferedDelta includes all fields for replay
+    /// - Bloom filter responses use Vec<TreeLeafData>
     #[must_use]
     pub fn full() -> Self {
         Self {
             supported_protocols: vec![
-                SyncProtocolVersion::HybridSync { version: 1 },
+                SyncProtocolVersion::HybridSync { version: 2 }, // v2: Metadata in wire format
                 SyncProtocolVersion::SnapshotSync { version: 1 },
                 SyncProtocolVersion::DeltaSync { version: 1 },
             ],
@@ -419,6 +424,10 @@ pub struct DeltaBuffer {
 }
 
 /// A single buffered delta.
+///
+/// Contains ALL fields needed for replay after snapshot sync completes.
+/// Previously missing fields (nonce, author_id, root_hash, events) caused
+/// data loss because deltas couldn't be decrypted or processed.
 #[derive(Debug, Clone)]
 pub struct BufferedDelta {
     /// Delta ID.
@@ -427,8 +436,16 @@ pub struct BufferedDelta {
     pub parents: Vec<[u8; 32]>,
     /// HLC timestamp.
     pub hlc: u64,
-    /// Serialized payload.
+    /// Serialized (encrypted) payload.
     pub payload: Vec<u8>,
+    /// Nonce for decryption (12 bytes for XChaCha20-Poly1305).
+    pub nonce: calimero_crypto::Nonce,
+    /// Author public key (needed to get sender key for decryption).
+    pub author_id: calimero_primitives::identity::PublicKey,
+    /// Expected root hash after applying this delta.
+    pub root_hash: calimero_primitives::hash::Hash,
+    /// Optional serialized events.
+    pub events: Option<Vec<u8>>,
 }
 
 impl DeltaBuffer {
@@ -653,7 +670,7 @@ mod tests {
         assert!(negotiated.is_some());
         assert!(matches!(
             negotiated.unwrap(),
-            SyncProtocolVersion::HybridSync { version: 1 }
+            SyncProtocolVersion::HybridSync { version: 2 }
         ));
     }
 
@@ -739,18 +756,33 @@ mod tests {
         assert!(state.should_buffer_deltas());
     }
 
+    // Helper to create a test BufferedDelta with default values for new fields
+    fn make_test_buffered_delta(
+        id: [u8; 32],
+        parents: Vec<[u8; 32]>,
+        hlc: u64,
+        payload: Vec<u8>,
+    ) -> BufferedDelta {
+        use calimero_primitives::identity::PublicKey;
+        BufferedDelta {
+            id,
+            parents,
+            hlc,
+            payload,
+            nonce: [0; 12],                      // Default test nonce
+            author_id: PublicKey::from([0; 32]), // Default test author
+            root_hash: calimero_primitives::hash::Hash::from([0; 32]), // Default test hash
+            events: None,
+        }
+    }
+
     #[test]
     fn test_delta_buffer_basic() {
         let mut buffer = DeltaBuffer::new(100, 12345);
         assert!(buffer.is_empty());
         assert_eq!(buffer.sync_start_hlc(), 12345);
 
-        let delta = BufferedDelta {
-            id: [1; 32],
-            parents: vec![[0; 32]],
-            hlc: 12346,
-            payload: vec![1, 2, 3],
-        };
+        let delta = make_test_buffered_delta([1; 32], vec![[0; 32]], 12346, vec![1, 2, 3]);
 
         buffer.push(delta.clone()).unwrap();
         assert_eq!(buffer.len(), 1);
@@ -766,29 +798,14 @@ mod tests {
         let mut buffer = DeltaBuffer::new(2, 0);
 
         buffer
-            .push(BufferedDelta {
-                id: [1; 32],
-                parents: vec![],
-                hlc: 1,
-                payload: vec![],
-            })
+            .push(make_test_buffered_delta([1; 32], vec![], 1, vec![]))
             .unwrap();
 
         buffer
-            .push(BufferedDelta {
-                id: [2; 32],
-                parents: vec![],
-                hlc: 2,
-                payload: vec![],
-            })
+            .push(make_test_buffered_delta([2; 32], vec![], 2, vec![]))
             .unwrap();
 
-        let result = buffer.push(BufferedDelta {
-            id: [3; 32],
-            parents: vec![],
-            hlc: 3,
-            payload: vec![],
-        });
+        let result = buffer.push(make_test_buffered_delta([3; 32], vec![], 3, vec![]));
 
         assert!(result.is_err());
         let err = result.unwrap_err();

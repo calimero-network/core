@@ -69,11 +69,17 @@ pub async fn handle_state_delta(
             delta_id = ?delta_id,
             "Buffering delta during snapshot sync"
         );
+        // CRITICAL: Store ALL fields needed for replay after snapshot completes
+        // Missing fields previously caused data loss (couldn't decrypt/process)
         let buffered = calimero_node_primitives::sync_protocol::BufferedDelta {
             id: delta_id,
             parents: parent_ids.clone(),
             hlc: hlc.get_time().as_u64(),
-            payload: artifact.clone(), // Store encrypted payload for replay
+            payload: artifact.clone(),
+            nonce,                  // Needed for decryption (Nonce = [u8; 12])
+            author_id,              // Needed to get sender key
+            root_hash,              // Expected root hash after applying
+            events: events.clone(), // Optional events
         };
         if node_state.buffer_delta(&context_id, buffered) {
             return Ok(()); // Successfully buffered, will be replayed after snapshot

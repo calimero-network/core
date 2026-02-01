@@ -625,6 +625,20 @@ impl<T: Clone> DagStore<T> {
         self.applied.iter().copied().collect()
     }
 
+    /// FNV-1a hash for bloom filter bit position calculation.
+    ///
+    /// CRITICAL: This MUST match `DeltaIdBloomFilter::hash` in sync_protocol.rs
+    /// to ensure bloom filter checks work correctly.
+    fn bloom_hash(data: &[u8; 32], seed: u8) -> usize {
+        let mut hash: u64 = 0xcbf29ce484222325_u64; // FNV offset basis
+        hash = hash.wrapping_add(u64::from(seed));
+        for byte in data {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+        }
+        hash as usize
+    }
+
     /// Get deltas that the remote doesn't have based on a bloom filter
     ///
     /// Checks each of our applied deltas against the bloom filter.
@@ -632,7 +646,7 @@ impl<T: Clone> DagStore<T> {
     pub fn get_deltas_not_in_bloom(
         &self,
         bloom_filter: &[u8],
-        false_positive_rate: f32,
+        _false_positive_rate: f32, // Note: Currently unused, kept for API compatibility
     ) -> Vec<CausalDelta<T>> {
         if bloom_filter.len() < 5 {
             // Invalid filter, return all deltas
@@ -650,6 +664,17 @@ impl<T: Clone> DagStore<T> {
             bloom_filter[2],
             bloom_filter[3],
         ]) as usize;
+
+        // SECURITY: Prevent division by zero from malformed bloom filter
+        if num_bits == 0 {
+            tracing::warn!("Malformed bloom filter: num_bits is 0, returning all deltas");
+            return self
+                .applied
+                .iter()
+                .filter_map(|id| self.deltas.get(id).cloned())
+                .collect();
+        }
+
         let num_hashes = bloom_filter[4] as usize;
         let bits = &bloom_filter[5..];
 
@@ -657,15 +682,11 @@ impl<T: Clone> DagStore<T> {
 
         for delta_id in &self.applied {
             // Check if delta_id is in bloom filter
+            // CRITICAL: Must use same hash function as DeltaIdBloomFilter::hash (FNV-1a)
+            // Previous bug: was using DefaultHasher (SipHash) which produced different bit positions
             let mut in_filter = true;
             for i in 0..num_hashes {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-
-                let mut hasher = DefaultHasher::new();
-                delta_id.hash(&mut hasher);
-                i.hash(&mut hasher);
-                let bit_index = (hasher.finish() as usize) % num_bits;
+                let bit_index = Self::bloom_hash(delta_id, i as u8) % num_bits;
 
                 if bit_index / 8 >= bits.len()
                     || (bits[bit_index / 8] & (1 << (bit_index % 8))) == 0
