@@ -267,9 +267,10 @@ impl KeyMetadata {
         self.last_activity = Some(Utc::now().timestamp() as u64);
     }
 
-    /// Get the last activity timestamp, falling back to created_at for backward compatibility
+    /// Get the last activity timestamp, falling back to "now" for legacy keys
     pub fn get_last_activity(&self) -> u64 {
-        self.last_activity.unwrap_or(self.created_at)
+        self.last_activity
+            .unwrap_or_else(|| Utc::now().timestamp() as u64)
     }
 
     /// Check if the key has been idle for longer than the specified timeout
@@ -286,7 +287,7 @@ impl KeyMetadata {
             return false; // Idle timeout disabled
         }
         let now = Utc::now().timestamp() as u64;
-        let last_activity = self.get_last_activity();
+        let last_activity = self.last_activity.unwrap_or(now);
         now.saturating_sub(last_activity) > idle_timeout_secs
     }
 }
@@ -324,10 +325,17 @@ mod tests {
 
     #[test]
     fn test_key_metadata_get_last_activity_fallback() {
-        let mut metadata = KeyMetadata::new();
-        metadata.last_activity = None;
-        // Should fall back to created_at
-        assert_eq!(metadata.get_last_activity(), metadata.created_at);
+        let metadata = KeyMetadata {
+            created_at: 1,
+            revoked_at: None,
+            last_activity: None,
+        };
+        let before = Utc::now().timestamp() as u64;
+        let last_activity = metadata.get_last_activity();
+        let after = Utc::now().timestamp() as u64;
+        // Should fall back to a current timestamp for legacy keys
+        assert!(last_activity >= before);
+        assert!(last_activity <= after);
     }
 
     #[test]
@@ -364,8 +372,8 @@ mod tests {
             revoked_at: None,
             last_activity: None,
         };
-        // get_last_activity should return created_at
-        assert_eq!(metadata.get_last_activity(), 1000);
+        // Legacy keys should not be treated as idle immediately
+        assert!(!metadata.is_idle(30 * 60));
     }
 
     #[test]
