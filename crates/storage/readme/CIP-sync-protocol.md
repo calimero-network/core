@@ -191,96 +191,38 @@ Requester                              Responder
     │     (Begin selected protocol)        │
 ```
 
-#### 2.3 Protocol Selection Algorithm
+#### 2.3 Protocol Selection Rules
 
-```rust
-fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> SyncProtocol {
-    // Already in sync
-    if local.root_hash == remote.root_hash {
-        return SyncProtocol::None;
-    }
-    
-    // Helper to check if remote supports a protocol
-    let remote_supports = |p: &SyncProtocol| -> bool {
-        remote.supported_protocols.iter().any(|sp| 
-            std::mem::discriminant(sp) == std::mem::discriminant(p)
-        )
-    };
-    
-    // Fresh node (no state) - use snapshot
-    if !local.has_state {
-        let preferred = if remote.entity_count > 100 {
-            SyncProtocol::Snapshot { compressed: true, verified: true }
-        } else {
-            SyncProtocol::Snapshot { compressed: false, verified: true }
-        };
-        
-        // Check if remote supports snapshot, fallback to delta if not
-        if remote_supports(&preferred) {
-            return preferred;
-        } else {
-            // Fallback: delta sync (always supported)
-            return SyncProtocol::DeltaSync { missing_delta_ids: vec![] };
-        }
-    }
-    
-    // Calculate divergence estimate
-    let count_diff = (local.entity_count as i64 - remote.entity_count as i64).abs();
-    let divergence_ratio = count_diff as f32 / remote.entity_count.max(1) as f32;
-    
-    // Large divergence (>50%) - snapshot is more efficient
-    if divergence_ratio > 0.5 && remote.entity_count > 20 {
-        let preferred = SyncProtocol::Snapshot { 
-            compressed: remote.entity_count > 100,
-            verified: true,
-        };
-        if remote_supports(&preferred) {
-            return preferred;
-        }
-        // Fallback to hash comparison
-    }
-    
-    // Deep tree with localized changes - subtree prefetch
-    if remote.max_depth > 3 && divergence_ratio < 0.2 {
-        let preferred = SyncProtocol::SubtreePrefetch { subtree_roots: vec![] };
-        if remote_supports(&preferred) {
-            return preferred;
-        }
-    }
-    
-    // Large tree with small diff - Bloom filter
-    if remote.entity_count > 50 && divergence_ratio < 0.1 {
-        let preferred = SyncProtocol::BloomFilter {
-            filter_size: local.entity_count * 10,
-            false_positive_rate: 0.01,
-        };
-        if remote_supports(&preferred) {
-            return preferred;
-        }
-    }
-    
-    // Wide shallow tree - level-wise
-    if remote.max_depth <= 2 {
-        let preferred = SyncProtocol::LevelWise { max_depth: remote.max_depth };
-        if remote_supports(&preferred) {
-            return preferred;
-        }
-    }
-    
-    // Default: hash-based comparison (always supported as baseline)
-    let hash_sync = SyncProtocol::HashComparison {
-        root_hash: local.root_hash,
-        divergent_subtrees: vec![],
-    };
-    
-    if remote_supports(&hash_sync) {
-        return hash_sync;
-    }
-    
-    // Final fallback: delta sync (guaranteed supported by all nodes)
-    SyncProtocol::DeltaSync { missing_delta_ids: vec![] }
-}
+Protocol selection MUST follow these rules in order:
+
+**Decision Table:**
+
+| # | Condition | Selected Protocol | Rationale |
+|---|-----------|-------------------|-----------|
+| 1 | `local.root_hash == remote.root_hash` | `None` | Already synchronized |
+| 2 | `!local.has_state` (fresh node) | `Snapshot` | Full bootstrap required |
+| 3 | `local.has_state` AND divergence > 50% | `HashComparison` | Large diff, MUST use CRDT merge |
+| 4 | `max_depth > 3` AND divergence < 20% | `SubtreePrefetch` | Deep tree, localized changes |
+| 5 | `entity_count > 50` AND divergence < 10% | `BloomFilter` | Large tree, small diff |
+| 6 | `max_depth <= 2` AND many children | `LevelWise` | Wide shallow tree |
+| 7 | (default) | `HashComparison` | General-purpose fallback |
+
+**Divergence Calculation:**
+
 ```
+divergence_ratio = |local.entity_count - remote.entity_count| / max(remote.entity_count, 1)
+```
+
+**Fallback Rules:**
+
+1. If the preferred protocol is not in `remote.supported_protocols`, implementations MUST fall back to the next applicable row in the decision table.
+2. `DeltaSync` MAY be used as a final fallback if no state-based protocol is mutually supported.
+3. Implementations MUST NOT select `Snapshot` for initialized nodes (see Invariant I5).
+
+**Compression:**
+
+- `Snapshot` SHOULD use compression when `remote.entity_count > 100`
+- Compression algorithm SHOULD be negotiated in handshake extensions
 
 ### 3. Sync Hints in Delta Propagation
 
@@ -517,8 +459,8 @@ SYNC STATE MACHINE
                                   ▼
     ┌──────────────────────────────────────────────────────────────────┐
     │                        VERIFYING                                  │
-    │  Compare resulting root hash with expected                       │
-    │  (For CRDT merge: hash may differ - that's OK)                   │
+    │  - Snapshot: computed root MUST equal claimed root               │
+    │  - Post-merge: local root MAY differ (see Section 7)             │
     └──────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -644,7 +586,7 @@ impl SyncContext {
 | Approach | Ordering | Clock Skew Safe? | Causal? |
 |----------|----------|------------------|---------|
 | HLC Sort | Timestamp | ❌ No | ❌ No |
-| DAG Insert | Parent hashes | ✅ Yes | ✅ Yes |
+| DAG Insert | Parent hashes | Yes | Yes |
 
 The DAG tracks parent-child relationships via hashes, not timestamps, ensuring correct causal ordering even with clock skew.
 
@@ -704,7 +646,7 @@ fn apply_snapshot_wrong(snapshot: Snapshot) {
     }
 }
 
-// ✅ CORRECT: Merges with local state
+// CORRECT: Merges with local state
 fn apply_snapshot_correct(snapshot: Snapshot) {
     for entity in snapshot.entities {
         let local = read_local(entity.id);
@@ -986,86 +928,111 @@ This CIP is backwards compatible:
 | **A9** | Large divergence (50%) | Nodes have 50% different entities | Sync completes, states converge |
 | **A10** | Identity determinism | Same code on two nodes | Same entity IDs generated |
 
-### Implementation Completeness Checklist
+### Implementation Checkpoints (Definition of Done)
 
-```markdown
-## Core Protocol
-- [ ] SyncHandshake exchange succeeds
-- [ ] Protocol negotiation selects appropriate strategy
-- [ ] DeltaSync transfers deltas by ID
-- [ ] HashComparison walks tree and transfers differing entities
-- [ ] Snapshot transfers full state with verification
-- [ ] BloomFilter identifies and transfers missing entities
-- [ ] All strategies include entity metadata in transfer
+An implementation is considered complete when it satisfies all of the following checkpoints:
 
-## CRDT Merge
-- [ ] Counter merge sums per-node values
-- [ ] UnorderedMap merge preserves all keys
-- [ ] UnorderedSet merge is add-wins union
-- [ ] LwwRegister merge uses timestamp comparison
-- [ ] Vector merge is element-wise
-- [ ] RGA merge preserves all insertions
-- [ ] Custom type merge invokes WASM callback
-- [ ] Root state merge invokes WASM `merge_root_state`
+#### Core Protocol Checkpoints
 
-## Safety
-- [ ] Snapshot on initialized node uses CRDT merge (not overwrite)
-- [ ] Deltas buffered during state-based sync
-- [ ] Buffered deltas replayed via DAG (causal order)
-- [ ] Entity metadata (crdt_type) persisted with entity
-- [ ] Snapshot verified before apply
+| Checkpoint | Requirement |
+|------------|-------------|
+| CP-1 | `SyncHandshake` messages exchanged and parsed correctly |
+| CP-2 | Protocol negotiation selects strategy per decision table (§2.3) |
+| CP-3 | `DeltaSync` transfers deltas by ID with parent verification |
+| CP-4 | `HashComparison` walks Merkle tree and transfers differing entities |
+| CP-5 | `Snapshot` transfers full state with cryptographic verification |
+| CP-6 | `BloomFilter` identifies missing entities with configurable FP rate |
+| CP-7 | All state-based strategies include `crdt_type` metadata in transfer |
 
-## Identity
-- [ ] Entity IDs are deterministic (same code → same IDs)
-- [ ] Collection IDs derived from parent + field name
-- [ ] No random ID generation for persistent entities
+#### CRDT Merge Checkpoints
 
-## Verification
-- [ ] Snapshot root hash verified before apply
-- [ ] Entity hashes verified during tree sync
-- [ ] Tampered data rejected with clear error
-```
+| Checkpoint | Requirement |
+|------------|-------------|
+| CP-8 | `Counter` merge sums per-node contribution vectors |
+| CP-9 | `UnorderedMap` merge preserves all keys (per-key LWW or recursive) |
+| CP-10 | `UnorderedSet` merge is add-wins union |
+| CP-11 | `LwwRegister` merge uses HLC timestamp comparison |
+| CP-12 | `Vector` merge is element-wise |
+| CP-13 | `Rga` merge preserves all insertions (tombstone-based) |
+| CP-14 | Custom types dispatch to WASM `merge()` callback |
+| CP-15 | Root state conflicts invoke WASM `merge_root_state()` |
 
-## Test Cases
+#### Safety Checkpoints
 
-### Sync Protocol Tests (35 tests in `sync_protocol_negotiation.rs`)
-1. ✅ **Protocol negotiation** - Full capability, mixed capability, version mismatch
-2. ✅ **SyncHints** - Divergence detection, protocol suggestions, serialization
-3. ✅ **DeltaBuffer** - FIFO order, overflow handling, reusability
-4. ✅ **Adaptive selection** - No divergence, local empty, 10x difference, tree sizes
+| Checkpoint | Requirement |
+|------------|-------------|
+| CP-16 | Snapshot on initialized node uses CRDT merge (Invariant I5) |
+| CP-17 | Deltas received during state sync are buffered (Invariant I6) |
+| CP-18 | Buffered deltas replayed via DAG insertion (causal order) |
+| CP-19 | Entity metadata (`crdt_type`) persisted with entity data (Invariant I10) |
+| CP-20 | Snapshot data verified before any state modification (Invariant I7) |
 
-### Sync Integration Tests (14 tests in `sync_integration.rs`)
-5. ✅ **Handshake negotiation** - Success and response construction
-6. ✅ **Delta buffering** - During snapshot sync, overflow handling
-7. ✅ **Full sync flow simulation** - End-to-end with multiple contexts
-8. ✅ **Hints processing** - Entity count diff, tree depth, snapshot triggers
+#### Identity Checkpoints
 
-### Concurrent Merge Tests (17 tests in `concurrent_merge.rs`, 0.02s total)
-9. ✅ **PureKvStore merge** - Disjoint keys, same key LWW, concurrent 10 keys each
-10. ✅ **merge_root_state** - Injectable registry, global registry, serialization
-11. ✅ **save_internal merge** - Older incoming timestamp, idempotent, same key LWW
-12. ✅ **Unregistered type fallback** - Falls back to LWW correctly
-13. ✅ **Real UnorderedMap merge** - 10 keys with actual CRDT types
+| Checkpoint | Requirement |
+|------------|-------------|
+| CP-21 | Entity IDs are deterministic given same code and field names (Invariant I9) |
+| CP-22 | Collection IDs derived from parent ID + field name hash |
+| CP-23 | No random ID generation for persistent state entities |
 
-### Hybrid Merge Tests (in `merge_integration.rs`)
-14. ✅ **Counter merge** - Built-in CRDT, values sum correctly
-15. ✅ **UnorderedMap per-key merge** - All keys preserved
-16. ✅ **Vector merge** - Element-wise merge with LwwRegister
-17. ✅ **UnorderedSet merge** - Add-wins union
-18. ✅ **RGA merge** - Text converges
-19. ✅ **Nested document merge** - Map of counters, map of LWW registers
-20. ✅ **Custom type via callback** - `compare_trees_with_callback`
-21. ✅ **Performance benchmark** - Built-in vs LWW comparison
+#### Verification Checkpoints
 
-### E2E Workflow Tests (4 workflows in `workflows/sync/`)
-22. 🔄 **crdt-merge.yml** - Two-node concurrent writes
-23. 🔄 **concurrent-sync.yml** - Delta buffering during sync
-24. 🔄 **three-node-convergence.yml** - 3-node network convergence
-25. 🔄 **late-joiner-large-state.yml** - Snapshot sync for large state gap
+| Checkpoint | Requirement |
+|------------|-------------|
+| CP-24 | Snapshot root hash verified against claimed value |
+| CP-25 | Entity hashes verified during tree sync |
+| CP-26 | Tampered data rejected with clear error, no state modification |
 
-**Total: 66+ unit/integration tests passing, 4 E2E workflows ready**
+## Compliance Test Plan
 
-> **📋 Implementation Details**: See [POC-IMPLEMENTATION-NOTES.md](./POC-IMPLEMENTATION-NOTES.md) for phase-by-phase implementation status, bugs discovered, and fixes applied.
+Compliant implementations MUST pass the following black-box test scenarios.
+
+### Protocol Negotiation Tests
+
+| ID | Scenario | Setup | Action | Expected Result |
+|----|----------|-------|--------|-----------------|
+| N1 | Full capability match | Both nodes support all protocols | Exchange handshakes | Optimal protocol selected per decision table |
+| N2 | Mixed capabilities | Node A supports Snapshot, Node B does not | Fresh node A syncs with B | Falls back to DeltaSync or HashComparison |
+| N3 | Version mismatch | Nodes have different protocol versions | Handshake exchange | Graceful fallback or clear rejection |
+| N4 | Root hash match | Both nodes have identical `root_hash` | Handshake exchange | `SyncProtocol::None` selected, no data transfer |
+
+### Delta Buffering Tests
+
+| ID | Scenario | Setup | Action | Expected Result |
+|----|----------|-------|--------|-----------------|
+| B1 | Buffer during snapshot | Node syncing via snapshot | Incoming delta arrives | Delta buffered, replayed after sync |
+| B2 | Buffer ordering | Multiple deltas arrive during sync | Sync completes | Deltas applied in causal order (via DAG) |
+| B3 | Buffer overflow | Very large number of deltas arrive | Sync completes | All deltas preserved (MUST NOT drop) |
+
+### CRDT Merge Tests
+
+| ID | Scenario | Setup | Action | Expected Result |
+|----|----------|-------|--------|-----------------|
+| M1 | Counter merge | Node A: +5, Node B: +3 | Sync | Final count = 8 |
+| M2 | Map disjoint keys | Node A: {a:1}, Node B: {b:2} | Sync | Both nodes have {a:1, b:2} |
+| M3 | Map same key | Node A: {k:1}, Node B: {k:2} (later HLC) | Sync | Both nodes have {k:2} |
+| M4 | Set union | Node A: {1,2}, Node B: {2,3} | Sync | Both nodes have {1,2,3} |
+| M5 | Custom type | Both nodes modify `MyGameState` | Sync | WASM `merge()` callback invoked |
+| M6 | Root state merge | Both nodes modify root | Sync | WASM `merge_root_state()` callback invoked |
+| M7 | Unknown type fallback | Entity has no `crdt_type` metadata | Sync | LWW applied, no crash |
+
+### End-to-End Convergence Tests
+
+| ID | Scenario | Setup | Action | Expected Result |
+|----|----------|-------|--------|-----------------|
+| E1 | Two-node concurrent writes | A and B write simultaneously | Sync both directions | `A.root_hash == B.root_hash` |
+| E2 | Three-node convergence | A↔B, B↔C, A↔C with concurrent writes | Multiple sync rounds | All three have identical state |
+| E3 | Fresh node joins | C has no state, A and B have state | C syncs with A | `C.root_hash == A.root_hash` |
+| E4 | Partition heals | Partition [A,B] and [C,D] evolve independently | Reconnect, sync | All four nodes converge |
+| E5 | Large state gap | B is 1000 deltas behind A | B syncs with A | B catches up, states match |
+
+### Security Tests
+
+| ID | Scenario | Setup | Action | Expected Result |
+|----|----------|-------|--------|-----------------|
+| S1 | Tampered snapshot | Malicious peer sends modified entity | Receiver verifies | Verification fails, sync aborts |
+| S2 | Wrong root hash | Claimed root ≠ computed root | Receiver verifies | Verification fails, sync aborts |
+| S3 | Snapshot on initialized | Initialized node receives snapshot | Apply | CRDT merge used, NOT overwrite |
 
 ---
 
@@ -1098,9 +1065,9 @@ The merge architecture has two categories of types:
 │   CrdtType::UnorderedSet    │   │                                   │
 │   CrdtType::LwwRegister     │   │   ┌───────────────────────────┐   │
 │                             │   │   │      WASM Module          │   │
-│   ✅ Merge in Storage Layer │   │   │                           │   │
-│   ✅ No WASM needed         │   │   │  impl Mergeable for       │   │
-│   ✅ ~100ns per merge       │   │   │  MyGameState { ... }      │   │
+│   Merge in Storage Layer    │   │   │                           │   │
+│   No WASM needed            │   │   │  impl Mergeable for       │   │
+│   ~100ns per merge          │   │   │  MyGameState { ... }      │   │
 │                             │   │   └───────────────────────────┘   │
 │                             │   │                                   │
 │                             │   │   ⚠️ Requires WASM callback      │
@@ -1108,38 +1075,7 @@ The merge architecture has two categories of types:
 └─────────────────────────────┘   └───────────────────────────────────┘
 ```
 
-### The Problem: Type Information Not Stored
-
-We already have the type system but don't store it with entities:
-
-```rust
-// ✅ HAVE: Type enumeration
-pub enum CrdtType {
-    LwwRegister, Counter, Rga, UnorderedMap, UnorderedSet, Vector,
-    Custom { type_name: String }  // ← ONLY for app-defined #[app::state] types
-}
-
-// ✅ HAVE: Every CRDT knows its type
-pub trait CrdtMeta {
-    fn crdt_type() -> CrdtType;
-}
-
-// ✅ HAVE: Deterministic merge per built-in type
-pub trait Mergeable {
-    fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
-}
-
-// ❌ MISSING: Type not stored with entity!
-pub struct Metadata {
-    pub created_at: u64,
-    pub updated_at: UpdatedAt,
-    pub storage_type: StorageType,
-    pub resolution: ResolutionStrategy,  // ← Dumb (timestamp-based only)
-    // WHERE IS crdt_type?!
-}
-```
-
-### The Solution: Enhanced CrdtType Enum
+### CrdtType Enum
 
 ```rust
 /// CRDT type for merge dispatch
@@ -1214,13 +1150,13 @@ pub struct Metadata {
 | Rga | Storage | ❌ No | ~100ns | `text: RGA` |
 | UnorderedSet | Storage | ❌ No | ~100ns | `tags: UnorderedSet<String>` |
 | LwwRegister | Storage | ❌ No | ~100ns | `name: LwwRegister<String>` |
-| Custom | WASM | ✅ Yes | ~10μs | `game: MyGameState` |
-| Root State | WASM | ✅ Yes | ~10μs | `#[app::state] MyApp` |
+| Custom | WASM | Yes | ~10μs | `game: MyGameState` |
+| Root State | WASM | Yes | ~10μs | `#[app::state] MyApp` |
 | Unknown (None) | Storage (LWW) | ❌ No | ~100ns | Legacy data only |
 
 > ⚠️ **All state types MUST be mergeable!** Non-CRDT scalars must be wrapped:
-> - ❌ `name: String` → ✅ `name: LwwRegister<String>`
-> - ❌ `count: u64` → ✅ `count: LwwRegister<u64>` or `count: Counter`
+> - `name: String` → `name: LwwRegister<String>`
+> - `count: u64` → `count: LwwRegister<u64>` or `count: Counter`
 
 ### WASM Merge Callback Interface
 
@@ -1449,7 +1385,7 @@ struct MyApp { /*...*/ }
 The `#[app::state]` macro MUST reject non-CRDT fields:
 
 ```rust
-// ✅ VALID: All fields are CRDTs
+// VALID: All fields are CRDTs
 #[app::state]
 struct MyApp {
     scores: Counter,                        // Built-in CRDT
@@ -1599,12 +1535,12 @@ impl SyncManager {
 
 | Phase | Change | Backwards Compatible? |
 |-------|--------|----------------------|
-| 1 | Add `crdt_type: Option<CrdtType>` to Metadata | ✅ Yes (Optional field) |
-| 2 | Collections auto-set crdt_type on creation | ✅ Yes (Additive) |
-| 3 | `#[app::state]` macro sets Custom type | ✅ Yes (Additive) |
-| 4 | `compare_trees_full` uses crdt_type for dispatch | ✅ Yes |
-| 5 | Add WasmMergeCallback trait | ✅ Yes (Optional) |
-| 6 | SyncManager creates callback from WASM module | ✅ Yes |
+| 1 | Add `crdt_type: Option<CrdtType>` to Metadata | Yes (Optional field) |
+| 2 | Collections auto-set crdt_type on creation | Yes (Additive) |
+| 3 | `#[app::state]` macro sets Custom type | Yes (Additive) |
+| 4 | Tree comparison uses crdt_type for dispatch | Yes |
+| 5 | Add WasmMergeCallback trait | Yes (Optional) |
+| 6 | SyncManager creates callback from WASM module | Yes |
 | 7 | Deprecate ResolutionStrategy | ⚠️ Migration needed |
 
 **Note**: No ABI required! Each entity stores its own `crdt_type` in Metadata - the tree is self-describing.
@@ -1613,8 +1549,8 @@ impl SyncManager {
 
 | Aspect | Old (ResolutionStrategy) | New (Hybrid CrdtType) |
 |--------|--------------------------|----------------------|
-| Built-in CRDT merge | ❌ LWW only (data loss!) | ✅ Proper CRDT merge |
-| Custom type merge | ❌ Not supported | ✅ Via WASM callback |
+| Built-in CRDT merge | LWW only (data loss!) | Proper CRDT merge |
+| Custom type merge | Not supported | Via WASM callback |
 | Performance | N/A | ~100ns built-in, ~10μs custom |
 | WASM dependency | Required for all | Only for custom types |
 | Type safety | None | Compile-time for built-in |
@@ -1736,10 +1672,10 @@ assert_eq!(result_a, result_b);  // Always true
 
 | Strategy | Deterministic? | Tie-breaker |
 |----------|---------------|-------------|
-| LastWriteWins | ✅ Yes | HLC timestamp, then data bytes |
-| FirstWriteWins | ✅ Yes | HLC timestamp |
-| MaxValue | ✅ Yes | Byte comparison |
-| MinValue | ✅ Yes | Byte comparison |
+| LastWriteWins | Yes | HLC timestamp, then data bytes |
+| FirstWriteWins | Yes | HLC timestamp |
+| MaxValue | Yes | Byte comparison |
+| MinValue | Yes | Byte comparison |
 | Manual | ⚠️ Requires app logic | App-defined |
 
 #### 4. Causal Consistency via DAG
@@ -1832,31 +1768,31 @@ impl CheckpointStore {
 
 ## Appendix D: Edge Cases & Missing Pieces
 
-### Edge Case 1: Concurrent Sync + Modifications ✅ SOLVED
+### Edge Case 1: Concurrent Sync + Modifications
 
 **Problem**: Node A is syncing from B while C sends new deltas.
 
-**Solution**: Delta buffering (implemented in Phase 4)
+**Solution**: Delta buffering (see Section 5)
 
 ```
 During Sync:
-  [Incoming deltas] → Buffer (via SyncSession in NodeState)
+  [Incoming deltas] → Buffer
   [Sync state] → Apply directly
   
 After Sync:
   [Buffer] → Trigger DAG sync → Apply missing deltas
 ```
 
-**Implementation**: `NodeState::start_sync_session()`, `buffer_delta()`, `end_sync_session()`
+**Checkpoint**: CP-17 (Deltas received during state sync are buffered)
 
-### Edge Case 1b: Concurrent Writes Creating Divergent Branches ✅ SOLVED
+### Edge Case 1b: Concurrent Writes Creating Divergent Branches
 
 **Problem**: Two nodes apply deltas concurrently, creating branches. When deltas propagate:
 - D2a expects hash based on Node A's state
 - D2b expects hash based on Node B's state  
 - Applying D2b on Node A fails: `RootHashMismatch`
 
-**Solution**: Smart concurrent branch detection (Appendix G)
+**Solution**: Smart concurrent branch detection
 
 ```rust
 // Detect merge scenario
@@ -1869,7 +1805,7 @@ if is_merge {
 }
 ```
 
-**Implementation**: `ContextStorageApplier::apply()` in `delta_store.rs`
+**Checkpoint**: CP-16 (Snapshot on initialized node uses CRDT merge)
 
 ### Edge Case 2: Partial Sync Failure
 
@@ -2026,60 +1962,34 @@ fn deserialize_entity(envelope: &EntityEnvelope) -> Result<Entity> {
 
 ---
 
-## Appendix E: What's Still Missing
+## Appendix E: Open Design Questions
 
-### Critical Gaps
+The following design questions are deferred to future CIPs or implementation decisions:
 
-| Gap | Severity | Status |
-|-----|----------|--------|
-| **CrdtType not stored in Metadata** | 🔴 CRITICAL | ✅ FIXED (Phase 2) - `crdt_type: Option<CrdtType>` in Metadata |
-| **No WasmMergeCallback for custom types** | 🔴 CRITICAL | ✅ FIXED (Phase 3) - `WasmMergeCallback` trait + `RuntimeMergeCallback` |
-| **Concurrent branch merge failures** | 🔴 CRITICAL | ✅ FIXED (Phase 4) - Smart merge detection in `delta_store.rs` |
-| **LWW rejecting root merges** | 🔴 CRITICAL | ✅ FIXED (Phase 4) - Root entities always attempt CRDT merge first |
-| **Collection IDs are random, not deterministic** | 🔴 CRITICAL | ✅ FIXED (Phase 5) - Deterministic IDs via `new_with_field_name()` |
-| **Hash mismatch rejecting valid deltas** | 🔴 CRITICAL | ✅ FIXED (Phase 5) - Trust CRDT semantics, see Appendix I |
-| **parent_hashes storing wrong value** | 🔴 CRITICAL | ✅ FIXED (Phase 5) - Store computed hash, not expected hash |
-| **merodb duplicates types (out of sync)** | 🟡 HIGH | TODO - See Appendix F for fix plan |
-| **Checkpoint protocol not implemented** | 🟡 HIGH | TODO (Phase 6) - Nodes keep all deltas forever |
-| **No quorum-based attestation** | 🟡 HIGH | TODO - Single malicious node could create fake checkpoint |
-| **Tombstone GC not implemented** | 🟠 MEDIUM | TODO - Deleted entities accumulate |
-| **Large entity streaming** | 🟠 MEDIUM | Partial - Pagination exists, chunked transfer TODO |
-| **Partition healing protocol** | 🟠 MEDIUM | Partial - Bidirectional sync helps, explicit protocol TODO |
+### Checkpoint Protocol (Future CIP)
 
-### Nice-to-Have Improvements
+| Question | Considerations |
+|----------|----------------|
+| Checkpoint frequency | Too frequent increases storage/network cost; too rare increases bootstrap time. RECOMMENDED: configurable, default 1000 deltas OR 1 hour. |
+| Quorum size for attestation | 2/3+1 for Byzantine tolerance; simple majority for crash tolerance only. RECOMMENDED: configurable per context. |
+| Checkpoint storage format | Full snapshot vs incremental diff from previous checkpoint. |
 
-| Improvement | Benefit |
-|-------------|---------|
-| Merkle proof for single entity sync | Verify entity without full state |
-| Incremental checkpoint updates | Don't regenerate full snapshot |
-| Probabilistic sync skip | Skip sync if bloom filter shows no diff |
-| Adaptive sync frequency | Sync more often during high activity |
+### Tombstone Garbage Collection (Future CIP)
 
-### Open Questions
+| Question | Considerations |
+|----------|----------------|
+| Tombstone TTL | Too short enables resurrection attacks; too long causes storage bloat. RECOMMENDED: 30 days default, configurable. |
+| GC safety conditions | Must ensure all active nodes have seen deletion before GC. |
 
-1. **Checkpoint Frequency**: How often should checkpoints be created?
-   - Too frequent: High storage/network cost
-   - Too rare: Long bootstrap times
-   - Proposal: Every 1000 deltas OR 1 hour, whichever first
+### Future Extensions
 
-2. **Quorum Size**: What's the right attestation quorum?
-   - 2/3 + 1 (Byzantine fault tolerant)
-   - Simple majority (crash fault tolerant only)
-   - Proposal: Configurable per context
-
-3. **Tombstone TTL**: How long to keep tombstones?
-   - Too short: Resurrection attacks possible
-   - Too long: Storage bloat
-   - Proposal: 30 days default, configurable
-
-4. **Cross-Context Sync**: Can contexts share sync infrastructure?
-   - Separate sync per context (current)
-   - Shared sync layer with context isolation
-   - Proposal: Keep separate for security
-
----
-
-> **📋 Bug Fixes & Implementation Details**: Appendices F-J documented specific bugs found and fixed during development. These have been moved to [POC-IMPLEMENTATION-NOTES.md](./POC-IMPLEMENTATION-NOTES.md) and [ARCHITECTURE-DECISIONS.md](./ARCHITECTURE-DECISIONS.md).
+| Extension | Benefit | Complexity |
+|-----------|---------|------------|
+| Merkle proof for single entity | Verify entity without full state | Low |
+| Incremental checkpoint updates | Avoid regenerating full snapshot | Medium |
+| Probabilistic sync skip | Skip sync if bloom filter shows no diff | Low |
+| Adaptive sync frequency | Sync more often during high activity | Medium |
+| Large entity chunked transfer | Handle entities > 1MB | Medium |
 
 ## References
 
@@ -2087,649 +1997,6 @@ fn deserialize_entity(envelope: &EntityEnvelope) -> Result<Entity> {
 - [Merkle Trees](https://en.wikipedia.org/wiki/Merkle_tree)
 - [Hybrid Logical Clocks](https://cse.buffalo.edu/tech-reports/2014-04.pdf)
 - [EIP-1 Format](https://eips.ethereum.org/EIPS/eip-1)
-
-```rust
-// crates/storage/src/collections.rs
-fn new_with_crdt_type(id: Option<Id>, crdt_type: CrdtType) -> Self {
-    let id = id.unwrap_or_else(|| Id::random());  // ← THE BUG!
-    // ...
-}
-```
-
-This means:
-- Node A creates `KvStore { items: UnorderedMap::new() }` → `items` gets ID `0xABC123...`
-- Node B creates `KvStore { items: UnorderedMap::new() }` → `items` gets ID `0xDEF456...`
-
-Even though both nodes have the same struct definition, they have **different collection IDs**.
-
-#### Why This Breaks Sync
-
-1. **Node A** stores entry at path: `compute_entry_id(0xABC123, "key1")` → `0x111...`
-2. **Node A** sends delta to **Node B**
-3. **Node B** applies the delta - entry `0x111...` is stored correctly
-4. **Node B** calls `items.get("key1")`
-5. **Node B** looks up: `compute_entry_id(0xDEF456, "key1")` → `0x222...` (DIFFERENT!)
-6. **Result**: `None` - the data is there but at the wrong ID!
-
-```
-Node A storage:                      Node B storage after sync:
-┌───────────────────────────────┐    ┌───────────────────────────────┐
-│ Root (0x00...)                │    │ Root (0x00...)                │
-│ └─ items (0xABC123)           │    │ ├─ items (0xDEF456) ← WRONG   │
-│    └─ key1 (0x111...)         │    │ │  └─ (nothing)               │
-│       value: "hello"          │    │ └─ entry (0x111...) ← ORPHAN  │
-└───────────────────────────────┘    │    value: "hello"             │
-                                     └───────────────────────────────┘
-```
-
-The synced entry exists but is **orphaned** - the collection can't find it because it's looking under a different parent ID!
-
-#### Manifestation in E2E Tests
-
-```yaml
-# Node 1 writes key_1_1 through key_1_10
-# Node 2 writes key_2_1 through key_2_10
-# After sync, both should have all 20 keys
-# ACTUAL: get("key_2_1") returns null on Node 1 (and vice versa)
-```
-
-The logs showed:
-- ✅ "Concurrent branch detected - applying with CRDT merge semantics"
-- ✅ "Merge produced new hash (expected - concurrent branches merged)"
-- ❌ But `get()` calls return `null`
-
-### The Fix: Deterministic Collection IDs
-
-**Inspiration**: `#[app::private]` already uses deterministic IDs based on field name!
-
-```rust
-// crates/storage/src/private.rs - EXISTING working pattern
-fn compute_default_key<T>(name: &'static str) -> Key {
-    let mut hasher = Sha256::new();
-    hasher.update(name.as_bytes());
-    Id::new(hasher.finalize().into())
-}
-```
-
-#### Proposed Solution
-
-1. **Modify `Collection::new_with_crdt_type`** to accept an optional field name:
-
-```rust
-fn new_with_crdt_type(id: Option<Id>, crdt_type: CrdtType, field_name: Option<&str>) -> Self {
-    let id = id.unwrap_or_else(|| {
-        if let Some(name) = field_name {
-            // Deterministic ID from field name
-            let mut hasher = Sha256::new();
-            hasher.update(name.as_bytes());
-            Id::new(hasher.finalize().into())
-        } else {
-            Id::random()  // Fallback for dynamic collections
-        }
-    });
-    // ...
-}
-```
-
-2. **Update `#[app::state]` macro** to pass field names:
-
-```rust
-// Instead of:
-items: UnorderedMap::new()
-
-// Generate:
-items: UnorderedMap::new_with_field_name("items")
-```
-
-3. **Result**: All nodes agree on collection IDs without needing to sync!
-
-```
-Node A: KvStore.items → SHA256("items") → 0x5F3C4F85...
-Node B: KvStore.items → SHA256("items") → 0x5F3C4F85... (SAME!)
-```
-
-### Test Evidence
-
-```rust
-#[test]
-fn test_failure_mode_fresh_state_before_sync() {
-    // Node A creates initial state
-    let mut node_a_kv = Root::new(|| KvStore::init());
-    node_a_kv.set("key1", "value_a").unwrap();
-    let node_a_delta = get_last_delta();
-
-    // Node B initializes fresh state (different collection ID!)
-    let mut node_b_kv = Root::new(|| KvStore::init());
-    
-    // Apply Node A's delta
-    Root::<KvStore>::sync(&delta).unwrap();
-
-    // TRY TO READ - FAILS!
-    assert_eq!(node_b_kv.get("key1"), Some("value_a")); // ❌ Returns None
-}
-
-#[test]
-fn test_deterministic_collection_id_proposal() {
-    // Compute deterministic ID from field name
-    let id_a = SHA256("items");
-    let id_b = SHA256("items");
-    
-    assert_eq!(id_a, id_b); // ✅ Always matches!
-}
-```
-
-### Migration Considerations
-
-1. **New nodes**: Use deterministic IDs (SHA256 of field name)
-2. **Existing state**: Must be migrated or re-synced from scratch
-3. **Genesis delta**: The very first delta establishes the collection IDs
-4. **Backward compatibility**: Old states with random IDs won't work with new code
-
-### Implementation Checklist
-
-- [ ] Add `field_name: Option<&str>` parameter to `Collection::new_with_crdt_type`
-- [ ] Create `UnorderedMap::new_with_field_name(&str)` constructor
-- [ ] Update `#[app::state]` macro to generate deterministic collection creation
-- [ ] Add migration tooling for existing contexts
-- [ ] Update genesis delta handling to establish canonical IDs
-- [ ] Add comprehensive tests for cross-node ID consistency
-
-### Why This Wasn't Caught Earlier
-
-1. **Single-node tests pass**: Collection IDs are consistent within a process
-2. **Sync tests use serialized state**: When Node B deserializes Node A's state, it gets Node A's IDs
-3. **The bug only manifests when**: Node B initializes fresh AND then receives deltas
-
-## Appendix F: Fresh Node Sync Strategy
-
-### Problem
-
-When a new node joins a context, it needs to bootstrap from peers. Two approaches exist:
-
-| Approach | Mechanism | Speed | Use Case |
-|----------|-----------|-------|----------|
-| **Snapshot Sync** | Transfer full state in one request | Fast (~3ms) | Production, large state |
-| **Delta Sync** | Fetch each delta from genesis | Slow (O(n) round trips) | Testing, debugging |
-
-The optimal strategy depends on the deployment scenario, and switching between them required code changes.
-
-### Solution: Configurable Fresh Node Strategy
-
-Added `FreshNodeStrategy` enum and `--sync-strategy` CLI flag for easy benchmarking.
-
-#### CLI Usage
-
-```bash
-# Fastest - single snapshot transfer (default)
-merod --node-name node1 run --sync-strategy snapshot
-
-# Slow - fetches all deltas from genesis (tests DAG path)
-merod --node-name node1 run --sync-strategy delta
-
-# Balanced - chooses based on peer state size
-merod --node-name node1 run --sync-strategy adaptive
-
-# Custom threshold - use snapshot if peer has ≥50 DAG heads
-merod --node-name node1 run --sync-strategy adaptive:50
-```
-
-#### Strategy Enum
-
-```rust
-/// Strategy for syncing fresh (uninitialized) nodes.
-pub enum FreshNodeStrategy {
-    /// Always use snapshot sync (fastest, default)
-    Snapshot,
-    
-    /// Always use delta-by-delta sync (slow, tests DAG)
-    DeltaSync,
-    
-    /// Choose based on peer state size
-    Adaptive {
-        snapshot_threshold: usize,  // Default: 10
-    },
-}
-
-impl FreshNodeStrategy {
-    /// Determine if snapshot should be used based on peer's state.
-    pub fn should_use_snapshot(&self, peer_dag_heads_count: usize) -> bool {
-        match self {
-            Self::Snapshot => true,
-            Self::DeltaSync => false,
-            Self::Adaptive { snapshot_threshold } => peer_dag_heads_count >= *snapshot_threshold,
-        }
-    }
-}
-```
-
-#### Log Output
-
-When a fresh node joins, you'll see:
-
-```
-INFO merod::cli::run: Using fresh node sync strategy fresh_node_strategy=snapshot
-INFO calimero_node::sync::manager: Node needs sync, checking peer state 
-    context_id=... is_uninitialized=true strategy=snapshot
-INFO calimero_node::sync::manager: Peer has state, selecting sync strategy 
-    peer_heads_count=1 use_snapshot=true strategy=snapshot
-INFO calimero_node::sync::snapshot: Snapshot sync completed applied_records=6
-```
-
-### Benchmarking Guide
-
-To compare strategies:
-
-```bash
-# Test 1: Snapshot sync (measure bootstrap time)
-time merod --node-name fresh1 run --sync-strategy snapshot &
-# Bootstrap time: ~3-5 seconds (mostly network setup)
-
-# Test 2: Delta sync (measure with larger state)
-time merod --node-name fresh2 run --sync-strategy delta &
-# Bootstrap time: O(n) where n = number of deltas
-
-# Test 3: Adaptive threshold tuning
-merod --node-name fresh3 run --sync-strategy adaptive:5  # Small threshold
-merod --node-name fresh4 run --sync-strategy adaptive:100  # Large threshold
-```
-
----
-
-> **Note**: Snapshot boundary handling now uses `DeltaKind::Checkpoint` (see [ARCHITECTURE-DECISIONS.md](./ARCHITECTURE-DECISIONS.md#3-snapshot-boundary-representation)).
-
-## Appendix G: State Sync Strategy Configuration
-
-### Overview
-
-`StateSyncStrategy` controls which Merkle tree comparison protocol is used when nodes need to reconcile state. This is separate from `FreshNodeStrategy` which controls bootstrap behavior.
-
-### Configuration
-
-```rust
-/// Strategy for Merkle tree state synchronization.
-pub enum StateSyncStrategy {
-    /// Auto-select based on tree characteristics (default)
-    Adaptive,
-    
-    /// Standard recursive hash comparison
-    HashComparison,
-    
-    /// Full state snapshot transfer
-    Snapshot,
-    
-    /// Compressed snapshot (zstd)
-    CompressedSnapshot,
-    
-    /// Bloom filter quick diff (for <10% divergence)
-    BloomFilter { false_positive_rate: f32 },
-    
-    /// Subtree prefetch (for deep trees)
-    SubtreePrefetch { max_depth: Option<usize> },
-    
-    /// Level-wise breadth-first (for wide shallow trees)
-    LevelWise { max_depth: Option<usize> },
-}
-```
-
-### CLI Usage
-
-```bash
-# Adaptive (default) - auto-select based on tree characteristics
-merod run --state-sync-strategy adaptive
-
-# Force specific protocols for testing/benchmarking
-merod run --state-sync-strategy hash        # Standard recursive
-merod run --state-sync-strategy snapshot    # Full transfer
-merod run --state-sync-strategy compressed  # Compressed snapshot
-merod run --state-sync-strategy bloom       # Bloom filter (1% FP)
-merod run --state-sync-strategy bloom:0.05  # Bloom filter (5% FP)
-merod run --state-sync-strategy subtree     # Subtree prefetch
-merod run --state-sync-strategy subtree:5   # Max depth 5
-merod run --state-sync-strategy level       # Level-wise
-merod run --state-sync-strategy level:3     # Max depth 3
-```
-
-### Safety: Snapshot Protection for Initialized Nodes
-
-**CRITICAL**: Snapshot sync would overwrite local data! Two layers of protection prevent this:
-
-#### Layer 1: Adaptive Selection Never Returns Snapshot for Initialized Nodes
-
-```
-if !local_has_data:
-    return CompressedSnapshot if remote_entities > 100 else Snapshot  // ✅ Safe
-
-// ========================================================
-// INITIALIZED NODE: NEVER use Snapshot - it would lose local changes!
-// All protocols below use CRDT merge to preserve both sides.
-// ========================================================
-
-if divergence_ratio > 50% && remote_entities > 20:
-    return HashComparison  // ✅ Uses CRDT merge (NOT Snapshot!)
-
-if tree_depth > 3 && child_count < 10:
-    return SubtreePrefetch
-
-if remote_entities > 50 && divergence_ratio < 10%:
-    return BloomFilter
-
-if tree_depth <= 2 && child_count > 5:
-    return LevelWise
-
-return HashComparison  // Default
-```
-
-#### Layer 2: Runtime Safety Check in SyncManager
-
-Even if explicitly configured via CLI (`--state-sync-strategy snapshot`):
-
-```rust
-if local_has_data {
-    match selected {
-        Snapshot | CompressedSnapshot => {
-            warn!("SAFETY: Snapshot blocked for initialized node - using HashComparison");
-            selected = HashComparison;
-        }
-    }
-}
-```
-
-#### Safety Matrix
-
-| Strategy | Fresh Node | Initialized Node |
-|----------|-----------|------------------|
-| **Snapshot** | ✅ Used | ⛔ **BLOCKED** → HashComparison |
-| **CompressedSnapshot** | ✅ Used | ⛔ **BLOCKED** → HashComparison |
-| **HashComparison** | ✅ Safe | ✅ **Uses CRDT merge** |
-| **BloomFilter** | ✅ Safe | ✅ **Uses CRDT merge** |
-| **SubtreePrefetch** | ✅ Safe | ✅ **Uses CRDT merge** |
-| **LevelWise** | ✅ Safe | ✅ **Uses CRDT merge** |
-
-### Protocol Comparison
-
-| Protocol | Round Trips | Best For | Trade-offs |
-|----------|-------------|----------|------------|
-| **HashComparison** | O(depth) | General, any divergence | Multiple round trips |
-| **Snapshot** | 1 | **Fresh nodes ONLY** | ⚠️ Blocked for initialized nodes |
-| **CompressedSnapshot** | 1 | **Fresh nodes ONLY** | ⚠️ Blocked for initialized nodes |
-| **BloomFilter** | 1-2 | Large tree, <10% diff | False positives |
-| **SubtreePrefetch** | 2 | Deep trees, localized changes | Over-fetch risk |
-| **LevelWise** | O(depth) | Wide shallow trees | High message count |
-
-### Integration in SyncManager
-
-The strategy is selected with safety checks:
-
-```rust
-// In SyncManager::select_state_sync_strategy
-let mut selected = if configured.is_adaptive() {
-    StateSyncStrategy::choose_protocol(...)
-} else {
-    configured
-};
-
-// SAFETY CHECK: Never use Snapshot on initialized nodes!
-if local_has_data {
-    match selected {
-        Snapshot | CompressedSnapshot => {
-            warn!("SAFETY: Snapshot blocked - using HashComparison");
-            selected = HashComparison;
-        }
-    }
-}
-```
-
-### Log Output
-
-Normal selection:
-```
-INFO calimero_node::sync::manager: Selected state sync strategy
-    context_id=...
-    configured=adaptive
-    selected=hash
-    local_has_data=true
-```
-
-Safety block (when Snapshot is explicitly configured but blocked):
-```
-WARN calimero_node::sync::manager: SAFETY: Snapshot strategy blocked for initialized node 
-    - using HashComparison to preserve local data
-    context_id=...
-    configured=snapshot
-```
-
-### Current Implementation Status
-
-| Component | Status |
-|-----------|--------|
-| `StateSyncStrategy` enum | ✅ Implemented |
-| CLI `--state-sync-strategy` flag | ✅ Implemented |
-| Adaptive selection logic | ✅ Implemented |
-| **Snapshot safety protection** | ✅ **Implemented (2 layers)** |
-| Strategy logging | ✅ Implemented |
-| Network-level BloomFilter | ✅ **Implemented** |
-| Network-level SubtreePrefetch | ✅ **Implemented** |
-| Network-level LevelWise | ✅ **Implemented** |
-
-**All strategies transfer actual entity data** (no DAG fallback):
-
-| Strategy | Diff Discovery | Entity Transfer | Wire Format |
-|----------|---------------|-----------------|-------------|
-| HashComparison | Merkle tree walk | ✅ Direct | `TreeLeafData` in `TreeNodeResponse` |
-| BloomFilter | Probabilistic | ✅ Direct | `missing_entities: Vec<TreeLeafData>` |
-| SubtreePrefetch | Subtree hashes | ✅ Direct | `TreeLeafData` in `TreeNodeResponse` |
-| LevelWise | Level-by-level | ✅ Direct | `TreeLeafData` in `TreeNodeResponse` |
-| Snapshot | N/A | ✅ Full state | `SnapshotPage` stream |
-
-**Wire Protocol:**
-- `TreeNodeRequest` → `TreeNodeResponse { nodes: Vec<TreeNode> }`
-- Each `TreeNode` contains `leaf_data: Option<TreeLeafData>` with actual entity `value` + `metadata`
-- `BloomFilterResponse` contains `missing_entities: Vec<TreeLeafData>` directly
-
-**CRDT Merge on Apply:**
-- `handle_tree_node_request()` includes `metadata.crdt_type` in response
-- `apply_entity_with_merge()` calls `Interface::merge_by_crdt_type_with_callback()`
-- Built-in CRDTs (Counter, Map) merge in storage layer (~100ns)
-- Custom types dispatch to WASM callback (~10μs)
-
-### Running Isolated Strategy Tests
-
-```bash
-# Hash-Based Comparison
-cargo test -p calimero-storage --lib network_sync_hash_based_minimal_diff -- --nocapture
-
-# Snapshot Transfer
-cargo test -p calimero-storage --lib network_sync_snapshot_fresh_node -- --nocapture
-
-# Bloom Filter
-cargo test -p calimero-storage --lib network_sync_bloom_filter_efficiency -- --nocapture
-
-# Subtree Prefetch
-cargo test -p calimero-storage --lib network_sync_subtree_prefetch_efficiency -- --nocapture
-
-# Level-Wise
-cargo test -p calimero-storage --lib network_sync_level_wise_efficiency -- --nocapture
-
-# Comprehensive comparison
-cargo test -p calimero-storage --lib network_sync_comprehensive_comparison -- --nocapture
-```
-
----
-
-## Appendix H: Sync Metrics and Observability
-
-### Overview
-
-Prometheus metrics and detailed timing logs have been added to provide observability into sync operations. This enables:
-
-1. **Performance benchmarking** - Compare different sync strategies
-2. **Debugging** - Identify slow syncs or failures
-3. **Root cause analysis** - Per-phase timing breakdown
-4. **Alerting** - Monitor sync health in production
-
-### Prometheus Metrics
-
-All metrics are registered under the `sync_` prefix:
-
-#### Overall Sync Metrics
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `sync_duration_seconds` | Histogram | Duration of sync operations (10ms to 5min buckets) |
-| `sync_attempts_total` | Counter | Total sync attempts |
-| `sync_successes_total` | Counter | Successful sync completions |
-| `sync_failures_total` | Counter | Failed syncs (includes timeouts) |
-| `sync_active` | Gauge | Currently active sync operations |
-| `sync_snapshot_records_applied_total` | Counter | Records applied via snapshot sync |
-| `sync_bytes_received_total` | Counter | Bytes received (uncompressed) |
-| `sync_bytes_sent_total` | Counter | Bytes sent (uncompressed) |
-| `sync_deltas_fetched_total` | Counter | Deltas fetched from peers |
-| `sync_deltas_applied_total` | Counter | Deltas successfully applied |
-
-#### Per-Phase Timing Metrics (NEW)
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `sync_phase_peer_selection_seconds` | Histogram | Time selecting and connecting to peer |
-| `sync_phase_key_share_seconds` | Histogram | Time for key share handshake |
-| `sync_phase_dag_compare_seconds` | Histogram | Time comparing DAG state |
-| `sync_phase_data_transfer_seconds` | Histogram | Time transferring data |
-| `sync_phase_timeout_wait_seconds` | Histogram | Time waiting for timeouts |
-| `sync_phase_merge_seconds` | Histogram | Time in merge operations |
-| `sync_merge_operations_total` | Counter | Number of merge operations |
-| `sync_hash_comparisons_total` | Counter | Number of hash comparisons |
-
-### Log Markers
-
-Two structured log markers are emitted for analysis:
-
-#### `SYNC_PHASE_BREAKDOWN` - Per-phase timing for each sync
-
-```
-INFO calimero_node::sync::metrics: SYNC_PHASE_BREAKDOWN 
-    context_id=...
-    peer_id=12D3KooW...
-    protocol=None
-    peer_selection_ms="174.15"
-    key_share_ms="2.09"
-    dag_compare_ms="0.78"
-    data_transfer_ms="0.00"
-    timeout_wait_ms="0.00"
-    merge_ms="0.00"
-    merge_count=0
-    hash_compare_count=0
-    bytes_received=0
-    bytes_sent=0
-    total_ms="177.05"
-```
-
-#### `DELTA_APPLY_TIMING` - Per-delta apply timing with merge detection
-
-```
-INFO calimero_node::delta_store: DELTA_APPLY_TIMING
-    context_id=...
-    delta_id=[...]
-    action_count=3
-    final_root_hash=Hash("...")
-    was_merge=true
-    wasm_ms="2.40"
-    total_ms="2.44"
-```
-
-### Extracting Metrics
-
-Use the provided script to extract and analyze metrics from logs:
-
-```bash
-./scripts/extract-sync-metrics.sh <data_dir_prefix>
-
-# Example:
-./scripts/extract-sync-metrics.sh b3n10d
-
-# Outputs:
-# - Per-phase timing statistics (min, max, avg, P50, P95)
-# - Tail latency analysis (flags P95/P50 > 2x)
-# - Delta apply timing with merge statistics
-# - Protocol distribution
-# - CSV export: data/<prefix>_metrics/phase_stats.csv
-# - Summary: data/<prefix>_metrics/summary.md
-```
-
-### PromQL Queries
-
-```promql
-# P95 peer selection time (root cause metric)
-histogram_quantile(0.95, rate(sync_phase_peer_selection_seconds_bucket[5m]))
-
-# Identify tail latency issues (P95/P50 > 2x)
-histogram_quantile(0.95, rate(sync_phase_peer_selection_seconds_bucket[5m])) /
-histogram_quantile(0.50, rate(sync_phase_peer_selection_seconds_bucket[5m])) > 2
-
-# Sync success rate
-sum(rate(sync_successes_total[5m])) / sum(rate(sync_attempts_total[5m]))
-
-# Merge operations per minute
-rate(sync_merge_operations_total[1m])
-
-# P95 overall sync duration
-histogram_quantile(0.95, rate(sync_duration_seconds_bucket[5m]))
-```
-
-### Implementation
-
-Located in `crates/node/src/sync/metrics.rs`:
-
-```rust
-/// Per-phase timing breakdown for root cause analysis
-#[derive(Debug, Clone, Default)]
-pub struct SyncPhaseTimings {
-    pub peer_selection_ms: f64,
-    pub key_share_ms: f64,
-    pub dag_compare_ms: f64,
-    pub data_transfer_ms: f64,
-    pub timeout_wait_ms: f64,
-    pub merge_ms: f64,
-    pub merge_count: u64,
-    pub hash_compare_count: u64,
-    pub bytes_received: u64,
-    pub bytes_sent: u64,
-    pub total_ms: f64,
-}
-
-/// Helper to time individual phases
-pub struct PhaseTimer {
-    start: Instant,
-}
-
-impl PhaseTimer {
-    pub fn start() -> Self { Self { start: Instant::now() } }
-    pub fn stop(&self) -> f64 { self.start.elapsed().as_secs_f64() * 1000.0 }
-}
-```
-
-Usage in `SyncManager::initiate_sync_inner`:
-
-```rust
-let mut timings = SyncPhaseTimings::new();
-
-// PHASE 1: Peer Selection
-let phase_timer = PhaseTimer::start();
-let mut stream = self.network_client.open_stream(chosen_peer).await?;
-timings.peer_selection_ms = phase_timer.stop();
-
-// PHASE 2: Key Share
-let phase_timer = PhaseTimer::start();
-self.initiate_key_share_process(...).await?;
-timings.key_share_ms = phase_timer.stop();
-
-// ... etc ...
-
-// Log and record
-timings.log(&context_id.to_string(), &peer_id.to_string(), &format!("{:?}", result));
-self.metrics.record_phase_timings(&timings);
-```
-
----
 
 ## Copyright
 
