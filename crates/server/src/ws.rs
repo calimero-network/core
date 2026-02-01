@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -58,6 +59,11 @@ pub struct WsConfig {
     /// If no pong received within this time after ping, connection is closed
     #[serde(default = "default_pong_timeout")]
     pub pong_timeout_secs: u64,
+
+    /// Maximum concurrent WebSocket connections per client IP address
+    /// Set to 0 to disable the limit (not recommended for production)
+    #[serde(default = "default_max_connections_per_ip")]
+    pub max_connections_per_ip: usize,
 }
 
 const fn default_ping_interval() -> u64 {
@@ -68,6 +74,10 @@ const fn default_pong_timeout() -> u64 {
     10 // Expect pong within 10 seconds
 }
 
+const fn default_max_connections_per_ip() -> usize {
+    10 // Allow up to 10 concurrent connections per IP address
+}
+
 impl WsConfig {
     #[must_use]
     pub const fn new(enabled: bool) -> Self {
@@ -75,6 +85,7 @@ impl WsConfig {
             enabled,
             ping_interval_secs: default_ping_interval(),
             pong_timeout_secs: default_pong_timeout(),
+            max_connections_per_ip: default_max_connections_per_ip(),
         }
     }
 }
@@ -103,6 +114,8 @@ pub(crate) struct ConnectionState {
 pub(crate) struct ServiceState {
     node_client: NodeClient,
     connections: RwLock<HashMap<ConnectionId, ConnectionState>>,
+    /// Tracks the number of active connections per client IP address
+    connections_per_ip: RwLock<HashMap<IpAddr, usize>>,
     config: WsConfig,
 }
 
@@ -142,10 +155,33 @@ pub(crate) fn service(
     let state = Arc::new(ServiceState {
         node_client,
         connections: RwLock::default(),
+        connections_per_ip: RwLock::default(),
         config: ws_config,
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
+}
+
+/// Extract client IP from request headers
+/// Checks X-Forwarded-For and X-Real-IP headers commonly set by reverse proxies
+fn extract_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    // Try X-Forwarded-For first (may contain comma-separated list, use first)
+    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first_ip) = forwarded_for.split(',').next() {
+            if let Ok(ip) = first_ip.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
+        }
+    }
+
+    // Try X-Real-IP as fallback
+    if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        if let Ok(ip) = real_ip.trim().parse::<IpAddr>() {
+            return Some(ip);
+        }
+    }
+
+    None
 }
 
 async fn ws_handler(
@@ -181,12 +217,47 @@ async fn ws_handler(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    // Extract client IP for connection limiting
+    let client_ip = extract_client_ip(&headers);
+
+    // Check connection limit per IP (if enabled and IP is available)
+    if let Some(ip) = client_ip {
+        let max_connections = state.config.max_connections_per_ip;
+        if max_connections > 0 {
+            let connections_per_ip = state.connections_per_ip.read().await;
+            let current_count = connections_per_ip.get(&ip).copied().unwrap_or(0);
+
+            if current_count >= max_connections {
+                warn!(
+                    %ip,
+                    current_count,
+                    max_connections,
+                    "WebSocket connection limit reached for client IP"
+                );
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many WebSocket connections from this IP address",
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, client_ip))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
+async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>, client_ip: Option<IpAddr>) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
+
+    // Increment connection count for this IP (if available and limit is enabled)
+    if let Some(ip) = client_ip {
+        if state.config.max_connections_per_ip > 0 {
+            let mut connections_per_ip = state.connections_per_ip.write().await;
+            *connections_per_ip.entry(ip).or_insert(0) += 1;
+        }
+    }
+
     let (connection_id, connection_state) = loop {
         let connection_id = random();
         let mut connections = state.connections.write().await;
@@ -204,7 +275,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         }
     };
 
-    debug!(%connection_id, "Client connection established");
+    debug!(%connection_id, ?client_ip, "Client connection established");
 
     drop(spawn(handle_node_events(
         connection_id,
@@ -284,8 +355,26 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
     debug!(%connection_id, "Client connection terminated");
 
-    let mut state = state.connections.write().await;
-    drop(state.remove(&connection_id));
+    // Remove connection from the connections map
+    {
+        let mut connections = state.connections.write().await;
+        drop(connections.remove(&connection_id));
+    }
+
+    // Decrement connection count for this IP (if available and limit is enabled)
+    if let Some(ip) = client_ip {
+        if state.config.max_connections_per_ip > 0 {
+            let mut connections_per_ip = state.connections_per_ip.write().await;
+            if let Entry::Occupied(mut entry) = connections_per_ip.entry(ip) {
+                let count = entry.get_mut();
+                if *count > 1 {
+                    *count -= 1;
+                } else {
+                    drop(entry.remove());
+                }
+            }
+        }
+    }
 }
 
 async fn handle_node_events(
