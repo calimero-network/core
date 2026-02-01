@@ -50,6 +50,9 @@ impl ToTokens for StateImpl<'_> {
         // Generate registration hook
         let registration_hook = generate_registration_hook(ident, &ty_generics);
 
+        // Generate Default implementation with deterministic collection IDs
+        let default_impl = generate_default_impl(ident, generics, orig);
+
         quote! {
             #orig
 
@@ -62,6 +65,9 @@ impl ToTokens for StateImpl<'_> {
                     ::calimero_sdk::env::ext::External {}
                 }
             }
+
+            // Auto-generated Default implementation with deterministic IDs
+            #default_impl
 
             // Auto-generated CRDT merge support
             #merge_impl
@@ -407,6 +413,107 @@ fn generate_mergeable_impl(
             {
                 #(#merge_calls)*
                 ::core::result::Result::Ok(())
+            }
+        }
+    }
+}
+
+/// Generate Default implementation that uses deterministic IDs for collections
+fn generate_default_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    // Extract fields from the struct
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => {
+            // Enums don't need Default with deterministic IDs
+            return quote! {};
+        }
+    };
+
+    // Generate field initializations with deterministic IDs
+    let field_inits: Vec<_> = fields
+        .iter()
+        .filter_map(|field| {
+            let field_name = field.ident.as_ref()?;
+            let field_type = &field.ty;
+
+            // Check if this is a known CRDT collection type
+            let type_str = quote! { #field_type }.to_string();
+
+            // Determine if this is a collection type and which constructor to use
+            let is_pncounter = type_str.contains("PNCounter") || (type_str.contains("Counter") && type_str.contains("<true"));
+            let is_gcounter = type_str.contains("GCounter");
+            let is_counter = type_str.contains("Counter") && !is_pncounter && !is_gcounter;
+            let is_unordered_map = type_str.contains("UnorderedMap");
+            let is_unordered_set = type_str.contains("UnorderedSet");
+            let is_vector = type_str.contains("Vector");
+            let is_rga = type_str.contains("ReplicatedGrowableArray");
+
+            // Generate initialization with deterministic ID
+            // Root-level collections use parent_id: None
+            if is_counter || is_pncounter || is_gcounter {
+                // For Counter types, preserve the generic parameters
+                Some(quote! {
+                    #field_name: <#field_type>::new_with_field_name(
+                        None,
+                        stringify!(#field_name)
+                    ),
+                })
+            } else if is_unordered_map {
+                Some(quote! {
+                    #field_name: ::calimero_storage::collections::UnorderedMap::new_with_field_name(
+                        None,
+                        stringify!(#field_name)
+                    ),
+                })
+            } else if is_unordered_set {
+                Some(quote! {
+                    #field_name: ::calimero_storage::collections::UnorderedSet::new_with_field_name(
+                        None,
+                        stringify!(#field_name)
+                    ),
+                })
+            } else if is_vector {
+                Some(quote! {
+                    #field_name: ::calimero_storage::collections::Vector::new_with_field_name(
+                        None,
+                        stringify!(#field_name)
+                    ),
+                })
+            } else if is_rga {
+                Some(quote! {
+                    #field_name: ::calimero_storage::collections::ReplicatedGrowableArray::new_with_field_name(
+                        None,
+                        stringify!(#field_name)
+                    ),
+                })
+            } else {
+                // Non-collection fields use Default::default()
+                Some(quote! {
+                    #field_name: ::core::default::Default::default(),
+                })
+            }
+        })
+        .collect();
+
+    quote! {
+        // ============================================================================
+        // AUTO-GENERATED Default implementation with deterministic collection IDs
+        // ============================================================================
+        //
+        // This Default implementation ensures collections get deterministic IDs based on
+        // field names, enabling proper CRDT merge during sync across nodes.
+        //
+        impl #impl_generics ::core::default::Default for #ident #ty_generics #where_clause {
+            fn default() -> Self {
+                Self {
+                    #(#field_inits)*
+                }
             }
         }
     }

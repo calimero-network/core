@@ -27,6 +27,17 @@ where
     pub fn new() -> Self {
         Self::new_internal()
     }
+
+    /// Create a new set collection with a deterministic ID derived from parent ID and field name.
+    /// This ensures sets get the same ID across all nodes when created with the same
+    /// parent and field name.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this set
+    pub fn new_with_field_name(parent_id: Option<crate::address::Id>, field_name: &str) -> Self {
+        Self::new_with_field_name_internal(parent_id, field_name)
+    }
 }
 
 impl<V, S> UnorderedSet<V, S>
@@ -38,6 +49,16 @@ where
     fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
+        }
+    }
+
+    /// Create a new set collection with deterministic ID (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        Self {
+            inner: Collection::new_with_field_name(parent_id, field_name),
         }
     }
 

@@ -187,11 +187,44 @@ impl<const ALLOW_DECREMENT: bool> Counter<ALLOW_DECREMENT, MainStorage> {
 }
 
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S> {
+    /// Creates a new counter with a deterministic ID derived from parent ID and field name.
+    /// This ensures counters get the same ID across all nodes when created with the same
+    /// parent and field name.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this counter
+    #[must_use]
+    pub fn new_with_field_name(parent_id: Option<crate::address::Id>, field_name: &str) -> Self {
+        Self::new_with_field_name_internal(parent_id, field_name)
+    }
+}
+
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S> {
     /// Creates a new counter (internal) - must use same visibility as UnorderedMap
     pub(super) fn new_internal() -> Self {
         Self {
             positive: UnorderedMap::new_internal(),
             negative: UnorderedMap::new_internal(),
+        }
+    }
+
+    /// Creates a new counter with deterministic IDs (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        // For Counter, we need to create deterministic IDs for both positive and negative maps
+        // We'll use field_name + "_positive" and field_name + "_negative" as suffixes
+        Self {
+            positive: UnorderedMap::new_with_field_name_internal(
+                parent_id,
+                &format!("{field_name}_positive"),
+            ),
+            negative: UnorderedMap::new_with_field_name_internal(
+                parent_id,
+                &format!("{field_name}_negative"),
+            ),
         }
     }
 
@@ -752,6 +785,60 @@ mod tests {
             err_str.contains("Not all bytes read") || err_str.contains("Unexpected length"),
             "Error should indicate leftover data, got: {}",
             err_str
+        );
+    }
+
+    #[test]
+    fn test_deterministic_counter_ids() {
+        crate::env::reset_for_testing();
+
+        // Create two counters with the same field name - they should have the same IDs
+        let counter1 = GCounter::new_with_field_name(None, "visit_count");
+        let counter2 = GCounter::new_with_field_name(None, "visit_count");
+
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.positive),
+            "Counters with same field name should have same positive map ID"
+        );
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.negative),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.negative),
+            "Counters with same field name should have same negative map ID"
+        );
+
+        // Different field names should produce different IDs
+        let counter3 = GCounter::new_with_field_name(None, "click_count");
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter3.positive),
+            "Counters with different field names should have different IDs"
+        );
+    }
+
+    #[test]
+    fn test_deterministic_counter_with_parent_id() {
+        crate::env::reset_for_testing();
+
+        let parent_id = Some(crate::address::Id::new([42u8; 32]));
+
+        // Same parent + same field name = same ID
+        let counter1 = GCounter::new_with_field_name(parent_id, "sub_counter");
+        let counter2 = GCounter::new_with_field_name(parent_id, "sub_counter");
+
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.positive),
+            "Counters with same parent and field name should have same ID"
+        );
+
+        // Different parent = different ID (even with same field name)
+        let parent_id2 = Some(crate::address::Id::new([43u8; 32]));
+        let counter3 = GCounter::new_with_field_name(parent_id2, "sub_counter");
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter3.positive),
+            "Counters with different parents should have different IDs"
         );
     }
 }

@@ -146,6 +146,18 @@ impl ReplicatedGrowableArray<MainStorage> {
     pub fn new() -> Self {
         Self::new_internal()
     }
+
+    /// Create a new RGA with a deterministic ID derived from parent ID and field name.
+    /// This ensures RGAs get the same ID across all nodes when created with the same
+    /// parent and field name.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this RGA
+    #[must_use]
+    pub fn new_with_field_name(parent_id: Option<crate::address::Id>, field_name: &str) -> Self {
+        Self::new_with_field_name_internal(parent_id, field_name)
+    }
 }
 
 impl Default for ReplicatedGrowableArray<MainStorage> {
@@ -158,6 +170,16 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     fn new_internal() -> Self {
         Self {
             chars: UnorderedMap::new_internal(),
+        }
+    }
+
+    /// Create a new RGA with deterministic ID (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        Self {
+            chars: UnorderedMap::new_with_field_name_internal(parent_id, field_name),
         }
     }
 
