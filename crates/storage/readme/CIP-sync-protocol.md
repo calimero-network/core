@@ -330,7 +330,7 @@ With hints, sync can be triggered **proactively** instead of reactively:
 | Fresh node joins | Waits for first delta, then discovers gap | Immediately sees `delta_height` gap |
 | Network partition heals | Tries delta sync, times out, then retries | Sees `root_hash` mismatch + `delta_height` gap |
 | Slow node catches up | Recursively fetches deltas one by one | Sees gap > threshold, requests snapshot |
-| Malicious delta | Applies, then discovers state mismatch | Verifies `root_hash` matches expected |
+| Malicious delta | Applies, then discovers state mismatch | Detects `root_hash` mismatch early, triggers verification via sync |
 
 #### 3.5 Gossip Protocol Enhancement
 
@@ -1339,8 +1339,9 @@ fn merge_entity(local: &Entity, remote: &Entity) -> Result<Vec<u8>> {
               >50%  │                    10-50%│                     <10% │
                     │                          │                          │
            ┌────────▼────────┐      ┌──────────▼──────────┐    ┌─────────▼─────────┐
-           │ SNAPSHOT        │      │ Check tree shape    │    │ BLOOM_FILTER      │
-           └─────────────────┘      └──────────┬──────────┘    │ (if entities >50) │
+           │ HASH_BASED      │      │ Check tree shape    │    │ BLOOM_FILTER      │
+           │ (CRDT merge)    │      └──────────┬──────────┘    │ (if entities >50) │
+           └─────────────────┘                 │               └───────────────────┘
                                                │               └───────────────────┘
                               ┌────────────────┼────────────────┐
                               │                │                │
