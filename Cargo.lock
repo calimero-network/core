@@ -2386,6 +2386,7 @@ dependencies = [
  "calimero-server-primitives",
  "calimero-store",
  "calimero-tee-attestation",
+ "chrono",
  "color-eyre",
  "eyre",
  "futures-util",

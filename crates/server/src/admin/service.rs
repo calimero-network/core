@@ -446,24 +446,23 @@ pub fn parse_api_error(err: Report) -> ApiError {
 }
 
 #[derive(Debug, Serialize)]
-struct GetHealthResponse {
-    data: HealthStatus,
-}
-
-#[derive(Debug, Serialize)]
 struct HealthStatus {
     status: String,
+    service: String,
+    timestamp: String,
 }
 
+/// Health check endpoint
+///
+/// Returns standardized health status with service name and timestamp.
 async fn health_check_handler() -> impl IntoResponse {
-    ApiResponse {
-        payload: GetHealthResponse {
-            data: HealthStatus {
-                status: "alive".to_owned(),
-            },
-        },
-    }
-    .into_response()
+    let response = HealthStatus {
+        status: "healthy".to_owned(),
+        service: "calimero-server".to_owned(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+
+    ApiResponse { payload: response }.into_response()
 }
 #[derive(Debug, Serialize)]
 struct IsAuthedResponse {

@@ -71,6 +71,7 @@ pub async fn metrics_handler(state: Extension<Arc<AppState>>) -> impl IntoRespon
 /// Health check handler
 ///
 /// This endpoint returns the health status of the authentication service.
+/// Returns standardized health status with service name, timestamp, and dependency checks.
 ///
 /// # Arguments
 ///
@@ -85,7 +86,11 @@ pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoRespons
 
     let response = json!({
         "status": if storage_ok { "healthy" } else { "unhealthy" },
-        "storage": storage_ok,
+        "service": "calimero-auth",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "dependencies": {
+            "storage": storage_ok
+        },
         "uptime_seconds": state.0.metrics.get_uptime_seconds(),
     });
 
