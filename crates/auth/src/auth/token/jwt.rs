@@ -449,7 +449,7 @@ impl TokenManager {
         let claims = self.verify_token(refresh_token).await?;
 
         // Get the key and verify it's valid
-        let key = self
+        let mut key = self
             .key_manager
             .get_key(&claims.sub)
             .await
@@ -464,6 +464,29 @@ impl TokenManager {
 
         if !key.is_valid() {
             return Err(AuthError::InvalidToken("Key is not valid".to_string()));
+        }
+
+        // Check for idle timeout - if the session has been inactive for too long, reject it
+        if key.metadata.is_idle(self.config.idle_timeout) {
+            tracing::debug!(
+                "Session for key {} has exceeded idle timeout of {} seconds",
+                claims.sub,
+                self.config.idle_timeout
+            );
+            return Err(AuthError::InvalidToken(
+                "Session has expired due to inactivity".to_string(),
+            ));
+        }
+
+        // Update last activity timestamp (sliding window expiration)
+        key.metadata.touch();
+        if let Err(e) = self.key_manager.set_key(&claims.sub, &key).await {
+            // Log the error but don't fail the refresh - activity tracking is best-effort
+            tracing::warn!(
+                "Failed to update last activity for key {}: {}",
+                claims.sub,
+                e
+            );
         }
 
         match key.key_type {
