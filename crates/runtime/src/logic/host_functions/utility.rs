@@ -461,4 +461,339 @@ mod tests {
             "Should fail with InvalidMemoryAccess due to read_guest_memory_sized"
         )
     }
+
+    /// Tests that `fetch` host function returns error since it's blocked.
+    #[test]
+    fn test_fetch_is_blocked() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare URL.
+        let url = "https://example.com";
+        let url_ptr = 100u64;
+        host.borrow_memory().write(url_ptr, url.as_bytes()).unwrap();
+        let url_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, url_buf_ptr, url_ptr, url.len() as u64);
+
+        // Prepare method.
+        let method = "GET";
+        let method_ptr = 200u64;
+        host.borrow_memory()
+            .write(method_ptr, method.as_bytes())
+            .unwrap();
+        let method_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, method_buf_ptr, method_ptr, method.len() as u64);
+
+        // Prepare headers (empty vec borsh-serialized).
+        let headers: Vec<(String, String)> = vec![];
+        let headers_bytes = borsh::to_vec(&headers).unwrap();
+        let headers_ptr = 300u64;
+        host.borrow_memory()
+            .write(headers_ptr, &headers_bytes)
+            .unwrap();
+        let headers_buf_ptr = 48u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            headers_buf_ptr,
+            headers_ptr,
+            headers_bytes.len() as u64,
+        );
+
+        // Prepare body (empty).
+        let body_ptr = 400u64;
+        let body_buf_ptr = 64u64;
+        prepare_guest_buf_descriptor(&host, body_buf_ptr, body_ptr, 0);
+
+        let dest_register_id = 1u64;
+
+        // Call fetch - it should return 1 (failure) since it's blocked.
+        let result = host
+            .fetch(
+                url_buf_ptr,
+                method_buf_ptr,
+                headers_buf_ptr,
+                body_buf_ptr,
+                dest_register_id,
+            )
+            .unwrap();
+
+        // Should return 1 indicating failure.
+        assert_eq!(result, 1);
+
+        // Check that an error message was written to the register.
+        let error_data = host.borrow_logic().registers.get(dest_register_id).unwrap();
+        let error_msg = std::str::from_utf8(error_data).unwrap();
+        assert!(error_msg.contains("temporarily disabled"));
+    }
+
+    /// Tests that `time_now` returns error when buffer size is incorrect.
+    #[test]
+    fn test_time_now_invalid_buffer_size() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare a buffer that is NOT 8 bytes (should fail).
+        let buf_ptr = 16u64;
+        let time_data_ptr = 200u64;
+        // Use 4 bytes instead of required 8.
+        let incorrect_len = 4u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, time_data_ptr, incorrect_len);
+
+        let err = host.time_now(buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+    }
+
+    /// Tests that `time_now` returns error when buffer size is too large.
+    #[test]
+    fn test_time_now_buffer_too_large() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare a buffer that is larger than 8 bytes (should fail).
+        let buf_ptr = 16u64;
+        let time_data_ptr = 200u64;
+        // Use 16 bytes instead of required 8.
+        let incorrect_len = 16u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, time_data_ptr, incorrect_len);
+
+        let err = host.time_now(buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+    }
+
+    /// Tests `random_bytes` with an empty buffer.
+    #[test]
+    fn test_random_bytes_empty_buffer() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let buf_ptr = 10u64;
+        let data_ptr = 200u64;
+        let data_len = 0u64; // Empty buffer.
+
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
+
+        // Should succeed (no-op for empty buffer).
+        host.random_bytes(buf_ptr).unwrap();
+    }
+
+    /// Tests `random_bytes` with a large buffer.
+    #[test]
+    fn test_random_bytes_large_buffer() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let buf_ptr = 10u64;
+        let data_ptr = 200u64;
+        let data_len = 1024u64; // 1 KiB buffer.
+
+        // Initialize memory with a pattern.
+        let initial_pattern = vec![0xAB; data_len as usize];
+        host.borrow_memory()
+            .write(data_ptr, &initial_pattern)
+            .unwrap();
+
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
+
+        host.random_bytes(buf_ptr).unwrap();
+
+        // Read back and verify it changed.
+        let mut random_data = vec![0u8; data_len as usize];
+        host.borrow_memory()
+            .read(data_ptr, &mut random_data)
+            .unwrap();
+
+        // Check that not all bytes are the same as initial pattern.
+        assert_ne!(
+            random_data, initial_pattern,
+            "Large buffer should be filled with random bytes"
+        );
+    }
+
+    /// Tests `random_bytes` produces different results on consecutive calls.
+    #[test]
+    fn test_random_bytes_produces_different_results() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let buf_ptr = 10u64;
+        let data_ptr = 200u64;
+        let data_len = 32u64;
+
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, data_len);
+
+        // First call.
+        host.random_bytes(buf_ptr).unwrap();
+        let mut first_result = vec![0u8; data_len as usize];
+        host.borrow_memory()
+            .read(data_ptr, &mut first_result)
+            .unwrap();
+
+        // Second call.
+        host.random_bytes(buf_ptr).unwrap();
+        let mut second_result = vec![0u8; data_len as usize];
+        host.borrow_memory()
+            .read(data_ptr, &mut second_result)
+            .unwrap();
+
+        // With high probability, the results should differ.
+        assert_ne!(
+            first_result, second_result,
+            "Consecutive random_bytes calls should produce different results"
+        );
+    }
+
+    /// Tests `ed25519_verify` with an all-zeros public key.
+    /// While all-zeros is technically a valid point (identity element), the signature
+    /// verification will fail, returning 0 (invalid signature).
+    #[test]
+    fn test_ed25519_verify_zeros_public_key() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Use all-zeros public key (the identity element on the curve).
+        let zeros_pk = [0u8; PUBLIC_KEY_LENGTH];
+        // Use a valid-length signature.
+        let signature = [0u8; SIGNATURE_LENGTH];
+        let message = b"test message";
+
+        // Write data to guest memory.
+        let sig_ptr = 100u64;
+        let pk_ptr = 200u64;
+        let msg_ptr = 300u64;
+        host.borrow_memory().write(sig_ptr, &signature).unwrap();
+        host.borrow_memory().write(pk_ptr, &zeros_pk).unwrap();
+        host.borrow_memory().write(msg_ptr, message).unwrap();
+
+        let sig_buf_ptr = 16u64;
+        let pk_buf_ptr = 32u64;
+        let msg_buf_ptr = 48u64;
+        prepare_guest_buf_descriptor(&host, sig_buf_ptr, sig_ptr, SIGNATURE_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, pk_buf_ptr, pk_ptr, PUBLIC_KEY_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, msg_buf_ptr, msg_ptr, message.len() as u64);
+
+        // With identity point as public key, signature verification should fail
+        // (return 0 indicating invalid signature).
+        let result = host.ed25519_verify(sig_buf_ptr, pk_buf_ptr, msg_buf_ptr);
+        // The result should either be an error or return 0 (invalid signature).
+        match result {
+            Ok(0) => {
+                // Valid behavior - signature verification failed as expected.
+            }
+            Err(VMLogicError::HostError(HostError::Ed25519IncorrectPublicKey)) => {
+                // Also valid - some versions of ed25519_dalek reject the identity point.
+            }
+            other => panic!(
+                "Expected invalid signature (0) or Ed25519IncorrectPublicKey error, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Tests `ed25519_verify` with empty message.
+    #[test]
+    fn test_ed25519_verify_empty_message() {
+        use ed25519_dalek::Signer;
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Generate a valid signature for an empty message.
+        let mut csprng = OsRng;
+        let keypair: SigningKey = SigningKey::generate(&mut csprng);
+        let public_key = keypair.verifying_key();
+        let empty_message: &[u8] = b"";
+        let signature = keypair.try_sign(empty_message).expect("Signing failed");
+
+        // Write data to guest memory.
+        let sig_ptr = 100u64;
+        let pk_ptr = 200u64;
+        let msg_ptr = 300u64;
+        host.borrow_memory()
+            .write(sig_ptr, &signature.to_bytes())
+            .unwrap();
+        host.borrow_memory()
+            .write(pk_ptr, public_key.as_ref())
+            .unwrap();
+        // Empty message.
+
+        let sig_buf_ptr = 16u64;
+        let pk_buf_ptr = 32u64;
+        let msg_buf_ptr = 48u64;
+        prepare_guest_buf_descriptor(&host, sig_buf_ptr, sig_ptr, SIGNATURE_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, pk_buf_ptr, pk_ptr, PUBLIC_KEY_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, msg_buf_ptr, msg_ptr, 0); // Empty message.
+
+        let result = host
+            .ed25519_verify(sig_buf_ptr, pk_buf_ptr, msg_buf_ptr)
+            .unwrap();
+        assert_eq!(result, 1, "Signature for empty message should be valid");
+    }
+
+    /// Tests `ed25519_verify` with a valid long message.
+    #[test]
+    fn test_ed25519_verify_long_message() {
+        use ed25519_dalek::Signer;
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Generate a valid signature for a long message.
+        let mut csprng = OsRng;
+        let keypair: SigningKey = SigningKey::generate(&mut csprng);
+        let public_key = keypair.verifying_key();
+        let long_message: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
+        let signature = keypair.try_sign(&long_message).expect("Signing failed");
+
+        // Write data to guest memory.
+        let sig_ptr = 100u64;
+        let pk_ptr = 200u64;
+        let msg_ptr = 300u64;
+        host.borrow_memory()
+            .write(sig_ptr, &signature.to_bytes())
+            .unwrap();
+        host.borrow_memory()
+            .write(pk_ptr, public_key.as_ref())
+            .unwrap();
+        host.borrow_memory().write(msg_ptr, &long_message).unwrap();
+
+        let sig_buf_ptr = 16u64;
+        let pk_buf_ptr = 32u64;
+        let msg_buf_ptr = 48u64;
+        prepare_guest_buf_descriptor(&host, sig_buf_ptr, sig_ptr, SIGNATURE_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, pk_buf_ptr, pk_ptr, PUBLIC_KEY_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, msg_buf_ptr, msg_ptr, long_message.len() as u64);
+
+        let result = host
+            .ed25519_verify(sig_buf_ptr, pk_buf_ptr, msg_buf_ptr)
+            .unwrap();
+        assert_eq!(result, 1, "Signature for long message should be valid");
+    }
 }
