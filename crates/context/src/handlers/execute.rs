@@ -190,13 +190,48 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
         let execution_duration = self.metrics.as_ref().map(|m| m.execution_duration.clone());
+        let queued_executions = self.metrics.as_ref().map(|m| m.queued_executions.clone());
+        let active_executions = self.metrics.as_ref().map(|m| m.active_executions.clone());
 
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
+            let execution_semaphore = act.execution_semaphore.clone();
 
             async move {
+                // Track queued execution before acquiring semaphore
+                if let Some(ref queued) = queued_executions {
+                    queued.inc();
+                }
+
+                debug!(
+                    %context_id,
+                    available_permits = execution_semaphore.available_permits(),
+                    "Waiting for execution permit"
+                );
+
+                // Acquire a permit to limit concurrent WASM executions.
+                // This will queue if the limit is reached, preventing resource exhaustion.
+                let _permit = execution_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| eyre::eyre!("execution semaphore closed"))?;
+
+                // Update metrics: no longer queued, now active
+                if let Some(ref queued) = queued_executions {
+                    queued.dec();
+                }
+                if let Some(ref active) = active_executions {
+                    active.inc();
+                }
+
+                debug!(
+                    %context_id,
+                    "Acquired execution permit, starting WASM execution"
+                );
+
                 let old_root_hash = context.root_hash;
 
                 let start = Instant::now();
@@ -266,6 +301,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                     xcalls_count = outcome.xcalls.len(),
                     "Execution outcome details"
                 );
+
+                // Decrement active executions counter before releasing the permit
+                if let Some(ref active) = active_executions {
+                    active.dec();
+                }
+                // _permit is dropped here, releasing the semaphore slot
 
                 Ok((guard, context, outcome, causal_delta))
             }

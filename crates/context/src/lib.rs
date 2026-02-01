@@ -14,8 +14,9 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
 
+use crate::config::DEFAULT_MAX_CONCURRENT_EXECUTIONS;
 use crate::metrics::Metrics;
 
 pub mod config;
@@ -67,6 +68,11 @@ pub struct ContextManager {
     /// so we cannot blindly reuse compiled blobs across apps.
     applications: BTreeMap<ApplicationId, Application>,
 
+    /// Semaphore to limit concurrent WASM executions.
+    /// This prevents resource exhaustion under high load by queueing
+    /// execution requests when the limit is reached.
+    execution_semaphore: Arc<Semaphore>,
+
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
@@ -85,7 +91,8 @@ pub struct ContextManager {
 /// * `node_client` - Client for interacting with the underlying Calimero node.
 /// * `context_client` - The context client facade.
 /// * `external_config` - Configuration for interacting with external blockchain contracts (e.g.,
-/// NEAR).
+///   NEAR).
+/// * `max_concurrent_executions` - Maximum number of concurrent WASM executions allowed.
 /// * `prometheus_registry` - A mutable reference to a Prometheus registry for registering metrics.
 impl ContextManager {
     pub fn new(
@@ -93,8 +100,16 @@ impl ContextManager {
         node_client: NodeClient,
         context_client: ContextClient,
         external_config: ExternalClientConfig,
+        max_concurrent_executions: Option<usize>,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
+        let max_executions = max_concurrent_executions.unwrap_or(DEFAULT_MAX_CONCURRENT_EXECUTIONS);
+
+        tracing::info!(
+            max_concurrent_executions = max_executions,
+            "Initializing ContextManager with execution limits"
+        );
+
         Self {
             datastore,
             node_client,
@@ -104,6 +119,7 @@ impl ContextManager {
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
 
+            execution_semaphore: Arc::new(Semaphore::new(max_executions)),
             metrics: prometheus_registry.map(Metrics::new),
         }
     }

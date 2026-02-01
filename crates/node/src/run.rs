@@ -144,6 +144,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         config.context.client.clone(),
+        Some(config.context.max_concurrent_executions),
         Some(&mut registry),
     );
 
