@@ -276,5 +276,137 @@ Future: Connection pooling, keep-alive tuning.
 
 ---
 
+## Implementation Reference (Moved from CIP)
+
+> These code examples were moved from the CIP to preserve implementation guidance without polluting the protocol specification.
+
+### Receiver Decision Logic Pattern
+
+```rust
+impl SyncManager {
+    fn on_delta_received(&mut self, msg: DeltaWithHints) -> SyncDecision {
+        let hints = &msg.hints;
+        
+        // 1. Check if we're already in sync
+        if self.root_hash == hints.root_hash {
+            return SyncDecision::AlreadySynced;
+        }
+        
+        // 2. Check if we have the parent deltas
+        let missing_parents: Vec<[u8; 32]> = msg.delta.parents
+            .iter()
+            .filter(|p| !self.dag_store.has_delta(p))
+            .copied()
+            .collect();
+        
+        if !missing_parents.is_empty() {
+            let gap = hints.delta_height.saturating_sub(self.dag_store.height());
+            
+            if gap > DELTA_SYNC_THRESHOLD {
+                return SyncDecision::RequestSnapshot { peer: msg.sender };
+            }
+            return SyncDecision::RequestMissingDeltas { delta_ids: missing_parents };
+        }
+        
+        // 3. Use bloom filter to estimate missing deltas
+        if let Some(ref bloom) = hints.delta_bloom_filter {
+            let missing_estimate = self.estimate_missing_from_bloom(bloom);
+            if missing_estimate > DELTA_SYNC_THRESHOLD {
+                return SyncDecision::RequestSnapshot { peer: msg.sender };
+            }
+        }
+        
+        // 4. Entity count divergence check
+        let divergence = (self.entity_count() as i64 - hints.entity_count as i64).abs() as f32 
+            / hints.entity_count.max(1) as f32;
+        
+        if divergence > 0.5 {
+            return SyncDecision::RequestHashSync { peer: msg.sender };
+        }
+        
+        // 5. All parents present - safe to apply
+        SyncDecision::ApplyDelta(msg.delta)
+    }
+}
+```
+
+### Merge Entity Implementation Pattern
+
+```rust
+impl<S: StorageAdaptor> Interface<S> {
+    pub fn merge_entity(
+        local_data: &[u8],
+        remote_data: &[u8],
+        metadata: &Metadata,
+        wasm_callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<Vec<u8>, MergeError> {
+        match &metadata.crdt_type {
+            Some(CrdtType::Counter) => {
+                let mut local: Counter = borsh::from_slice(local_data)?;
+                let remote: Counter = borsh::from_slice(remote_data)?;
+                local.merge(&remote)?;
+                Ok(borsh::to_vec(&local)?)
+            }
+            Some(CrdtType::UnorderedMap) => {
+                merge_unordered_map(local_data, remote_data, wasm_callback)
+            }
+            Some(CrdtType::Custom { type_name }) => {
+                let callback = wasm_callback.ok_or(MergeError::WasmCallbackRequired)?;
+                callback.merge(local_data, remote_data, type_name)
+            }
+            None => {
+                // LWW fallback for legacy data
+                Ok(remote_data.to_vec())
+            }
+            // ... other types ...
+        }
+    }
+}
+```
+
+### Performance Benchmark (Informative)
+
+```
+Merge Benchmark (1000 entities):
+
+Built-in CRDTs (Counter, Map, etc.):
+├── Conflicts: 100 entities
+├── Merge time: 100 × 100ns = 10μs total
+└── WASM calls: 0
+
+Custom Mergeable Types:
+├── Conflicts: 10 entities
+├── Merge time: 10 × 10μs = 100μs total
+└── WASM calls: 10
+
+Total: ~120μs for 111 conflicts
+Network RTT: ~50ms
+Merge overhead: 0.24% of sync time
+```
+
+### Collections Auto-Set Type Pattern
+
+```rust
+impl<S: StorageAdaptor> Counter<S> {
+    pub fn new() -> Self {
+        let mut element = Element::new();
+        element.metadata_mut().crdt_type = Some(CrdtType::Counter);
+        Self { element, counts: BTreeMap::new() }
+    }
+}
+
+impl<K, V, S: StorageAdaptor> UnorderedMap<K, V, S> {
+    pub fn new() -> Self {
+        let mut element = Element::new();
+        element.metadata_mut().crdt_type = Some(CrdtType::UnorderedMap);
+        Self { element, entries: BTreeMap::new(), _phantom: PhantomData }
+    }
+}
+
+// Custom types set via #[app::state] macro
+```
+
+---
+
 *Created: February 1, 2026*  
 *Branch: test/tree_sync*
