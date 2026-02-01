@@ -9,6 +9,8 @@ on:
       - "crates/**"
       - "apps/**"
       - "tools/**"
+      - ".github/workflows/**"
+      - ".github/actions/**"
       - ".github/workflows/codeql.yml"
       - ".github/codeql/**"
   pull_request:
@@ -19,6 +21,8 @@ on:
       - "crates/**"
       - "apps/**"
       - "tools/**"
+      - ".github/workflows/**"
+      - ".github/actions/**"
       - ".github/workflows/codeql.yml"
       - ".github/codeql/**"
   schedule:
@@ -47,7 +51,7 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: rust, javascript
+          languages: rust, javascript, actions
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Autobuild
