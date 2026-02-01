@@ -45,7 +45,7 @@ The current synchronization implementation has several limitations:
 |----------|------------------|-------------------|
 | Fresh node joins | Fetch ALL deltas recursively | Snapshot sync with verification |
 | 1% divergence | Fetch missing deltas | Hash-based incremental sync |
-| 50% divergence | Fetch ALL missing deltas | Snapshot sync (more efficient) |
+| 50% divergence | Fetch ALL missing deltas | State-based sync (HashComparison + CRDT merge) |
 | Network partition recovery | May timeout/fail | Adaptive protocol selection |
 | Malicious snapshot | Blindly accepted | Cryptographic verification |
 | Counter conflict (state sync) | LWW - **data loss!** | Sum per-node counts (CRDT merge) |
@@ -131,9 +131,11 @@ pub enum SyncProtocol {
         divergent_subtrees: Vec<Id>,
     },
     
-    /// Full state snapshot transfer
+    /// Full state snapshot transfer (fresh nodes only per Invariant I5)
     Snapshot {
         compressed: bool,
+        /// Indicates responder guarantees snapshot is verifiable.
+        /// Note: Verification is still REQUIRED before application (Invariant I7).
         verified: bool,
     },
     
@@ -1295,7 +1297,7 @@ fn merge_entity(local: &Entity, remote: &Entity) -> Result<Vec<u8>> {
 | Protocol | Trigger Conditions | Best For | Avoid When |
 |----------|-------------------|----------|------------|
 | **DeltaSync** | Missing < 10 deltas, parents known | Real-time updates, small gaps | Fresh nodes, large gaps |
-| **HashBasedSync** | Divergence 10-50%, depth any | General-purpose catch-up | 100% divergence (fresh node) |
+| **HashComparison** | Divergence 10-50%, depth any | General-purpose catch-up | 100% divergence (fresh node) |
 | **BloomFilterSync** | Entities > 50, divergence < 10% | Large trees with tiny diff | Small trees, high divergence |
 | **SubtreePrefetchSync** | Depth > 3, divergence < 20% | Deep hierarchies, localized changes | Shallow trees, scattered changes |
 | **LevelWiseSync** | Depth ≤ 2 | Wide shallow trees | Deep hierarchies |
@@ -1339,7 +1341,7 @@ fn merge_entity(local: &Entity, remote: &Entity) -> Result<Vec<u8>> {
               >50%  │                    10-50%│                     <10% │
                     │                          │                          │
            ┌────────▼────────┐      ┌──────────▼──────────┐    ┌─────────▼─────────┐
-           │ HASH_BASED      │      │ Check tree shape    │    │ BLOOM_FILTER      │
+           │ HashComparison  │      │ Check tree shape    │    │ BloomFilter       │
            │ (CRDT merge)    │      └──────────┬──────────┘    │ (if entities >50) │
            └─────────────────┘                 │               └───────────────────┘
                                                │               └───────────────────┘
@@ -1348,7 +1350,7 @@ fn merge_entity(local: &Entity, remote: &Entity) -> Result<Vec<u8>> {
                         depth>3         depth≤2          default
                               │                │                │
                      ┌────────▼────────┐ ┌─────▼─────┐ ┌────────▼────────┐
-                     │ SUBTREE_PREFETCH│ │ LEVEL_WISE│ │ HASH_BASED      │
+                     │ SubtreePrefetch │ │ LevelWise │ │ HashComparison  │
                      └─────────────────┘ └───────────┘ └─────────────────┘
 ```
 
