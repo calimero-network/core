@@ -8,6 +8,8 @@ use cached_path::Cache;
 use cached_path::Options;
 use eyre::bail;
 use eyre::OptionExt;
+use reqwest::blocking::Client as ReqwestClient;
+use reqwest::redirect::Policy;
 use reqwest::Url;
 use reqwest_compat::blocking::Client as ReqwestCompatClient;
 use reqwest_compat::header::AUTHORIZATION;
@@ -21,6 +23,7 @@ const CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL: &str =
     "https://github.com/{repo}/releases/latest/download/{asset}";
 const CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL: &str =
     "https://github.com/{repo}/releases/download/{version}/{asset}";
+const CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL: &str = "https://github.com/{repo}/releases/latest";
 const CALIMERO_AUTH_FRONTEND_REF_ARCHIVE_URL: &str =
     "https://github.com/{repo}/archive/refs/heads/{ref}.zip";
 const CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL: &str =
@@ -67,29 +70,35 @@ fn try_main() -> eyre::Result<()> {
             let default_ref = option_env!("CALIMERO_AUTH_FRONTEND_REF")
                 .unwrap_or(CALIMERO_AUTH_FRONTEND_DEFAULT_REF);
 
-            let (release_url_template, asset, reference) = if let Some(asset) = asset {
-                let template = if version == "latest" {
+            let mut resolved_version = None;
+            let mut resolved_asset = None;
+            let mut resolved_ref = None;
+            let release_url_template = if let Some(asset) = asset {
+                resolved_asset = Some(asset);
+                if version == "latest" {
                     CALIMERO_AUTH_FRONTEND_LATEST_ASSET_URL
                 } else {
                     CALIMERO_AUTH_FRONTEND_VERSIONED_ASSET_URL
-                };
-
-                (template, Some(asset), None)
+                }
             } else if version == "latest" {
-                (
-                    CALIMERO_AUTH_FRONTEND_REF_ARCHIVE_URL,
-                    None,
-                    Some(default_ref),
-                )
+                if let Some(tag) = resolve_latest_release_tag(repo)? {
+                    resolved_version = Some(tag);
+                    CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL
+                } else {
+                    resolved_ref = Some(default_ref);
+                    CALIMERO_AUTH_FRONTEND_REF_ARCHIVE_URL
+                }
             } else {
-                (CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL, None, None)
+                CALIMERO_AUTH_FRONTEND_TAG_ARCHIVE_URL
             };
+
+            let version_value = resolved_version.as_deref().unwrap_or(version);
 
             let release_url = replace(release_url_template.into(), |var| match var {
                 "repo" => Some(repo),
-                "version" => Some(version),
-                "asset" => asset,
-                "ref" => reference,
+                "version" => Some(version_value),
+                "asset" => resolved_asset,
+                "ref" => resolved_ref,
                 _ => None,
             });
 
@@ -140,6 +149,31 @@ fn try_main() -> eyre::Result<()> {
     );
 
     Ok(())
+}
+
+fn resolve_latest_release_tag(repo: &str) -> eyre::Result<Option<String>> {
+    let latest_release_url =
+        replace(
+            CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL.into(),
+            |var| match var {
+                "repo" => Some(repo),
+                _ => None,
+            },
+        );
+    let client = ReqwestClient::builder()
+        .user_agent(USER_AGENT)
+        .redirect(Policy::limited(5))
+        .build()?;
+    let response = client.get(&*latest_release_url).send()?;
+    let final_url = response.url();
+
+    let tag = final_url
+        .path_segments()
+        .and_then(|segments| segments.last())
+        .filter(|segment| !segment.is_empty() && *segment != "latest")
+        .map(str::to_owned);
+
+    Ok(tag)
 }
 
 // https://github.com/rust-lang/cargo/issues/9661#issuecomment-1722358176
