@@ -53,6 +53,56 @@ The current synchronization implementation has several limitations:
 | Custom type conflict | LWW only | WASM callback for app-defined merge |
 | Root state conflict | LWW | WASM merge_root_state callback |
 
+## Protocol Invariants
+
+These invariants MUST hold for any compliant implementation:
+
+### Convergence Invariants
+
+**I1. Operation Completeness**
+> If node A applies operation O, and A syncs with B, then B will eventually have O reflected in its state.
+
+**I2. Eventual Consistency**
+> Given no new operations, all connected nodes will converge to identical root hashes within O(log N) sync rounds.
+
+**I3. Merge Determinism**
+> For any two values V1, V2 and metadata M1, M2: `merge(V1, V2, M1, M2)` always produces the same output.
+
+**I4. Strategy Equivalence**
+> All state-based strategies (HashComparison, BloomFilter, SubtreePrefetch, LevelWise) MUST produce identical final state given identical inputs, differing only in network efficiency.
+
+### Safety Invariants
+
+**I5. No Silent Data Loss**
+> State-based sync on initialized nodes MUST use CRDT merge. LWW overwrite is ONLY permitted when local value is absent (fresh node bootstrap).
+
+**I6. Liveness Guarantee**
+> Deltas received during state-based sync MUST be preserved and applied after sync completes. Implementations MUST NOT drop buffered deltas.
+
+**I7. Verification Before Apply**
+> Snapshot data MUST be verified against claimed root hash BEFORE any state modification.
+
+**I8. Causal Consistency**
+> A delta D can only be applied after ALL its parent deltas have been applied. The DAG structure enforces this.
+
+### Identity Invariants
+
+**I9. Deterministic Entity IDs**
+> Given the same application code and field names, all nodes MUST generate identical entity IDs for the same logical entities. Non-deterministic IDs cause "ghost entities" that prevent proper CRDT merge.
+
+**I10. Metadata Persistence**
+> Entity metadata (including `crdt_type`) MUST be persisted alongside entity data. Metadata loss forces LWW fallback and potential data loss.
+
+### Protocol Behavior Invariants
+
+**I11. Protocol Honesty**
+> A node MUST NOT advertise a protocol in `SyncCapabilities` unless it can execute the protocol end-to-end (diff discovery AND entity transfer).
+
+**I12. SyncProtocol::None Behavior**
+> When `SyncProtocol::None` is selected (root hashes match), responder MUST acknowledge without data transfer. This is distinguishable from negotiation failure.
+
+---
+
 ## Specification
 
 ### 1. Sync Protocol Types
@@ -505,7 +555,7 @@ Is local state empty?
 
 ### 5. Delta Handling During Sync
 
-#### 4.1 Delta Buffer
+#### 5.1 Delta Buffer
 
 During state-based sync (snapshot, hash comparison), incoming deltas MUST be buffered:
 
@@ -555,9 +605,11 @@ impl SyncContext {
 }
 ```
 
-#### 4.2 Post-Sync Delta Replay
+#### 5.2 Post-Sync Delta Replay
 
-After state-based sync completes:
+After state-based sync completes, buffered deltas MUST be replayed via **DAG insertion** (not HLC sorting).
+
+> ⚠️ **CRITICAL**: HLC ordering does NOT guarantee causal ordering. A delta's parent may have a higher HLC due to clock skew. DAG insertion ensures parents are applied before children regardless of timestamp.
 
 ```rust
 impl SyncContext {
@@ -565,21 +617,21 @@ impl SyncContext {
         // 1. Verify received state
         self.verify_snapshot()?;
         
-        // 2. Apply received state
+        // 2. Apply received state (CRDT merge for initialized nodes)
         self.apply_snapshot()?;
         
-        // 3. Replay buffered deltas in order
-        self.buffered_deltas.sort_by(|a, b| a.hlc.cmp(&b.hlc));
-        
+        // 3. Replay buffered deltas via DAG insertion (NOT HLC sort!)
+        // The DAG enforces causal ordering: parents applied before children
         for delta in self.buffered_deltas.drain(..) {
-            // Deltas authored AFTER sync started should be applied
-            // Deltas authored BEFORE are already in snapshot
-            if delta.hlc > self.sync_start_hlc {
-                self.dag_store.add_delta(delta).await?;
-            }
+            // Add to DAG - may queue if parents still missing
+            self.dag_store.add_delta(delta).await;
         }
         
-        // 4. Transition to idle
+        // 4. Apply all ready deltas in causal order
+        // DAG tracks parent dependencies and applies when ready
+        self.dag_store.apply_ready_deltas().await?;
+        
+        // 5. Transition to idle
         self.state = SyncState::Idle;
         
         Ok(())
@@ -587,9 +639,107 @@ impl SyncContext {
 }
 ```
 
-### 6. Cryptographic Verification
+**Why DAG, not HLC?**
 
-#### 5.1 Snapshot Verification
+| Approach | Ordering | Clock Skew Safe? | Causal? |
+|----------|----------|------------------|---------|
+| HLC Sort | Timestamp | ❌ No | ❌ No |
+| DAG Insert | Parent hashes | ✅ Yes | ✅ Yes |
+
+The DAG tracks parent-child relationships via hashes, not timestamps, ensuring correct causal ordering even with clock skew.
+
+### 6. Snapshot Usage Constraints
+
+Snapshot sync has different semantics depending on the receiver's state:
+
+#### 6.1 Fresh Node Bootstrap (Snapshot as Initialization)
+
+| Condition | `local.has_state == false` |
+|-----------|---------------------------|
+| Behavior | Apply snapshot directly (no CRDT merge) |
+| Post-condition | `local_root == snapshot_root` |
+| Use case | New node joining network |
+
+```rust
+// Fresh node: direct application
+if !local.has_state {
+    apply_snapshot_direct(snapshot);  // No merge needed
+    assert_eq!(local_root, snapshot.root_hash);
+}
+```
+
+#### 6.2 Initialized Node Sync (Snapshot as CRDT State)
+
+| Condition | `local.has_state == true` |
+|-----------|--------------------------|
+| Behavior | CRDT merge each entity |
+| Post-condition | `local_root` is merged state (may differ from `snapshot_root`) |
+| Use case | Partition healing, large divergence recovery |
+
+```rust
+// Initialized node: MUST merge
+if local.has_state {
+    for entity in snapshot.entities {
+        crdt_merge(local_entity, entity);  // Preserves both sides' updates
+    }
+    // local_root may differ from snapshot.root_hash - that's expected
+}
+```
+
+#### 6.3 Overwrite Protection (CRITICAL)
+
+> ⚠️ **INVARIANT I5**: An initialized node MUST NOT blindly overwrite state with a snapshot.
+
+**Violation consequences:**
+- Data loss (local updates discarded)
+- Convergence failure (nodes diverge permanently)
+- CRDT invariants broken
+
+```rust
+// ❌ INCORRECT: Overwrites local state
+fn apply_snapshot_wrong(snapshot: Snapshot) {
+    clear_local_state();
+    for entity in snapshot.entities {
+        write(entity);  // Loses local concurrent updates!
+    }
+}
+
+// ✅ CORRECT: Merges with local state
+fn apply_snapshot_correct(snapshot: Snapshot) {
+    for entity in snapshot.entities {
+        let local = read_local(entity.id);
+        let merged = crdt_merge(local, entity);  // Preserves both
+        write(merged);
+    }
+}
+```
+
+### 7. Root Hash Semantics
+
+Root hash expectations vary by protocol and scenario:
+
+| Protocol | Scenario | Post-Apply Expectation |
+|----------|----------|------------------------|
+| DeltaSync | Sequential (no concurrent) | `computed == expected` MUST match |
+| DeltaSync | Concurrent (merge) | `computed ≠ expected` - new merged state |
+| HashComparison | Normal | `computed == peer_root` SHOULD match |
+| HashComparison | Concurrent updates | May differ (apply again) |
+| Snapshot | Fresh node | `computed == snapshot_root` MUST match |
+| Snapshot | Initialized node (merge) | `computed` is merged state (may differ) |
+
+**When is root hash a HARD invariant?**
+- Snapshot integrity verification (before apply)
+- Merkle proof verification
+- Fresh node bootstrap completion
+
+**When is root hash EMERGENT?**
+- Post-CRDT-merge state
+- Post-bidirectional-sync state
+- After concurrent operations
+
+### 8. Cryptographic Verification
+
+#### 8.1 Snapshot Verification
 
 ```rust
 impl Snapshot {
@@ -628,7 +778,7 @@ impl Snapshot {
 }
 ```
 
-#### 5.2 Incremental Verification
+#### 8.2 Incremental Verification
 
 For hash-based sync, verify each entity as received:
 
@@ -652,7 +802,7 @@ fn verify_entity(
 }
 ```
 
-### 7. Bidirectional Sync
+### 9. Bidirectional Sync
 
 All protocols MUST be bidirectional to ensure convergence:
 
@@ -677,7 +827,7 @@ pub struct SyncResult {
 }
 ```
 
-### 8. Network Messages
+### 10. Network Messages
 
 ```rust
 pub enum SyncMessage {
@@ -807,6 +957,74 @@ This CIP is backwards compatible:
 
 **Risk**: Network partition causes divergent states.
 **Mitigation**: Deterministic conflict resolution (LWW, configurable per-entity).
+
+## Acceptance Criteria
+
+### Sync Success vs Convergence
+
+**Sync Session Success** - A single sync exchange between two peers is successful when:
+1. All requested entities have been transferred (no protocol errors)
+2. All received entities have been applied via CRDT merge
+3. Buffered deltas (if any) have been replayed via DAG
+
+**Convergence** - All peers have identical state. May require multiple sync rounds.
+
+> Note: A successful sync does NOT guarantee immediate root hash equality (concurrent operations may occur during sync).
+
+### Black-Box Compliance Tests
+
+| # | Scenario | Observable Behavior | Pass Criteria |
+|---|----------|---------------------|---------------|
+| **A1** | Fresh node joins | Node bootstraps from peer | `node.root_hash == peer.root_hash` after sync |
+| **A2** | Concurrent writes | Two nodes write simultaneously | Both nodes converge to same `root_hash` |
+| **A3** | Partition heals | Two partitions reconnect | All nodes converge to same state |
+| **A4** | Delta during sync | Delta arrives while snapshot syncing | Delta visible in final state (not lost) |
+| **A5** | Counter conflict | Both nodes increment counter | `final_count == node1_increments + node2_increments` |
+| **A6** | Map conflict | Both nodes add different keys | All keys present in both nodes |
+| **A7** | Custom type merge | Both nodes modify custom type | WASM merge callback invoked, both see merged result |
+| **A8** | Malicious snapshot | Peer sends tampered snapshot | Verification fails, sync aborts, no state change |
+| **A9** | Large divergence (50%) | Nodes have 50% different entities | Sync completes, states converge |
+| **A10** | Identity determinism | Same code on two nodes | Same entity IDs generated |
+
+### Implementation Completeness Checklist
+
+```markdown
+## Core Protocol
+- [ ] SyncHandshake exchange succeeds
+- [ ] Protocol negotiation selects appropriate strategy
+- [ ] DeltaSync transfers deltas by ID
+- [ ] HashComparison walks tree and transfers differing entities
+- [ ] Snapshot transfers full state with verification
+- [ ] BloomFilter identifies and transfers missing entities
+- [ ] All strategies include entity metadata in transfer
+
+## CRDT Merge
+- [ ] Counter merge sums per-node values
+- [ ] UnorderedMap merge preserves all keys
+- [ ] UnorderedSet merge is add-wins union
+- [ ] LwwRegister merge uses timestamp comparison
+- [ ] Vector merge is element-wise
+- [ ] RGA merge preserves all insertions
+- [ ] Custom type merge invokes WASM callback
+- [ ] Root state merge invokes WASM `merge_root_state`
+
+## Safety
+- [ ] Snapshot on initialized node uses CRDT merge (not overwrite)
+- [ ] Deltas buffered during state-based sync
+- [ ] Buffered deltas replayed via DAG (causal order)
+- [ ] Entity metadata (crdt_type) persisted with entity
+- [ ] Snapshot verified before apply
+
+## Identity
+- [ ] Entity IDs are deterministic (same code → same IDs)
+- [ ] Collection IDs derived from parent + field name
+- [ ] No random ID generation for persistent entities
+
+## Verification
+- [ ] Snapshot root hash verified before apply
+- [ ] Entity hashes verified during tree sync
+- [ ] Tampered data rejected with clear error
+```
 
 ## Test Cases
 
