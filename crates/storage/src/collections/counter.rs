@@ -215,15 +215,18 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         field_name: &str,
     ) -> Self {
         // For Counter, we need to create deterministic IDs for both positive and negative maps
-        // We'll use field_name + "_positive" and field_name + "_negative" as suffixes
+        // Use a reserved internal prefix to prevent collisions with user-created collections.
+        // The prefix "__counter_internal_" is reserved for Counter's internal maps and ensures
+        // that a Counter with field name "X" won't collide with a user-created collection
+        // named "X_positive" or "X_negative".
         Self {
             positive: UnorderedMap::new_with_field_name_internal(
                 parent_id,
-                &format!("{field_name}_positive"),
+                &format!("__counter_internal_{field_name}_positive"),
             ),
             negative: UnorderedMap::new_with_field_name_internal(
                 parent_id,
-                &format!("{field_name}_negative"),
+                &format!("__counter_internal_{field_name}_negative"),
             ),
         }
     }
@@ -839,6 +842,44 @@ mod tests {
             <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
             <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter3.positive),
             "Counters with different parents should have different IDs"
+        );
+    }
+
+    #[test]
+    fn test_counter_internal_maps_no_collision() {
+        crate::env::reset_for_testing();
+
+        // Verify that Counter's internal maps don't collide with user-created collections
+        // A Counter with field name "visits" should NOT collide with a user-created
+        // UnorderedMap with field name "visits_positive" or "visits_negative"
+        let counter = GCounter::new_with_field_name(None, "visits");
+        let user_map_positive =
+            UnorderedMap::<String, u64>::new_with_field_name(None, "visits_positive");
+        let user_map_negative =
+            UnorderedMap::<String, u64>::new_with_field_name(None, "visits_negative");
+
+        // Counter's internal maps should have different IDs than user-created maps
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&user_map_positive),
+            "Counter's internal positive map should not collide with user-created 'visits_positive' map"
+        );
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter.negative),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&user_map_negative),
+            "Counter's internal negative map should not collide with user-created 'visits_negative' map"
+        );
+
+        // Also verify that Counter's internal maps use the reserved prefix
+        // by checking that a map with the actual internal name matches
+        let internal_positive = UnorderedMap::<String, u64>::new_with_field_name(
+            None,
+            "__counter_internal_visits_positive",
+        );
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&internal_positive),
+            "Counter's internal positive map should use the reserved prefix"
         );
     }
 }
