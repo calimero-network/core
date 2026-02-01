@@ -5,4 +5,4 @@ paths-ignore:
   - "contracts/**"
   - "apps/**/res/**"
   - "apps/**/static/**"
-  - "tools/merodb/gui/static/**"
+  - "tools/merodb/src/gui/static/css/**"
