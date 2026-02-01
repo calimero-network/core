@@ -4,19 +4,46 @@
 use std::collections::{btree_map, BTreeMap};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use actix::Actor;
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::metrics::Metrics;
+
+/// Default TTL for cached context configurations (30 seconds).
+/// This balances freshness of config data with reducing database lookups.
+const CONTEXT_CONFIG_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// A cached context configuration entry with timestamp for TTL tracking.
+#[derive(Debug, Clone)]
+struct CachedContextConfig {
+    config: ContextConfigParams<'static>,
+    cached_at: Instant,
+}
+
+impl CachedContextConfig {
+    /// Creates a new cached config entry with the current timestamp.
+    fn new(config: ContextConfigParams<'static>) -> Self {
+        Self {
+            config,
+            cached_at: Instant::now(),
+        }
+    }
+
+    /// Returns true if the cached entry has expired based on TTL.
+    fn is_expired(&self) -> bool {
+        self.cached_at.elapsed() > CONTEXT_CONFIG_CACHE_TTL
+    }
+}
 
 pub mod config;
 pub mod handlers;
@@ -67,6 +94,11 @@ pub struct ContextManager {
     /// so we cannot blindly reuse compiled blobs across apps.
     applications: BTreeMap<ApplicationId, Application>,
 
+    /// An in-memory cache of context configurations (`ContextId` -> `CachedContextConfig`).
+    /// This cache reduces repeated database lookups for external configuration data
+    /// by storing config entries with TTL-based expiration.
+    context_configs: BTreeMap<ContextId, CachedContextConfig>,
+
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
@@ -103,6 +135,7 @@ impl ContextManager {
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
+            context_configs: BTreeMap::new(),
 
             metrics: prometheus_registry.map(Metrics::new),
         }
@@ -208,6 +241,74 @@ impl ContextManager {
 
                 Ok(Some(item))
             }
+        }
+    }
+
+    /// Retrieves context configuration, using cache with TTL to reduce database lookups.
+    ///
+    /// This function implements TTL-based caching for external context configurations.
+    /// It first checks if a valid (non-expired) cached entry exists. On cache hit,
+    /// it returns the cached config. On cache miss or expiration, it fetches from
+    /// the database via `context_client`, updates the cache, and returns the result.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The unique identifier of the context to retrieve config for.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing an `Option` with the `ContextConfigParams`.
+    /// Returns `Ok(Some(config))` if the config is found in cache or database.
+    /// Returns `Ok(None)` if the context config does not exist.
+    /// Returns `Err` if a database error occurs.
+    pub fn get_cached_context_config(
+        &mut self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<ContextConfigParams<'static>>> {
+        // Check if we have a cached entry that hasn't expired
+        if let Some(cached) = self.context_configs.get(context_id) {
+            if !cached.is_expired() {
+                tracing::trace!(
+                    %context_id,
+                    cache_age_ms = cached.cached_at.elapsed().as_millis(),
+                    "Returning cached context config"
+                );
+                return Ok(Some(cached.config.clone()));
+            }
+            tracing::debug!(
+                %context_id,
+                cache_age_ms = cached.cached_at.elapsed().as_millis(),
+                "Context config cache expired, refreshing"
+            );
+        }
+
+        // Cache miss or expired - fetch from database
+        let config = self.context_client.context_config(context_id)?;
+
+        if let Some(ref config) = config {
+            tracing::debug!(
+                %context_id,
+                "Caching context config with TTL of {:?}",
+                CONTEXT_CONFIG_CACHE_TTL
+            );
+            self.context_configs
+                .insert(*context_id, CachedContextConfig::new(config.clone()));
+        }
+
+        Ok(config)
+    }
+
+    /// Invalidates the cached context configuration for a specific context.
+    ///
+    /// This should be called when context configuration is updated to ensure
+    /// subsequent lookups fetch fresh data from the database.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The unique identifier of the context to invalidate cache for.
+    pub fn invalidate_context_config_cache(&mut self, context_id: &ContextId) {
+        if self.context_configs.remove(context_id).is_some() {
+            tracing::debug!(%context_id, "Invalidated context config cache");
         }
     }
 }

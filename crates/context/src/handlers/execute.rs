@@ -102,7 +102,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
         };
 
-        let external_config = match self.context_client.context_config(&context_id) {
+        let external_config = match self.get_cached_context_config(&context_id) {
             Ok(Some(external_config)) => external_config,
             Ok(None) => {
                 error!(%context_id, "missing context config for context");
