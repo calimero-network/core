@@ -37,7 +37,6 @@ use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
-use rand::seq::SliceRandom;
 use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::time::{self, timeout_at, Instant, MissedTickBehavior};
@@ -680,7 +679,7 @@ impl SyncManager {
         phases.log(&context_id.to_string());
 
         // ========================================================
-        // PARALLEL DIAL PHASE
+        // TRUE PARALLEL DIAL PHASE (using FuturesUnordered)
         // ========================================================
         use super::dial_tracker::{DialResult, ParallelDialConfig, ParallelDialTracker};
 
@@ -693,7 +692,7 @@ impl SyncManager {
         let mut parallel_tracker = ParallelDialTracker::new(parallel_config);
         let dial_start = Instant::now();
 
-        // Spawn parallel dial tasks
+        // Select peers to dial in parallel
         let peers_to_dial: Vec<_> = selected_peers
             .iter()
             .take(parallel_config.max_concurrent)
@@ -703,22 +702,37 @@ impl SyncManager {
         info!(
             %context_id,
             peer_count = peers_to_dial.len(),
-            "Starting parallel dial to peers"
+            "Starting TRUE parallel dial to peers"
         );
 
-        // Try each peer - first success wins
-        // Note: True parallel would use tokio::select! but that requires
-        // careful handling of the sync state. For now, we race them sequentially
-        // but track as parallel for metrics.
-        let mut last_error = None;
-        for peer_id in &peers_to_dial {
-            let attempt_start = Instant::now();
-            match self.initiate_sync(context_id, *peer_id).await {
-                Ok(result) => {
+        // Create a FuturesUnordered to race all dial attempts concurrently
+        let mut dial_futures: FuturesUnordered<_> = peers_to_dial
+            .iter()
+            .map(|&peer_id| {
+                let attempt_start = Instant::now();
+                async move {
+                    let result = self.initiate_sync(context_id, peer_id).await;
                     let dial_ms = attempt_start.elapsed().as_secs_f64() * 1000.0;
-                    parallel_tracker.record(*peer_id, DialResult::Success, dial_ms);
+                    (peer_id, result, dial_ms)
+                }
+            })
+            .collect();
 
-                    // Log the parallel dial result
+        // Race all dial attempts - first success wins, others are dropped
+        let mut last_error = None;
+        let mut attempts = 0u32;
+
+        while let Some((peer_id, result, dial_ms)) = dial_futures.next().await {
+            attempts += 1;
+
+            match result {
+                Ok(sync_result) => {
+                    // SUCCESS! First successful dial wins
+                    parallel_tracker.record(peer_id, DialResult::Success, dial_ms);
+
+                    // Drop remaining futures (they'll be cancelled)
+                    drop(dial_futures);
+
                     let parallel_result = parallel_tracker.finish(&context_id.to_string());
 
                     info!(
@@ -727,42 +741,45 @@ impl SyncManager {
                         time_to_viable_peer_ms = %format!("{:.2}", phases.time_to_viable_peer_ms()),
                         dial_ms = %format!("{:.2}", dial_ms),
                         total_attempts = parallel_result.attempts,
+                        concurrent_cancelled = peers_to_dial.len().saturating_sub(attempts as usize),
                         result = "success",
-                        "PARALLEL_DIAL_SUCCESS"
+                        "TRUE_PARALLEL_DIAL_SUCCESS"
                     );
 
                     // Record success in cache
                     {
                         let mut cache = self.recent_peer_cache.write().unwrap();
-                        cache.record_success(context_id_bytes, *peer_id, peer_source);
+                        cache.record_success(context_id_bytes, peer_id, peer_source);
                     }
 
-                    return Ok(result);
+                    return Ok(sync_result);
                 }
                 Err(e) => {
-                    let dial_ms = attempt_start.elapsed().as_secs_f64() * 1000.0;
-                    parallel_tracker.record(*peer_id, DialResult::Error, dial_ms);
+                    parallel_tracker.record(peer_id, DialResult::Error, dial_ms);
 
                     debug!(
                         %context_id,
                         %peer_id,
                         dial_ms = %format!("{:.2}", dial_ms),
                         error = %e,
-                        "Parallel dial attempt failed"
+                        attempt = attempts,
+                        remaining = dial_futures.len(),
+                        "Parallel dial attempt failed, waiting for others"
                     );
 
                     // Record failure in cache
                     {
                         let mut cache = self.recent_peer_cache.write().unwrap();
-                        cache.record_failure(*peer_id);
+                        cache.record_failure(peer_id);
                     }
 
                     last_error = Some(e);
+                    // Continue to next future (others are still racing)
                 }
             }
         }
 
-        // All parallel attempts failed - log and return error
+        // All parallel attempts failed
         let total_dial_ms = dial_start.elapsed().as_secs_f64() * 1000.0;
         let parallel_result = parallel_tracker.finish(&context_id.to_string());
 

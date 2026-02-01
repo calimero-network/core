@@ -57,9 +57,9 @@ This is acceptable because:
 
 ---
 
-## Issue 2: ParallelDialTracker ~~Not Integrated~~ ✅ INTEGRATED
+## Issue 2: ParallelDialTracker - ✅ TRUE PARALLEL DIALING
 
-### Status: ✅ RESOLVED (January 31, 2026)
+### Status: ✅ COMPLETE (February 1, 2026)
 
 ### What Was Implemented
 
@@ -128,17 +128,34 @@ PARALLEL_DIAL_RESULT  context_id=... success=true attempts=2 time_to_success_ms=
 | P99 dial | 1000ms+ | ~200ms (first success of 3) |
 | Churn recovery | Sequential retries | Parallel attempts |
 
-### Future Improvement
+### Implementation
 
-Current implementation is "pseudo-parallel" - attempts are sequential but tracked
-as parallel for metrics. True parallel dialing with `tokio::select!` would require:
+**TRUE parallel dialing using `FuturesUnordered`**:
 
-1. Careful handling of shared sync state
-2. Connection cancellation logic
-3. Resource cleanup for abandoned connections
+```rust
+// Create concurrent dial futures
+let mut dial_futures: FuturesUnordered<_> = peers_to_dial
+    .iter()
+    .map(|&peer_id| async move {
+        let result = self.initiate_sync(context_id, peer_id).await;
+        (peer_id, result, dial_ms)
+    })
+    .collect();
 
-This is deferred as the current approach already improves P99 by trying multiple
-peers before giving up.
+// Race all - first success wins, others are dropped
+while let Some((peer_id, result, dial_ms)) = dial_futures.next().await {
+    if result.is_ok() {
+        drop(dial_futures); // Cancel remaining
+        return Ok(result);
+    }
+}
+```
+
+Benefits:
+- All dial attempts run truly concurrently
+- First success immediately returns
+- Remaining futures are cancelled (dropped)
+- No sequential blocking
 
 ---
 
@@ -237,6 +254,19 @@ Ideal DAG structure:                    Actual after snapshot:
    - Cleaner than stubs
    - Requires protocol change
 
+### Why This Is NOT In This PR
+
+A proper checkpoint delta type would require:
+1. **DAG protocol change**: Add `DeltaKind` enum to `CausalDelta`
+2. **Wire format change**: Affects Borsh serialization (breaking change)
+3. **Storage schema change**: New delta type in database
+4. **Network protocol change**: All nodes must understand new type
+
+This is a **separate CIP** with its own review cycle. The current stub approach is:
+- ✅ **Functional**: New deltas after snapshot work correctly
+- ✅ **Safe**: No data loss or corruption
+- ⚠️ **Architecturally impure**: But acceptable for production
+
 ### Recommendation
 
 **Keep the workaround** with clear documentation:
@@ -298,8 +328,8 @@ pub async fn add_snapshot_boundary_stubs(...) { ... }
 
 - [x] ~~**Parallel dialing integration**~~ → **DONE**
 - [x] ~~**WASM merge callback**~~ → **NOT NEEDED** (see below)
-- [ ] **Checkpoint delta type**: Proper protocol-level snapshot boundary
-- [ ] **True parallel dialing**: Use `tokio::select!` for concurrent dial attempts
+- [x] ~~**True parallel dialing**~~ → **DONE** (uses `FuturesUnordered`)
+- [ ] **Checkpoint delta type**: Separate CIP required (protocol-level change)
 
 ### Why `RuntimeMergeCallback::from_module()` is NOT Needed
 
