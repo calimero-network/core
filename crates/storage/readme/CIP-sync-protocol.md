@@ -2289,16 +2289,30 @@ WARN calimero_node::sync::manager: SAFETY: Snapshot strategy blocked for initial
 | Adaptive selection logic | ✅ Implemented |
 | **Snapshot safety protection** | ✅ **Implemented (2 layers)** |
 | Strategy logging | ✅ Implemented |
-| Network-level BloomFilter | ⏳ Defined in storage tests only |
-| Network-level SubtreePrefetch | ⏳ Defined in storage tests only |
-| Network-level LevelWise | ⏳ Defined in storage tests only |
+| Network-level BloomFilter | ✅ **Implemented** |
+| Network-level SubtreePrefetch | ✅ **Implemented** |
+| Network-level LevelWise | ✅ **Implemented** |
 
-**Note**: All strategies (HashComparison, BloomFilter, SubtreePrefetch, LevelWise) are fully wired to the network layer:
-- Network messages: `TreeNodeRequest`, `TreeNodeResponse`, `BloomFilterRequest`, `BloomFilterResponse`
-- Dispatch: `SyncManager` calls `hash_comparison_sync()`, `bloom_filter_sync()` based on strategy
-- Handlers: `handle_tree_node_request()`, `handle_bloom_filter_request()` respond to incoming requests
+**All strategies transfer actual entity data** (no DAG fallback):
 
-Current limitation: Underlying tree storage enumeration methods fall back to DAG sync for actual data transfer. The network protocol layer is complete.
+| Strategy | Diff Discovery | Entity Transfer | Wire Format |
+|----------|---------------|-----------------|-------------|
+| HashComparison | Merkle tree walk | ✅ Direct | `TreeLeafData` in `TreeNodeResponse` |
+| BloomFilter | Probabilistic | ✅ Direct | `missing_entities: Vec<TreeLeafData>` |
+| SubtreePrefetch | Subtree hashes | ✅ Direct | `TreeLeafData` in `TreeNodeResponse` |
+| LevelWise | Level-by-level | ✅ Direct | `TreeLeafData` in `TreeNodeResponse` |
+| Snapshot | N/A | ✅ Full state | `SnapshotPage` stream |
+
+**Wire Protocol:**
+- `TreeNodeRequest` → `TreeNodeResponse { nodes: Vec<TreeNode> }`
+- Each `TreeNode` contains `leaf_data: Option<TreeLeafData>` with actual entity `value` + `metadata`
+- `BloomFilterResponse` contains `missing_entities: Vec<TreeLeafData>` directly
+
+**CRDT Merge on Apply:**
+- `handle_tree_node_request()` includes `metadata.crdt_type` in response
+- `apply_entity_with_merge()` calls `Interface::merge_by_crdt_type_with_callback()`
+- Built-in CRDTs (Counter, Map) merge in storage layer (~100ns)
+- Custom types dispatch to WASM callback (~10μs)
 
 ### Running Isolated Strategy Tests
 
