@@ -42,6 +42,14 @@ This branch implements a **hybrid state synchronization protocol** that combines
 
 3. **Snapshot Boundary** - Replaced fake delta stubs with proper `DeltaKind::Checkpoint`.
 
+4. **Metadata Persistence** (Feb 1) - Tree sync was writing entity values but NOT `EntityIndex` with `crdt_type`. Now calls `Index::persist_metadata_for_sync()`.
+
+5. **Bloom Filter Hash** (Feb 1) - `sync_protocol.rs` used FNV-1a but `dag/lib.rs` used SipHash. Now both use FNV-1a.
+
+6. **Buffered Delta Replay** (Feb 1) - `BufferedDelta` was missing `nonce`, `author_id`, `root_hash`, `events` needed for replay after snapshot.
+
+7. **Protocol Version** (Feb 1) - Wire format changed but HybridSync was still v1. Bumped to **HybridSync v2**.
+
 ---
 
 ## Document Map

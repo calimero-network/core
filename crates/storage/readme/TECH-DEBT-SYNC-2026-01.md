@@ -237,6 +237,42 @@ pub async fn add_snapshot_checkpoints(
 
 ---
 
+## Issue 5: Review Findings (Bugbot + Agents) - ✅ FIXED
+
+### Status: ✅ ALL FIXED (February 1, 2026)
+
+Cursor Bugbot and 8 AI agents reviewed the PR and found critical issues. All have been addressed.
+
+### P0 Fixes (Blockers)
+
+| Issue | Root Cause | Fix |
+|-------|------------|-----|
+| **Metadata not persisted** | Tree sync wrote entity value but NOT `EntityIndex` with `crdt_type` → subsequent merges defaulted to LWW | Added `Index::persist_metadata_for_sync()` public API, called after `apply_entity_with_merge()` |
+| **Bloom filter hash mismatch** | `sync_protocol.rs` used FNV-1a, `dag/lib.rs` used `DefaultHasher` (SipHash) → wrong bit positions | Added `bloom_hash()` FNV-1a function in DAG matching sync_protocol |
+| **Buffered delta missing fields** | `BufferedDelta` only had `id`, `parents`, `hlc`, `payload` → can't decrypt/replay | Extended struct with `nonce`, `author_id`, `root_hash`, `events` |
+| **Division by zero** | `num_bits == 0` from malformed bloom filter → panic | Added validation before modulo operation |
+
+### P1 Fixes
+
+| Issue | Root Cause | Fix |
+|-------|------------|-----|
+| **Protocol version** | Wire format changed but HybridSync still v1 → mixed clusters crash | Bumped to `HybridSync { version: 2 }` |
+| **remote_root_hash bug** | Used `local_root_hash` instead of peer's → tree comparison short-circuited | Pass `peer_root_hash` from handshake to `handle_tree_sync_with_callback()` |
+| **Parallel dialing exhaustion** | Only tried first N peers, gave up if all failed → regression from sequential | Implemented sliding window refill to try ALL peers |
+
+### Key Files Changed
+
+```
+crates/storage/src/index.rs          +55 (persist_metadata_for_sync API)
+crates/node/src/sync/tree_sync.rs    +18 (call persist_metadata_for_sync)
+crates/dag/src/lib.rs                +25 (bloom_hash FNV-1a, num_bits validation)
+crates/node/primitives/src/sync_protocol.rs  +30 (BufferedDelta fields, HybridSync v2)
+crates/node/src/handlers/state_delta.rs      +6  (pass all BufferedDelta fields)
+crates/node/src/sync/manager.rs      +50 (sliding window, peer_root_hash param)
+```
+
+---
+
 ## Summary Table
 
 | Issue | Status |
@@ -246,6 +282,12 @@ pub async fn add_snapshot_checkpoints(
 | True parallel dialing | ✅ DONE |
 | WASM merge callback | ✅ NOT NEEDED |
 | Snapshot checkpoints | ✅ FIXED (DeltaKind::Checkpoint) |
+| **Metadata persistence** | ✅ FIXED (persist_metadata_for_sync) |
+| **Bloom hash mismatch** | ✅ FIXED (FNV-1a in both) |
+| **BufferedDelta fields** | ✅ FIXED (all replay fields) |
+| **HybridSync version** | ✅ FIXED (v2) |
+| **remote_root_hash** | ✅ FIXED (peer hash from handshake) |
+| **Parallel dial sliding window** | ✅ FIXED (try all peers) |
 
 **Key Insight (Updated)**: Both delta sync AND tree sync now use proper CRDT merge:
 - Built-in CRDTs (Counter, Map, Set, Register) merge correctly via `Interface`

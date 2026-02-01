@@ -26,12 +26,25 @@
 | WASM Custom Type Merge | ⚠️ Deferred | Uses LWW fallback (see Future Work) |
 | Collection Architecture | ✅ Complete | Children stored as separate entities |
 | Counter Per-Executor Slots | ✅ Complete | No conflicts between nodes |
-| Parallel Dialing | ✅ Complete | Uses `FuturesUnordered` for true concurrency |
+| Parallel Dialing | ✅ Complete | Uses `FuturesUnordered` with sliding window |
 | Checkpoint Deltas | ✅ Complete | `DeltaKind::Checkpoint` for snapshot boundaries |
 | Bloom Filter Metadata | ✅ Complete | Response includes `TreeLeafData` |
+| **Metadata Persistence** | ✅ Complete | `Index::persist_metadata_for_sync()` |
+| **Bloom Filter Hash Fix** | ✅ Complete | FNV-1a in both sync_protocol and DAG |
+| **BufferedDelta Fields** | ✅ Complete | All replay fields (nonce, author, etc.) |
+| **HybridSync v2** | ✅ Complete | Wire format version bump |
 | Payload Compression | 🔲 Future | zstd compression for large transfers |
 
 **Summary**: All core features are implemented. Built-in CRDTs (Counter, Map, Set, Register) merge correctly during state sync. Custom `Mergeable` types fall back to LWW (acceptable for current use cases).
+
+### Protocol Version
+
+**HybridSync v2** (February 2026) includes breaking changes:
+- `TreeLeafData` now includes `Metadata` with `crdt_type`
+- `BufferedDelta` includes all replay fields (`nonce`, `author_id`, `root_hash`, `events`)
+- `BloomFilterResponse` uses `Vec<TreeLeafData>` instead of raw bytes
+
+Mixed-version clusters (v1 + v2) are **not supported** due to wire format incompatibility.
 
 ## Abstract
 
