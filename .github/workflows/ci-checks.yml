@@ -20,7 +20,7 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: [self-hosted, big-machine]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,23 +33,30 @@ jobs:
           key: ci-checks
           cache-on-failure: true
 
-      - name: Build
+      - name: Build (docker-only for PR)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          cargo build -p merod -p meroctl -p mero-auth -p mero-relayer -p mero-kms-phala
+
+      - name: Build (full)
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           ./scripts/build-all-apps.sh
           cargo build --workspace --all-targets --tests
 
       - name: Cargo format
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           rustup component add rustfmt
 
           cargo fmt --check
 
       - name: Cargo clippy
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         run: cargo clippy -- -A warnings
 
       - name: Cargo test
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         run: |
           FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
 
@@ -59,7 +66,7 @@ jobs:
           cargo test -- --nocapture
 
       - name: Cargo deny
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         run: |
           # Pin cargo-deny to 0.16.3 for compatibility with Rust 1.88.0 (from rust-toolchain.toml)
           cargo install cargo-deny --version 0.16.3 --locked
