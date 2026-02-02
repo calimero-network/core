@@ -146,12 +146,7 @@ pub fn non_empty_string(s: &str) -> Result<String, String> {
 /// Can be used with `#[arg(value_parser = existing_file_path)]`
 pub fn existing_file_path(s: &str) -> Result<std::path::PathBuf, String> {
     let path = std::path::PathBuf::from(s);
-    if !path.exists() {
-        return Err(format!("File not found: '{}'", s));
-    }
-    if !path.is_file() {
-        return Err(format!("Path is not a file: '{}'", s));
-    }
+    validate_file_exists(&path).map_err(|err| err.to_string())?;
     Ok(path)
 }
 
