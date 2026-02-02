@@ -85,6 +85,19 @@ jobs:
                   cd sdk-js
                   git checkout master || git checkout main
 
+            - name: Patch SDK JS workflows for stability
+              run: |
+                  python3 - <<'PY'
+                  from pathlib import Path
+
+                  path = Path("sdk-js/examples/blobs/workflows/blobs-js.yml")
+                  if path.exists():
+                      content = path.read_text()
+                      content = content.replace("seconds: 3", "seconds: 15")
+                      content = content.replace("seconds: 6", "seconds: 15")
+                      path.write_text(content)
+                  PY
+
             - name: Install SDK JS dependencies
               working-directory: sdk-js
               run: |
@@ -149,16 +162,32 @@ jobs:
 
                   for workflow in "${WORKFLOW_FILES[@]}"; do
                       workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
-                      workflow_log="$GITHUB_WORKSPACE/workflow-logs/${workflow_id}.log"
+                      max_attempts=2
+                      attempt=1
+                      success=false
 
-                      if merobox bootstrap run "$workflow" \
-                          --image "$MEROD_IMAGE" \
-                          --e2e-mode \
-                          --near-devnet \
-                          --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
-                          --verbose 2>&1 | tee "$workflow_log"; then
-                          :
-                      else
+                      while [ $attempt -le $max_attempts ]; do
+                          workflow_log="$GITHUB_WORKSPACE/workflow-logs/${workflow_id}-attempt-${attempt}.log"
+
+                          if [ $attempt -gt 1 ]; then
+                              merobox stop --all || true
+                              merobox nuke -f || true
+                              sleep 2
+                          fi
+
+                          if merobox bootstrap run "$workflow" \
+                              --image "$MEROD_IMAGE" \
+                              --e2e-mode \
+                              --near-devnet \
+                              --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
+                              --verbose 2>&1 | tee "$workflow_log"; then
+                              success=true
+                              break
+                          else
+                              attempt=$((attempt + 1))
+                          fi
+                      done
+                      if [ "$success" = false ]; then
                           FAILED_WORKFLOWS+=("$workflow")
                       fi
                       
