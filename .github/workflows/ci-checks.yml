@@ -20,7 +20,7 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: [self-hosted, big-machine]
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
