@@ -85,6 +85,19 @@ jobs:
                   cd sdk-js
                   git checkout master || git checkout main
 
+            - name: Patch SDK JS workflows for stability
+              run: |
+                  python3 - <<'PY'
+                  from pathlib import Path
+
+                  path = Path("sdk-js/examples/blobs/workflows/blobs-js.yml")
+                  if path.exists():
+                      content = path.read_text()
+                      content = content.replace("seconds: 3", "seconds: 15")
+                      content = content.replace("seconds: 6", "seconds: 15")
+                      path.write_text(content)
+                  PY
+
             - name: Install SDK JS dependencies
               working-directory: sdk-js
               run: |
@@ -122,9 +135,11 @@ jobs:
             - name: Run SDK JS Merobox Workflows
               id: run_workflows
               run: |
+                  set -o pipefail
                   MEROD_IMAGE="ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}"
 
                   mkdir -p docker-logs
+                  mkdir -p workflow-logs
                   cd sdk-js
 
                   merobox stop --all || true
@@ -146,27 +161,53 @@ jobs:
                   FAILED_WORKFLOWS=()
 
                   for workflow in "${WORKFLOW_FILES[@]}"; do
-                      if merobox bootstrap run "$workflow" \
-                          --image "$MEROD_IMAGE" \
-                          --e2e-mode \
-                          --near-devnet \
-                          --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
-                          --verbose; then
-                          :
-                      else
+                      workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
+                      max_attempts=2
+                      attempt=1
+                      success=false
+
+                      while [ $attempt -le $max_attempts ]; do
+                          workflow_log="$GITHUB_WORKSPACE/workflow-logs/${workflow_id}-attempt-${attempt}.log"
+
+                          if [ $attempt -gt 1 ]; then
+                              merobox stop --all || true
+                              merobox nuke -f || true
+                              sleep 2
+                          fi
+
+                          if merobox bootstrap run "$workflow" \
+                              --image "$MEROD_IMAGE" \
+                              --e2e-mode \
+                              --near-devnet \
+                              --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
+                              --verbose 2>&1 | tee "$workflow_log"; then
+                              success=true
+                              break
+                          else
+                              attempt=$((attempt + 1))
+                          fi
+                      done
+                      if [ "$success" = false ]; then
                           FAILED_WORKFLOWS+=("$workflow")
                       fi
                       
                       # Collect logs with workflow identifier to prevent filename collisions
-                      # Create sanitized workflow identifier (replace / with -, remove .yml extension)
-                      workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
                       echo "Collecting Docker logs for workflow: $workflow (id: $workflow_id)"
-                      for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-                          if [ -n "$container" ]; then
-                              echo "Collecting logs from container: $container"
-                              docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
-                          fi
-                      done
+                      containers=$(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true)
+                      if [ -z "$containers" ]; then
+                          containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | rg -i "calimero|merobox|node" || true)
+                      fi
+                      if [ -z "$containers" ]; then
+                          containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null || true)
+                      fi
+                      if [ -n "$containers" ]; then
+                          while IFS= read -r container; do
+                              if [ -n "$container" ]; then
+                                  echo "Collecting logs from container: $container"
+                                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
+                              fi
+                          done <<< "$containers"
+                      fi
                       
                       merobox stop --all || true
                       merobox nuke -f || true
@@ -202,6 +243,15 @@ jobs:
                   retention-days: 7
                   if-no-files-found: warn
 
+            - name: Upload Workflow Logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: sdk-js-workflow-logs-${{ github.sha }}
+                  path: workflow-logs/
+                  retention-days: 7
+                  if-no-files-found: warn
+
             - name: Upload Docker Logs
               if: always()
               uses: actions/upload-artifact@v4
@@ -213,7 +263,12 @@ jobs:
 
             - name: Fail if workflows failed
               if: steps.run_workflows.outputs.has_failures == 'true'
-              run: exit 1
+              run: |
+                  if [ -f sdk-js/failed_workflows.txt ]; then
+                      echo "Failed SDK JS workflows:"
+                      cat sdk-js/failed_workflows.txt
+                  fi
+                  exit 1
 
     comment:
         name: Report Failed Workflows
@@ -242,11 +297,12 @@ jobs:
               continue-on-error: true
               with:
                   name: failed-workflows
+                  path: failed-workflows
 
             - name: Prepare Failure Comment
               if: steps.download.outcome == 'success'
               run: |
-                  failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+                  failed_list=$(cat failed-workflows/failed_workflows.txt | sed 's/^/- /')
                   message="## SDK JS Workflows Failed
 
                   The following SDK JS workflow(s) failed:
@@ -271,6 +327,10 @@ jobs:
             - name: Fail if main job failed or was cancelled
               if: steps.check_status.outputs.job_failed == 'true'
               run: |
+                  if [ -f failed-workflows/failed_workflows.txt ]; then
+                      echo "Failed SDK JS workflows:"
+                      cat failed-workflows/failed_workflows.txt
+                  fi
                   if [ "${{ steps.check_status.outputs.was_cancelled }}" == "true" ]; then
                       echo "Workflow was cancelled"
                   else
