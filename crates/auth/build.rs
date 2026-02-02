@@ -142,11 +142,23 @@ fn resolve_latest_release_tag(repo: &str, token: Option<&str>) -> eyre::Result<O
     let response = request.send()?;
     let final_url = response.url();
 
-    let tag = final_url
-        .path_segments()
-        .and_then(|segments| segments.last())
-        .filter(|segment| !segment.is_empty() && *segment != "latest")
-        .map(str::to_owned);
+    let tag = final_url.path_segments().and_then(|segments| {
+        let segments: Vec<_> = segments.collect();
+        if let Some(tag_index) = segments.iter().position(|segment| *segment == "tag") {
+            let tag_segments = &segments[tag_index + 1..];
+
+            if tag_segments.is_empty() {
+                None
+            } else {
+                Some(tag_segments.join("/"))
+            }
+        } else {
+            segments
+                .last()
+                .filter(|segment| !segment.is_empty() && **segment != "latest")
+                .map(|segment| (*segment).to_owned())
+        }
+    });
 
     Ok(tag)
 }
