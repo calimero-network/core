@@ -31,6 +31,9 @@ env:
     mero-kms-phala
   AUTH_BINARIES: |-
     mero-auth
+  PROFILING_BINARIES: |-
+    merod
+    meroctl
   # Binaries to publish to Homebrew (excludes specialized components like mero-kms-phala)
   HOMEBREW_BINARIES: |-
     merod
@@ -47,6 +50,7 @@ jobs:
       binary_release: ${{ steps.version_info.outputs.binary_release }}
       crate_release: ${{ steps.version_info.outputs.crate_release }}
       docker_release: ${{ steps.version_info.outputs.docker_release }}
+      build_binaries: ${{ steps.version_info.outputs.build_binaries }}
       docker_push: ${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
@@ -84,26 +88,43 @@ jobs:
             docker_release=true
           fi
 
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            build_binaries=$(cat <<'EOF'
+          merod
+          meroctl
+          mero-relayer
+          mero-kms-phala
+          mero-auth
+          EOF
+            )
+          else
+            build_binaries=$(printf "%s\n%s\n" "$BINARIES" "$AUTH_BINARIES")
+          fi
+
           echo "version=$version" >> $GITHUB_OUTPUT
           echo "prerelease=$prerelease" >> $GITHUB_OUTPUT
           echo "binary_release=$binary_release" >> $GITHUB_OUTPUT
           echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
+          echo "build_binaries<<EOF" >> $GITHUB_OUTPUT
+          echo "$build_binaries" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
   build-binaries:
     name: Build Binaries
     needs: prepare
+    if: ${{ github.event_name != 'pull_request' || matrix.target != 'aarch64-apple-darwin' }}
     strategy:
       matrix:
         include:
-          - os: ubuntu-24.04-8cpu
+          - runs-on: big-machine
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
+          - runs-on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-latest
+          - runs-on: macos-latest
             target: aarch64-apple-darwin
       fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
 
     env:
       CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,15 +142,12 @@ jobs:
           key: release
 
       - name: Update Bash
-        if: ${{ matrix.os == 'macos-13' || matrix.os == 'macos-latest' }}
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
         run: brew install bash
 
       - name: Build binaries
         run: |
-          readarray -t binaries <<< "$BINARIES"
-          readarray -t auth_binaries <<< "$AUTH_BINARIES"
-
-          binaries+=("${auth_binaries[@]}")
+          readarray -t binaries <<< "${{ needs.prepare.outputs.build_binaries }}"
 
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
@@ -139,30 +157,27 @@ jobs:
         run: |
           mkdir -p artifacts
 
-          readarray -t binaries <<< "$BINARIES"
-          readarray -t auth_binaries <<< "$AUTH_BINARIES"
-
-          binaries+=("${auth_binaries[@]}")
+          readarray -t binaries <<< "${{ needs.prepare.outputs.build_binaries }}"
 
           for binary in "${binaries[@]}"; do
             tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
           done
 
       - name: Build profiling binaries (with frame pointers and debug symbols)
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        if: ${{ github.event_name != 'pull_request' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
         run: |
-          readarray -t binaries <<< "$BINARIES"
+          readarray -t binaries <<< "$PROFILING_BINARIES"
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
           # Build with frame pointers and enable Wasmer PerfMap profiling feature
           RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }} --features calimero-context/profiling
 
       - name: Compress profiling artifacts using gzip
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        if: ${{ github.event_name != 'pull_request' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
         run: |
           mkdir -p artifacts-profiling
 
-          readarray -t binaries <<< "$BINARIES"
+          readarray -t binaries <<< "$PROFILING_BINARIES"
 
           for binary in "${binaries[@]}"; do
             tar -czf artifacts-profiling/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/profiling "$binary"
@@ -176,7 +191,7 @@ jobs:
           retention-days: 2
 
       - name: Upload profiling artifacts
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        if: ${{ github.event_name != 'pull_request' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-profiling-${{ matrix.target }}
@@ -285,7 +300,9 @@ jobs:
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           push: ${{ needs.prepare.outputs.docker_push }}
-          binaries: ${{ env.BINARIES }}
+          binaries: |-
+            merod
+            meroctl
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -314,7 +331,7 @@ jobs:
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           push: ${{ needs.prepare.outputs.docker_push }}
-          binaries: ${{ env.AUTH_BINARIES }}
+          binaries: mero-auth
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -343,7 +360,7 @@ jobs:
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           push: ${{ needs.prepare.outputs.docker_push }}
-          binaries: ${{ env.BINARIES }}
+          binaries: mero-kms-phala
           dockerfile: .github/workflows/deps/prebuilt.mero-kms-phala.Dockerfile
           container_name: mero-kms-phala
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -380,6 +397,7 @@ jobs:
   release-merod-profiling-container:
     name: Release Merod Profiling container
     needs: [prepare, build-binaries]
+    if: ${{ github.event_name != 'pull_request' }}
     concurrency:
       group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-merod-profiling-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
@@ -401,7 +419,7 @@ jobs:
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           push: ${{ needs.prepare.outputs.docker_push }}
-          binaries: ${{ env.BINARIES }}
+          binaries: ${{ env.PROFILING_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.profiling.Dockerfile
           container_name: merod
           github-token: ${{ secrets.GITHUB_TOKEN }}
