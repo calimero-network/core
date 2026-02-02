@@ -49,7 +49,7 @@ env:
 jobs:
   build:
     name: Build Apps
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     outputs:
       cache-key: ${{ steps.cache-key.outputs.key }}
     steps:
@@ -113,7 +113,7 @@ jobs:
   fuzzy-test-kv-store:
     name: Run KV Store Fuzzy Test with Profiling
     needs: build
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 150
     outputs:
       test_passed: ${{ steps.set-result.outputs.passed }}
@@ -331,7 +331,7 @@ jobs:
   fuzzy-test-handlers:
     name: Run KV Store with Handlers Fuzzy Test with Profiling
     needs: build
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 150
     outputs:
       test_passed: ${{ steps.set-result-handlers.outputs.passed }}

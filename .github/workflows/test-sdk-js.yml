@@ -31,7 +31,7 @@ env:
 jobs:
     test-sdk-js:
         name: Test SDK JS with Core Binary
-        runs-on: ubuntu-24.04-8cpu
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout Core code
               uses: actions/checkout@v4

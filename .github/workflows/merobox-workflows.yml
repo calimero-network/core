@@ -32,7 +32,7 @@ env:
 jobs:
     build-apps:
         name: Build Apps
-        runs-on: ubuntu-24.04-8cpu
+        runs-on: ubuntu-24.04
         outputs:
             cache-key: ${{ steps.cache-key.outputs.key }}
         steps:
@@ -74,7 +74,7 @@ jobs:
     test:
         name: Run All Merobox Workflows
         needs: build-apps
-        runs-on: ubuntu-24.04-8cpu
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
