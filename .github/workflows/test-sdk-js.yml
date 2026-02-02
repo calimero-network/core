@@ -213,7 +213,12 @@ jobs:
 
             - name: Fail if workflows failed
               if: steps.run_workflows.outputs.has_failures == 'true'
-              run: exit 1
+              run: |
+                  if [ -f sdk-js/failed_workflows.txt ]; then
+                      echo "Failed SDK JS workflows:"
+                      cat sdk-js/failed_workflows.txt
+                  fi
+                  exit 1
 
     comment:
         name: Report Failed Workflows
@@ -242,6 +247,7 @@ jobs:
               continue-on-error: true
               with:
                   name: failed-workflows
+                  path: failed-workflows
 
             - name: Prepare Failure Comment
               if: steps.download.outcome == 'success'
@@ -271,6 +277,10 @@ jobs:
             - name: Fail if main job failed or was cancelled
               if: steps.check_status.outputs.job_failed == 'true'
               run: |
+                  if [ -f failed-workflows/failed_workflows.txt ]; then
+                      echo "Failed SDK JS workflows:"
+                      cat failed-workflows/failed_workflows.txt
+                  fi
                   if [ "${{ steps.check_status.outputs.was_cancelled }}" == "true" ]; then
                       echo "Workflow was cancelled"
                   else
