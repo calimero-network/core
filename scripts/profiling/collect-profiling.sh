@@ -3,7 +3,7 @@
 # Usage: collect-profiling.sh [OPTIONS]
 #
 # Options:
-#   --node-name NAME    Name of the node
+#   --node NAME    Name of the node
 #   --input-dir DIR     Directory containing profiling data
 #   --output-dir DIR    Directory to store collected/packaged data
 #   --archive           Create a compressed archive of all data
@@ -19,7 +19,7 @@ CREATE_ARCHIVE=false
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --node-name)
+        --node)
             NODE_NAME="$2"
             shift 2
             ;;
@@ -53,7 +53,7 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 COLLECT_DIR="$OUTPUT_DIR/$NODE_NAME"
 
 # Stop any running profiling first
-/profiling/scripts/stop-profiling.sh --node-name "$NODE_NAME" --output-dir "$INPUT_DIR" || true
+/profiling/scripts/stop-profiling.sh --node "$NODE_NAME" --output-dir "$INPUT_DIR" || true
 
 # Copy all relevant data files
 echo ""
@@ -108,7 +108,7 @@ fi
 # Generate memory report
 echo "Generating memory report..."
 /profiling/scripts/generate-memory-report.sh \
-    --node-name "$NODE_NAME" \
+    --node "$NODE_NAME" \
     --input-dir "$INPUT_DIR" \
     --output "$COLLECT_DIR/memory-report-${NODE_NAME}.txt" || echo "Warning: Memory report generation failed"
 
