@@ -14,8 +14,12 @@ use super::Report;
 impl Report for CreateContextResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Context Created").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully created context"]);
+        let _ = table.set_header(vec![
+            Cell::new("Context Created").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Context ID", &self.data.context_id.to_string()]);
+        let _ = table.add_row(vec!["Member Public Key", &self.data.member_public_key.to_string()]);
         println!("{table}");
     }
 }
@@ -167,19 +171,40 @@ impl Report for GrantPermissionResponse {
 
 impl Report for InviteToContextResponse {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Invitation Sent").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully sent invitation"]);
-        println!("{table}");
+        if let Some(ref payload) = self.data {
+            println!("Invitation Created: Success");
+            println!();
+            println!("Invitation Payload:");
+            println!("{}", payload);
+            println!();
+            println!("To join, run:");
+            println!("  meroctl context join {}", payload);
+        } else {
+            println!("Invitation Created: Success");
+        }
     }
 }
 
 impl Report for InviteToContextOpenInvitationResponse {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Open Invitation Created").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully created an open invitation"]);
-        println!("{table}");
+        if let Some(ref signed_invitation) = self.data {
+            println!("Open Invitation Created: Success");
+            println!();
+            println!("Open Invitation Payload:");
+            match serde_json::to_string(signed_invitation) {
+                Ok(json_payload) => {
+                    println!("{}", json_payload);
+                    println!();
+                    println!("To join, run:");
+                    println!("  meroctl context join-by-open-invitation '{}'", json_payload);
+                }
+                Err(_) => {
+                    println!("{:?}", signed_invitation);
+                }
+            }
+        } else {
+            println!("Open Invitation Created: Success");
+        }
     }
 }
 
