@@ -38,7 +38,7 @@ pub enum ProposalsSubcommand {
         #[arg(
             long,
             help = "Maximum number of proposals to display in results",
-            default_value = "20"
+            default_value = "1"
         )]
         limit: usize,
     },
