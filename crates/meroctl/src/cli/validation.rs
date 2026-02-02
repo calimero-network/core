@@ -5,7 +5,8 @@
 
 use std::path::Path;
 
-use eyre::{bail, Result};
+use eyre::bail;
+use eyre::Result;
 
 /// Validates that a string is non-empty.
 ///
@@ -56,19 +57,30 @@ pub fn validate_directory_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validates that a parent directory exists and is writable.
+/// Validates that a parent directory exists and is a directory.
 ///
 /// # Arguments
 /// * `path` - The file path whose parent directory should be validated
 ///
 /// # Errors
-/// Returns an error if the parent directory doesn't exist.
+/// Returns an error if the parent directory doesn't exist or isn't a directory.
 pub fn validate_parent_directory_exists(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            bail!("Parent directory does not exist: '{}'", parent.display());
-        }
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+
+    if parent.as_os_str().is_empty() {
+        return Ok(());
     }
+
+    if !parent.exists() {
+        bail!("Parent directory does not exist: '{}'", parent.display());
+    }
+
+    if !parent.is_dir() {
+        bail!("Parent path is not a directory: '{}'", parent.display());
+    }
+
     Ok(())
 }
 
@@ -176,9 +188,12 @@ pub fn valid_url(s: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
+    use tempfile::tempdir;
     use tempfile::NamedTempFile;
+
+    use super::*;
 
     #[test]
     fn test_validate_non_empty_valid() {
@@ -206,6 +221,37 @@ mod tests {
         let result = validate_file_exists(path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("File not found"));
+    }
+
+    #[test]
+    fn test_validate_parent_directory_exists_valid() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("output.txt");
+        assert!(validate_parent_directory_exists(&path).is_ok());
+    }
+
+    #[test]
+    fn test_validate_parent_directory_exists_missing() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("missing").join("output.txt");
+        let result = validate_parent_directory_exists(&path);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Parent directory does not exist"));
+    }
+
+    #[test]
+    fn test_validate_parent_directory_exists_not_directory() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().join("output.txt");
+        let result = validate_parent_directory_exists(&path);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Parent path is not a directory"));
     }
 
     #[test]
