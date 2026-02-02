@@ -1,6 +1,6 @@
+use crate::panic_payload::panic_payload_to_string;
 use crate::{
     errors::HostError,
-    extract_panic_message,
     logic::{sys, VMHostFunctions, VMLogicResult},
 };
 use calimero_storage::{
@@ -361,9 +361,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, extract_panic_message(&payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -549,9 +550,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, extract_panic_message(&payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -678,9 +680,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, extract_panic_message(&payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -861,9 +864,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, extract_panic_message(&payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -966,9 +970,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, extract_panic_message(&payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -1070,9 +1075,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, extract_panic_message(&payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -1267,9 +1273,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, extract_panic_message(&payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 

@@ -15,6 +15,7 @@ mod constraint;
 pub mod errors;
 pub mod logic;
 mod memory;
+mod panic_payload;
 pub mod store;
 
 pub use constraint::Constraint;
@@ -184,7 +185,10 @@ impl Module {
             Ok(Err(e)) => return Err(e),
             Err(panic_payload) => {
                 // Extract panic message from the payload
-                let message = extract_panic_message(&panic_payload);
+                let message = panic_payload::panic_payload_to_string(
+                    panic_payload.as_ref(),
+                    "<unknown panic>",
+                );
                 error!(
                     %context_id,
                     method,
@@ -334,48 +338,9 @@ impl Module {
     }
 }
 
-/// Extracts a human-readable message from a panic payload.
-/// Panics can carry either a `&'static str` or a `String` as their message.
-/// This is a shared utility used by both the main WASM execution and JS collections.
-pub(crate) fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_owned()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<unknown panic>".to_owned()
-    }
-}
-
 #[cfg(test)]
 mod integration_tests_package_usage {
     use {eyre as _, owo_colors as _, rand as _, wat as _};
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_panic_message_with_str() {
-        let payload: Box<dyn std::any::Any + Send> = Box::new("test panic message");
-        let message = extract_panic_message(&payload);
-        assert_eq!(message, "test panic message");
-    }
-
-    #[test]
-    fn test_extract_panic_message_with_string() {
-        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("owned panic message"));
-        let message = extract_panic_message(&payload);
-        assert_eq!(message, "owned panic message");
-    }
-
-    #[test]
-    fn test_extract_panic_message_with_unknown_type() {
-        let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
-        let message = extract_panic_message(&payload);
-        assert_eq!(message, "<unknown panic>");
-    }
 }
 
 /// Integration tests for WASM execution with panic handling
