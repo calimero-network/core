@@ -47,6 +47,7 @@ pub fn validate_file_exists(path: &Path) -> Result<()> {
 ///
 /// # Errors
 /// Returns an error if the directory doesn't exist or is not a directory.
+#[allow(dead_code)]
 pub fn validate_directory_exists(path: &Path) -> Result<()> {
     if !path.exists() {
         bail!("Directory not found: '{}'", path.display());
@@ -91,6 +92,7 @@ pub fn validate_parent_directory_exists(path: &Path) -> Result<()> {
 ///
 /// # Errors
 /// Returns an error if the URL is malformed.
+#[allow(dead_code)]
 pub fn validate_url(url_str: &str) -> Result<url::Url> {
     url::Url::parse(url_str).map_err(|e| {
         eyre::eyre!(
@@ -111,6 +113,7 @@ pub fn validate_url(url_str: &str) -> Result<url::Url> {
 ///
 /// # Errors
 /// Returns an error if the node name is invalid.
+#[allow(dead_code)]
 pub fn validate_node_name(name: &str) -> Result<()> {
     validate_non_empty(name, "Node name")?;
 
@@ -221,6 +224,34 @@ mod tests {
         let result = validate_file_exists(path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("File not found"));
+    }
+
+    #[test]
+    fn test_validate_directory_exists_valid() {
+        let temp_dir = tempdir().unwrap();
+        assert!(validate_directory_exists(temp_dir.path()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_directory_exists_not_found() {
+        let path = Path::new("/nonexistent/directory/path");
+        let result = validate_directory_exists(path);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Directory not found"));
+    }
+
+    #[test]
+    fn test_validate_directory_exists_not_directory() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let result = validate_directory_exists(temp_file.path());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Path is not a directory"));
     }
 
     #[test]
