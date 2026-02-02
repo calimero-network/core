@@ -1,23 +1,25 @@
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
-use std::{env, fs};
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
 
-use bytes::Bytes;
-use cached_path::{Cache, Options};
-use eyre::{bail, Context, OptionExt};
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Release {
-    zipball_url: String,
-}
+use cached_path::Cache;
+use cached_path::Options;
+use eyre::bail;
+use eyre::OptionExt;
+use reqwest::blocking::Client as ReqwestClient;
+use reqwest::redirect::Policy;
+use reqwest::Url;
+use reqwest_compat::blocking::Client as ReqwestCompatClient;
+use reqwest_compat::header::AUTHORIZATION;
 
 const USER_AGENT: &str = "calimero-auth-build";
 const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
 const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "latest";
-const CALIMERO_AUTH_FRONTEND_SRC_URL: &str =
-    "https://api.github.com/repos/{repo}/releases/{version}";
+const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "master";
+const CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL: &str = "https://github.com/{repo}/releases/latest";
 
 fn main() {
     if let Err(e) = try_main() {
@@ -34,7 +36,7 @@ fn try_main() -> eyre::Result<()> {
 
     let src = match option_env!("CALIMERO_AUTH_FRONTEND_SRC") {
         Some(src) => {
-            match reqwest::Url::parse(src) {
+            match Url::parse(src) {
                 Ok(url) if !matches!(url.scheme(), "http" | "https") => {
                     bail!(
                         "CALIMERO_AUTH_FRONTEND_SRC must be an absolute path or a valid URL, got: {}",
@@ -56,50 +58,37 @@ fn try_main() -> eyre::Result<()> {
                 option_env!("CALIMERO_AUTH_FRONTEND_REPO").unwrap_or(CALIMERO_AUTH_FRONTEND_REPO);
             let version = option_env!("CALIMERO_AUTH_FRONTEND_VERSION")
                 .unwrap_or(CALIMERO_AUTH_FRONTEND_VERSION);
+            let asset = option_env!("CALIMERO_AUTH_FRONTEND_ASSET");
+            let default_ref = option_env!("CALIMERO_AUTH_FRONTEND_REF")
+                .unwrap_or(CALIMERO_AUTH_FRONTEND_DEFAULT_REF);
 
-            let release_url = replace(CALIMERO_AUTH_FRONTEND_SRC_URL.into(), |var| match var {
-                "repo" => Some(repo),
-                "version" => Some(version),
-                _ => None,
-            });
-
-            let builder = reqwest::blocking::Client::builder()
-                .user_agent(USER_AGENT)
-                .build()?;
-
-            let mut req = builder.get(&*release_url);
-
-            if let Some(token) = token {
-                req = req.bearer_auth(token);
-            }
-
-            let res = req.send()?;
-
-            let Release { mut zipball_url } = match Response::try_from(res)? {
-                Response::Json(value) => serde_json::from_value(value)?,
-                other => bail!("expected json response, got: {:?}", other),
+            let release_url = if let Some(asset) = asset {
+                if version == "latest" {
+                    format!("https://github.com/{repo}/releases/latest/download/{asset}")
+                } else {
+                    format!("https://github.com/{repo}/releases/download/{version}/{asset}")
+                }
+            } else if version == "latest" {
+                if let Some(tag) = resolve_latest_release_tag(repo, token)? {
+                    format!("https://github.com/{repo}/archive/refs/tags/{tag}.zip")
+                } else {
+                    format!("https://github.com/{repo}/archive/refs/heads/{default_ref}.zip")
+                }
+            } else {
+                format!("https://github.com/{repo}/archive/refs/tags/{version}.zip")
             };
 
-            // atm, cached-path infers the archive type from the URL
-            // https://github.com/epwalsh/rust-cached-path/issues/68
-            // this is a temporary workaround for extraction support
-            zipball_url.push_str("?.zip");
-
-            zipball_url.into()
+            release_url.into()
         }
     };
 
     let frontend_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
-        let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
+        let mut builder = ReqwestCompatClient::builder().user_agent(USER_AGENT);
 
         if let Some(token) = token {
-            let headers = [(
-                reqwest_compat::header::AUTHORIZATION,
-                format!("Bearer {token}").try_into()?,
-            )]
-            .into_iter();
+            let headers = [(AUTHORIZATION, format!("Bearer {token}").try_into()?)].into_iter();
 
             builder = builder.default_headers(headers.collect());
         }
@@ -138,6 +127,42 @@ fn try_main() -> eyre::Result<()> {
     Ok(())
 }
 
+fn resolve_latest_release_tag(repo: &str, token: Option<&str>) -> eyre::Result<Option<String>> {
+    let latest_release_url = CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL.replace("{repo}", repo);
+    let client = ReqwestClient::builder()
+        .user_agent(USER_AGENT)
+        .redirect(Policy::limited(5))
+        .build()?;
+    let mut request = client.get(latest_release_url);
+
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request.send()?;
+    let final_url = response.url();
+
+    let tag = final_url.path_segments().and_then(|segments| {
+        let segments: Vec<_> = segments.collect();
+        if let Some(tag_index) = segments.iter().position(|segment| *segment == "tag") {
+            let tag_segments = &segments[tag_index + 1..];
+
+            if tag_segments.is_empty() {
+                None
+            } else {
+                Some(tag_segments.join("/"))
+            }
+        } else {
+            segments
+                .last()
+                .filter(|segment| !segment.is_empty() && **segment != "latest")
+                .map(|segment| (*segment).to_owned())
+        }
+    });
+
+    Ok(tag)
+}
+
 // https://github.com/rust-lang/cargo/issues/9661#issuecomment-1722358176
 fn target_dir() -> eyre::Result<PathBuf> {
     let mut out_dir = PathBuf::from(env::var("OUT_DIR")?);
@@ -153,96 +178,4 @@ fn target_dir() -> eyre::Result<PathBuf> {
     }
 
     eyre::bail!("failed to resolve target dir");
-}
-
-#[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
-fn replace<'a: 'b, 'b>(str: Cow<'a, str>, replace: impl Fn(&str) -> Option<&str>) -> Cow<'b, str> {
-    let mut idx = 0;
-    let mut buf = str.as_ref();
-    let mut out = String::new();
-
-    while let Some(start) = buf[idx..].find('{') {
-        let start = start + 1;
-
-        let Some(end) = buf[idx + start..].find(['{', '}']) else {
-            break;
-        };
-
-        if buf.as_bytes()[idx + start + end] == b'{' {
-            idx += start + end;
-            continue;
-        }
-
-        let var = &buf[idx + start..idx + start + end];
-
-        if let Some(sub) = replace(var) {
-            out.push_str(&buf[..idx + start - 1]);
-            out.push_str(sub);
-            buf = &buf[idx + start + end + 1..];
-            idx = 0;
-        } else {
-            idx += start + end;
-        }
-    }
-
-    if out.is_empty() {
-        return str;
-    }
-
-    out.push_str(buf);
-
-    out.into()
-}
-
-#[derive(Debug)]
-enum Response {
-    Bytes(Bytes),
-    String(String),
-    Json(serde_json::Value),
-}
-
-impl TryFrom<reqwest::blocking::Response> for Response {
-    type Error = eyre::Report;
-
-    #[track_caller]
-    fn try_from(value: reqwest::blocking::Response) -> Result<Self, Self::Error> {
-        let error = value.error_for_status_ref().err();
-
-        let bytes = match value.bytes() {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                if let Some(error) = error {
-                    return Err(err).wrap_err(error);
-                }
-
-                bail!(err)
-            }
-        };
-
-        let res = match serde_json::from_slice(&bytes) {
-            Ok(res) => Response::Json(res),
-            Err(_) => match std::str::from_utf8(&bytes) {
-                Ok(str) => Response::String(str.to_owned()),
-                Err(_) => Response::Bytes(bytes),
-            },
-        };
-
-        if let Some(error) = error {
-            let res = match res {
-                Response::Bytes(bytes) => {
-                    format!(
-                        "failed with raw bytes of length {}: {:?}",
-                        bytes.len(),
-                        bytes
-                    )
-                }
-                Response::String(str) => format!("failed with response: {str}"),
-                Response::Json(json) => format!("failed with json response: {json:#}"),
-            };
-
-            return Err(error).wrap_err(res);
-        }
-
-        Ok(res)
-    }
 }
