@@ -258,7 +258,7 @@ lto = "fat"
 codegen-units = 1
 opt-level = "z"
 strip = "symbols"
-panic = "abort"
+panic = "unwind"
 
 [profile.app-release]
 inherits = "release"
@@ -267,6 +267,7 @@ opt-level = "z"
 lto = true
 debug = false
 strip = "symbols"
+panic = "abort"
 overflow-checks = true
 
 [profile.profiling]
@@ -285,4 +286,5 @@ opt-level = 2
 lto = true
 debug = true
 strip = false
+panic = "abort"
 overflow-checks = true
