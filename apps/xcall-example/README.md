@@ -21,19 +21,19 @@ This application shows how one context can call functions on another context. It
 
 ```bash
 # Deploy to Context A
-meroctl --node-name node1 context deploy --application-id <app-id> --context-id <context-a-id>
+meroctl --node node1 context deploy --application-id <app-id> --context-id <context-a-id>
 
 # Deploy to Context B  
-meroctl --node-name node1 context deploy --application-id <app-id> --context-id <context-b-id>
+meroctl --node node1 context deploy --application-id <app-id> --context-id <context-b-id>
 
 # Send a ping from Context A to Context B
-meroctl --node-name node1 context mutate \
+meroctl --node node1 context mutate \
   --context-id <context-a-id> \
   --method ping \
   --args-json '{"target_context": "<context-b-id-base58>"}'
 
 # Check the counter on Context B
-meroctl --node-name node1 context query \
+meroctl --node node1 context query \
   --context-id <context-b-id> \
   --method get_counter
 ```
