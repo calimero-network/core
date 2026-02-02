@@ -138,7 +138,7 @@ The relayer functionality has been **completely removed from merod** and is now 
 
 ```bash
 # OLD (no longer available):
-# merod --node-name my-node relay --listen 127.0.0.1:63529
+# merod --node my-node relay --listen 127.0.0.1:63529
 
 # NEW (standalone with own config):
 mero-relayer --listen 127.0.0.1:63529
