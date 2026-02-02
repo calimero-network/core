@@ -1,0 +1,8 @@
+name: CodeQL config
+paths-ignore:
+  - "**/target/**"
+  - "**/node_modules/**"
+  - "contracts/**"
+  - "apps/**/res/**"
+  - "apps/**/static/**"
+  - "tools/merodb/src/gui/static/css/**"
