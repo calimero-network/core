@@ -20,6 +20,10 @@ use crate::delta_store::DeltaStore;
 use crate::sync::CHALLENGE_DOMAIN;
 use crate::utils::choose_stream;
 
+/// Maximum number of events allowed in a single state delta.
+/// This is required to avoid node spawning too many handler execution tasks.
+const MAX_EVENTS_PER_DELTA: usize = 50;
+
 /// Handles state delta received from a peer (DAG-based)
 ///
 /// This processes incoming state mutations using a DAG structure.
@@ -189,7 +193,7 @@ pub async fn handle_state_delta(
         }
     }
 
-    let events_payload = parse_events_payload(&events, &context_id);
+    let events_payload = parse_events_payload(&events, &context_id)?;
 
     if applied && !handlers_already_executed {
         if let Some(ref payload) = events_payload {
@@ -538,20 +542,37 @@ async fn execute_cascaded_events(
 fn parse_events_payload(
     events: &Option<Vec<u8>>,
     context_id: &ContextId,
-) -> Option<Vec<ExecutionEvent>> {
+) -> Result<Option<Vec<ExecutionEvent>>> {
     let Some(events_data) = events else {
-        return None;
+        return Ok(None);
     };
 
     match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-        Ok(payload) => Some(payload),
+        Ok(payload) => {
+            // Enforce limits on number of events per delta
+            if payload.len() > MAX_EVENTS_PER_DELTA {
+                warn!(
+                    %context_id,
+                    count = payload.len(),
+                    max = MAX_EVENTS_PER_DELTA,
+                    "State delta contains too many events - rejecting delta for safety"
+                );
+                bail!(
+                    "State delta event count {} exceeds limit {}",
+                    payload.len(),
+                    MAX_EVENTS_PER_DELTA
+                );
+            }
+
+            Ok(Some(payload))
+        }
         Err(e) => {
             warn!(
                 %context_id,
                 error = %e,
                 "Failed to deserialize events, skipping handler execution and WebSocket emission"
             );
-            None
+            Ok(None)
         }
     }
 }
@@ -574,6 +595,7 @@ mod tests {
 
         // Should deserialize valid event JSON
         let parsed = parse_events_payload(&Some(serialized), &ContextId::zero())
+            .ok()
             .expect("events should parse");
 
         assert_eq!(parsed.len(), 1);
@@ -584,7 +606,7 @@ mod tests {
     #[test]
     fn parse_events_payload_invalid() {
         // Invalid JSON should be rejected gracefully
-        let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero());
+        let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero()).ok();
         assert!(parsed.is_none());
     }
 
