@@ -336,7 +336,8 @@ impl Module {
 
 /// Extracts a human-readable message from a panic payload.
 /// Panics can carry either a `&'static str` or a `String` as their message.
-fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+/// This is a shared utility used by both the main WASM execution and JS collections.
+pub(crate) fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
     } else if let Some(s) = payload.downcast_ref::<String>() {
