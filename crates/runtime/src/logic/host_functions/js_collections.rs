@@ -855,7 +855,7 @@ impl VMHostFunctions<'_> {
         }));
 
         match outcome {
-            Ok(Ok(mut register)) => {
+            Ok(Ok(register)) => {
                 self.write_register_bytes(dest_register_id, register.id().as_bytes())?;
                 Ok(0)
             }
