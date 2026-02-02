@@ -16,6 +16,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
+use eyre::WrapErr;
 use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
@@ -483,7 +484,18 @@ impl SyncManager {
 
         info!(%context_id, %peer_id, "Attempting to sync with peer");
 
-        let protocol = self.initiate_sync_inner(context_id, peer_id).await?;
+        let protocol = match self.initiate_sync_inner(context_id, peer_id).await {
+            Ok(protocol) => protocol,
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    %peer_id,
+                    error = %err,
+                    "Sync attempt failed for peer"
+                );
+                return Err(err);
+            }
+        };
 
         let took = start.elapsed();
 
@@ -737,7 +749,11 @@ impl SyncManager {
 
                     // Note: request_snapshot_sync opens its own stream, existing stream
                     // will be closed when this function returns
-                    match self.request_snapshot_sync(context_id, chosen_peer).await {
+                    match self
+                        .request_snapshot_sync(context_id, chosen_peer)
+                        .await
+                        .wrap_err("snapshot sync")
+                    {
                         Ok(result) => {
                             info!(
                                 %context_id,
@@ -827,7 +843,8 @@ impl SyncManager {
                 // Request DAG heads just like uninitialized nodes
                 let result = self
                     .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
-                    .await?;
+                    .await
+                    .wrap_err("request DAG heads and sync")?;
 
                 // If peer had no data, return error to try next peer
                 if matches!(result, SyncProtocol::None) {
@@ -874,7 +891,8 @@ impl SyncManager {
 
                     let result = self
                         .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
-                        .await?;
+                        .await
+                        .wrap_err("request DAG heads and sync")?;
 
                     // If peer had no data or unexpected response, return error to try next peer
                     if matches!(result, SyncProtocol::None) {
@@ -892,7 +910,8 @@ impl SyncManager {
 
                     let result = self
                         .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
-                        .await?;
+                        .await
+                        .wrap_err("request DAG heads and sync")?;
 
                     // If peer had no data or unexpected response, return error to try next peer
                     if matches!(result, SyncProtocol::None) {
@@ -988,10 +1007,15 @@ impl SyncManager {
             bail!("no owned identities found for context: {}", context.id);
         };
 
-        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+        let mut stream = self
+            .network_client
+            .open_stream(chosen_peer)
+            .await
+            .wrap_err("open stream for sync")?;
 
         self.initiate_key_share_process(&mut context, our_identity, &mut stream)
-            .await?;
+            .await
+            .wrap_err("key share")?;
 
         if !self.node_client.has_blob(&blob_id)? {
             // Get size from application config if we don't have application yet
@@ -1000,7 +1024,8 @@ impl SyncManager {
                 .await?;
 
             self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
-                .await?;
+                .await
+                .wrap_err("blob share")?;
 
             // After blob sharing, try to install application if it doesn't exist
             if application.is_none() {
@@ -1011,7 +1036,8 @@ impl SyncManager {
                     &mut context,
                     &mut application,
                 )
-                .await?;
+                .await
+                .wrap_err("install bundle after blob share")?;
             }
         }
 
@@ -1022,7 +1048,8 @@ impl SyncManager {
         // Handle DAG synchronization if needed (uninitialized or incomplete DAG)
         if let Some(result) = self
             .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
-            .await?
+            .await
+            .wrap_err("DAG sync")?
         {
             return Ok(result);
         }
