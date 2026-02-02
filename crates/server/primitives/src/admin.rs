@@ -953,12 +953,16 @@ pub struct GetProxyContractResponse {
     pub data: String,
 }
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsRequest {
+    #[serde(default)]
     pub offset: usize,
+    #[serde(default = "default_proposals_limit")]
     pub limit: usize,
 }
+
+fn default_proposals_limit() -> usize { 1 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
