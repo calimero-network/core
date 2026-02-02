@@ -3,7 +3,7 @@
 # Usage: stop-profiling.sh [OPTIONS]
 #
 # Options:
-#   --node-name NAME    Name of the node (for finding PID files)
+#   --node NAME    Name of the node (for finding PID files)
 #   --output-dir DIR    Output directory for profiling data
 #   --generate-reports  Generate reports after stopping (flamegraphs, etc.)
 
@@ -17,7 +17,7 @@ GENERATE_REPORTS=false
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --node-name)
+        --node)
             NODE_NAME="$2"
             shift 2
             ;;
@@ -118,7 +118,7 @@ if [ "$GENERATE_REPORTS" = true ]; then
     # Generate memory report
     echo "Generating memory report..."
     /profiling/scripts/generate-memory-report.sh \
-        --node-name "$NODE_NAME" \
+        --node "$NODE_NAME" \
         --input-dir "$OUTPUT_DIR" \
         --output "$REPORTS_DIR/memory-report-${NODE_NAME}.txt"
     
