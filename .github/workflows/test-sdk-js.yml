@@ -273,7 +273,7 @@ jobs:
             - name: Prepare Failure Comment
               if: steps.download.outcome == 'success'
               run: |
-                  failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+                  failed_list=$(cat failed-workflows/failed_workflows.txt | sed 's/^/- /')
                   message="## SDK JS Workflows Failed
 
                   The following SDK JS workflow(s) failed:
