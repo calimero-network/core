@@ -99,7 +99,7 @@ configs unchanged while opting in environment by environment.
 To initialize a node with embedded authentication, use the `--auth-mode embedded` flag:
 
 ```bash
-merod --node-name my-node init --auth-mode embedded
+merod --node my-node init --auth-mode embedded
 ```
 
 By default, this will configure RocksDB storage at `auth/` within the node's home directory.
@@ -111,7 +111,7 @@ You can customize the storage:
 Example with in-memory storage:
 
 ```bash
-merod --node-name my-node init --auth-mode embedded --auth-storage memory
+merod --node my-node init --auth-mode embedded --auth-storage memory
 ```
 
 #### CI/CD expectations
