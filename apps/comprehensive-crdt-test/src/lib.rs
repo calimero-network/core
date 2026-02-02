@@ -285,13 +285,13 @@ impl ComprehensiveCrdtApp {
     /// Set a simple value for the current user
     pub fn set_user_simple(&mut self, value: String) -> Result<(), String> {
         let executor_id = calimero_sdk::env::executor_id();
+        self.user_storage_simple
+            .insert(value.clone().into())
+            .map_err(|e| format!("Insert failed: {:?}", e))?;
         app::emit!(Event::UserSimpleSet {
             executor_id: executor_id.into(),
             value: &value
         });
-        self.user_storage_simple
-            .insert(value.into())
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
         Ok(())
     }
 
@@ -387,6 +387,22 @@ impl ComprehensiveCrdtApp {
                 .value()
                 .map_err(|e| format!("Value failed: {:?}", e)),
             None => Ok(0),
+        }
+    }
+
+    /// Get a nested value for a specific user
+    pub fn get_user_nested_for(&self, user_key: PublicKey, key: &str) -> Result<Option<String>, String> {
+        let nested_data = self
+            .user_storage_nested
+            .get_for_user(&user_key)
+            .map_err(|e| format!("Get for user failed: {:?}", e))?;
+        match nested_data {
+            Some(data) => Ok(data
+                .map
+                .get(key)
+                .map_err(|e| format!("Map get failed: {:?}", e))?
+                .map(|v| v.get().clone())),
+            None => Ok(None),
         }
     }
 
