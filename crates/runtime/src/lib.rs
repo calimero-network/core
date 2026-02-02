@@ -348,7 +348,7 @@ fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod integration_tests_package_usage {
-    use {eyre as _, owo_colors as _, rand as _};
+    use {eyre as _, owo_colors as _, rand as _, wat as _};
 }
 
 #[cfg(test)]
@@ -374,5 +374,277 @@ mod tests {
         let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
         let message = extract_panic_message(&payload);
         assert_eq!(message, "<unknown panic>");
+    }
+}
+
+/// Integration tests for WASM execution with panic handling
+#[cfg(test)]
+mod wasm_panic_integration_tests {
+    use super::*;
+    use crate::store::InMemoryStorage;
+
+    /// Test that a simple WASM module runs successfully (baseline test)
+    #[test]
+    fn test_wasm_execution_success() {
+        // A minimal WASM module with a function that does nothing
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "test_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        assert!(
+            outcome.returns.is_ok(),
+            "Expected successful execution, got: {:?}",
+            outcome.returns
+        );
+    }
+
+    /// Test that calling a non-existent method returns MethodNotFound error
+    #[test]
+    fn test_wasm_method_not_found() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "existing_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "non_existent_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        match &outcome.returns {
+            Err(FunctionCallError::MethodResolutionError(
+                errors::MethodResolutionError::MethodNotFound { name },
+            )) => {
+                assert_eq!(name, "non_existent_func");
+            }
+            other => panic!("Expected MethodNotFound error, got: {other:?}"),
+        }
+    }
+
+    /// Test that unreachable instruction causes a WasmTrap error (not a crash)
+    #[test]
+    fn test_wasm_unreachable_trap() {
+        // A WASM module with a function that executes unreachable instruction
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "trap_func")
+                    unreachable
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "trap_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        // The unreachable instruction should cause a WasmTrap::Unreachable error
+        match &outcome.returns {
+            Err(FunctionCallError::WasmTrap(errors::WasmTrap::Unreachable)) => {
+                // Expected - the trap was properly caught and converted to an error
+            }
+            other => panic!("Expected WasmTrap::Unreachable error, got: {other:?}"),
+        }
+    }
+
+    /// Test that a WASM module calling the panic host function returns a Panic error
+    #[test]
+    fn test_wasm_panic_host_function() {
+        // A WASM module that calls the panic host function
+        // The panic function expects a pointer to a location struct
+        let wat = r#"
+            (module
+                (import "env" "panic" (func $panic (param i64)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "test.rs")
+                (func (export "panic_func")
+                    ;; Store the location struct at offset 100:
+                    ;; - ptr to filename (8 bytes): points to 0
+                    ;; - len of filename (8 bytes): 7
+                    ;; - line (4 bytes): 42
+                    ;; - column (4 bytes): 10
+
+                    ;; ptr to filename = 0
+                    (i64.store (i32.const 100) (i64.const 0))
+                    ;; len of filename = 7
+                    (i64.store (i32.const 108) (i64.const 7))
+                    ;; line = 42
+                    (i32.store (i32.const 116) (i32.const 42))
+                    ;; column = 10
+                    (i32.store (i32.const 120) (i32.const 10))
+
+                    ;; Call panic with pointer to location struct
+                    (call $panic (i64.const 100))
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "panic_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        // The panic should be caught and converted to a HostError::Panic
+        match &outcome.returns {
+            Err(FunctionCallError::HostError(HostError::Panic {
+                context, location, ..
+            })) => {
+                assert!(
+                    matches!(context, PanicContext::Guest),
+                    "Expected Guest panic context"
+                );
+                // Verify location information was captured
+                match location {
+                    Location::At { file, line, column } => {
+                        assert_eq!(file, "test.rs");
+                        assert_eq!(*line, 42);
+                        assert_eq!(*column, 10);
+                    }
+                    Location::Unknown => panic!("Expected location to be known"),
+                }
+            }
+            other => panic!("Expected HostError::Panic, got: {other:?}"),
+        }
+    }
+
+    /// Test that memory out of bounds causes a WasmTrap error (not a crash)
+    #[test]
+    fn test_wasm_memory_out_of_bounds() {
+        // A WASM module that tries to access memory out of bounds
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "oob_func")
+                    ;; Try to load from way beyond the memory limit (1 page = 65536 bytes)
+                    (drop (i32.load (i32.const 1000000)))
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "oob_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        // Memory out of bounds should cause a WasmTrap error
+        match &outcome.returns {
+            Err(FunctionCallError::WasmTrap(errors::WasmTrap::MemoryOutOfBounds)) => {
+                // Expected - the trap was properly caught and converted to an error
+            }
+            other => panic!("Expected WasmTrap::MemoryOutOfBounds error, got: {other:?}"),
+        }
+    }
+
+    /// Test that stack overflow causes a WasmTrap error (not a crash)
+    #[test]
+    fn test_wasm_stack_overflow() {
+        // A WASM module with infinite recursion to cause stack overflow
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func $recurse
+                    (call $recurse)
+                )
+                (func (export "overflow_func")
+                    (call $recurse)
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "overflow_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        // Stack overflow should cause a WasmTrap error
+        match &outcome.returns {
+            Err(FunctionCallError::WasmTrap(errors::WasmTrap::StackOverflow)) => {
+                // Expected - the trap was properly caught and converted to an error
+            }
+            other => panic!("Expected WasmTrap::StackOverflow error, got: {other:?}"),
+        }
     }
 }
