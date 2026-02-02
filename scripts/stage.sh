@@ -18,8 +18,8 @@ export CALIMERO_HOME=.
 merod="../../target/debug/merod"
 meroctl="../../target/debug/meroctl"
 
-${merod} --node-name n1 init --server-port 2550 --swarm-port 2450 --force
-${merod} --node-name n2 init --server-port 2551 --swarm-port 2451 --force
+${merod} --node n1 init --server-port 2550 --swarm-port 2450 --force
+${merod} --node n2 init --server-port 2551 --swarm-port 2451 --force
 
 TFREQ=6000
 TINTVL=5000
@@ -31,7 +31,7 @@ TPUBKEY="ed25519:Gxa24TGbJu4mqdhW3GbvLXmf4bSEyxVicrtpChDWbgga"
 TSECKEY="ed25519:3JtQnV5Tm5GM35t24mytoqR4UbLEAa6km4tiPXd6ubXebCrviQ7usSWJNKFYNyFkmtf6D2qZfN9ZUw8C2mibXw1C"
 
 for n in n1 n2; do
-  ${merod} --node-name $n config \
+  ${merod} --node $n config \
     sync.frequency_ms=${TFREQ} \
     sync.interval_ms=${TINTVL} \
     bootstrap.nodes='[]' \
@@ -81,7 +81,7 @@ run() {
 
   stdin $1
 
-  <n$1.i ${merod} --node-name n"$1" run 2> >(scoped $1 2 $fg >&1) > >(scoped $1 1 $fg) &
+  <n$1.i ${merod} --node n"$1" run 2> >(scoped $1 2 $fg >&1) > >(scoped $1 1 $fg) &
   export PID$1=$!
 }
 
