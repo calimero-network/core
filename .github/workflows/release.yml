@@ -31,6 +31,12 @@ env:
     mero-kms-phala
   AUTH_BINARIES: |-
     mero-auth
+  # Binaries to publish to Homebrew (excludes specialized components like mero-kms-phala)
+  HOMEBREW_BINARIES: |-
+    merod
+    meroctl
+    mero-relayer
+    mero-abi
 
 jobs:
   prepare:
@@ -183,7 +189,7 @@ jobs:
     runs-on: ubuntu-24.04-8cpu
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: write
@@ -259,7 +265,7 @@ jobs:
     name: Release Merod container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-merod-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-merod-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -288,7 +294,7 @@ jobs:
     name: Release Mero Auth container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-mero-auth-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-mero-auth-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -317,7 +323,7 @@ jobs:
     name: Release Mero KMS Phala container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-mero-kms-phala-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-mero-kms-phala-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -346,7 +352,7 @@ jobs:
     name: Release Mero Relayer container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-mero-relayer-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-mero-relayer-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -375,7 +381,7 @@ jobs:
     name: Release Merod Profiling container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-merod-profiling-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-merod-profiling-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -447,10 +453,10 @@ jobs:
           git fetch origin "${target_branch}" || true
           git checkout "${target_branch}" || git checkout -b "${target_branch}"
 
-          readarray -t binaries <<< "$BINARIES"
+          readarray -t binaries <<< "$HOMEBREW_BINARIES"
 
           for binary in "${binaries[@]}"; do
-            echo "Updating formula for ${binary}, version: ${version}"
+            echo "Updating formula for ${binary}, version: ${{ needs.prepare.outputs.version }}"
             ./generate-formula.sh "${binary}" "${{ needs.prepare.outputs.version }}"
           done
 

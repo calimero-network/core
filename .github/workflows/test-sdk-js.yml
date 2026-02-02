@@ -123,58 +123,38 @@ jobs:
               id: run_workflows
               run: |
                   MEROD_IMAGE="ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}"
-
-                  mkdir -p docker-logs
-                  cd sdk-js
-
                   merobox stop --all || true
                   merobox nuke -f || true
 
-                  WORKFLOW_FILES=()
+                  cd "$GITHUB_WORKSPACE/sdk-js"
+                  WORKFLOW_LIST="$PWD/workflow-list.txt"
+                  : > "$WORKFLOW_LIST"
+
                   while IFS= read -r -d '' file; do
-                      WORKFLOW_FILES+=("$file")
+                      echo "$file" >> "$WORKFLOW_LIST"
                   done < <(find examples -type f -name "*.yml" -path "*/workflows/*" -print0 2>/dev/null)
                   while IFS= read -r -d '' file; do
-                      WORKFLOW_FILES+=("$file")
+                      echo "$file" >> "$WORKFLOW_LIST"
                   done < <(find examples -type f -name "default.yml" ! -path "*/workflows/*" -print0 2>/dev/null)
 
-                  if [ ${#WORKFLOW_FILES[@]} -eq 0 ]; then
+                  if [ ! -s "$WORKFLOW_LIST" ]; then
                       echo "Error: No workflow files found in examples directories"
                       exit 1
                   fi
 
-                  FAILED_WORKFLOWS=()
+                  bash "$GITHUB_WORKSPACE/scripts/run-merobox-workflows.sh" \
+                      --root "$GITHUB_WORKSPACE/sdk-js" \
+                      --workflow-list "$WORKFLOW_LIST" \
+                      --image "$MEROD_IMAGE" \
+                      --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
+                      --docker-logs "$GITHUB_WORKSPACE/docker-logs" \
+                      --workflow-logs "$GITHUB_WORKSPACE/workflow-logs" \
+                      --failed-output "$GITHUB_WORKSPACE/sdk-js/failed_workflows.txt" \
+                      --max-attempts 2 \
+                      --workdir-mode root
 
-                  for workflow in "${WORKFLOW_FILES[@]}"; do
-                      if merobox bootstrap run "$workflow" \
-                          --image "$MEROD_IMAGE" \
-                          --e2e-mode \
-                          --near-devnet \
-                          --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
-                          --verbose; then
-                          :
-                      else
-                          FAILED_WORKFLOWS+=("$workflow")
-                      fi
-                      
-                      # Collect logs with workflow identifier to prevent filename collisions
-                      # Create sanitized workflow identifier (replace / with -, remove .yml extension)
-                      workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
-                      echo "Collecting Docker logs for workflow: $workflow (id: $workflow_id)"
-                      for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-                          if [ -n "$container" ]; then
-                              echo "Collecting logs from container: $container"
-                              docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
-                          fi
-                      done
-                      
-                      merobox stop --all || true
-                      merobox nuke -f || true
-                  done
-
-                  if [ ${#FAILED_WORKFLOWS[@]} -gt 0 ]; then
+                  if [ -s "$GITHUB_WORKSPACE/sdk-js/failed_workflows.txt" ]; then
                       echo "has_failures=true" >> $GITHUB_OUTPUT
-                      printf '%s\n' "${FAILED_WORKFLOWS[@]}" > failed_workflows.txt
                   else
                       echo "has_failures=false" >> $GITHUB_OUTPUT
                   fi
@@ -202,6 +182,15 @@ jobs:
                   retention-days: 7
                   if-no-files-found: warn
 
+            - name: Upload Workflow Logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: sdk-js-workflow-logs-${{ github.sha }}
+                  path: workflow-logs/
+                  retention-days: 7
+                  if-no-files-found: warn
+
             - name: Upload Docker Logs
               if: always()
               uses: actions/upload-artifact@v4
@@ -213,7 +202,12 @@ jobs:
 
             - name: Fail if workflows failed
               if: steps.run_workflows.outputs.has_failures == 'true'
-              run: exit 1
+              run: |
+                  if [ -f sdk-js/failed_workflows.txt ]; then
+                      echo "Failed SDK JS workflows:"
+                      cat sdk-js/failed_workflows.txt
+                  fi
+                  exit 1
 
     comment:
         name: Report Failed Workflows
@@ -242,11 +236,12 @@ jobs:
               continue-on-error: true
               with:
                   name: failed-workflows
+                  path: failed-workflows
 
             - name: Prepare Failure Comment
               if: steps.download.outcome == 'success'
               run: |
-                  failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+                  failed_list=$(cat failed-workflows/failed_workflows.txt | sed 's/^/- /')
                   message="## SDK JS Workflows Failed
 
                   The following SDK JS workflow(s) failed:
@@ -271,6 +266,10 @@ jobs:
             - name: Fail if main job failed or was cancelled
               if: steps.check_status.outputs.job_failed == 'true'
               run: |
+                  if [ -f failed-workflows/failed_workflows.txt ]; then
+                      echo "Failed SDK JS workflows:"
+                      cat failed-workflows/failed_workflows.txt
+                  fi
                   if [ "${{ steps.check_status.outputs.was_cancelled }}" == "true" ]; then
                       echo "Workflow was cancelled"
                   else

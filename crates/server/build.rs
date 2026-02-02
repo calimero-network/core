@@ -11,7 +11,7 @@ use serde::Deserialize;
 #[serde(rename_all = "snake_case")]
 struct Asset {
     name: String,
-    url: String,
+    browser_download_url: String,
 }
 
 #[derive(Deserialize)]
@@ -103,7 +103,8 @@ fn try_main() -> eyre::Result<()> {
             }
         };
 
-        asset.url.into()
+        // Prefer browser download URLs to avoid the asset API endpoint.
+        asset.browser_download_url.into()
     };
 
     let webui_dir = if is_local_dir {
@@ -111,17 +112,20 @@ fn try_main() -> eyre::Result<()> {
     } else {
         let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
 
-        let base_headers = [(
+        let mut headers = reqwest_compat::header::HeaderMap::new();
+        headers.insert(
             reqwest_compat::header::ACCEPT,
             reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
-        )];
+        );
 
-        let auth_header = token
-            .map(|token| format!("Bearer {token}").try_into())
-            .transpose()?
-            .map(|token| (reqwest_compat::header::AUTHORIZATION, token));
+        if let Some(token) = token {
+            if src.starts_with("https://api.github.com/") {
+                let token_header = format!("Bearer {token}").try_into()?;
+                headers.insert(reqwest_compat::header::AUTHORIZATION, token_header);
+            }
+        }
 
-        builder = builder.default_headers(base_headers.into_iter().chain(auth_header).collect());
+        builder = builder.default_headers(headers);
 
         let cache = Cache::builder()
             .client_builder(builder)
