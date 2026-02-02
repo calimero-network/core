@@ -33,14 +33,12 @@ pub struct AddNodeCommand {
 #[derive(Debug, Parser)]
 pub struct RemoveNodeCommand {
     /// Name of the node to remove
-    #[arg(value_parser = valid_node_name)]
     pub name: String,
 }
 
 #[derive(Debug, Parser)]
 pub struct UseNodeCommand {
     /// Name of the node to set as active
-    #[arg(value_parser = valid_node_name)]
     pub name: String,
 }
 
