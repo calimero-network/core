@@ -320,6 +320,26 @@ impl TokenManager {
         }
     }
 
+    async fn touch_key_last_activity(&self, key_id: &str) -> Result<(), AuthError> {
+        // Re-fetch key to avoid overwriting revocations with stale data.
+        let Some(mut key) = self
+            .key_manager
+            .get_key(key_id)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+        else {
+            return Ok(());
+        };
+
+        key.metadata.touch();
+        self.key_manager
+            .set_key(key_id, &key)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+        Ok(())
+    }
+
     /// Verify a JWT token from request headers
     ///
     /// This method validates the token, checks for idle timeout, and updates the
@@ -357,7 +377,7 @@ impl TokenManager {
         }
 
         // Verify the key exists and is valid
-        let mut key = self
+        let key = self
             .key_manager
             .get_key(&claims.sub)
             .await
@@ -381,8 +401,7 @@ impl TokenManager {
         }
 
         // Update last activity timestamp (sliding window expiration)
-        key.metadata.touch();
-        if let Err(e) = self.key_manager.set_key(&claims.sub, &key).await {
+        if let Err(e) = self.touch_key_last_activity(&claims.sub).await {
             // Log the error but don't fail the request - activity tracking is best-effort
             tracing::warn!(
                 "Failed to update last activity for key {}: {}",
@@ -449,7 +468,7 @@ impl TokenManager {
         let claims = self.verify_token(refresh_token).await?;
 
         // Get the key and verify it's valid
-        let mut key = self
+        let key = self
             .key_manager
             .get_key(&claims.sub)
             .await
@@ -479,8 +498,7 @@ impl TokenManager {
         }
 
         // Update last activity timestamp (sliding window expiration)
-        key.metadata.touch();
-        if let Err(e) = self.key_manager.set_key(&claims.sub, &key).await {
+        if let Err(e) = self.touch_key_last_activity(&claims.sub).await {
             // Log the error but don't fail the refresh - activity tracking is best-effort
             tracing::warn!(
                 "Failed to update last activity for key {}: {}",
