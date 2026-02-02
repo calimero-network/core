@@ -4,7 +4,7 @@
 #
 # Options:
 #   --pid PID           Process ID to profile (required if not auto-detecting)
-#   --node-name NAME    Name of the node (for output file naming)
+#   --node NAME    Name of the node (for output file naming)
 #   --output-dir DIR    Output directory for profiling data
 #   --perf              Enable perf profiling
 #   --jemalloc          Enable jemalloc profiling
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
             PID="$2"
             shift 2
             ;;
-        --node-name)
+        --node)
             NODE_NAME="$2"
             shift 2
             ;;
@@ -148,5 +148,5 @@ echo "PID files:"
 [ "$ENABLE_PERF" = true ] && echo "  - perf: $OUTPUT_DIR/perf-${NODE_NAME}.pid"
 echo "  - memstats: $OUTPUT_DIR/memstats-${NODE_NAME}.pid"
 echo ""
-echo "To stop profiling, run: stop-profiling.sh --node-name $NODE_NAME --output-dir $OUTPUT_DIR"
+echo "To stop profiling, run: stop-profiling.sh --node $NODE_NAME --output-dir $OUTPUT_DIR"
 
