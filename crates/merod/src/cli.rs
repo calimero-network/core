@@ -18,17 +18,17 @@ use run::RunCommand;
 
 pub const EXAMPLES: &str = r"
   # Initialize node
-  $ merod --node-name node1 init --server-port 2428 --swarm-port 2528
+  $ merod --node node1 init --server-port 2428 --swarm-port 2528
 
   # Initialize node with a custom home directory data
   $ mkdir data
-  $ merod --home data/ --node-name node1 init
+  $ merod --home data/ --node node1 init
 
   # Configure an existing node
-  $ merod --node-name node1 config --server-host 143.34.182.202 --server-port 3000
+  $ merod --node node1 config --server-host 143.34.182.202 --server-port 3000
 
   # Run a node
-  $ merod --node-name node1 run
+  $ merod --node node1 run
 ";
 
 #[derive(Debug, Parser)]
@@ -64,7 +64,7 @@ pub struct RootArgs {
     pub home: Utf8PathBuf,
 
     /// Name of node
-    #[arg(short, long, value_name = "NAME")]
+    #[arg(short = 'n', long = "node", value_name = "NAME")]
     pub node_name: Utf8PathBuf,
 }
 
