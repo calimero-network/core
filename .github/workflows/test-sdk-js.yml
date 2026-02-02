@@ -122,9 +122,11 @@ jobs:
             - name: Run SDK JS Merobox Workflows
               id: run_workflows
               run: |
+                  set -o pipefail
                   MEROD_IMAGE="ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}"
 
                   mkdir -p docker-logs
+                  mkdir -p workflow-logs
                   cd sdk-js
 
                   merobox stop --all || true
@@ -146,27 +148,37 @@ jobs:
                   FAILED_WORKFLOWS=()
 
                   for workflow in "${WORKFLOW_FILES[@]}"; do
+                      workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
+                      workflow_log="$GITHUB_WORKSPACE/workflow-logs/${workflow_id}.log"
+
                       if merobox bootstrap run "$workflow" \
                           --image "$MEROD_IMAGE" \
                           --e2e-mode \
                           --near-devnet \
                           --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
-                          --verbose; then
+                          --verbose 2>&1 | tee "$workflow_log"; then
                           :
                       else
                           FAILED_WORKFLOWS+=("$workflow")
                       fi
                       
                       # Collect logs with workflow identifier to prevent filename collisions
-                      # Create sanitized workflow identifier (replace / with -, remove .yml extension)
-                      workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
                       echo "Collecting Docker logs for workflow: $workflow (id: $workflow_id)"
-                      for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-                          if [ -n "$container" ]; then
-                              echo "Collecting logs from container: $container"
-                              docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
-                          fi
-                      done
+                      containers=$(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true)
+                      if [ -z "$containers" ]; then
+                          containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | rg -i "calimero|merobox|node" || true)
+                      fi
+                      if [ -z "$containers" ]; then
+                          containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null || true)
+                      fi
+                      if [ -n "$containers" ]; then
+                          while IFS= read -r container; do
+                              if [ -n "$container" ]; then
+                                  echo "Collecting logs from container: $container"
+                                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
+                              fi
+                          done <<< "$containers"
+                      fi
                       
                       merobox stop --all || true
                       merobox nuke -f || true
@@ -199,6 +211,15 @@ jobs:
                       sdk-js/examples/*/res/abi.json
                       sdk-js/examples/*/res/state-schema.json
                       sdk-js/examples/*/data/
+                  retention-days: 7
+                  if-no-files-found: warn
+
+            - name: Upload Workflow Logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: sdk-js-workflow-logs-${{ github.sha }}
+                  path: workflow-logs/
                   retention-days: 7
                   if-no-files-found: warn
 
