@@ -197,7 +197,7 @@ impl Report for InviteToContextOpenInvitationResponse {
                     println!("{}", json_payload);
                     println!();
                     println!("To join, run from another node:");
-                    println!("  meroctl --node <NODE_ID> context join-by-open-invitation '{}'", json_payload);
+                    println!("  meroctl --node <NODE_ID> context --as <INVITEE_PUBLIC_KEY> join-by-open-invitation '{}'", json_payload);
                 }
                 Err(_) => {
                     println!("{:?}", signed_invitation);
