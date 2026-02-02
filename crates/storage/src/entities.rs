@@ -216,7 +216,6 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
-                crdt_type: None,
             },
             merkle_hash: [0; 32],
         }
@@ -233,7 +232,6 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
-                crdt_type: None,
             },
             merkle_hash: [0; 32],
         }
@@ -372,58 +370,6 @@ pub struct Metadata {
     /// different characteristics of handling in the node.
     /// See `StorageType`.
     pub storage_type: StorageType,
-
-    /// CRDT type identifier for proper merge dispatch during state synchronization.
-    ///
-    /// When `None`, state sync falls back to Last-Write-Wins (LWW).
-    /// When `Some(crdt_type)`, enables proper CRDT merge for Counters, Maps, Sets, etc.
-    ///
-    /// Backward compatible: custom deserializer handles missing field from old data.
-    pub crdt_type: Option<CrdtType>,
-}
-
-// Custom deserialization to handle backward compatibility with existing stored data.
-//
-// Before this field was added, Metadata was serialized with only 3 fields:
-// [created_at][updated_at][storage_type]
-//
-// After adding crdt_type, new data serializes as:
-// [created_at][updated_at][storage_type][crdt_type]
-//
-// When deserializing old data, Borsh will encounter UnexpectedEof when trying to
-// read crdt_type (because it doesn't exist in old data). We catch this error and
-// default to None, maintaining backward compatibility.
-impl BorshDeserialize for Metadata {
-    fn deserialize_reader<R: Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        // Always deserialize the original 3 fields
-        let created_at = u64::deserialize_reader(reader)?;
-        let updated_at = UpdatedAt::deserialize_reader(reader)?;
-        let storage_type = StorageType::deserialize_reader(reader)?;
-
-        // Try to deserialize crdt_type (new field)
-        // If the data is old (doesn't have this field), UnexpectedEof will be raised
-        let crdt_type = match Option::<CrdtType>::deserialize_reader(reader) {
-            Ok(crdt_type) => crdt_type,
-            Err(e) => {
-                // Only treat "no more data" errors as "field not present" (old data format)
-                // Propagate all other errors (corruption, I/O errors, etc.)
-                match e.kind() {
-                    ErrorKind::UnexpectedEof => None, // Old data - no crdt_type field
-                    ErrorKind::InvalidData if e.to_string().contains("Unexpected length") => {
-                        None // Old data detected via insufficient bytes
-                    }
-                    _ => return Err(e), // Real error - propagate
-                }
-            }
-        };
-
-        Ok(Metadata {
-            created_at,
-            updated_at,
-            storage_type,
-            crdt_type,
-        })
-    }
 }
 
 impl Metadata {
@@ -434,56 +380,7 @@ impl Metadata {
             created_at,
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
-            crdt_type: None,
         }
-    }
-
-    /// Creates new metadata with CRDT type.
-    ///
-    /// # Example
-    /// ```
-    /// # use calimero_storage::entities::{Metadata, CrdtType};
-    /// let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::Counter);
-    /// assert_eq!(metadata.crdt_type, Some(CrdtType::Counter));
-    /// ```
-    #[must_use]
-    pub fn with_crdt_type(created_at: u64, updated_at: u64, crdt_type: CrdtType) -> Self {
-        Self {
-            created_at,
-            updated_at: updated_at.into(),
-            storage_type: StorageType::default(),
-            crdt_type: Some(crdt_type),
-        }
-    }
-
-    /// Checks if this metadata has a built-in CRDT type (not Custom).
-    ///
-    /// Built-in CRDTs (Counter, LwwRegister, etc.) are merged in the storage layer.
-    /// Custom CRDTs require WASM callback for merge.
-    ///
-    /// # Example
-    /// ```
-    /// # use calimero_storage::entities::{Metadata, CrdtType};
-    /// let builtin = Metadata::with_crdt_type(1000, 2000, CrdtType::Counter);
-    /// assert!(builtin.is_builtin_crdt());
-    ///
-    /// let custom = Metadata::with_crdt_type(1000, 2000, CrdtType::Custom { type_name: "MyCRDT".to_string() });
-    /// assert!(!custom.is_builtin_crdt());
-    ///
-    /// let none = Metadata::new(1000, 2000);
-    /// assert!(!none.is_builtin_crdt());
-    /// ```
-    #[must_use]
-    pub fn is_builtin_crdt(&self) -> bool {
-        matches!(
-            self.crdt_type,
-            Some(CrdtType::Counter)
-                | Some(CrdtType::LwwRegister)
-                | Some(CrdtType::Rga)
-                | Some(CrdtType::UnorderedMap)
-                | Some(CrdtType::UnorderedSet)
-                | Some(CrdtType::Vector)
-        )
     }
 
     /// Updates the `updated_at` timestamp.
