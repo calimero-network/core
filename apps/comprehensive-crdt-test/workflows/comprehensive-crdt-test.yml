@@ -434,8 +434,9 @@ steps:
     node: comprehensive-node-2
     context_id: "{{context_id}}"
     executor_public_key: "{{public_key_comprehensive-node-2}}"
-    method: get_user_nested
+    method: get_user_nested_for
     args:
+      user_key: "{{member_public_key}}"
       key: nested-key
     outputs:
       nested_value: result
