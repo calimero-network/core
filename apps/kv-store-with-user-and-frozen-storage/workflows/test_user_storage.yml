@@ -185,3 +185,78 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{node1_simple_value_res_from_node2}}, {"output": "SimpleUserStringFromNode2"})'
+
+  # ============================================
+  # UserStorage Intrinsics Tests
+  # ============================================
+  
+  # Test: Merge behavior - concurrent writes to different users should merge correctly
+  - name: Node 1 updates their own user storage (concurrent merge test)
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: set_user_simple
+    args:
+      value: "UpdatedByNode1"
+
+  - name: Node 2 updates their own user storage concurrently
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_new-calimero-node-2}}'
+    method: set_user_simple
+    args:
+      value: "UpdatedByNode2"
+
+  - name: Wait for user storage merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Verify: Each user's storage should be independent (merge preserves both)
+  - name: Verify Node 1's storage preserved after merge
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_user_simple
+    outputs:
+      node1_after_merge: result
+
+  - name: Verify Node 2's storage preserved after merge
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_new-calimero-node-2}}'
+    method: get_user_simple
+    outputs:
+      node2_after_merge: result
+
+  - name: Assert user storage merge preserves both users' data
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_after_merge}}, {"output": "UpdatedByNode1"})'
+      - 'json_equal({{node2_after_merge}}, {"output": "UpdatedByNode2"})'
+
+  # Test: User isolation - verify users can read but not write to each other's storage
+  - name: Verify Node 1 can read Node 2's data (read access works)
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_user_simple_for
+    args:
+      user_key: "{{public_key_new-calimero-node-2}}"
+    outputs:
+      node1_reads_node2: result
+
+  - name: Assert read access works across users
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_reads_node2}}, {"output": "UpdatedByNode2"})'

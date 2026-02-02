@@ -1,0 +1,24 @@
+[package]
+name = "comprehensive-crdt-test"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+thiserror.workspace = true
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+hex.workspace = true
+
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true
+
+[package.metadata.workspaces]
+independent = true

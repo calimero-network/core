@@ -1,0 +1,581 @@
+name: Comprehensive CRDT Test
+description: Tests ALL CRDT types, UserStorage, FrozenStorage, and root-level concurrent modifications
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: comprehensive-node
+
+steps:
+  # ============================================
+  # Setup Phase
+  # ============================================
+  
+  - name: Install Comprehensive CRDT Application on Node 1
+    type: install_application
+    node: comprehensive-node-1
+    path: res/comprehensive_crdt_test.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: comprehensive-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - comprehensive-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # ============================================
+  # Root Counter Test (CRDT merge)
+  # ============================================
+  
+  - name: Node 1 increments root counter
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_root_counter
+    outputs:
+      counter_1: result
+
+  - name: Node 1 increments root counter again
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_root_counter
+
+  - name: Node 2 increments root counter concurrently
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: increment_root_counter
+
+  - name: Wait for root counter merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get root counter from Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_root_counter
+    outputs:
+      counter_after: result
+
+  - name: Assert root counter is 3 (2 + 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_after}}, {"output": 3})'
+
+  # ============================================
+  # Root Map Test (field-level merge)
+  # ============================================
+  
+  - name: Node 1 sets root map key1
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_root_map
+    args:
+      key: key1
+      value: value1
+
+  - name: Node 2 sets root map key2 concurrently
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: set_root_map
+    args:
+      key: key2
+      value: value2
+
+  - name: Wait for root map merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get root map key1 from Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_root_map
+    args:
+      key: key1
+    outputs:
+      map_key1: result
+
+  - name: Get root map key2 from Node 1
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_root_map
+    args:
+      key: key2
+    outputs:
+      map_key2: result
+
+  - name: Assert root map field-level merge worked
+    type: json_assert
+    statements:
+      - 'json_equal({{map_key1}}, {"output": "value1"})'
+      - 'json_equal({{map_key2}}, {"output": "value2"})'
+
+  # ============================================
+  # Root Vector Test (element-wise merge)
+  # ============================================
+  
+  - name: Node 1 pushes to root vector
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: push_root_vector
+    args:
+      value: 5
+
+  - name: Node 2 pushes to root vector concurrently
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: push_root_vector
+    args:
+      value: 10
+
+  - name: Wait for root vector merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get root vector length from Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_root_vector_len
+    outputs:
+      vector_len: result
+
+  - name: Assert root vector synced correctly
+    type: json_assert
+    statements:
+      - 'json_equal({{vector_len}}, {"output": 2})'
+
+  # ============================================
+  # Root Set Test (union merge)
+  # ============================================
+  
+  - name: Node 1 adds item1 to root set
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_root_set
+    args:
+      item: item1
+
+  - name: Node 2 adds item2 to root set concurrently
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: add_root_set
+    args:
+      item: item2
+
+  - name: Wait for root set union merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Check item1 on Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: has_root_set
+    args:
+      item: item1
+    outputs:
+      has_item1: result
+
+  - name: Check item2 on Node 1
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: has_root_set
+    args:
+      item: item2
+    outputs:
+      has_item2: result
+
+  - name: Assert root set union merge worked
+    type: json_assert
+    statements:
+      - 'json_equal({{has_item1}}, {"output": true})'
+      - 'json_equal({{has_item2}}, {"output": true})'
+
+  # ============================================
+  # Root RGA Test (text CRDT merge)
+  # ============================================
+  
+  - name: Node 1 inserts text at position 0
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: insert_root_rga
+    args:
+      position: 0
+      text: Hello
+
+  - name: Node 2 inserts text at position 0 concurrently
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: insert_root_rga
+    args:
+      position: 0
+      text: World
+
+  - name: Wait for root RGA merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get root RGA text from Node 1
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_root_rga_text
+    outputs:
+      rga_text: result
+
+  - name: Assert root RGA contains both texts
+    type: json_assert
+    statements:
+      - 'json_equal({{rga_text}}, {"output": "WorldHello"})'
+
+  # ============================================
+  # Root Register Test (LWW)
+  # ============================================
+  
+  - name: Node 1 sets root register
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_root_register
+    args:
+      value: first
+
+  - name: Wait for timestamp separation
+    type: wait
+    seconds: 2
+
+  - name: Node 2 sets root register (LWW test)
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: set_root_register
+    args:
+      value: second
+
+  - name: Wait for root register LWW consensus
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get root register from Node 1
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_root_register
+    outputs:
+      register_value: result
+
+  - name: Assert latest timestamp wins
+    type: json_assert
+    statements:
+      - 'json_equal({{register_value}}, {"output": "second"})'
+
+  # ============================================
+  # UserStorage Simple Test
+  # ============================================
+  
+  - name: Node 1 sets user simple value
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_user_simple
+    args:
+      value: user1-value
+
+  - name: Node 2 sets user simple value
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: set_user_simple
+    args:
+      value: user2-value
+
+  - name: Wait for user storage sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get user simple value for Node 1 from Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_user_simple_for
+    args:
+      user_key: "{{member_public_key}}"
+    outputs:
+      user1_value: result
+
+  - name: Assert user storage synced correctly
+    type: json_assert
+    statements:
+      - 'json_equal({{user1_value}}, {"output": "user1-value"})'
+
+  # ============================================
+  # UserStorage Nested Test
+  # ============================================
+  
+  - name: Node 1 sets user nested value
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: set_user_nested
+    args:
+      key: nested-key
+      value: nested-value
+
+  - name: Node 1 increments user nested counter
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_user_nested_counter
+
+  - name: Wait for user nested sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get user nested value from Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_user_nested
+    args:
+      key: nested-key
+    outputs:
+      nested_value: result
+
+  - name: Get user nested counter from Node 2 (as Node 1 user)
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_user_nested_counter
+    outputs:
+      nested_counter: result
+
+  - name: Assert user nested synced correctly
+    type: json_assert
+    statements:
+      - 'json_equal({{nested_value}}, {"output": "nested-value"})'
+      - 'json_equal({{nested_counter}}, {"output": 1})'
+
+  # ============================================
+  # FrozenStorage Test
+  # ============================================
+  
+  - name: Node 1 adds frozen value
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_frozen
+    args:
+      value: frozen-content
+    outputs:
+      frozen_hash: result
+
+  - name: Wait for frozen storage sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get frozen value from Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_frozen
+    args:
+      hash_hex: "{{frozen_hash.output}}"
+    outputs:
+      frozen_value: result
+
+  - name: Assert frozen storage synced correctly
+    type: json_assert
+    statements:
+      - 'json_equal({{frozen_value}}, {"output": "frozen-content"})'
+
+  # ============================================
+  # Root-Level Concurrent Modification Test
+  # This tests that root merge works when different
+  # nodes modify different root fields concurrently
+  # ============================================
+  
+  - name: Node 1 modifies root counter (root field 1)
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: increment_root_counter
+
+  - name: Node 2 modifies root map (root field 2) concurrently
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: set_root_map
+    args:
+      key: concurrent-key
+      value: concurrent-value
+
+  - name: Node 1 modifies root set (root field 3) concurrently
+    type: call
+    node: comprehensive-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: add_root_set
+    args:
+      item: concurrent-item
+
+  - name: Wait for root-level concurrent merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Verify all concurrent modifications merged on Node 2
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_root_counter
+    outputs:
+      final_counter: result
+
+  - name: Verify root map modification merged
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: get_root_map
+    args:
+      key: concurrent-key
+    outputs:
+      final_map: result
+
+  - name: Verify root set modification merged
+    type: call
+    node: comprehensive-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_comprehensive-node-2}}"
+    method: has_root_set
+    args:
+      item: concurrent-item
+    outputs:
+      final_set: result
+
+  - name: Assert root-level concurrent merge worked
+    type: json_assert
+    statements:
+      - 'json_equal({{final_counter}}, {"output": 4})'  # Previous 3 + 1
+      - 'json_equal({{final_map}}, {"output": "concurrent-value"})'
+      - 'json_equal({{final_set}}, {"output": true})'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
