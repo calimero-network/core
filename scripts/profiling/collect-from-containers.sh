@@ -96,7 +96,7 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
             # Memory report
             echo "  Generating memory report..."
             docker exec "$container" /profiling/scripts/generate-memory-report.sh \
-                --node-name "$container" \
+                --node "$container" \
                 --output /profiling/reports/memory-report.txt 2>&1 || echo "    Could not generate memory report"
             
             # Memory flamegraph

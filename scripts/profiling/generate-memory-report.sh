@@ -3,7 +3,7 @@
 # Usage: generate-memory-report.sh [OPTIONS]
 #
 # Options:
-#   --node-name NAME    Name of the node
+#   --node NAME    Name of the node
 #   --input-dir DIR     Directory containing profiling data
 #   --output FILE       Output report file
 #   --format FORMAT     Output format (text, json, html) - default: text
@@ -19,7 +19,7 @@ FORMAT="text"
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --node-name)
+        --node)
             NODE_NAME="$2"
             shift 2
             ;;
