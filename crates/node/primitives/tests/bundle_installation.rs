@@ -2070,3 +2070,312 @@ async fn test_get_latest_version_mixed_semver_and_non_semver() {
         "Latest version should be 2.0.0 (semantic), preferring semantic versions over non-semantic"
     );
 }
+
+// Path Traversal Validation Tests
+
+/// Helper to create a bundle with a custom manifest (for testing malicious inputs)
+fn create_bundle_with_custom_manifest(
+    temp_dir: &TempDir,
+    manifest_json: serde_json::Value,
+    wasm_content: &[u8],
+) -> Utf8PathBuf {
+    let bundle_path = temp_dir.path().join("malicious-bundle.mpk");
+    let bundle_file = fs::File::create(&bundle_path).unwrap();
+    let encoder = GzEncoder::new(bundle_file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
+    let mut manifest_header = tar::Header::new_gnu();
+    manifest_header.set_path("manifest.json").unwrap();
+    manifest_header.set_size(manifest_bytes.len() as u64);
+    manifest_header.set_cksum();
+    tar.append(&manifest_header, manifest_bytes.as_slice())
+        .unwrap();
+
+    // Add WASM file
+    let mut wasm_header = tar::Header::new_gnu();
+    wasm_header.set_path("app.wasm").unwrap();
+    wasm_header.set_size(wasm_content.len() as u64);
+    wasm_header.set_cksum();
+    tar.append(&wasm_header, wasm_content).unwrap();
+
+    tar.finish().unwrap();
+    bundle_path.try_into().unwrap()
+}
+
+/// Test: Installation should fail when package contains path traversal sequence ".."
+///
+/// A malicious bundle could set package to "../../../etc" to escape the
+/// applications directory and write files to arbitrary locations.
+#[tokio::test]
+async fn test_bundle_validation_path_traversal_in_package() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Generate a signing key
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest with path traversal in package
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "../../../etc/malicious",  // Path traversal!
+        "appVersion": "1.0.0",
+        "signerId": signer_id,
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 12
+        },
+        "migrations": []
+    });
+
+    // Sign the manifest
+    sign_manifest(&mut manifest, &signing_key);
+
+    let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
+
+    // Installation should fail due to path traversal
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail with path traversal in package"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("path traversal") || error_msg.contains("'..'"),
+        "Error should mention path traversal, got: {}",
+        error_msg
+    );
+}
+
+/// Test: Installation should fail when appVersion contains path traversal sequence ".."
+#[tokio::test]
+async fn test_bundle_validation_path_traversal_in_version() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Generate a signing key
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest with path traversal in appVersion
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.test",
+        "appVersion": "../../../tmp/malicious",  // Path traversal!
+        "signerId": signer_id,
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 12
+        },
+        "migrations": []
+    });
+
+    // Sign the manifest
+    sign_manifest(&mut manifest, &signing_key);
+
+    let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
+
+    // Installation should fail due to path traversal
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail with path traversal in appVersion"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("path traversal") || error_msg.contains("'..'"),
+        "Error should mention path traversal, got: {}",
+        error_msg
+    );
+}
+
+/// Test: Installation should fail when package contains forward slash
+#[tokio::test]
+async fn test_bundle_validation_forward_slash_in_package() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Generate a signing key
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest with forward slash in package
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "foo/bar",  // Directory separator!
+        "appVersion": "1.0.0",
+        "signerId": signer_id,
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 12
+        },
+        "migrations": []
+    });
+
+    // Sign the manifest
+    sign_manifest(&mut manifest, &signing_key);
+
+    let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
+
+    // Installation should fail due to directory separator
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail with forward slash in package"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("directory separator") || error_msg.contains("package"),
+        "Error should mention directory separator, got: {}",
+        error_msg
+    );
+}
+
+/// Test: Installation should fail when package contains backslash (Windows path separator)
+#[tokio::test]
+async fn test_bundle_validation_backslash_in_package() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Generate a signing key
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest with backslash in package
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "foo\\bar",  // Windows directory separator!
+        "appVersion": "1.0.0",
+        "signerId": signer_id,
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 12
+        },
+        "migrations": []
+    });
+
+    // Sign the manifest
+    sign_manifest(&mut manifest, &signing_key);
+
+    let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
+
+    // Installation should fail due to directory separator
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail with backslash in package"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("directory separator") || error_msg.contains("package"),
+        "Error should mention directory separator, got: {}",
+        error_msg
+    );
+}
+
+/// Test: Installation should fail when package looks like a Windows absolute path
+#[tokio::test]
+async fn test_bundle_validation_windows_absolute_path_in_package() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Generate a signing key
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    // Create manifest with Windows absolute path in package
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "C:malicious",  // Windows absolute path!
+        "appVersion": "1.0.0",
+        "signerId": signer_id,
+        "minRuntimeVersion": "1.0.0",
+        "wasm": {
+            "path": "app.wasm",
+            "size": 12
+        },
+        "migrations": []
+    });
+
+    // Sign the manifest
+    sign_manifest(&mut manifest, &signing_key);
+
+    let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
+
+    // Installation should fail due to absolute path
+    let result = node_client
+        .install_application_from_path(bundle_path, vec![])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bundle installation should fail with Windows absolute path in package"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("absolute path") || error_msg.contains("package"),
+        "Error should mention absolute path, got: {}",
+        error_msg
+    );
+}
+
+/// Test: Valid package names should be accepted
+#[tokio::test]
+async fn test_bundle_validation_valid_package_names() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    // Test various valid package name formats
+    let valid_packages = vec![
+        "com.example.myapp",
+        "my-app",
+        "my_app_v2",
+        "MyApp",
+        "app123",
+        "com.calimero.kv-store",
+    ];
+
+    for (i, package) in valid_packages.iter().enumerate() {
+        let bundle_path = create_test_bundle(
+            &temp_dir,
+            package,
+            &format!("1.0.{}", i), // Unique version to avoid conflicts
+            b"wasm content",
+            None,
+            vec![],
+        );
+
+        let result = node_client
+            .install_application_from_path(bundle_path, vec![])
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Bundle with valid package '{}' should install successfully, got error: {:?}",
+            package,
+            result.err()
+        );
+    }
+}

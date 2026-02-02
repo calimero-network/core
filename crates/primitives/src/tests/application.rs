@@ -148,6 +148,28 @@ fn test_app_key_new_empty_app_id_fails() {
 }
 
 #[test]
+fn test_app_key_new_colon_in_app_id_fails() {
+    let signer_id =
+        SignerId::new("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK").unwrap();
+
+    // Single colon in app_id should fail
+    let result = AppKey::new("my:app", signer_id.clone());
+    assert!(matches!(result, Err(InvalidAppKey::ColonInAppId)));
+
+    // Multiple colons should also fail
+    let result = AppKey::new("my:app:name", signer_id.clone());
+    assert!(matches!(result, Err(InvalidAppKey::ColonInAppId)));
+
+    // Colon at start should fail
+    let result = AppKey::new(":myapp", signer_id.clone());
+    assert!(matches!(result, Err(InvalidAppKey::ColonInAppId)));
+
+    // Colon at end should fail
+    let result = AppKey::new("myapp:", signer_id);
+    assert!(matches!(result, Err(InvalidAppKey::ColonInAppId)));
+}
+
+#[test]
 fn test_app_key_display() {
     let signer_id =
         SignerId::new("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK").unwrap();

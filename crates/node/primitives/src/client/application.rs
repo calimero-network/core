@@ -752,6 +752,31 @@ impl NodeClient {
         Ok(application_id)
     }
 
+    /// Validates that a string is safe for use as a filesystem path component.
+    /// Returns an error if the string contains path traversal or other unsafe characters.
+    ///
+    /// This prevents malicious bundle manifests from writing files outside the intended
+    /// `applications` directory by using path traversal sequences in package or version fields.
+    fn validate_path_component(value: &str, field_name: &str) -> eyre::Result<()> {
+        // Check for parent directory traversal
+        if value.contains("..") {
+            bail!("{} contains path traversal sequence '..'", field_name);
+        }
+        // Check for directory separators (Unix and Windows)
+        if value.contains('/') || value.contains('\\') {
+            bail!("{} contains directory separator", field_name);
+        }
+        // Check for null bytes
+        if value.contains('\0') {
+            bail!("{} contains null byte", field_name);
+        }
+        // Check for absolute path indicators (Windows drive letters like "C:")
+        if value.len() >= 2 && value.chars().nth(1) == Some(':') {
+            bail!("{} appears to be an absolute path", field_name);
+        }
+        Ok(())
+    }
+
     /// Extract and parse bundle manifest from bundle archive data.
     /// Returns both the raw JSON value (for signature verification) and the typed manifest.
     fn extract_bundle_manifest(
@@ -783,6 +808,12 @@ impl NodeClient {
                 if manifest.app_version.is_empty() {
                     bail!("bundle manifest 'appVersion' field is empty");
                 }
+
+                // Validate fields are safe for use in filesystem paths
+                // This prevents path traversal attacks where malicious manifests could
+                // write files outside the intended applications directory
+                Self::validate_path_component(&manifest.package, "package")?;
+                Self::validate_path_component(&manifest.app_version, "appVersion")?;
 
                 return Ok((manifest_json, manifest));
             }

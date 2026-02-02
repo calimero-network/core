@@ -229,10 +229,14 @@ impl AppKey {
     /// # Errors
     ///
     /// Returns [`InvalidAppKey::EmptyAppId`] if the app_id is empty.
+    /// Returns [`InvalidAppKey::ColonInAppId`] if the app_id contains a colon.
     pub fn new(app_id: impl Into<Box<str>>, signer_id: SignerId) -> Result<Self, InvalidAppKey> {
         let app_id = app_id.into();
         if app_id.is_empty() {
             return Err(InvalidAppKey::EmptyAppId);
+        }
+        if app_id.contains(':') {
+            return Err(InvalidAppKey::ColonInAppId);
         }
         Ok(Self { app_id, signer_id })
     }
@@ -275,6 +279,10 @@ pub enum InvalidAppKey {
     /// The appId is empty.
     #[error("appId cannot be empty")]
     EmptyAppId,
+
+    /// The appId contains a colon, which is not allowed (used as separator in serialized format).
+    #[error("appId cannot contain ':' (colon is used as separator in serialized format)")]
+    ColonInAppId,
 
     /// The signerId is invalid.
     #[error("invalid signerId: {0}")]
