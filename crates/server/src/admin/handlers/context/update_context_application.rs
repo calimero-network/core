@@ -33,12 +33,17 @@ pub async fn handler(
 
     info!(context_id=%context_id_result, application_id=%req.application_id, "Updating context application");
 
+    let migration_args = req
+        .migration
+        .map(|m| (m.method, m.payload, m.write_return_to_state_key));
+
     let result = state
         .ctx_client
         .update_application(
             &context_id_result,
             &req.application_id,
             &req.executor_public_key,
+            migration_args,
         )
         .await
         .map_err(parse_api_error);

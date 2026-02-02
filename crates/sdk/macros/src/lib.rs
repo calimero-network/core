@@ -46,6 +46,7 @@ mod event;
 mod items;
 mod logic;
 mod macros;
+mod migration;
 mod private;
 mod reserved;
 mod sanitizer;
@@ -305,4 +306,38 @@ pub fn log(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as TokenStream2);
 
     quote!(::calimero_sdk::__log__!(#input)).into()
+}
+
+/// Marks a function as an entry point to the migration function.
+///
+/// This function bypasses the state loading on function call, allowing
+/// to read the raw state bytes, transform it into the new struct (new version of
+/// the app state), and return the new struct representing the new state of the app.
+///
+/// The return value of this function will be serialized and written to the
+/// application's root state key by the node.
+///
+/// # Example
+///
+/// ```rust
+/// /// #[app::migrate]
+/// pub fn migrate_v1_to_v2() -> NewState {
+///     // Read raw bytes from the standardized root storage key
+///     let old_bytes = calimero_sdk::state::read_raw().expect("No existing state found");
+///     
+///     // Deserialize using the old schema
+///     let old = OldState::try_from_slice(&old_bytes).expect("Failed to deserialize old state");
+///
+///     env::log(&format!("Migrating state. Old count: {}", old.count));
+///
+///     // Return the new state structure
+///     NewState {
+///         count: old.count,
+///         new_field: "Default Value".to_string(),
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn migrate(args: TokenStream, input: TokenStream) -> TokenStream {
+    migration::migrate_impl(args.into(), input.into()).into()
 }

@@ -2337,12 +2337,14 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
  "calimero-sys",
  "calimero-wasm-abi",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "trybuild",
 ]
 
@@ -2432,6 +2434,7 @@ name = "calimero-storage"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk",
  "calimero-storage-macros",

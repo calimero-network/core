@@ -13,7 +13,9 @@ borsh = { workspace = true, features = ["derive"] }
 bs58.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 calimero-sdk-macros.workspace = true
+calimero-prelude.workspace = true
 calimero-primitives.workspace = true
 calimero-sys.workspace = true
 calimero-wasm-abi.workspace = true

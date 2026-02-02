@@ -1,6 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
+mod constants;
+
+pub use constants::*;
+
 #[derive(
     Debug, Clone, Copy, BorshSerialize, BorshDeserialize, Serialize, Deserialize, PartialEq, Eq,
 )]

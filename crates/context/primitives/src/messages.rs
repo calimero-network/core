@@ -131,10 +131,21 @@ impl Message for SyncRequest {
 }
 
 #[derive(Debug)]
+pub struct MigrationParams {
+    pub method: String,
+    pub payload: Vec<u8>,
+
+    /// If value is `Some`, the return value of the migration function will be
+    /// written to this storage key.
+    pub write_return_to_state_key: Option<Vec<u8>>,
+}
+
+#[derive(Debug)]
 pub struct UpdateApplicationRequest {
     pub context_id: ContextId,
     pub application_id: ApplicationId,
     pub public_key: PublicKey,
+    pub migration: Option<MigrationParams>,
 }
 
 impl Message for UpdateApplicationRequest {

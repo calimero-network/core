@@ -12,6 +12,7 @@ use crate::integration::Comparison;
 use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
 use borsh::{from_slice, BorshDeserialize, BorshSerialize};
+use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
 use tracing::info;
 
 /// A set collection that stores unqiue values once.
@@ -67,7 +68,7 @@ where
     }
 
     fn entry_id() -> Id {
-        Id::new([118; 32])
+        Id::new(ROOT_STORAGE_ENTRY_ID)
     }
 
     #[expect(clippy::mut_from_ref, reason = "'tis fine")]

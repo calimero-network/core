@@ -1,5 +1,10 @@
 //! Storage configuration constants.
 
+use crate::address::Id;
+use crate::store::Key;
+
+use calimero_prelude::{DIGEST_SIZE, ROOT_STORAGE_ENTRY_ID};
+
 /// Tombstone retention period in nanoseconds (1 day).
 ///
 /// Tombstones are kept for this duration to enable CRDT conflict resolution
@@ -38,6 +43,12 @@ pub const fn days_to_nanos(days: u64) -> u64 {
 #[must_use]
 pub const fn hours_to_nanos(hours: u64) -> u64 {
     hours * 60 * 60 * 1_000_000_000
+}
+
+/// Returns the canonical storage key for the application's root state
+/// in the form that is actually used in RocksDB internally.
+pub fn root_storage_key() -> [u8; DIGEST_SIZE] {
+    Key::Entry(Id::new(ROOT_STORAGE_ENTRY_ID)).to_bytes()
 }
 
 #[cfg(test)]

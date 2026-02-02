@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
     DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, JoinContextRequest,
-    JoinContextResponse, UpdateApplicationRequest,
+    JoinContextResponse, MigrationParams, UpdateApplicationRequest,
 };
 use crate::ContextAtomic;
 
@@ -714,6 +714,7 @@ impl ContextClient {
     /// * `context_id` - The ID of the context where to update the application.
     /// * `application_id` - The ID of the new application to switch to.
     /// * `identity` - The public key of the member authorizing the update.
+    /// * `migration` - an optional tuple containing migration params: method, payload, write_key.
     ///
     /// # Returns
     ///
@@ -723,8 +724,15 @@ impl ContextClient {
         context_id: &ContextId,
         application_id: &ApplicationId,
         identity: &PublicKey,
+        migration: Option<(String, Vec<u8>, Option<Vec<u8>>)>,
     ) -> eyre::Result<()> {
         let (sender, receiver) = oneshot::channel();
+
+        let migration_params = migration.map(|(method, payload, write_key)| MigrationParams {
+            method,
+            payload,
+            write_return_to_state_key: write_key,
+        });
 
         self.context_manager
             .send(ContextMessage::UpdateApplication {
@@ -732,6 +740,7 @@ impl ContextClient {
                     context_id: *context_id,
                     application_id: *application_id,
                     public_key: *identity,
+                    migration: migration_params,
                 },
                 outcome: sender,
             })

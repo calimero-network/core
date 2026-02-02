@@ -556,11 +556,25 @@ impl JoinContextResponse {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppMigrationParams {
+    pub method: String,
+    pub payload: Vec<u8>,
+
+    /// If value is `Some`, the return value of the migration function will be
+    /// written to this storage key.
+    pub write_return_to_state_key: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateContextApplicationRequest {
     pub application_id: ApplicationId,
     pub executor_public_key: PublicKey,
+
+    /// Optional migration parameters.
+    pub migration: Option<AppMigrationParams>,
 }
 
 impl UpdateContextApplicationRequest {
@@ -568,6 +582,7 @@ impl UpdateContextApplicationRequest {
         Self {
             application_id,
             executor_public_key,
+            migration: None,
         }
     }
 }

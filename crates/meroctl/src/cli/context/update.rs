@@ -3,7 +3,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    InstallDevApplicationRequest, UpdateContextApplicationRequest,
+    AppMigrationParams, InstallDevApplicationRequest, UpdateContextApplicationRequest,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
@@ -56,6 +56,19 @@ pub struct UpdateCommand {
     )]
     watch: bool,
 
+    #[clap(
+        long,
+        help = "Name of the migration function to execute (e.g. 'migrate_v1_to_v2')"
+    )]
+    pub migrate_method: Option<String>,
+
+    #[clap(
+        long,
+        help = "Arguments for the migration function (JSON string or hex string)",
+        requires = "migrate"
+    )]
+    pub migrate_args: Option<String>,
+
     #[arg(
         long = "as",
         help = "Public key of the executor",
@@ -82,6 +95,29 @@ impl UpdateCommand {
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
+        // Prepare migration params if migration info is provided.
+        let migration_params = if let Some(migrate_method) = self.migrate_method {
+            // Require migration params to be hex-encoded.
+            let payload = if let Some(hex_str) = &self.migrate_args {
+                hex::decode(hex_str.trim_start_matches("0x"))
+                    .wrap_err("Failed to decode migration args. Must be a hex string.")?
+            } else {
+                Vec::new()
+            };
+
+            // Set the `write_return_to_state_key` to trigger the behavior that ignores the state on the node
+            // Currently, the node ignores the content, it just checks if the value is `Some`
+            let write_back_key = Some(vec![]);
+
+            Some(MigrationParams {
+                method,
+                payload,
+                write_return_to_state_key: write_back_key,
+            })
+        } else {
+            None
+        };
+
         match self {
             Self {
                 application_id: Some(application_id),
@@ -90,7 +126,9 @@ impl UpdateCommand {
                 watch: false,
                 ..
             } => {
-                let request = UpdateContextApplicationRequest::new(application_id, executor_id);
+                let mut request = UpdateContextApplicationRequest::new(application_id, executor_id);
+                request.migration = migration_params;
+
                 let _response = client
                     .update_context_application(&context_id, request)
                     .await?;
