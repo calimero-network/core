@@ -12,6 +12,7 @@ use serde::Deserialize;
 struct Asset {
     name: String,
     url: String,
+    browser_download_url: String,
 }
 
 #[derive(Deserialize)]
@@ -103,7 +104,8 @@ fn try_main() -> eyre::Result<()> {
             }
         };
 
-        asset.url.into()
+        // Prefer browser download URLs to avoid the asset API endpoint.
+        asset.browser_download_url.into()
     };
 
     let webui_dir = if is_local_dir {
