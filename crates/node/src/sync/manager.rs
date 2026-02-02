@@ -747,6 +747,26 @@ impl SyncManager {
                                 dag_heads_count = result.dag_heads.len(),
                                 "Snapshot sync completed successfully"
                             );
+                            if !result.dag_heads.is_empty() {
+                                let mut fine_stream =
+                                    self.network_client.open_stream(chosen_peer).await?;
+                                if let Err(e) = self
+                                    .fine_sync_from_boundary(
+                                        context_id,
+                                        chosen_peer,
+                                        our_identity,
+                                        &mut fine_stream,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        %context_id,
+                                        %chosen_peer,
+                                        error = %e,
+                                        "Fine-sync after snapshot failed, state may be slightly behind"
+                                    );
+                                }
+                            }
                             return Ok(Some(SyncProtocol::SnapshotSync));
                         }
                         Err(e) => {
