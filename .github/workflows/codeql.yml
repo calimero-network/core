@@ -1,0 +1,45 @@
+name: CodeQL
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "apps/**"
+      - "tools/**"
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/codeql/**"
+
+concurrency:
+  group: codeql-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (CodeQL)
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust, javascript, actions
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
