@@ -11,6 +11,10 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+  pull_request:
+    paths:
+      - "workflows/fuzzy-tests/**"
+      - ".github/workflows/fuzzy-load-test.yml"
   workflow_dispatch:
     inputs:
       duration_override:
