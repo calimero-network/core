@@ -85,19 +85,6 @@ jobs:
                   cd sdk-js
                   git checkout master || git checkout main
 
-            - name: Patch SDK JS workflows for stability
-              run: |
-                  python3 - <<'PY'
-                  from pathlib import Path
-
-                  path = Path("sdk-js/examples/blobs/workflows/blobs-js.yml")
-                  if path.exists():
-                      content = path.read_text()
-                      content = content.replace("seconds: 3", "seconds: 15")
-                      content = content.replace("seconds: 6", "seconds: 15")
-                      path.write_text(content)
-                  PY
-
             - name: Install SDK JS dependencies
               working-directory: sdk-js
               run: |
