@@ -155,3 +155,131 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{node1_frozen_value_from_node2_res}}, {"output": "SomeFrozenString2"})'
+
+  # ============================================
+  # FrozenStorage Intrinsics Tests
+  # ============================================
+  
+  # Test: Content-addressability - same content = same hash (idempotent)
+  - name: Node 1 inserts same content again (idempotent test)
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: add_frozen
+    args:
+      value: "SomeFrozenString"
+    outputs:
+      frozen_hash_idempotent: result.output
+
+  - name: Assert idempotent insert returns same hash
+    type: json_assert
+    statements:
+      - 'json_equal({{frozen_hash_idempotent}}, "{{frozen_value_hash_hex}}")'
+
+  # Test: Content-addressability - different content = different hash
+  - name: Node 2 inserts different content
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_new-calimero-node-2}}'
+    method: add_frozen
+    args:
+      value: "DifferentFrozenContent"
+    outputs:
+      frozen_hash_different: result.output
+
+  - name: Wait for frozen storage sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Test: Merge behavior - FrozenValue::merge() does nothing (immutable)
+  # Both nodes should have both entries after merge
+  - name: Node 1 verifies both frozen entries exist after merge
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_frozen
+    args:
+      hash_hex: "{{frozen_value_hash_hex}}"
+    outputs:
+      node1_original: result
+
+  - name: Node 1 verifies different content entry exists
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: get_frozen
+    args:
+      hash_hex: "{{frozen_hash_different}}"
+    outputs:
+      node1_different: result
+
+  - name: Assert frozen storage merge preserves all entries
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_original}}, {"output": "SomeFrozenString"})'
+      - 'json_equal({{node1_different}}, {"output": "DifferentFrozenContent"})'
+
+  # Test: Concurrent inserts of same content from different nodes
+  # Should result in same hash (content-addressable) and merge correctly
+  - name: Node 1 inserts content for concurrent test
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    executor_public_key: '{{member_public_key}}'
+    method: add_frozen
+    args:
+      value: "ConcurrentContent"
+    outputs:
+      concurrent_hash_1: result.output
+
+  - name: Node 2 inserts same content concurrently
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_new-calimero-node-2}}'
+    method: add_frozen
+    args:
+      value: "ConcurrentContent"
+    outputs:
+      concurrent_hash_2: result.output
+
+  - name: Wait for concurrent frozen storage merge
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Assert concurrent inserts produce same hash (content-addressable)
+    type: json_assert
+    statements:
+      - 'json_equal({{concurrent_hash_1}}, {{concurrent_hash_2}})'
+
+  - name: Verify both nodes can retrieve concurrent content
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    executor_public_key: '{{public_key_new-calimero-node-2}}'
+    method: get_frozen
+    args:
+      hash_hex: "{{concurrent_hash_1}}"
+    outputs:
+      concurrent_retrieved: result
+
+  - name: Assert concurrent content retrieved correctly
+    type: json_assert
+    statements:
+      - 'json_equal({{concurrent_retrieved}}, {"output": "ConcurrentContent"})'
