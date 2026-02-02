@@ -7,6 +7,7 @@ use calimero_server_primitives::admin::{
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
+use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;
@@ -172,15 +173,15 @@ impl Report for GrantPermissionResponse {
 impl Report for InviteToContextResponse {
     fn report(&self) {
         if let Some(ref payload) = self.data {
-            println!("Invitation Created: Success");
+            println!("{}", "Invitation Created Successfully".green());
             println!();
             println!("Invitation Payload:");
             println!("{}", payload);
             println!();
-            println!("To join, run:");
-            println!("  meroctl context join {}", payload);
+            println!("To join, run from another node:");
+            println!("  meroctl --node <NODE_ID> context join {}", payload);
         } else {
-            println!("Invitation Created: Success");
+            println!("Failed to create an invitation");
         }
     }
 }
@@ -188,22 +189,22 @@ impl Report for InviteToContextResponse {
 impl Report for InviteToContextOpenInvitationResponse {
     fn report(&self) {
         if let Some(ref signed_invitation) = self.data {
-            println!("Open Invitation Created: Success");
+            println!("{}", "Open Invitation Created Successfully".green());
             println!();
             println!("Open Invitation Payload:");
             match serde_json::to_string(signed_invitation) {
                 Ok(json_payload) => {
                     println!("{}", json_payload);
                     println!();
-                    println!("To join, run:");
-                    println!("  meroctl context join-by-open-invitation '{}'", json_payload);
+                    println!("To join, run from another node:");
+                    println!("  meroctl --node <NODE_ID> context join-by-open-invitation '{}'", json_payload);
                 }
                 Err(_) => {
                     println!("{:?}", signed_invitation);
                 }
             }
         } else {
-            println!("Open Invitation Created: Success");
+            println!("Failed to create an open invitation");
         }
     }
 }
