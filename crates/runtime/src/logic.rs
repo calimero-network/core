@@ -73,6 +73,41 @@ impl<'a> VMContext<'a> {
     }
 }
 
+// Default limit constants for VMLimits.
+// These constants define the default values for VM resource limits,
+// making them easier to configure and document.
+
+/// Default maximum stack size in KiB (200 KiB).
+const DEFAULT_MAX_STACK_SIZE_KIB: usize = 200;
+/// Default maximum number of registers.
+const DEFAULT_MAX_REGISTERS: u64 = 100;
+/// Default maximum register size in MiB (100 MiB).
+const DEFAULT_MAX_REGISTER_SIZE_MIB: u64 = 100;
+/// Default maximum number of log entries.
+const DEFAULT_MAX_LOGS: u64 = 100;
+/// Default maximum log message size in KiB (16 KiB).
+const DEFAULT_MAX_LOG_SIZE_KIB: u64 = 16;
+/// Default maximum number of events.
+const DEFAULT_MAX_EVENTS: u64 = 100;
+/// Default maximum event kind size in bytes.
+const DEFAULT_MAX_EVENT_KIND_SIZE: u64 = 100;
+/// Default maximum event data size in KiB (16 KiB).
+const DEFAULT_MAX_EVENT_DATA_SIZE_KIB: u64 = 16;
+/// Default maximum number of cross-context calls.
+const DEFAULT_MAX_XCALLS: u64 = 100;
+/// Default maximum cross-context call function name size in bytes.
+const DEFAULT_MAX_XCALL_FUNCTION_SIZE: u64 = 100;
+/// Default maximum cross-context call parameters size in KiB (16 KiB).
+const DEFAULT_MAX_XCALL_PARAMS_SIZE_KIB: u64 = 16;
+/// Default maximum storage key size in MiB (1 MiB).
+const DEFAULT_MAX_STORAGE_KEY_SIZE_MIB: u64 = 1;
+/// Default maximum storage value size in MiB (10 MiB).
+const DEFAULT_MAX_STORAGE_VALUE_SIZE_MIB: u64 = 10;
+/// Default maximum number of blob handles.
+const DEFAULT_MAX_BLOB_HANDLES: u64 = 100;
+/// Default maximum blob chunk size in MiB (10 MiB).
+const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
+
 /// Defines the resource limits for a VM instance.
 ///
 /// This struct is used to configure constraints on various VM operations to prevent
@@ -125,23 +160,29 @@ impl Default for VMLimits {
         }
 
         Self {
-            max_memory_pages: ONE_KIB,                                          // 1 KiB
-            max_stack_size: 200 * ONE_KIB as usize,                             // 200 KiB
-            max_registers: 100,                                                 //
-            max_register_size: is_valid((100 * u64::from(ONE_MIB)).validate()), // 100 MiB
-            max_registers_capacity: u64::from(ONE_GIB),                         // 1 GiB
-            max_logs: 100,                                                      //
-            max_log_size: 16 * u64::from(ONE_KIB),                              // 16 KiB
-            max_events: 100,                                                    //
-            max_event_kind_size: 100,                                           //
-            max_event_data_size: 16 * u64::from(ONE_KIB),                       // 16 KiB
-            max_xcalls: 100,                                                    //
-            max_xcall_function_size: 100,                                       //
-            max_xcall_params_size: 16 * u64::from(ONE_KIB),                     // 16 KiB
-            max_storage_key_size: is_valid(u64::from(ONE_MIB).try_into()),      // 1 MiB
-            max_storage_value_size: is_valid((10 * u64::from(ONE_MIB)).try_into()), // 10 MiB
-            max_blob_handles: 100,                                              //
-            max_blob_chunk_size: 10 * u64::from(ONE_MIB),                       // 10 MiB
+            max_memory_pages: ONE_KIB,
+            max_stack_size: DEFAULT_MAX_STACK_SIZE_KIB * ONE_KIB as usize,
+            max_registers: DEFAULT_MAX_REGISTERS,
+            max_register_size: is_valid(
+                (DEFAULT_MAX_REGISTER_SIZE_MIB * u64::from(ONE_MIB)).validate(),
+            ),
+            max_registers_capacity: u64::from(ONE_GIB),
+            max_logs: DEFAULT_MAX_LOGS,
+            max_log_size: DEFAULT_MAX_LOG_SIZE_KIB * u64::from(ONE_KIB),
+            max_events: DEFAULT_MAX_EVENTS,
+            max_event_kind_size: DEFAULT_MAX_EVENT_KIND_SIZE,
+            max_event_data_size: DEFAULT_MAX_EVENT_DATA_SIZE_KIB * u64::from(ONE_KIB),
+            max_xcalls: DEFAULT_MAX_XCALLS,
+            max_xcall_function_size: DEFAULT_MAX_XCALL_FUNCTION_SIZE,
+            max_xcall_params_size: DEFAULT_MAX_XCALL_PARAMS_SIZE_KIB * u64::from(ONE_KIB),
+            max_storage_key_size: is_valid(
+                (DEFAULT_MAX_STORAGE_KEY_SIZE_MIB * u64::from(ONE_MIB)).try_into(),
+            ),
+            max_storage_value_size: is_valid(
+                (DEFAULT_MAX_STORAGE_VALUE_SIZE_MIB * u64::from(ONE_MIB)).try_into(),
+            ),
+            max_blob_handles: DEFAULT_MAX_BLOB_HANDLES,
+            max_blob_chunk_size: DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB * u64::from(ONE_MIB),
         }
     }
 }
