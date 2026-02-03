@@ -21,7 +21,7 @@ pub mod store;
 pub use constraint::Constraint;
 use errors::{FunctionCallError, HostError, Location, PanicContext, VMRuntimeError};
 use logic::{ContextHost, Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
-use memory::{MemoryCleanupGuard, WasmerTunables};
+use memory::WasmerTunables;
 use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
@@ -239,10 +239,9 @@ impl Module {
             }
         };
 
-        // Get the memory and create a cleanup guard to ensure it's properly
-        // cleaned up even if execution fails mid-way. The guard will be
-        // disarmed once we successfully attach the memory to VMLogic, which
-        // handles cleanup in its finish() method.
+        // Get memory from the WASM instance and attach it to VMLogic.
+        // Note: memory.clone() is cheap - it just increments an Arc reference count,
+        // not copying actual memory contents. VMLogic::finish() handles cleanup.
         let memory = match instance.exports.get_memory("memory") {
             Ok(memory) => memory.clone(),
             // todo! test memory returns MethodNotFound
@@ -252,17 +251,8 @@ impl Module {
             }
         };
 
-        // Create a cleanup guard that will release the memory if we don't
-        // successfully complete setup. This prevents dangling memory if an
-        // error occurs between getting memory and attaching it to VMLogic.
-        let mut memory_guard = MemoryCleanupGuard::new(memory.clone());
-
-        // Attach memory to VMLogic
+        // Attach memory to VMLogic, which will clean it up in finish()
         let _ = logic.with_memory(memory);
-
-        // Disarm the guard - VMLogic now owns the memory reference and will
-        // clean it up in finish(). The guard is no longer needed.
-        memory_guard.disarm();
 
         // Call the auto-generated registration hook if it exists.
         // This enables automatic CRDT merge during sync.
