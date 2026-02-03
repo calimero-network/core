@@ -37,8 +37,8 @@ pub enum ProposalsSubcommand {
         /// Limit for pagination
         #[arg(
             long,
-            help = "Maximum number of proposals to display in results",
-            default_value = "20"
+            help = "Maximum number of proposals to display in results (default 1 for single-node usage)",
+            default_value = "1"
         )]
         limit: usize,
     },
