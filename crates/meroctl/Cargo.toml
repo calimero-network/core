@@ -42,5 +42,8 @@ calimero-server-primitives.workspace = true
 calimero-version.workspace = true
 async-trait.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [package.metadata.workspaces]
 independent = true
