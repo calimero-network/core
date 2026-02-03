@@ -468,7 +468,7 @@ impl TokenManager {
         let claims = self.verify_token(refresh_token).await?;
 
         // Get the key and verify it's valid
-        let key = self
+        let mut key = self
             .key_manager
             .get_key(&claims.sub)
             .await
@@ -505,6 +505,9 @@ impl TokenManager {
                 claims.sub,
                 e
             );
+        } else {
+            // Keep the in-memory key in sync for client rotation.
+            key.metadata.touch();
         }
 
         match key.key_type {
