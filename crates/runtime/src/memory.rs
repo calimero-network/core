@@ -1,6 +1,5 @@
 use core::ptr::NonNull;
 
-use tracing::trace;
 use wasmer::sys::vm::{VMConfig, VMMemory, VMMemoryDefinition, VMTable, VMTableDefinition};
 use wasmer::sys::{BaseTunables, Tunables};
 use wasmer_types::{
@@ -23,31 +22,11 @@ use crate::logic::VMLimits;
 /// - Individual `Instance` objects are dropped
 /// - `VMLogic::drop` is called (explicitly releases memory references)
 ///
-/// The `Drop` implementation for this struct is provided for completeness and
-/// logging purposes, but the actual memory cleanup is handled by Wasmer's
-/// reference counting system and the `VMLogic::drop` implementation.
+/// This struct does not perform explicit cleanup. Memory management is handled
+/// by Wasmer's `Store` and the `VMLogic::finish()` implementation.
 pub struct WasmerTunables {
     base: BaseTunables,
     vmconfig: VMConfig,
-}
-
-/// Implements cleanup logging for `WasmerTunables`.
-///
-/// Note: `WasmerTunables` doesn't directly own the allocated memories - they are
-/// returned to Wasmer's internal machinery via the `Tunables` trait methods.
-/// The actual memory cleanup is handled by:
-/// - Wasmer's `Store` when it is dropped
-/// - `VMLogic::finish()` which explicitly releases memory references
-///
-/// This `Drop` implementation is provided for consistency and to document the
-/// cleanup behavior. See `VMLogic::finish()` for the main cleanup implementation.
-impl Drop for WasmerTunables {
-    fn drop(&mut self) {
-        trace!(
-            target: "runtime::memory",
-            "WasmerTunables::drop: tunables dropped (memory cleanup handled by Store/VMLogic)"
-        );
-    }
 }
 
 impl WasmerTunables {
