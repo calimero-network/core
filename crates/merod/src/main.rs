@@ -41,6 +41,7 @@ fn setup() -> EyreResult<()> {
 
     color_eyre::install()?;
 
+    // Must be called after color_eyre::install() to chain to its panic handler
     setup_panic_hook();
 
     init_global_runtime()?;
@@ -53,6 +54,13 @@ fn setup() -> EyreResult<()> {
 /// This hook captures and logs the panic message, thread name, source location,
 /// and backtrace before delegating to the previous panic handler. This provides
 /// better crash diagnostics for investigation.
+///
+/// # Note
+///
+/// - Backtraces are always captured regardless of `RUST_BACKTRACE` setting to
+///   ensure crash diagnostics are available in all environments.
+/// - Panic messages are logged as-is. Avoid including sensitive data (tokens,
+///   passwords, keys) in panic messages as they will appear in logs.
 fn setup_panic_hook() {
     let prev_hook = take_hook();
 
@@ -95,7 +103,7 @@ fn setup_panic_hook() {
 
 #[cfg(test)]
 mod tests {
-    use std::panic::catch_unwind;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::{Arc, Mutex};
 
     use tracing_subscriber::layer::SubscriberExt;
@@ -141,6 +149,12 @@ mod tests {
 
     #[test]
     fn test_panic_hook_logs_structured_info() {
+        // Save the current panic hook to restore later (prevents test pollution)
+        let original_hook = take_hook();
+        // Restore the default hook first so setup_panic_hook chains correctly
+        set_hook(original_hook);
+        let original_hook = take_hook();
+
         let logs = Arc::new(Mutex::new(Vec::new()));
         let capture_layer = CaptureLayer { logs: logs.clone() };
 
@@ -150,14 +164,17 @@ mod tests {
             // Install our panic hook
             setup_panic_hook();
 
-            // Trigger a panic and catch it
-            let result = catch_unwind(|| {
+            // Trigger a panic and catch it using AssertUnwindSafe
+            let result = catch_unwind(AssertUnwindSafe(|| {
                 panic!("test panic message");
-            });
+            }));
 
             // Verify the panic was caught
             assert!(result.is_err());
         });
+
+        // Restore the original panic hook to prevent test pollution
+        set_hook(original_hook);
 
         // Check that our panic hook logged the expected fields
         let captured = logs.lock().unwrap();
