@@ -32,7 +32,7 @@ env:
 jobs:
     build-apps:
         name: Build Apps
-        runs-on: ubuntu-24.04-8cpu
+        runs-on: big-machine
         outputs:
             cache-key: ${{ steps.cache-key.outputs.key }}
         steps:
@@ -74,7 +74,7 @@ jobs:
     test:
         name: Run All Merobox Workflows
         needs: build-apps
-        runs-on: ubuntu-24.04-8cpu
+        runs-on: big-machine
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
@@ -124,63 +124,34 @@ jobs:
             - name: Run All Workflows
               id: run_workflows
               run: |
-                  mkdir -p docker-logs
                   cd apps
-                  failed_workflows=()
+                  WORKFLOW_LIST="$PWD/workflow-list.txt"
+                  : > "$WORKFLOW_LIST"
+
                   for workflow in */workflows/*.yml */workflows/*.yaml; do
                       if [ -f "$workflow" ]; then
-                          app_dir=$(dirname "$(dirname "$workflow")")
-                          workflow_file=$(basename "$workflow")
-                          max_attempts=2
-                          attempt=1
-                          success=false
-                          
-                          while [ $attempt -le $max_attempts ]; do
-                              if [ $attempt -gt 1 ]; then
-                                  merobox stop --all || true
-                                  merobox nuke --force || true
-                                  sleep 2
-                              fi
-                              
-                              if (
-                                  cd "$app_dir"
-                                  merobox bootstrap run \
-                                      "workflows/$workflow_file" \
-                                      --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                                      --e2e-mode \
-                                      --near-devnet \
-                                      --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
-                              ); then
-                                  success=true
-                                  break
-                              else
-                                  attempt=$((attempt + 1))
-                              fi
-                          done
-                          
-                          # Collect logs with workflow identifier to prevent filename collisions
-                          # Create sanitized workflow identifier (replace / with -, remove .yml extension)
-                          workflow_id=$(echo "$workflow" | sed 's|/|-|g' | sed 's|\.yml$||')
-                          echo "Collecting Docker logs for workflow: $workflow (id: $workflow_id)"
-                          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-                              if [ -n "$container" ]; then
-                                  echo "Collecting logs from container: $container"
-                                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${workflow_id}-${container}.log" 2>&1 || true
-                              fi
-                          done
-                          
-                          merobox stop --all || true
-                          merobox nuke --force || true
-                          if [ "$success" = false ]; then
-                              failed_workflows+=("$workflow")
-                          fi
-                          sleep 2
+                          echo "$workflow" >> "$WORKFLOW_LIST"
                       fi
                   done
 
-                  if [ ${#failed_workflows[@]} -gt 0 ]; then
+                  if [ ! -s "$WORKFLOW_LIST" ]; then
+                      echo "Error: No workflow files found in apps directories"
+                      exit 1
+                  fi
+
+                  bash "$GITHUB_WORKSPACE/scripts/run-merobox-workflows.sh" \
+                      --root "$GITHUB_WORKSPACE/apps" \
+                      --workflow-list "$WORKFLOW_LIST" \
+                      --image "ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}" \
+                      --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
+                      --docker-logs "$GITHUB_WORKSPACE/docker-logs" \
+                      --workflow-logs "$GITHUB_WORKSPACE/workflow-logs" \
+                      --failed-output "$GITHUB_WORKSPACE/apps/failed_workflows.txt" \
+                      --max-attempts 2 \
+                      --workdir-mode parent
+
+                  if [ -s "$GITHUB_WORKSPACE/apps/failed_workflows.txt" ]; then
                       echo "has_failures=true" >> $GITHUB_OUTPUT
-                      printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
                   else
                       echo "has_failures=false" >> $GITHUB_OUTPUT
                   fi
@@ -204,6 +175,15 @@ jobs:
                       apps/*/res/*.mpk
                       apps/*/res/state-schema.json
                       apps/*/data/
+                  retention-days: 7
+                  if-no-files-found: warn
+
+            - name: Upload Workflow Logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: merobox-workflow-logs-${{ github.sha }}
+                  path: workflow-logs/
                   retention-days: 7
                   if-no-files-found: warn
 
