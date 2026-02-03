@@ -218,6 +218,17 @@ impl Element {
     /// Creates a new element with optional field name for schema inference.
     #[must_use]
     pub fn new_with_field_name(id: Option<Id>, field_name: Option<String>) -> Self {
+        Self::new_with_field_name_and_crdt_type(id, field_name, CrdtType::LwwRegister)
+    }
+
+    /// Creates a new element with field name and specific CRDT type for schema inference.
+    /// This allows collections to specify their actual CRDT type (e.g., UnorderedMap, Vector).
+    #[must_use]
+    pub fn new_with_field_name_and_crdt_type(
+        id: Option<Id>,
+        field_name: Option<String>,
+        crdt_type: CrdtType,
+    ) -> Self {
         let timestamp = time_now();
         let element_id = id.unwrap_or_else(Id::random);
         Self {
@@ -227,7 +238,7 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
-                crdt_type: Some(CrdtType::LwwRegister),
+                crdt_type: Some(crdt_type),
                 field_name,
             },
             merkle_hash: [0; 32],

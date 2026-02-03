@@ -26,7 +26,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::UnorderedMap;
+use super::{CrdtType, UnorderedMap};
 use crate::collections::error::StoreError;
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -155,7 +155,7 @@ impl ReplicatedGrowableArray<MainStorage> {
     #[must_use]
     pub fn new_with_field_name(field_name: &str) -> Self {
         Self {
-            chars: UnorderedMap::new_with_field_name(field_name),
+            chars: UnorderedMap::new_with_field_name_and_crdt_type(field_name, CrdtType::Rga),
         }
     }
 }

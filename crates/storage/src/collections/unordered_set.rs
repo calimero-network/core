@@ -7,7 +7,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::{compute_id, Collection};
+use super::{compute_id, Collection, CrdtType};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -35,7 +35,11 @@ where
     /// generate deterministic collection IDs.
     pub fn new_with_field_name(field_name: &str) -> Self {
         Self {
-            inner: Collection::new_with_field_name(None, field_name),
+            inner: Collection::new_with_field_name_and_crdt_type(
+                None,
+                field_name,
+                CrdtType::UnorderedSet,
+            ),
         }
     }
 }
