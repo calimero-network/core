@@ -195,20 +195,26 @@ impl Report for InviteToContextOpenInvitationResponse {
             println!("{}", "Open Invitation Created Successfully".green());
             println!();
             println!("Open Invitation Payload:");
-            let payload = match serde_json::to_string(signed_invitation) {
-                Ok(json_payload) => json_payload,
-                Err(e) => {
-                    eprintln!("Warning: could not serialize invitation as JSON ({e}), showing debug format");
-                    format!("{:?}", signed_invitation)
+            match serde_json::to_string(signed_invitation) {
+                Ok(json_payload) => {
+                    println!("{}", json_payload);
+                    println!();
+                    println!("To join, run from another node:");
+                    println!(
+                        "  meroctl --node <NODE_ID> context join-by-open-invitation '{}' --as <INVITEE_PUBLIC_KEY>",
+                        json_payload
+                    );
                 }
-            };
-            println!("{}", payload);
-            println!();
-            println!("To join, run from another node:");
-            println!(
-                "  meroctl --node <NODE_ID> context join-by-open-invitation '{}' --as <INVITEE_PUBLIC_KEY>",
-                payload
-            );
+                Err(e) => {
+                    eprintln!("Error: failed to serialize invitation as JSON: {e}");
+                    eprintln!("Debug representation:");
+                    eprintln!("{:?}", signed_invitation);
+                    eprintln!();
+                    eprintln!(
+                        "Cannot provide join command - invitation is not in valid JSON format."
+                    );
+                }
+            }
         } else {
             println!("Failed to create an open invitation");
         }
