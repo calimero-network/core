@@ -247,14 +247,14 @@ mod tests {
                 prev_hook_called_clone.store(true, Ordering::SeqCst);
             }));
 
-            // Now install our panic hook which should chain to the above
-            setup_panic_hook();
-
             let logs = Arc::new(Mutex::new(Vec::new()));
             let capture_layer = CaptureLayer { logs: logs.clone() };
             let subscriber = tracing_subscriber::registry().with(capture_layer);
 
             tracing::subscriber::with_default(subscriber, || {
+                // Install our panic hook INSIDE with_default so tracing works correctly
+                setup_panic_hook();
+
                 let _ = catch_unwind(AssertUnwindSafe(|| {
                     panic!("chaining test");
                 }));
