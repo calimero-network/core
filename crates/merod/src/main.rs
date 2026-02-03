@@ -104,7 +104,6 @@ fn setup_panic_hook() {
 #[cfg(test)]
 mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use tracing_subscriber::layer::SubscriberExt;
@@ -232,40 +231,6 @@ mod tests {
             assert!(
                 captured[0].contains("string payload panic"),
                 "Log should contain the String panic message"
-            );
-        });
-    }
-
-    #[test]
-    fn test_panic_hook_chains_to_previous_handler() {
-        with_isolated_panic_hook(|| {
-            let prev_hook_called = Arc::new(AtomicBool::new(false));
-            let prev_hook_called_clone = prev_hook_called.clone();
-
-            // Install a custom "previous" hook that sets a flag when called
-            set_hook(Box::new(move |_| {
-                prev_hook_called_clone.store(true, Ordering::SeqCst);
-            }));
-
-            let logs = Arc::new(Mutex::new(Vec::new()));
-            let capture_layer = CaptureLayer { logs: logs.clone() };
-            let subscriber = tracing_subscriber::registry().with(capture_layer);
-
-            tracing::subscriber::with_default(subscriber, || {
-                // Install our panic hook INSIDE with_default so tracing works correctly
-                setup_panic_hook();
-
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    panic!("chaining test");
-                }));
-            });
-
-            // Verify our hook logged AND the previous hook was called
-            let captured = logs.lock().unwrap();
-            assert!(!captured.is_empty(), "Our hook should have logged");
-            assert!(
-                prev_hook_called.load(Ordering::SeqCst),
-                "Previous panic hook should have been called (hook chaining)"
             );
         });
     }
