@@ -457,7 +457,6 @@ struct GetHealthResponse {
 /// - RocksDB connection status
 /// - Network peer count
 /// - Pending sync queue depth
-/// - Memory usage
 #[derive(Debug, Serialize)]
 struct HealthStatus {
     /// Overall health status: "healthy", "degraded", or "unhealthy"
@@ -468,8 +467,6 @@ struct HealthStatus {
     network: NetworkStatus,
     /// Sync queue status
     sync_queue: SyncQueueStatus,
-    /// Memory usage status
-    memory: MemoryStatus,
 }
 
 /// Status of a single dependency.
@@ -502,64 +499,12 @@ struct SyncQueueStatus {
     capacity: usize,
 }
 
-/// Memory usage status.
-#[derive(Debug, Serialize)]
-struct MemoryStatus {
-    /// Whether memory usage is healthy
-    healthy: bool,
-    /// Resident Set Size (RSS) in bytes
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rss_bytes: Option<u64>,
-    /// Virtual memory size in bytes
-    #[serde(skip_serializing_if = "Option::is_none")]
-    virtual_bytes: Option<u64>,
-}
-
-/// Get memory usage from /proc/self/status on Linux.
-/// Returns (rss_bytes, virtual_bytes) if available.
-fn get_memory_usage() -> (Option<u64>, Option<u64>) {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
-            let mut rss: Option<u64> = None;
-            let mut virt: Option<u64> = None;
-
-            for line in content.lines() {
-                if line.starts_with("VmRSS:") {
-                    // Format: "VmRSS:    12345 kB"
-                    if let Some(value) = line.split_whitespace().nth(1) {
-                        if let Ok(kb) = value.parse::<u64>() {
-                            rss = Some(kb * 1024); // Convert kB to bytes
-                        }
-                    }
-                } else if line.starts_with("VmSize:") {
-                    // Format: "VmSize:   12345 kB"
-                    if let Some(value) = line.split_whitespace().nth(1) {
-                        if let Ok(kb) = value.parse::<u64>() {
-                            virt = Some(kb * 1024); // Convert kB to bytes
-                        }
-                    }
-                }
-            }
-
-            return (rss, virt);
-        }
-        (None, None)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        (None, None)
-    }
-}
-
 /// Health check endpoint for load balancer integration.
 ///
 /// Reports the status of all critical dependencies:
 /// - **RocksDB**: Database connection status
 /// - **Network**: Peer count and connectivity
 /// - **Sync Queue**: Pending sync requests and queue capacity
-/// - **Memory**: Current RSS and virtual memory usage
 ///
 /// Returns HTTP 200 with detailed status for monitoring.
 /// Overall status is "healthy" if all dependencies are OK,
@@ -604,15 +549,6 @@ async fn health_check_handler(Extension(state): Extension<Arc<AdminState>>) -> i
         capacity,
     };
 
-    // Get memory usage
-    let (rss_bytes, virtual_bytes) = get_memory_usage();
-    let memory_status = MemoryStatus {
-        // Memory is always considered healthy for now (monitoring only)
-        healthy: true,
-        rss_bytes,
-        virtual_bytes,
-    };
-
     // Determine overall status
     let overall_status = if !rocksdb_status.healthy {
         "unhealthy"
@@ -629,7 +565,6 @@ async fn health_check_handler(Extension(state): Extension<Arc<AdminState>>) -> i
                 rocksdb: rocksdb_status,
                 network: network_status,
                 sync_queue: sync_queue_status,
-                memory: memory_status,
             },
         },
     }
