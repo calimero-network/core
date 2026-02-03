@@ -12,20 +12,6 @@ use super::Collection;
 use crate::collections::error::StoreError;
 use crate::store::{MainStorage, StorageAdaptor};
 
-/// Performs checked addition, returning an error on overflow.
-///
-/// This function provides explicit overflow protection for size calculations,
-/// ensuring safety in release builds where overflow checks may be disabled.
-#[inline]
-fn checked_add(a: usize, b: usize) -> Result<usize, StoreError> {
-    a.checked_add(b).ok_or_else(|| {
-        StoreError::ArithmeticOverflow(format!(
-            "addition overflow: {} + {} exceeds usize::MAX",
-            a, b
-        ))
-    })
-}
-
 /// Validates that an index is safe for iterator arithmetic.
 ///
 /// This function ensures that the index won't cause issues when used with
@@ -35,7 +21,12 @@ fn checked_add(a: usize, b: usize) -> Result<usize, StoreError> {
 fn validate_index_bounds(index: usize) -> Result<(), StoreError> {
     // First check for potential overflow: index + 1 must not overflow
     // This is checked regardless of bounds since it's a safety invariant
-    let _ = checked_add(index, 1)?;
+    let _ = index.checked_add(1).ok_or_else(|| {
+        StoreError::ArithmeticOverflow(format!(
+            "addition overflow: {} + {} exceeds usize::MAX",
+            index, 1
+        ))
+    })?;
     Ok(())
 }
 
