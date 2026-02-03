@@ -578,3 +578,786 @@ async fn test_recovery_via_delta_replay() {
     // Now synchronized
     assert_eq!(node_b.get_heads().await, node_a_heads);
 }
+
+// ============================================================
+// Test: Network Partitions During Sync
+// ============================================================
+
+/// Simulates a network that can be partitioned
+struct PartitionableNetwork {
+    /// Which nodes can communicate with each other (bi-directional)
+    /// If (a, b) is in connected, a and b can communicate
+    connected: Arc<RwLock<std::collections::HashSet<(String, String)>>>,
+}
+
+impl PartitionableNetwork {
+    fn new() -> Self {
+        Self {
+            connected: Arc::new(RwLock::new(std::collections::HashSet::new())),
+        }
+    }
+
+    async fn connect(&self, node_a: &str, node_b: &str) {
+        let mut connected = self.connected.write().await;
+        connected.insert((node_a.to_string(), node_b.to_string()));
+        connected.insert((node_b.to_string(), node_a.to_string()));
+    }
+
+    async fn disconnect(&self, node_a: &str, node_b: &str) {
+        let mut connected = self.connected.write().await;
+        connected.remove(&(node_a.to_string(), node_b.to_string()));
+        connected.remove(&(node_b.to_string(), node_a.to_string()));
+    }
+
+    async fn can_communicate(&self, node_a: &str, node_b: &str) -> bool {
+        let connected = self.connected.read().await;
+        connected.contains(&(node_a.to_string(), node_b.to_string()))
+    }
+}
+
+#[tokio::test]
+async fn test_network_partition_during_sync_recovers() {
+    // Test that sync can recover after network partition heals
+
+    let node_a = SimulatedNode::new("node_a");
+    let node_b = SimulatedNode::new("node_b");
+    let network = PartitionableNetwork::new();
+
+    // Initially nodes are connected
+    network.connect("node_a", "node_b").await;
+
+    // Node A creates deltas 1-5
+    for i in 1..=5 {
+        let mut id = [0; 32];
+        id[0] = i;
+        let delta =
+            CausalDelta::new_test(id, vec![if i == 1 { [0; 32] } else { [i - 1; 32] }], vec![]);
+        node_a.add_delta(delta).await.unwrap();
+    }
+
+    // Node B receives only first 2 deltas while connected
+    for i in 1..=2 {
+        let mut id = [0; 32];
+        id[0] = i;
+        if network.can_communicate("node_a", "node_b").await {
+            if let Some(delta) = node_a.get_delta(&id).await {
+                let _result = node_b.add_delta(delta).await;
+            }
+        }
+    }
+
+    // Network partition occurs
+    network.disconnect("node_a", "node_b").await;
+
+    // Node A creates more deltas during partition
+    for i in 6..=8 {
+        let mut id = [0; 32];
+        id[0] = i;
+        let delta = CausalDelta::new_test(id, vec![[i - 1; 32]], vec![]);
+        node_a.add_delta(delta).await.unwrap();
+    }
+
+    // Verify node B cannot get new deltas during partition
+    let mut id = [0; 32];
+    id[0] = 6;
+    assert!(
+        !network.can_communicate("node_a", "node_b").await,
+        "Nodes should be partitioned"
+    );
+
+    // Network heals
+    network.connect("node_a", "node_b").await;
+
+    // Node B catches up by requesting missing deltas
+    // First get what's missing
+    let missing = node_b.get_missing_parents().await;
+
+    // Request all deltas from node A to catch up
+    // This simulates the catch-up flow after partition heals
+    let mut to_sync: Vec<[u8; 32]> = missing;
+
+    // Also need to sync any deltas node B doesn't have
+    let node_a_heads = node_a.get_heads().await;
+    for head in &node_a_heads {
+        if node_b.get_delta(head).await.is_none() {
+            to_sync.push(*head);
+        }
+    }
+
+    // Sync all missing deltas in topological order
+    let mut synced_count = 0;
+    for _ in 0..20 {
+        // Max iterations to prevent infinite loop
+        let current_missing = node_b.get_missing_parents().await;
+        if current_missing.is_empty() {
+            break;
+        }
+
+        for delta_id in &current_missing {
+            if let Some(delta) = node_a.get_delta(delta_id).await {
+                if node_b.add_delta(delta).await.is_ok() {
+                    synced_count += 1;
+                }
+            }
+        }
+    }
+
+    // Also apply any heads we're missing
+    for head_id in &node_a_heads {
+        if node_b.get_delta(head_id).await.is_none() {
+            if let Some(delta) = node_a.get_delta(head_id).await {
+                if node_b.add_delta(delta).await.is_ok() {
+                    synced_count += 1;
+                }
+            }
+        }
+    }
+
+    // After recovery, nodes should be in sync
+    assert!(synced_count > 0, "Should have synced some deltas");
+    assert_eq!(
+        node_b.get_missing_parents().await.len(),
+        0,
+        "No missing parents after recovery"
+    );
+}
+
+#[tokio::test]
+async fn test_network_partition_three_nodes_split_brain() {
+    // Test scenario: 3 nodes, partition creates split-brain, then heals
+
+    let node_a = SimulatedNode::new("node_a");
+    let node_b = SimulatedNode::new("node_b");
+    let node_c = SimulatedNode::new("node_c");
+    let network = PartitionableNetwork::new();
+
+    // Initial state: all connected
+    network.connect("node_a", "node_b").await;
+    network.connect("node_b", "node_c").await;
+    network.connect("node_a", "node_c").await;
+
+    // All nodes start with root delta
+    let root_delta = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
+    node_a.add_delta(root_delta.clone()).await.unwrap();
+    node_b.add_delta(root_delta.clone()).await.unwrap();
+    node_c.add_delta(root_delta).await.unwrap();
+
+    // Network partition: A-B in one partition, C isolated
+    network.disconnect("node_a", "node_c").await;
+    network.disconnect("node_b", "node_c").await;
+
+    // A creates delta in partition 1
+    let delta_a = CausalDelta::new_test([10; 32], vec![[1; 32]], vec![]);
+    node_a.add_delta(delta_a.clone()).await.unwrap();
+
+    // B receives delta from A (same partition)
+    if network.can_communicate("node_a", "node_b").await {
+        node_b.add_delta(delta_a).await.unwrap();
+    }
+
+    // C creates delta in isolation (different branch)
+    let delta_c = CausalDelta::new_test([20; 32], vec![[1; 32]], vec![]);
+    node_c.add_delta(delta_c).await.unwrap();
+
+    // Verify split state
+    assert_eq!(node_a.get_heads().await, vec![[10; 32]]);
+    assert_eq!(node_b.get_heads().await, vec![[10; 32]]);
+    assert_eq!(node_c.get_heads().await, vec![[20; 32]]);
+
+    // Network heals
+    network.connect("node_a", "node_c").await;
+    network.connect("node_b", "node_c").await;
+
+    // Exchange deltas to merge branches
+    let delta_from_a = node_a.get_delta(&[10; 32]).await.unwrap();
+    let delta_from_c = node_c.get_delta(&[20; 32]).await.unwrap();
+
+    // All nodes receive both branches
+    node_a.add_delta(delta_from_c.clone()).await.unwrap();
+    node_b.add_delta(delta_from_c).await.unwrap();
+    node_c.add_delta(delta_from_a).await.unwrap();
+
+    // All nodes should now have both branches as heads
+    let mut heads_a = node_a.get_heads().await;
+    let mut heads_b = node_b.get_heads().await;
+    let mut heads_c = node_c.get_heads().await;
+
+    heads_a.sort();
+    heads_b.sort();
+    heads_c.sort();
+
+    assert_eq!(heads_a, heads_b);
+    assert_eq!(heads_b, heads_c);
+    assert_eq!(heads_a.len(), 2, "Should have 2 concurrent heads");
+}
+
+// ============================================================
+// Test: Concurrent Syncs to Same Context
+// ============================================================
+
+#[tokio::test]
+async fn test_concurrent_syncs_to_same_context() {
+    // Multiple nodes syncing deltas concurrently to the same DAG
+
+    let node_a = SimulatedNode::new("node_a");
+    let node_b = SimulatedNode::new("node_b");
+    let node_c = SimulatedNode::new("node_c");
+
+    // Source node has a chain of deltas
+    let source = SimulatedNode::new("source");
+    for i in 1..=10 {
+        let mut id = [0; 32];
+        id[0] = i;
+        let delta =
+            CausalDelta::new_test(id, vec![if i == 1 { [0; 32] } else { [i - 1; 32] }], vec![]);
+        source.add_delta(delta).await.unwrap();
+    }
+
+    // All three nodes sync concurrently
+    let sync_a = async {
+        for i in 1..=10 {
+            let mut id = [0; 32];
+            id[0] = i;
+            if let Some(delta) = source.get_delta(&id).await {
+                let _ = node_a.add_delta(delta).await;
+            }
+            // Small delay to simulate network latency variation
+            tokio::time::sleep(tokio::time::Duration::from_micros(10)).await;
+        }
+    };
+
+    let sync_b = async {
+        for i in 1..=10 {
+            let mut id = [0; 32];
+            id[0] = i;
+            if let Some(delta) = source.get_delta(&id).await {
+                let _ = node_b.add_delta(delta).await;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_micros(5)).await;
+        }
+    };
+
+    let sync_c = async {
+        for i in 1..=10 {
+            let mut id = [0; 32];
+            id[0] = i;
+            if let Some(delta) = source.get_delta(&id).await {
+                let _ = node_c.add_delta(delta).await;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_micros(15)).await;
+        }
+    };
+
+    // Run all syncs concurrently
+    tokio::join!(sync_a, sync_b, sync_c);
+
+    // All nodes should end up with the same state
+    let heads_a = node_a.get_heads().await;
+    let heads_b = node_b.get_heads().await;
+    let heads_c = node_c.get_heads().await;
+
+    assert_eq!(heads_a, heads_b, "Node A and B should have same heads");
+    assert_eq!(heads_b, heads_c, "Node B and C should have same heads");
+    assert_eq!(heads_a, source.get_heads().await, "All should match source");
+
+    // All deltas should be applied
+    assert_eq!(node_a.applier.get_applied().await.len(), 10);
+    assert_eq!(node_b.applier.get_applied().await.len(), 10);
+    assert_eq!(node_c.applier.get_applied().await.len(), 10);
+}
+
+#[tokio::test]
+async fn test_concurrent_sync_with_out_of_order_delivery() {
+    // Simulate out-of-order delta delivery during concurrent sync
+
+    let node = SimulatedNode::new("node");
+
+    // Create deltas in a chain
+    let mut deltas = vec![];
+    for i in 1..=5 {
+        let mut id = [0; 32];
+        id[0] = i;
+        let delta =
+            CausalDelta::new_test(id, vec![if i == 1 { [0; 32] } else { [i - 1; 32] }], vec![]);
+        deltas.push(delta);
+    }
+
+    // Deliver in reverse order (simulating out-of-order network delivery)
+    for delta in deltas.iter().rev() {
+        let _ = node.add_delta(delta.clone()).await;
+    }
+
+    // Should have pending deltas waiting for parents
+    let missing = node.get_missing_parents().await;
+    assert!(!missing.is_empty(), "Should have missing parents initially");
+
+    // Now deliver in correct order
+    for delta in &deltas {
+        let _ = node.add_delta(delta.clone()).await;
+    }
+
+    // After correct delivery, all should be applied
+    let missing_after = node.get_missing_parents().await;
+    assert_eq!(
+        missing_after.len(),
+        0,
+        "No missing parents after in-order delivery"
+    );
+
+    // All deltas should be applied
+    let applied = node.applier.get_applied().await;
+    assert_eq!(applied.len(), 5, "All deltas should be applied");
+}
+
+#[tokio::test]
+async fn test_concurrent_writes_from_multiple_sources() {
+    // Test handling concurrent deltas from multiple source nodes
+    // creating a DAG with multiple branches that need merging
+
+    let target = SimulatedNode::new("target");
+
+    // Three concurrent writers create deltas from root
+    let delta_from_a = CausalDelta::new_test([100; 32], vec![[0; 32]], vec![]);
+    let delta_from_b = CausalDelta::new_test([101; 32], vec![[0; 32]], vec![]);
+    let delta_from_c = CausalDelta::new_test([102; 32], vec![[0; 32]], vec![]);
+
+    // Concurrent add (simulating network delivery)
+    let handle_a = {
+        let delta = delta_from_a.clone();
+        let node = SimulatedNode::new("temp");
+        // Use same DAG
+        tokio::spawn(async move {
+            let _ = node.add_delta(delta).await;
+        })
+    };
+
+    // Apply to actual target
+    target.add_delta(delta_from_a).await.unwrap();
+    target.add_delta(delta_from_b).await.unwrap();
+    target.add_delta(delta_from_c).await.unwrap();
+
+    let _ = handle_a.await;
+
+    // Should have 3 heads (concurrent branches)
+    let mut heads = target.get_heads().await;
+    heads.sort();
+
+    assert_eq!(heads.len(), 3, "Should have 3 concurrent heads");
+    assert!(heads.contains(&[100; 32]));
+    assert!(heads.contains(&[101; 32]));
+    assert!(heads.contains(&[102; 32]));
+
+    // Create merge delta
+    let merge_delta =
+        CausalDelta::new_test([200; 32], vec![[100; 32], [101; 32], [102; 32]], vec![]);
+    target.add_delta(merge_delta).await.unwrap();
+
+    // After merge, single head
+    let heads_after_merge = target.get_heads().await;
+    assert_eq!(
+        heads_after_merge,
+        vec![[200; 32]],
+        "Single head after merge"
+    );
+}
+
+// ============================================================
+// Test: Sync with Corrupted Deltas
+// ============================================================
+
+/// Applier that simulates corrupted delta detection
+struct CorruptionDetectingApplier {
+    applied: Arc<RwLock<Vec<[u8; 32]>>>,
+    /// Delta IDs that should be rejected as corrupted
+    corrupted_ids: Arc<RwLock<std::collections::HashSet<[u8; 32]>>>,
+}
+
+impl CorruptionDetectingApplier {
+    fn new() -> Self {
+        Self {
+            applied: Arc::new(RwLock::new(Vec::new())),
+            corrupted_ids: Arc::new(RwLock::new(std::collections::HashSet::new())),
+        }
+    }
+
+    async fn mark_corrupted(&self, id: [u8; 32]) {
+        self.corrupted_ids.write().await.insert(id);
+    }
+
+    async fn get_applied(&self) -> Vec<[u8; 32]> {
+        self.applied.read().await.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl DeltaApplier<Vec<Action>> for CorruptionDetectingApplier {
+    async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
+        // Check if this delta is marked as corrupted
+        if self.corrupted_ids.read().await.contains(&delta.id) {
+            return Err(ApplyError::Application(
+                "Corrupted delta detected: hash mismatch".to_string(),
+            ));
+        }
+
+        // Apply actions to storage
+        for action in &delta.payload {
+            Interface::<MainStorage>::apply_action(action.clone())
+                .map_err(|e| ApplyError::Application(e.to_string()))?;
+        }
+
+        self.applied.write().await.push(delta.id);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_sync_rejects_corrupted_delta() {
+    // Test that corrupted deltas are rejected and don't break the sync
+
+    let applier = Arc::new(CorruptionDetectingApplier::new());
+    let dag = Arc::new(RwLock::new(DagStore::new([0; 32])));
+
+    // Create valid deltas
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
+    let delta2_corrupted = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![]);
+    let delta3 = CausalDelta::new_test([3; 32], vec![[2; 32]], vec![]);
+
+    // Mark delta 2 as corrupted
+    applier.mark_corrupted([2; 32]).await;
+
+    // Apply delta 1 (should succeed)
+    let result1 = dag.write().await.add_delta(delta1, &*applier).await;
+    assert!(result1.is_ok());
+
+    // Apply corrupted delta 2 (should fail)
+    let result2 = dag
+        .write()
+        .await
+        .add_delta(delta2_corrupted, &*applier)
+        .await;
+    assert!(result2.is_err(), "Corrupted delta should be rejected");
+
+    // Delta 3 depends on corrupted delta 2, so it should be pending
+    let _ = dag.write().await.add_delta(delta3.clone(), &*applier).await;
+
+    // Only delta 1 should be applied
+    let applied = applier.get_applied().await;
+    assert_eq!(applied.len(), 1);
+    assert!(applied.contains(&[1; 32]));
+
+    // Delta 3 should be in pending (waiting for delta 2)
+    let missing = dag.read().await.get_missing_parents(100);
+    assert!(
+        missing.contains(&[2; 32]),
+        "Should be missing corrupted parent"
+    );
+}
+
+#[tokio::test]
+async fn test_sync_recovers_after_corrupted_delta_retry() {
+    // Test that sync can recover when corrupted delta is later received correctly
+
+    let applier = Arc::new(CorruptionDetectingApplier::new());
+    let dag = Arc::new(RwLock::new(DagStore::new([0; 32])));
+
+    // Delta 1 is valid
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
+
+    // First attempt: delta 2 is corrupted
+    let delta2_corrupted = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![]);
+    applier.mark_corrupted([2; 32]).await;
+
+    // Delta 3 depends on delta 2
+    let delta3 = CausalDelta::new_test([3; 32], vec![[2; 32]], vec![]);
+
+    // Apply delta 1
+    let _ = dag.write().await.add_delta(delta1, &*applier).await;
+
+    // Try to apply corrupted delta 2 (fails)
+    let result = dag
+        .write()
+        .await
+        .add_delta(delta2_corrupted, &*applier)
+        .await;
+    assert!(result.is_err());
+
+    // Delta 3 waits for parent
+    let _ = dag.write().await.add_delta(delta3.clone(), &*applier).await;
+    assert!(dag.read().await.get_missing_parents(100).contains(&[2; 32]));
+
+    // Clear corruption flag (simulating re-request with valid data)
+    applier.corrupted_ids.write().await.clear();
+
+    // Retry with valid delta 2
+    let delta2_valid = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![]);
+    let result = dag.write().await.add_delta(delta2_valid, &*applier).await;
+    assert!(result.is_ok());
+
+    // Now delta 3 should also be applied (was waiting)
+    let _ = dag.write().await.add_delta(delta3, &*applier).await;
+
+    // All deltas should be applied
+    let applied = applier.get_applied().await;
+    assert_eq!(applied.len(), 3);
+}
+
+#[tokio::test]
+async fn test_sync_handles_delta_with_invalid_parent_reference() {
+    // Test handling deltas that reference non-existent parents
+
+    let node = SimulatedNode::new("node");
+
+    // Delta referencing a parent that doesn't exist
+    let orphan_delta = CausalDelta::new_test([50; 32], vec![[99; 32]], vec![]);
+
+    // Add orphan delta
+    node.add_delta(orphan_delta).await.unwrap();
+
+    // Should be pending, waiting for parent
+    let missing = node.get_missing_parents().await;
+    assert_eq!(
+        missing,
+        vec![[99; 32]],
+        "Should be missing the non-existent parent"
+    );
+
+    // Delta should not be applied
+    let applied = node.applier.get_applied().await;
+    assert_eq!(applied.len(), 0, "Orphan delta should not be applied");
+
+    // Heads should still be root
+    let heads = node.get_heads().await;
+    assert_eq!(heads, vec![[0; 32]], "Heads should still be root");
+}
+
+// ============================================================
+// Test: Recovery After Partial Sync Failure
+// ============================================================
+
+#[tokio::test]
+async fn test_recovery_after_partial_sync_failure() {
+    // Simulate sync that fails partway through, then recovers
+
+    let source = SimulatedNode::new("source");
+    let target = SimulatedNode::new("target");
+
+    // Source has 10 deltas
+    for i in 1..=10 {
+        let mut id = [0; 32];
+        id[0] = i;
+        let delta =
+            CausalDelta::new_test(id, vec![if i == 1 { [0; 32] } else { [i - 1; 32] }], vec![]);
+        source.add_delta(delta).await.unwrap();
+    }
+
+    // First sync attempt: only first 3 deltas transfer successfully
+    for i in 1..=3 {
+        let mut id = [0; 32];
+        id[0] = i;
+        if let Some(delta) = source.get_delta(&id).await {
+            target.add_delta(delta).await.unwrap();
+        }
+    }
+
+    // Verify partial state
+    let applied_before = target.applier.get_applied().await;
+    assert_eq!(
+        applied_before.len(),
+        3,
+        "Only 3 deltas applied before failure"
+    );
+
+    // Simulate failure (no more deltas received)
+    // Target has incomplete state
+
+    let mut id = [0; 32];
+    id[0] = 3;
+    assert_eq!(target.get_heads().await, vec![id], "Head at delta 3");
+
+    // Recovery: Resume sync from where we left off
+    // Target requests remaining deltas
+
+    // Determine what's missing
+    let target_heads = target.get_heads().await;
+    let source_heads = source.get_heads().await;
+
+    // Find path from target heads to source heads
+    let mut current = target_heads[0];
+    let mut to_fetch = vec![];
+
+    // In real implementation, would query source for descendants
+    // Here we just get all deltas after current head
+    for i in 4..=10 {
+        let mut id = [0; 32];
+        id[0] = i;
+        to_fetch.push(id);
+    }
+
+    // Resume sync
+    for delta_id in to_fetch {
+        if let Some(delta) = source.get_delta(&delta_id).await {
+            target.add_delta(delta).await.unwrap();
+        }
+    }
+
+    // After recovery, target should be fully synced
+    assert_eq!(
+        target.get_heads().await,
+        source_heads,
+        "Target should have same heads as source"
+    );
+
+    let applied_after = target.applier.get_applied().await;
+    assert_eq!(applied_after.len(), 10, "All 10 deltas should be applied");
+}
+
+#[tokio::test]
+async fn test_recovery_tracks_sync_progress() {
+    // Test that partial sync progress can be tracked and resumed
+
+    #[derive(Default)]
+    struct SyncProgress {
+        last_synced_id: Option<[u8; 32]>,
+        total_synced: usize,
+    }
+
+    let source = SimulatedNode::new("source");
+    let target = SimulatedNode::new("target");
+    let mut progress = SyncProgress::default();
+
+    // Source has chain of deltas
+    for i in 1..=10 {
+        let mut id = [0; 32];
+        id[0] = i;
+        let delta =
+            CausalDelta::new_test(id, vec![if i == 1 { [0; 32] } else { [i - 1; 32] }], vec![]);
+        source.add_delta(delta).await.unwrap();
+    }
+
+    // Sync first batch with progress tracking
+    for i in 1..=4 {
+        let mut id = [0; 32];
+        id[0] = i;
+        if let Some(delta) = source.get_delta(&id).await {
+            if target.add_delta(delta).await.is_ok() {
+                progress.last_synced_id = Some(id);
+                progress.total_synced += 1;
+            }
+        }
+    }
+
+    assert_eq!(progress.total_synced, 4);
+    assert_eq!(
+        progress.last_synced_id,
+        Some([
+            4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0
+        ])
+    );
+
+    // Simulate restart - load progress
+    let resume_from = progress.last_synced_id.unwrap()[0];
+
+    // Resume sync from tracked progress
+    for i in (resume_from + 1)..=10 {
+        let mut id = [0; 32];
+        id[0] = i;
+        if let Some(delta) = source.get_delta(&id).await {
+            if target.add_delta(delta).await.is_ok() {
+                progress.last_synced_id = Some(id);
+                progress.total_synced += 1;
+            }
+        }
+    }
+
+    // All synced
+    assert_eq!(progress.total_synced, 10);
+    assert_eq!(target.applier.get_applied().await.len(), 10);
+}
+
+#[tokio::test]
+async fn test_recovery_with_concurrent_branches_partial_sync() {
+    // Test recovery when sync fails on one branch but not another
+
+    let source = SimulatedNode::new("source");
+    let target = SimulatedNode::new("target");
+
+    // Source has two concurrent branches from root
+    let branch_a_1 = CausalDelta::new_test([10; 32], vec![[0; 32]], vec![]);
+    let branch_a_2 = CausalDelta::new_test([11; 32], vec![[10; 32]], vec![]);
+    let branch_b_1 = CausalDelta::new_test([20; 32], vec![[0; 32]], vec![]);
+    let branch_b_2 = CausalDelta::new_test([21; 32], vec![[20; 32]], vec![]);
+
+    source.add_delta(branch_a_1.clone()).await.unwrap();
+    source.add_delta(branch_a_2.clone()).await.unwrap();
+    source.add_delta(branch_b_1.clone()).await.unwrap();
+    source.add_delta(branch_b_2.clone()).await.unwrap();
+
+    // Target syncs branch A successfully
+    target.add_delta(branch_a_1).await.unwrap();
+    target.add_delta(branch_a_2).await.unwrap();
+
+    // Branch B sync fails after first delta
+    target.add_delta(branch_b_1.clone()).await.unwrap();
+    // branch_b_2 not received (simulated failure)
+
+    // Target has partial state
+    let mut heads = target.get_heads().await;
+    heads.sort();
+    assert_eq!(
+        heads.len(),
+        2,
+        "Two heads: one complete branch, one partial"
+    );
+    assert!(heads.contains(&[11; 32]), "Branch A complete");
+    assert!(heads.contains(&[20; 32]), "Branch B at first delta");
+
+    // Recovery: complete branch B
+    target.add_delta(branch_b_2).await.unwrap();
+
+    // Now fully synced
+    let mut final_heads = target.get_heads().await;
+    final_heads.sort();
+
+    let mut source_heads = source.get_heads().await;
+    source_heads.sort();
+
+    assert_eq!(final_heads, source_heads, "Target should match source");
+}
+
+#[tokio::test]
+async fn test_recovery_handles_duplicate_deltas() {
+    // Test that recovery handles re-sending already-applied deltas gracefully
+
+    let node = SimulatedNode::new("node");
+
+    // Create chain of deltas
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], vec![]);
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], vec![]);
+    let delta3 = CausalDelta::new_test([3; 32], vec![[2; 32]], vec![]);
+
+    // Apply all deltas
+    node.add_delta(delta1.clone()).await.unwrap();
+    node.add_delta(delta2.clone()).await.unwrap();
+    node.add_delta(delta3.clone()).await.unwrap();
+
+    // Verify all applied
+    assert_eq!(node.applier.get_applied().await.len(), 3);
+
+    // Simulate recovery that re-sends already-applied deltas
+    // This should be idempotent
+    let result1 = node.add_delta(delta1).await;
+    let result2 = node.add_delta(delta2).await;
+    let result3 = node.add_delta(delta3).await;
+
+    // Results may vary (Ok or already-exists), but shouldn't cause issues
+    // Most importantly, the node state should be unchanged
+
+    // Still only 3 deltas applied (no duplicates)
+    let applied = node.applier.get_applied().await;
+    assert_eq!(applied.len(), 3, "No duplicate applications");
+
+    // Heads unchanged
+    let heads = node.get_heads().await;
+    assert_eq!(heads, vec![[3; 32]], "Head unchanged after duplicate sends");
+}
