@@ -1,4 +1,4 @@
-name: E2E - SDK JS (Released Image)
+name: E2E - SDK JS
 
 permissions:
     contents: read
@@ -8,7 +8,13 @@ on:
         branches: [master]
         paths:
             - "crates/**"
-            - ".github/workflows/e2e-sdk-js-release.yml"
+            - ".github/workflows/e2e-sdk-js.yml"
+
+    pull_request:
+        branches: [master]
+        paths:
+            - "crates/**"
+            - ".github/workflows/e2e-sdk-js.yml"
 
     workflow_dispatch:
 
@@ -23,27 +29,61 @@ env:
     PNPM_VERSION: "9"
     PYTHON_VERSION: "3.11"
     CALIMERO_CONTRACTS_VERSION: "latest"
+    CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
+    build-merod:
+        name: Build Merod Image
+        runs-on: ubuntu-24.04-8cpu
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+            - name: Setup Rust CI
+              uses: ./.github/actions/setup-rust-ci
+              with:
+                  toolchain: stable
+                  shared-key: e2e-sdk-js
+                  save-if: ${{ github.ref == 'refs/heads/master' }}
+
+            - name: Build local merod image
+              uses: ./.github/actions/build-local-merod
+              env:
+                  CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Export Docker image
+              run: |
+                  docker save merod:local -o merod-local.tar
+                  gzip merod-local.tar
+
+            - name: Upload Docker image artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: e2e-sdk-js-merod-image
+                  path: merod-local.tar.gz
+                  retention-days: 1
+
     test-sdk-js:
         name: Test SDK JS with Core Binary
+        needs: build-merod
         runs-on: ubuntu-24.04-8cpu
         steps:
             - name: Checkout Core code
               uses: actions/checkout@v4
 
-            - name: Determine Docker image tag
-              id: image-tag
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - name: Download Docker image artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: e2e-sdk-js-merod-image
+
+            - name: Load Docker image
               run: |
-                  ./scripts/determine-image-tag.sh \
-                      "${{ github.event_name }}" \
-                      "${{ github.event.number }}" \
-                      "${{ github.repository_owner }}" \
-                      "${{ github.repository }}" \
-                      "${{ github.head_ref }}" \
-                      "$GH_TOKEN"
+                  gunzip merod-local.tar.gz
+                  docker load -i merod-local.tar
+                  docker images merod:local
 
             - name: Setup pnpm
               uses: pnpm/action-setup@v2
@@ -106,7 +146,7 @@ jobs:
             - name: Run SDK JS Merobox Workflows
               id: run_workflows
               run: |
-                  MEROD_IMAGE="ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}"
+                  MEROD_IMAGE="merod:local"
                   merobox stop --all || true
                   merobox nuke -f || true
 
@@ -147,7 +187,7 @@ jobs:
               if: ${{ !cancelled() }}
               uses: actions/upload-artifact@v4
               with:
-                  name: e2e-sdk-js-release-data-${{ github.sha }}
+                  name: e2e-sdk-js-data-${{ github.sha }}
                   path: |
                       sdk-js/examples/*/build/*.wasm
                       sdk-js/examples/*/res/*.wasm
@@ -162,7 +202,7 @@ jobs:
               if: always()
               uses: actions/upload-artifact@v4
               with:
-                  name: e2e-sdk-js-release-logs-${{ github.sha }}
+                  name: e2e-sdk-js-logs-${{ github.sha }}
                   path: workflow-logs/
                   retention-days: 7
                   if-no-files-found: warn
@@ -171,7 +211,7 @@ jobs:
               if: always()
               uses: actions/upload-artifact@v4
               with:
-                  name: e2e-sdk-js-release-docker-logs-${{ github.sha }}
+                  name: e2e-sdk-js-docker-logs-${{ github.sha }}
                   path: docker-logs/
                   retention-days: 7
                   if-no-files-found: warn
@@ -182,5 +222,58 @@ jobs:
                   if [ -f sdk-js/failed_workflows.txt ]; then
                       echo "Failed SDK JS workflows:"
                       cat sdk-js/failed_workflows.txt
+                  fi
+                  exit 1
+
+    comment:
+        name: Report Failed Workflow
+        needs: test-sdk-js
+        runs-on: ubuntu-latest
+        if: always() && github.event_name == 'pull_request'
+        steps:
+            - name: Check if main job failed or was cancelled
+              id: check_status
+              run: |
+                  if [ "${{ needs.test-sdk-js.result }}" != "success" ]; then
+                      echo "job_failed=true" >> $GITHUB_OUTPUT
+                      if [ "${{ needs.test-sdk-js.result }}" == "cancelled" ]; then
+                          echo "was_cancelled=true" >> $GITHUB_OUTPUT
+                      else
+                          echo "was_cancelled=false" >> $GITHUB_OUTPUT
+                      fi
+                  else
+                      echo "job_failed=false" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Prepare Failure Comment
+              if: steps.check_status.outputs.job_failed == 'true' && steps.check_status.outputs.was_cancelled == 'false'
+              run: |
+                  message="## E2E SDK JS Failed
+
+                  One or more SDK JS workflows failed after retries.
+
+                  Please check the workflow logs for more details."
+
+                  jq -n \
+                    --arg pr '${{ github.event.number }}' \
+                    --arg tag e2e-sdk-js-report \
+                    --arg mode recreate \
+                    --arg message "$message" \
+                    '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+            - name: Upload Comment
+              if: steps.check_status.outputs.job_failed == 'true' && steps.check_status.outputs.was_cancelled == 'false'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: pr-comment-payload-sdk-js
+                  path: payload.json
+
+            - name: Fail if main job failed or was cancelled
+              if: steps.check_status.outputs.job_failed == 'true'
+              run: |
+                  if [ "${{ steps.check_status.outputs.was_cancelled }}" == "true" ]; then
+                      echo "Workflow was cancelled"
+                  else
+                      echo "Workflow failed"
                   fi
                   exit 1
