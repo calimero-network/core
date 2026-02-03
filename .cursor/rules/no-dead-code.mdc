@@ -1,0 +1,40 @@
+---
+description: Do not introduce unused code; every added symbol must be used or removed
+globs: **/*.rs
+alwaysApply: false
+---
+
+# No Dead Code
+
+All code you add must be **used**. Do not introduce unused functions, variables, imports, or types.
+
+## Rules
+
+- **Every new symbol must have at least one reference** (call site, use in expression, or re-export). If you add a helper, use it; if you add an import, use it.
+- **Do not leave commented-out code** — remove it before finishing the change.
+- **Do not add code "for later"** — add it only when it is used in the same change.
+- **`#[allow(dead_code)]`** — use only when necessary (e.g. FFI, test fixtures) and add a short comment explaining why.
+
+## Examples
+
+```rust
+// ❌ BAD: unused import
+use std::collections::HashMap;
+fn foo() { let _x = 0; }
+
+// ✅ GOOD: import used or removed
+use std::collections::HashMap;
+fn foo() { let m: HashMap<(), ()> = HashMap::new(); }
+```
+
+```rust
+// ❌ BAD: unused function
+fn helper_parse(s: &str) -> Option<u32> { s.parse().ok() }
+fn main() { println!("hi"); }
+
+// ✅ GOOD: function is used
+fn helper_parse(s: &str) -> Option<u32> { s.parse().ok() }
+fn main() { let n = helper_parse("42").unwrap_or(0); println!("{}", n); }
+```
+
+Before finishing an edit, mentally check: is every new function, variable, import, and type referenced somewhere? If not, either wire it in or remove it.
