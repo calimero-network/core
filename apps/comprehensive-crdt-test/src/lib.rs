@@ -411,7 +411,11 @@ impl ComprehensiveCrdtApp {
     }
 
     /// Get a nested value for a specific user
-    pub fn get_user_nested_for(&self, user_key: PublicKey, key: &str) -> Result<Option<String>, String> {
+    pub fn get_user_nested_for(
+        &self,
+        user_key: PublicKey,
+        key: &str,
+    ) -> Result<Option<String>, String> {
         let nested_data = self
             .user_storage_nested
             .get_for_user(&user_key)

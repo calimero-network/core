@@ -1334,6 +1334,7 @@ fn try_manual_entity_index_decode(
                         created_at,
                         updated_at: UpdatedAt(updated_at_val),
                         storage_type,
+                        crdt_type: None,
                     };
 
                     let child_info = ChildInfo {
@@ -1408,6 +1409,7 @@ fn try_manual_entity_index_decode(
             created_at: 0,
             updated_at: UpdatedAt(0),
             storage_type: StorageType::Public,
+            crdt_type: None,
         },
         deleted_at: None,
     })
@@ -1433,6 +1435,24 @@ struct Metadata {
     created_at: u64,
     updated_at: UpdatedAt,
     storage_type: StorageType,
+    crdt_type: Option<CrdtType>,
+}
+
+/// CRDT type identifier for entity metadata.
+/// Must match the definition in calimero-storage.
+#[derive(borsh::BorshDeserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum CrdtType {
+    LwwRegister,
+    Counter,
+    Rga,
+    UnorderedMap,
+    UnorderedSet,
+    Vector,
+    UserStorage,
+    FrozenStorage,
+    Record,
+    Custom,
 }
 
 #[derive(borsh::BorshDeserialize)]
