@@ -123,6 +123,23 @@ runs:
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 
+    - name: Resolve buildx annotations
+      id: resolve-annotations
+      shell: bash
+      env:
+        PLATFORMS: ${{ inputs.platforms }}
+        METADATA_ANNOTATIONS: ${{ steps.metadata.outputs.annotations }}
+      run: |
+        if [[ "$PLATFORMS" == *","* ]]; then
+          {
+            echo "annotations<<EOF"
+            echo "$METADATA_ANNOTATIONS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        else
+          echo "annotations=" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Build and push image
       uses: docker/build-push-action@v5
       with:
@@ -132,7 +149,7 @@ runs:
         platforms: ${{ inputs.platforms }}
         tags: ${{ steps.metadata.outputs.tags }}
         labels: ${{ steps.metadata.outputs.labels }}
-        annotations: ${{ steps.metadata.outputs.annotations }}
+        annotations: ${{ steps.resolve-annotations.outputs.annotations }}
         cache-from: ${{ steps.prepare.outputs.cache_from }}
         cache-to: ${{ steps.prepare.outputs.cache_to }}
         provenance: false
