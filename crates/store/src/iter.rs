@@ -26,10 +26,43 @@ impl<K, V> Debug for Iter<'_, K, V> {
     }
 }
 
+/// A database iterator trait that provides methods for seeking and iterating over keys.
+///
+/// # Error Handling
+///
+/// All methods return `EyreResult` to properly propagate database errors. Callers should:
+///
+/// - Use the `?` operator to propagate errors, not `.unwrap()` or `.ok()`
+/// - Handle errors explicitly rather than silently dropping them
+/// - Be aware that iterators derived from this trait (like [`IterKeys`] and [`IterEntries`])
+///   will fuse (stop yielding items) after the first error to prevent undefined behavior
+///
+/// ## Example
+///
+/// ```ignore
+/// // Proper error propagation
+/// let first = iter.seek(start_key)?;
+/// while let Some(key) = iter.next()? {
+///     // process key
+/// }
+/// ```
 pub trait DBIter: Send + Sync {
     // todo! indicate somehow that Key<'a> doesn't contain mutable references to &'a mut self
+    /// Seeks to the first key greater than or equal to the given key.
+    ///
+    /// Returns `Ok(Some(key))` if a matching key is found, `Ok(None)` if no such key exists,
+    /// or an error if the seek operation fails.
     fn seek(&mut self, key: Key<'_>) -> EyreResult<Option<Key<'_>>>;
+
+    /// Advances to the next key in the iteration.
+    ///
+    /// Returns `Ok(Some(key))` if there is a next key, `Ok(None)` if iteration is complete,
+    /// or an error if the operation fails.
     fn next(&mut self) -> EyreResult<Option<Key<'_>>>;
+
+    /// Reads the value at the current iterator position.
+    ///
+    /// Returns the value or an error if the read operation fails.
     fn read(&self) -> EyreResult<Value<'_>>;
 }
 
@@ -164,6 +197,39 @@ where
     }
 }
 
+/// An iterator adapter that yields keys from a database iterator.
+///
+/// This iterator properly propagates errors and fuses (stops yielding items)
+/// after encountering the first error, preventing continued iteration in an
+/// error state.
+///
+/// # Error Handling
+///
+/// Each item yielded is an `EyreResult<K::Key>`. Callers should propagate errors
+/// using the `?` operator rather than using methods like `.flatten()` which
+/// silently drop errors.
+///
+/// ## Proper Usage
+///
+/// ```ignore
+/// let mut iter = handle.iter::<MyKey>()?;
+/// // Use .transpose() to convert seek result for chaining
+/// let first = iter.seek(start_key).transpose();
+/// for key_result in first.into_iter().chain(iter.keys()) {
+///     let key = key_result?; // Properly propagate errors
+///     // ... use key
+/// }
+/// ```
+///
+/// ## Improper Usage (Avoid)
+///
+/// ```ignore
+/// // DON'T: This silently drops errors
+/// for key in iter.keys().flatten() { ... }
+///
+/// // DON'T: This also drops seek errors
+/// let first = iter.seek(start_key).ok().flatten();
+/// ```
 #[derive(Debug)]
 pub struct IterKeys<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
@@ -183,7 +249,11 @@ where
                     let key = unsafe { transmute::<Slice<'_>, Slice<'_>>(key) };
                     return Some(K::try_into_key(key).map_err(Into::into));
                 }
-                Err(e) => return Some(Err(e)),
+                Err(e) => {
+                    // Fuse iterator on error to prevent continued iteration after failure
+                    self.iter.done = true;
+                    return Some(Err(e));
+                }
                 Ok(None) => self.iter.done = true,
             }
         }
@@ -191,6 +261,27 @@ where
     }
 }
 
+/// An iterator adapter that yields key-value entries from a database iterator.
+///
+/// This iterator properly propagates errors and fuses (stops yielding items)
+/// after encountering the first error, preventing continued iteration in an
+/// error state.
+///
+/// # Error Handling
+///
+/// Each item yielded is a tuple of `(EyreResult<K::Key>, EyreResult<V::Value>)`.
+/// Callers should check both results and propagate errors appropriately.
+///
+/// ## Proper Usage
+///
+/// ```ignore
+/// let mut iter = handle.iter::<MyKey>()?;
+/// for (key_result, value_result) in iter.entries() {
+///     let key = key_result?;     // Propagate key errors
+///     let value = value_result?; // Propagate value errors
+///     // ... use key and value
+/// }
+/// ```
 #[derive(Debug)]
 pub struct IterEntries<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
@@ -208,7 +299,11 @@ where
                 if !self.iter.done {
                     match self.iter.inner.next() {
                         Ok(Some(key)) => break 'found key,
-                        Err(e) => break 'key Err(e),
+                        Err(e) => {
+                            // Fuse iterator on error to prevent continued iteration after failure
+                            self.iter.done = true;
+                            break 'key Err(e);
+                        }
                         _ => {}
                     }
 
@@ -227,7 +322,11 @@ where
         let value = 'value: {
             let value = match self.iter.inner.read() {
                 Ok(value) => value,
-                Err(value) => break 'value Err(value),
+                Err(e) => {
+                    // Fuse iterator on read error as well
+                    self.iter.done = true;
+                    break 'value Err(e);
+                }
             };
 
             // safety: value only needs to live as long as the iterator, not it's reference
