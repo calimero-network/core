@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,7 +21,6 @@ use calimero_server_primitives::ws::{
 use eyre::Error as EyreError;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
-use rand::random;
 use serde::{Deserialize, Serialize};
 use serde_json::{
     from_str as from_json_str, from_value as from_json_value, to_string as to_json_string,
@@ -35,6 +33,10 @@ use tracing::{debug, error, info, warn};
 
 mod subscribe;
 mod unsubscribe;
+
+/// Global counter for generating unique connection IDs.
+/// Uses monotonic increment to guarantee uniqueness without collision risk.
+static CONNECTION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// WebSocket close codes (RFC 6455)
 /// https://datatracker.ietf.org/doc/html/rfc6455#section-7.4.1
@@ -187,22 +189,19 @@ async fn ws_handler(
 
 async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
-    let (connection_id, connection_state) = loop {
-        let connection_id = random();
-        let mut connections = state.connections.write().await;
 
-        match connections.entry(connection_id) {
-            Entry::Occupied(_) => continue,
-            Entry::Vacant(entry) => {
-                let connection_state = ConnectionState {
-                    commands: commands_sender.clone(),
-                    inner: Arc::default(),
-                };
-                let _ = entry.insert(connection_state.clone());
-                break (connection_id, connection_state);
-            }
-        }
+    // Generate unique connection ID using monotonic counter
+    // This guarantees uniqueness without collision risk or potential infinite loops
+    let connection_id = CONNECTION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let connection_state = ConnectionState {
+        commands: commands_sender.clone(),
+        inner: Arc::default(),
     };
+
+    {
+        let mut connections = state.connections.write().await;
+        let _ = connections.insert(connection_id, connection_state.clone());
+    }
 
     debug!(%connection_id, "Client connection established");
 

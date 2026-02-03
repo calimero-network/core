@@ -10,6 +10,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use url::Url;
 
+use crate::cli::validation::{valid_url, validate_file_exists};
 use crate::cli::Environment;
 use crate::output::{ErrorLine, InfoLine};
 
@@ -19,7 +20,7 @@ pub struct InstallCommand {
     #[arg(long, short, conflicts_with = "url", help = "Path to the application")]
     pub path: Option<Utf8PathBuf>,
 
-    #[clap(long, short, conflicts_with = "path", help = "Url of the application")]
+    #[clap(long, short, conflicts_with = "path", help = "Url of the application", value_parser = valid_url)]
     pub url: Option<String>,
 
     #[clap(short, long, help = "Metadata for the application")]
@@ -61,6 +62,9 @@ impl InstallCommand {
         let client = environment.client()?;
 
         let response = if let Some(app_path) = self.path.as_ref() {
+            // Validate file exists before attempting to install
+            validate_file_exists(app_path.as_std_path())?;
+
             let request = InstallDevApplicationRequest::new(
                 app_path.canonicalize_utf8()?,
                 metadata,
@@ -89,6 +93,9 @@ impl InstallCommand {
         let Some(path) = self.path.as_ref() else {
             bail!("The path must be provided");
         };
+
+        // Validate file exists before watching
+        validate_file_exists(path.as_std_path())?;
 
         let (tx, mut rx) = mpsc::channel(1);
         let handle = Handle::current();

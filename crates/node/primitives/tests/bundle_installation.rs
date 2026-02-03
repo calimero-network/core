@@ -151,7 +151,7 @@ async fn test_bundle_detection() {
     let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(wasm_path_utf8, vec![])
+        .install_application_from_path(wasm_path_utf8, vec![], None, None)
         .await;
     assert!(result.is_ok(), "Single WASM installation should work");
 
@@ -166,7 +166,7 @@ async fn test_bundle_detection() {
     );
 
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
     assert!(result.is_ok(), "Bundle installation should work");
 }
@@ -197,7 +197,7 @@ async fn test_bundle_installation() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path.clone(), vec![])
+        .install_application_from_path(bundle_path.clone(), vec![], None, None)
         .await
         .expect("Bundle installation should succeed");
 
@@ -267,7 +267,7 @@ async fn test_bundle_get_application_bytes() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await
         .expect("Bundle installation should succeed");
 
@@ -303,7 +303,7 @@ async fn test_bundle_deduplication() {
 
     // Install first version
     let _app_id_v1 = node_client
-        .install_application_from_path(bundle_path_v1, vec![])
+        .install_application_from_path(bundle_path_v1, vec![], None, None)
         .await
         .expect("First bundle installation should succeed");
 
@@ -320,7 +320,7 @@ async fn test_bundle_deduplication() {
 
     // Install second version
     let _app_id_v2 = node_client
-        .install_application_from_path(bundle_path_v2, vec![])
+        .install_application_from_path(bundle_path_v2, vec![], None, None)
         .await
         .expect("Second bundle installation should succeed");
 
@@ -375,7 +375,7 @@ async fn test_bundle_manifest_validation() {
     // Since we're extracting from manifest, this test no longer makes sense
     // The package/version will always match because they come from the manifest
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -426,7 +426,7 @@ async fn test_bundle_validation_missing_fields() {
 
     // Installation should fail with validation error
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![])
+        .install_application_from_path(bundle_path_utf8, vec![], None, None)
         .await;
 
     assert!(
@@ -459,7 +459,7 @@ async fn test_bundle_backward_compatibility() {
     let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
 
     let application_id = node_client
-        .install_application_from_path(wasm_path_utf8, vec![])
+        .install_application_from_path(wasm_path_utf8, vec![], None, None)
         .await
         .expect("Single WASM installation should work");
 
@@ -549,7 +549,7 @@ async fn test_bundle_custom_wasm_path() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await
         .expect("Bundle installation should succeed");
 
@@ -597,7 +597,7 @@ async fn test_bundle_no_metadata() {
 
     // Install bundle (metadata is extracted from manifest in Registry v2)
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await
         .expect("Bundle installation should succeed");
 
@@ -665,7 +665,7 @@ async fn test_bundle_validation_empty_package() {
     let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![])
+        .install_application_from_path(bundle_path_utf8, vec![], None, None)
         .await;
 
     assert!(
@@ -719,7 +719,7 @@ async fn test_bundle_validation_empty_app_version() {
     let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![])
+        .install_application_from_path(bundle_path_utf8, vec![], None, None)
         .await;
 
     assert!(
@@ -772,7 +772,7 @@ async fn test_bundle_validation_missing_app_version() {
     let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![])
+        .install_application_from_path(bundle_path_utf8, vec![], None, None)
         .await;
 
     assert!(
@@ -806,7 +806,7 @@ async fn test_bundle_deduplication_different_paths() {
     );
 
     let _app_id_v1 = node_client
-        .install_application_from_path(bundle_path_v1, vec![])
+        .install_application_from_path(bundle_path_v1, vec![], None, None)
         .await
         .expect("First bundle installation should succeed");
 
@@ -820,7 +820,7 @@ async fn test_bundle_deduplication_different_paths() {
     );
 
     let _app_id_v2 = node_client
-        .install_application_from_path(bundle_path_v2, vec![])
+        .install_application_from_path(bundle_path_v2, vec![], None, None)
         .await
         .expect("Second bundle installation should succeed");
 
@@ -872,7 +872,7 @@ async fn test_bundle_extract_dir_derived_from_manifest() {
     );
 
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await
         .expect("Bundle installation should succeed");
 
@@ -930,7 +930,7 @@ async fn test_bundle_package_version_extracted_from_manifest() {
 
     // Install without providing package/version (should extract from manifest)
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await
         .expect("Bundle installation should succeed");
 
@@ -1154,7 +1154,7 @@ async fn test_simple_wasm_installation_still_works() {
     let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
 
     let application_id = node_client
-        .install_application_from_path(wasm_path_utf8, vec![])
+        .install_application_from_path(wasm_path_utf8, vec![], None, None)
         .await
         .expect("Single WASM installation should work");
 
@@ -1242,7 +1242,7 @@ async fn test_bundle_blob_sharing_integration() {
     );
 
     let application_id_user1 = node_client_1
-        .install_application_from_path(bundle_path.clone(), vec![])
+        .install_application_from_path(bundle_path.clone(), vec![], None, None)
         .await
         .expect("User 1 should install bundle successfully");
 
@@ -1414,7 +1414,7 @@ async fn test_bundle_get_application_bytes_fallback() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await
         .expect("Bundle installation should succeed");
 
@@ -1470,7 +1470,7 @@ async fn test_get_latest_version_semantic_ordering() {
             create_test_bundle(&temp_dir, package, version, b"wasm content", None, vec![]);
 
         let app_id = node_client
-            .install_application_from_path(bundle_path, vec![])
+            .install_application_from_path(bundle_path, vec![], None, None)
             .await
             .expect("Bundle installation should succeed");
 
@@ -1478,17 +1478,10 @@ async fn test_get_latest_version_semantic_ordering() {
     }
 
     // Get latest version - should be "10.0.0" (not "2.5.0" which would be lexicographically latest)
-    let latest_app_id = node_client
+    let (latest_version_str, _latest_app_id) = node_client
         .get_latest_version(package)
         .expect("Should get latest version")
         .expect("Latest version should exist");
-
-    // Find which version this corresponds to
-    let latest_version_str = application_ids
-        .iter()
-        .find(|(_, app_id)| *app_id == latest_app_id)
-        .map(|(v, _)| v)
-        .expect("Should find version for latest app_id");
 
     assert_eq!(
         latest_version_str, "10.0.0",
@@ -1512,7 +1505,7 @@ async fn test_get_latest_version_mixed_semver_and_non_semver() {
             create_test_bundle(&temp_dir, package, version, b"wasm content", None, vec![]);
 
         let app_id = node_client
-            .install_application_from_path(bundle_path, vec![])
+            .install_application_from_path(bundle_path, vec![], None, None)
             .await
             .expect("Bundle installation should succeed");
 
@@ -1520,16 +1513,10 @@ async fn test_get_latest_version_mixed_semver_and_non_semver() {
     }
 
     // Get latest version - should prefer semantic versions over non-semantic
-    let latest_app_id = node_client
+    let (latest_version_str, _latest_app_id) = node_client
         .get_latest_version(package)
         .expect("Should get latest version")
         .expect("Latest version should exist");
-
-    let latest_version_str = application_ids
-        .iter()
-        .find(|(_, app_id)| *app_id == latest_app_id)
-        .map(|(v, _)| v)
-        .expect("Should find version for latest app_id");
 
     // Should be "2.0.0" (latest semantic version), not "invalid-version" or "also-invalid"
     assert_eq!(

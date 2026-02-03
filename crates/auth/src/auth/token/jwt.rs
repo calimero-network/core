@@ -121,8 +121,10 @@ impl TokenManager {
             .and_then(|h| h.to_str().ok());
 
         if let Some(request_host) = request_host {
-            // Skip validation if request is coming from internal auth service
-            if request_host.starts_with("auth:") {
+            // Skip validation if request is coming from internal auth service.
+            // Only allow exact "auth" hostname or "auth:" followed by a numeric port.
+            // This prevents bypass attacks using forged headers like "auth:malicious.com".
+            if Self::is_internal_auth_service(request_host) {
                 return Ok(());
             }
 
@@ -142,6 +144,27 @@ impl TokenManager {
         }
 
         Ok(())
+    }
+
+    /// Check if the host represents an internal auth service.
+    ///
+    /// This is a robust check that only matches:
+    /// - Exact "auth" hostname
+    /// - "auth:" followed by a valid numeric port (e.g., "auth:3001")
+    ///
+    /// This prevents bypass attacks where an attacker forges headers like
+    /// "auth:malicious.com" to skip validation.
+    fn is_internal_auth_service(host: &str) -> bool {
+        if host == "auth" {
+            return true;
+        }
+
+        if let Some(port_str) = host.strip_prefix("auth:") {
+            // Port must be non-empty and contain only digits
+            return !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit());
+        }
+
+        false
     }
 
     /// Generate a JWT token
@@ -589,5 +612,76 @@ impl TokenManager {
     /// Get the key manager
     pub fn get_key_manager(&self) -> &KeyManager {
         &self.key_manager
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_internal_auth_service_valid_cases() {
+        // Exact "auth" hostname should be valid
+        assert!(TokenManager::is_internal_auth_service("auth"));
+
+        // "auth:" followed by numeric port should be valid
+        assert!(TokenManager::is_internal_auth_service("auth:3001"));
+        assert!(TokenManager::is_internal_auth_service("auth:80"));
+        assert!(TokenManager::is_internal_auth_service("auth:443"));
+        assert!(TokenManager::is_internal_auth_service("auth:8080"));
+        assert!(TokenManager::is_internal_auth_service("auth:1"));
+        assert!(TokenManager::is_internal_auth_service("auth:65535"));
+    }
+
+    #[test]
+    fn test_is_internal_auth_service_bypass_attempts() {
+        // These are potential bypass attempts that should be rejected
+
+        // Attacker trying to bypass with malicious domain
+        assert!(!TokenManager::is_internal_auth_service(
+            "auth:malicious.com"
+        ));
+        assert!(!TokenManager::is_internal_auth_service(
+            "auth:evil.example.com"
+        ));
+
+        // Attacker trying to use non-numeric port
+        assert!(!TokenManager::is_internal_auth_service("auth:abc"));
+        assert!(!TokenManager::is_internal_auth_service("auth:80abc"));
+        assert!(!TokenManager::is_internal_auth_service("auth:abc80"));
+        assert!(!TokenManager::is_internal_auth_service("auth:80.0"));
+        assert!(!TokenManager::is_internal_auth_service("auth:80:80"));
+
+        // Empty port should be rejected
+        assert!(!TokenManager::is_internal_auth_service("auth:"));
+
+        // Similar prefixes that should not match
+        assert!(!TokenManager::is_internal_auth_service("authentication"));
+        assert!(!TokenManager::is_internal_auth_service("auth-service"));
+        assert!(!TokenManager::is_internal_auth_service("auth_service"));
+        assert!(!TokenManager::is_internal_auth_service("authservice:3001"));
+
+        // Other hostnames should not match
+        assert!(!TokenManager::is_internal_auth_service("localhost"));
+        assert!(!TokenManager::is_internal_auth_service("localhost:3001"));
+        assert!(!TokenManager::is_internal_auth_service("example.com"));
+    }
+
+    #[test]
+    fn test_is_internal_auth_service_edge_cases() {
+        // Case sensitivity - "auth" should be lowercase only
+        assert!(!TokenManager::is_internal_auth_service("AUTH"));
+        assert!(!TokenManager::is_internal_auth_service("Auth"));
+        assert!(!TokenManager::is_internal_auth_service("AUTH:3001"));
+
+        // Whitespace variations
+        assert!(!TokenManager::is_internal_auth_service(" auth"));
+        assert!(!TokenManager::is_internal_auth_service("auth "));
+        assert!(!TokenManager::is_internal_auth_service(" auth:3001"));
+
+        // Special characters in port
+        assert!(!TokenManager::is_internal_auth_service("auth:-3001"));
+        assert!(!TokenManager::is_internal_auth_service("auth:+3001"));
+        assert!(!TokenManager::is_internal_auth_service("auth: 3001"));
     }
 }

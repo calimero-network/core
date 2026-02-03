@@ -18,19 +18,40 @@ fn test_owned_memory() {
             let value = Slice::from(&bytes[..]);
 
             db.put(Column::Identity, (&key).into(), (&value).into())
-                .unwrap();
+                .expect("put should succeed");
 
-            assert!(db.has(Column::Identity, (&key).into()).unwrap());
-            assert_eq!(db.get(Column::Identity, key).unwrap().unwrap(), value);
+            assert!(db
+                .has(Column::Identity, (&key).into())
+                .expect("has should succeed"));
+            assert_eq!(
+                db.get(Column::Identity, key)
+                    .expect("get should succeed")
+                    .expect("key should exist"),
+                value
+            );
         }
     }
 
-    assert_eq!(None, db.get(Column::Identity, (&[]).into()).unwrap());
+    assert_eq!(
+        None,
+        db.get(Column::Identity, (&[]).into())
+            .expect("get should succeed")
+    );
 
-    let mut iter = db.iter(Column::Identity).unwrap();
+    let mut iter = db.iter(Column::Identity).expect("iter should succeed");
 
-    let mut key = Some(iter.seek((&[]).into()).unwrap().unwrap().into_boxed());
-    let mut value = Some(iter.read().unwrap().clone().into_boxed());
+    let mut key = Some(
+        iter.seek((&[]).into())
+            .expect("seek should succeed")
+            .expect("seek should find a key")
+            .into_boxed(),
+    );
+    let mut value = Some(
+        iter.read()
+            .expect("read should succeed")
+            .clone()
+            .into_boxed(),
+    );
 
     let mut entries = iter.entries();
 
@@ -40,13 +61,13 @@ fn test_owned_memory() {
                 .next()
                 .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
-                .unwrap()
+                .expect("entry iteration should succeed")
                 .map_or_else(Default::default, |(k, v)| {
                     (Some(k.into_boxed()), Some(v.into_boxed()))
                 });
 
-            let last_key = mem::replace(&mut key, k).unwrap();
-            let last_value = mem::replace(&mut value, v).unwrap();
+            let last_key = mem::replace(&mut key, k).expect("key should be present");
+            let last_value = mem::replace(&mut value, v).expect("value should be present");
 
             let bytes = [b1, b2];
 
@@ -72,19 +93,40 @@ fn test_ref_memory() {
                 key.clone().into_boxed().into(),
                 value.clone().into_boxed().into(),
             )
-            .unwrap();
+            .expect("put should succeed");
 
-            assert!(db.has(Column::Identity, (&key).into()).unwrap());
-            assert_eq!(db.get(Column::Identity, key).unwrap().unwrap(), value);
+            assert!(db
+                .has(Column::Identity, (&key).into())
+                .expect("has should succeed"));
+            assert_eq!(
+                db.get(Column::Identity, key)
+                    .expect("get should succeed")
+                    .expect("key should exist"),
+                value
+            );
         }
     }
 
-    assert_eq!(None, db.get(Column::Identity, (&[]).into()).unwrap());
+    assert_eq!(
+        None,
+        db.get(Column::Identity, (&[]).into())
+            .expect("get should succeed")
+    );
 
-    let mut iter = db.iter(Column::Identity).unwrap();
+    let mut iter = db.iter(Column::Identity).expect("iter should succeed");
 
-    let mut key = Some(iter.seek((&[]).into()).unwrap().unwrap().into_boxed());
-    let mut value = Some(iter.read().unwrap().clone().into_boxed());
+    let mut key = Some(
+        iter.seek((&[]).into())
+            .expect("seek should succeed")
+            .expect("seek should find a key")
+            .into_boxed(),
+    );
+    let mut value = Some(
+        iter.read()
+            .expect("read should succeed")
+            .clone()
+            .into_boxed(),
+    );
 
     let mut entries = iter.entries();
 
@@ -94,13 +136,13 @@ fn test_ref_memory() {
                 .next()
                 .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
-                .unwrap()
+                .expect("entry iteration should succeed")
                 .map_or_else(Default::default, |(k, v)| {
                     (Some(k.into_boxed()), Some(v.into_boxed()))
                 });
 
-            let last_key = mem::replace(&mut key, k).unwrap();
-            let last_value = mem::replace(&mut value, v).unwrap();
+            let last_key = mem::replace(&mut key, k).expect("key should be present");
+            let last_value = mem::replace(&mut value, v).expect("value should be present");
 
             let bytes = [b1, b2];
 

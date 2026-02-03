@@ -24,6 +24,7 @@ mod call;
 mod context;
 mod node;
 mod peers;
+pub mod validation;
 
 use app::AppCommand;
 use blob::BlobCommand;
