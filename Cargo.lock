@@ -2329,6 +2329,7 @@ dependencies = [
  "wasmer",
  "wasmer-compiler-cranelift",
  "wasmer-types",
+ "wat",
 ]
 
 [[package]]
@@ -2539,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.37"
+version = "0.10.0-rc.39"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",

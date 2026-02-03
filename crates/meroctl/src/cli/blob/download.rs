@@ -6,6 +6,7 @@ use calimero_primitives::context::ContextId;
 use clap::Parser;
 use eyre::{eyre, Result};
 
+use crate::cli::validation::validate_parent_directory_exists;
 use crate::cli::Environment;
 use crate::output::BlobDownloadResponse;
 
@@ -39,6 +40,9 @@ pub struct DownloadCommand {
 
 impl DownloadCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        // Validate output path before downloading
+        validate_parent_directory_exists(&self.output_path)?;
+
         let client = environment.client()?;
 
         // Download the blob
