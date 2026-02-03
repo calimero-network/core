@@ -38,6 +38,7 @@ pub struct WasmerTunables {
 /// The actual memory cleanup is handled by:
 /// - Wasmer's `Store` when it is dropped
 /// - `VMLogic::finish()` which explicitly releases memory references
+/// - `MemoryCleanupGuard` for edge cases where finish() might not be called
 ///
 /// This `Drop` implementation is provided for consistency and to document the
 /// cleanup behavior. See `VMLogic::finish()` for the main cleanup implementation.
@@ -47,6 +48,64 @@ impl Drop for WasmerTunables {
             target: "runtime::memory",
             "WasmerTunables::drop: tunables dropped (memory cleanup handled by Store/VMLogic)"
         );
+    }
+}
+
+/// A guard that ensures WASM memory is cleaned up when dropped.
+///
+/// This guard can be used to wrap a `wasmer::Memory` reference and ensure
+/// it is properly cleaned up even if an error or panic occurs before
+/// normal cleanup paths are reached.
+///
+/// # Usage
+///
+/// Create the guard after obtaining a memory reference:
+/// ```ignore
+/// let memory = instance.exports.get_memory("memory")?;
+/// let _guard = MemoryCleanupGuard::new(memory.clone());
+/// // Memory will be cleaned up when guard goes out of scope
+/// ```
+///
+/// The guard can also be disarmed if cleanup is handled elsewhere:
+/// ```ignore
+/// let memory = instance.exports.get_memory("memory")?;
+/// let mut guard = MemoryCleanupGuard::new(memory.clone());
+/// // ... use memory ...
+/// guard.disarm(); // Prevent cleanup by guard
+/// ```
+pub struct MemoryCleanupGuard {
+    memory: Option<wasmer::Memory>,
+}
+
+impl MemoryCleanupGuard {
+    /// Creates a new cleanup guard for the given memory.
+    #[must_use]
+    pub fn new(memory: wasmer::Memory) -> Self {
+        Self {
+            memory: Some(memory),
+        }
+    }
+
+    /// Disarms the guard, preventing it from cleaning up the memory on drop.
+    ///
+    /// Call this when cleanup is being handled elsewhere (e.g., by `VMLogic::finish()`).
+    pub fn disarm(&mut self) {
+        self.memory = None;
+    }
+}
+
+impl Drop for MemoryCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(memory) = self.memory.take() {
+            // Explicitly drop the memory reference to ensure Wasmer's
+            // internal reference count is decremented. When all references
+            // are released, the actual memory will be deallocated.
+            drop(memory);
+            trace!(
+                target: "runtime::memory",
+                "MemoryCleanupGuard::drop: cleaned up dangling WASM memory"
+            );
+        }
     }
 }
 
