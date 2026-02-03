@@ -472,7 +472,12 @@ impl VMHostFunctions<'_> {
     /// # Returns
     ///
     /// * Immutable slice of the guest memory contents.
-    fn read_guest_memory_slice(&self, slice: &sys::Buffer<'_>) -> &[u8] {
+    ///
+    /// # Errors
+    ///
+    /// Returns `VMLogicError::HostError(HostError::InvalidMemoryAccess)` if the requested
+    /// memory region (ptr + len) exceeds the bounds of guest memory.
+    fn read_guest_memory_slice(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&[u8]> {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
 
@@ -483,7 +488,17 @@ impl VMHostFunctions<'_> {
             "read_guest_memory_slice"
         );
 
-        unsafe { &self.borrow_memory().data_unchecked()[ptr..ptr + len] }
+        let memory = self.borrow_memory();
+        let memory_size = memory.data_size() as usize;
+
+        // Check for potential overflow and bounds
+        let end = ptr.checked_add(len).ok_or(HostError::InvalidMemoryAccess)?;
+        if end > memory_size {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        // SAFETY: We have verified that ptr..ptr+len is within the memory bounds
+        Ok(unsafe { &memory.data_unchecked()[ptr..end] })
     }
 
     /// Reads a MUTABLE slice of guest memory.
@@ -497,12 +512,17 @@ impl VMHostFunctions<'_> {
     /// # Returns
     ///
     /// * Mutable slice of the guest memory contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VMLogicError::HostError(HostError::InvalidMemoryAccess)` if the requested
+    /// memory region (ptr + len) exceeds the bounds of guest memory.
     #[expect(
         clippy::mut_from_ref,
         reason = "We are not modifying the self explicitly, only the underlying slice of the guest memory.\
         Meantime we are required to have an immutable reference to self, hence the exception"
     )]
-    fn read_guest_memory_slice_mut(&self, slice: &sys::BufferMut<'_>) -> &mut [u8] {
+    fn read_guest_memory_slice_mut(&self, slice: &sys::BufferMut<'_>) -> VMLogicResult<&mut [u8]> {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
 
@@ -513,7 +533,17 @@ impl VMHostFunctions<'_> {
             "read_guest_memory_slice_mut"
         );
 
-        unsafe { &mut self.borrow_memory().data_unchecked_mut()[ptr..ptr + len] }
+        let memory = self.borrow_memory();
+        let memory_size = memory.data_size() as usize;
+
+        // Check for potential overflow and bounds
+        let end = ptr.checked_add(len).ok_or(HostError::InvalidMemoryAccess)?;
+        if end > memory_size {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        // SAFETY: We have verified that ptr..ptr+len is within the memory bounds
+        Ok(unsafe { &mut memory.data_unchecked_mut()[ptr..end] })
     }
 
     /// Reads an immutable UTF-8 string slice from guest memory.
@@ -530,8 +560,10 @@ impl VMHostFunctions<'_> {
     ///
     /// Returns `VMLogicError::HostError(HostError::BadUTF8)` if the memory slice
     /// does not contain valid UTF-8 data.
+    /// Returns `VMLogicError::HostError(HostError::InvalidMemoryAccess)` if the requested
+    /// memory region exceeds the bounds of guest memory.
     fn read_guest_memory_str(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&str> {
-        let buf = self.read_guest_memory_slice(slice);
+        let buf = self.read_guest_memory_slice(slice)?;
 
         trace!(target: "runtime::memory", len = buf.len(), "read_guest_memory_str");
 
@@ -547,12 +579,13 @@ impl VMHostFunctions<'_> {
     /// # Errors
     ///
     /// Returns `VMLogicError::HostError(HostError::InvalidMemoryAccess)` if the buffer
-    /// length in guest memory does not exactly match the requested array size `N`.
+    /// length in guest memory does not exactly match the requested array size `N`,
+    /// or if the requested memory region exceeds the bounds of guest memory.
     fn read_guest_memory_sized<const N: usize>(
         &self,
         slice: &sys::Buffer<'_>,
     ) -> VMLogicResult<&[u8; N]> {
-        let buf = self.read_guest_memory_slice(slice);
+        let buf = self.read_guest_memory_slice(slice)?;
 
         buf.try_into()
             .map_err(|_| HostError::InvalidMemoryAccess.into())
@@ -793,7 +826,7 @@ mod tests {
         assert_eq!(result_str, expected_str);
 
         // Guest: ask host to read slice from the `buffer` located in guest memory.
-        let result_slice = host.read_guest_memory_slice(&buffer);
+        let result_slice = host.read_guest_memory_slice(&buffer).unwrap();
         assert_eq!(result_slice, expected_str.as_bytes());
     }
 
@@ -821,7 +854,7 @@ mod tests {
         };
 
         // Guest: ask host to read slice from the `buffer` located in guest memory.
-        let result_slice = host.read_guest_memory_slice(&buffer);
+        let result_slice = host.read_guest_memory_slice(&buffer).unwrap();
         assert_eq!(result_slice, expected_str.as_bytes());
 
         // Now, this code won't be compilable as we get an immutable ref.
@@ -924,5 +957,168 @@ mod tests {
             err,
             VMLogicError::HostError(HostError::InvalidMemoryAccess)
         ));
+    }
+
+    /// Tests that `read_guest_memory_slice` returns an error when the requested memory region
+    /// exceeds the bounds of guest memory.
+    #[test]
+    fn test_read_guest_memory_slice_out_of_bounds() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        // Get the memory size - one page is 64KB (65536 bytes)
+        let memory_size = host.borrow_memory().data_size() as u64;
+
+        // Test case 1: ptr + len exceeds memory size
+        let data_ptr = memory_size - 10; // 10 bytes before end of memory
+        let buf_ptr = 16u64;
+        // Request 100 bytes which will exceed memory bounds
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, 100);
+
+        let buffer = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr)
+                .unwrap()
+        };
+
+        let err = host.read_guest_memory_slice(&buffer).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+
+        // Test case 2: ptr itself is beyond memory size
+        let data_ptr_beyond = memory_size + 100;
+        let buf_ptr_beyond = 32u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr_beyond, data_ptr_beyond, 10);
+
+        let buffer_beyond = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_beyond)
+                .unwrap()
+        };
+
+        let err_beyond = host.read_guest_memory_slice(&buffer_beyond).unwrap_err();
+        assert!(matches!(
+            err_beyond,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+
+        // Test case 3: overflow when adding ptr + len
+        let data_ptr_overflow = u64::MAX - 5;
+        let buf_ptr_overflow = 48u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr_overflow, data_ptr_overflow, 10);
+
+        let buffer_overflow = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr_overflow)
+                .unwrap()
+        };
+
+        let err_overflow = host.read_guest_memory_slice(&buffer_overflow).unwrap_err();
+        assert!(matches!(
+            err_overflow,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+    }
+
+    /// Tests that `read_guest_memory_slice_mut` returns an error when the requested memory region
+    /// exceeds the bounds of guest memory.
+    #[test]
+    fn test_read_guest_memory_slice_mut_out_of_bounds() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        // Get the memory size - one page is 64KB (65536 bytes)
+        let memory_size = host.borrow_memory().data_size() as u64;
+
+        // Test case 1: ptr + len exceeds memory size
+        let data_ptr = memory_size - 10; // 10 bytes before end of memory
+        let buf_ptr = 16u64;
+        // Request 100 bytes which will exceed memory bounds
+        // Note: we're using the same descriptor format but will interpret it as BufferMut
+        host.borrow_memory()
+            .write(buf_ptr, &data_ptr.to_le_bytes())
+            .unwrap();
+        host.borrow_memory()
+            .write(buf_ptr + 8, &100u64.to_le_bytes())
+            .unwrap();
+
+        let buffer = unsafe {
+            host.read_guest_memory_typed::<sys::BufferMut<'_>>(buf_ptr)
+                .unwrap()
+        };
+
+        let err = host.read_guest_memory_slice_mut(&buffer).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+
+        // Test case 2: ptr itself is beyond memory size
+        let data_ptr_beyond = memory_size + 100;
+        let buf_ptr_beyond = 32u64;
+        host.borrow_memory()
+            .write(buf_ptr_beyond, &data_ptr_beyond.to_le_bytes())
+            .unwrap();
+        host.borrow_memory()
+            .write(buf_ptr_beyond + 8, &10u64.to_le_bytes())
+            .unwrap();
+
+        let buffer_beyond = unsafe {
+            host.read_guest_memory_typed::<sys::BufferMut<'_>>(buf_ptr_beyond)
+                .unwrap()
+        };
+
+        let err_beyond = host
+            .read_guest_memory_slice_mut(&buffer_beyond)
+            .unwrap_err();
+        assert!(matches!(
+            err_beyond,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+    }
+
+    /// Tests that valid memory accesses within bounds succeed.
+    #[test]
+    fn test_read_guest_memory_slice_valid_bounds() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        // Write data at the beginning of memory
+        let test_data = b"test data";
+        let data_ptr = 100u64;
+        host.borrow_memory().write(data_ptr, test_data).unwrap();
+
+        let buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, test_data.len() as u64);
+
+        let buffer = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(buf_ptr)
+                .unwrap()
+        };
+
+        let result = host.read_guest_memory_slice(&buffer).unwrap();
+        assert_eq!(result, test_data);
+
+        // Test at the edge of memory (valid access)
+        let memory_size = host.borrow_memory().data_size() as u64;
+        let edge_data = b"edge";
+        let edge_ptr = memory_size - edge_data.len() as u64;
+        host.borrow_memory().write(edge_ptr, edge_data).unwrap();
+
+        let edge_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, edge_buf_ptr, edge_ptr, edge_data.len() as u64);
+
+        let edge_buffer = unsafe {
+            host.read_guest_memory_typed::<sys::Buffer<'_>>(edge_buf_ptr)
+                .unwrap()
+        };
+
+        let edge_result = host.read_guest_memory_slice(&edge_buffer).unwrap();
+        assert_eq!(edge_result, edge_data);
     }
 }
