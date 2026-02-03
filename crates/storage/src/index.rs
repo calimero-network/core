@@ -77,6 +77,12 @@ impl<S: StorageAdaptor> Index<S> {
         });
         child_index.parent_id = Some(parent_id);
         child_index.own_hash = child.merkle_hash();
+        // Always preserve field_name from child metadata if it exists
+        // This ensures field_name is stored even if EntityIndex already exists
+        // Critical for schema inference - field_name identifies which struct field this entity belongs to
+        if child.metadata.field_name.is_some() {
+            child_index.metadata.field_name = child.metadata.field_name.clone();
+        }
         child_index.full_hash =
             Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
         Self::save_index(&child_index)?;

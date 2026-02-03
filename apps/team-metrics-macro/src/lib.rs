@@ -48,9 +48,8 @@ pub enum MetricsEvent {
 impl TeamMetricsApp {
     #[app::init]
     pub fn init() -> TeamMetricsApp {
-        TeamMetricsApp {
-            teams: UnorderedMap::new(),
-        }
+        // Use the auto-generated Default implementation which uses field names
+        TeamMetricsApp::default()
     }
 
     pub fn record_win(&mut self, team_id: String) -> Result<u64, String> {

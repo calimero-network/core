@@ -37,6 +37,7 @@ export class StateTreeVisualizer {
      */
     async load() {
         // Check if we have schema content (from file or local storage)
+        // Schema is optional - if not provided, backend will infer it from database
         if (!this.state.currentStateSchemaFile && !this.state.currentStateSchemaFileContent) {
             // Try to load from local storage
             try {
@@ -45,10 +46,10 @@ export class StateTreeVisualizer {
                     this.state.currentStateSchemaFileContent = savedContent;
                     console.log('[StateTreeVisualizer] Loaded schema from local storage');
                 } else {
-                    throw new Error('State schema file is required for state tree visualization');
+                    console.log('[StateTreeVisualizer] No schema file provided - will use schema inference');
                 }
             } catch (err) {
-                throw new Error('State schema file is required for state tree visualization');
+                console.log('[StateTreeVisualizer] No schema file provided - will use schema inference');
             }
         }
 
