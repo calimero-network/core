@@ -125,7 +125,7 @@ jobs:
           key: release
 
       - name: Update Bash
-        if: ${{ matrix.os == 'macos-13' || matrix.os == 'macos-latest' }}
+        if: ${{ matrix.runner == 'macos-13' || matrix.runner == 'macos-latest' }}
         run: brew install bash
 
       - name: Build binaries
