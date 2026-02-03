@@ -151,13 +151,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// # Arguments
     /// * `parent_id` - The ID of the parent collection (None for root-level collections)
     /// * `field_name` - The name of the field containing this collection
+    /// * `crdt_type` - The CRDT type for this collection (e.g., UnorderedMap, Vector)
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
-    pub(crate) fn new_with_field_name(parent_id: Option<Id>, field_name: &str) -> Self {
+    pub(crate) fn new_with_field_name_and_crdt_type(
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) -> Self {
         let id = compute_collection_id(parent_id, field_name);
 
         let mut this = Self {
             children_ids: RefCell::new(None),
-            storage: Element::new_with_field_name(Some(id), Some(field_name.to_string())),
+            storage: Element::new_with_field_name_and_crdt_type(
+                Some(id),
+                Some(field_name.to_string()),
+                crdt_type,
+            ),
             _priv: PhantomData,
         };
 

@@ -9,7 +9,7 @@
 use borsh::io::{ErrorKind, Read, Result as BorshResult, Write};
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::{StorageAdaptor, UnorderedMap};
+use super::{CrdtType, StorageAdaptor, UnorderedMap};
 use crate::collections::error::StoreError;
 use crate::interface::StorageError;
 use crate::store::MainStorage;
@@ -190,11 +190,19 @@ impl<const ALLOW_DECREMENT: bool> Counter<ALLOW_DECREMENT, MainStorage> {
     /// This enables merodb and other tools to infer the schema from the database
     /// without requiring an external schema file. The field name is used to
     /// generate deterministic collection IDs.
+    ///
+    /// Note: Counter uses CrdtType::Counter on its primary (positive) map for schema
+    /// inference. The negative map is internal and unnamed.
     #[must_use]
     pub fn new_with_field_name(field_name: &str) -> Self {
         Self {
-            positive: UnorderedMap::new_with_field_name(field_name),
-            negative: UnorderedMap::new_with_field_name(field_name),
+            // Primary map gets the field_name and CrdtType::Counter
+            positive: UnorderedMap::new_with_field_name_and_crdt_type(
+                field_name,
+                CrdtType::Counter,
+            ),
+            // Negative map is internal - no field_name
+            negative: UnorderedMap::new_internal(),
         }
     }
 }

@@ -45,8 +45,15 @@ where
     /// generate deterministic collection IDs.
     pub fn new_with_field_name(field_name: &str) -> Self {
         Self {
-            inner: UnorderedMap::new_with_field_name(field_name),
-            storage: Element::new_with_field_name(None, Some(field_name.to_string())),
+            inner: UnorderedMap::new_with_field_name_and_crdt_type(
+                field_name,
+                CrdtType::UserStorage,
+            ),
+            storage: Element::new_with_field_name_and_crdt_type(
+                None,
+                Some(field_name.to_string()),
+                CrdtType::UserStorage,
+            ),
         }
     }
 }
