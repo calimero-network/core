@@ -32,14 +32,14 @@ impl VMHostFunctions<'_> {
         let actions = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_actions_ptr)? };
         let dest_id = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_id_ptr)? };
 
+        let actions = self.read_guest_memory_slice(&actions)?.to_vec();
+
         let mut proposal_id = [0_u8; DIGEST_SIZE];
         rand::thread_rng().fill_bytes(&mut proposal_id);
 
         // Record newly created ID to guest memory
         let dest_id: &mut [u8] = self.read_guest_memory_slice_mut(&dest_id)?;
         dest_id.copy_from_slice(&proposal_id);
-
-        let actions = self.read_guest_memory_slice(&actions)?.to_vec();
 
         let _ignored = self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions));
         Ok(())
