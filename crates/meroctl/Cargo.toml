@@ -43,6 +43,8 @@ calimero-version.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
 tempfile.workspace = true
 
 [package.metadata.workspaces]
