@@ -80,34 +80,23 @@ merod --node node1 init --force
 
 ### Configure Node (`config`)
 
-Update configuration of an existing node:
+Update configuration of an existing node using TOML key=value pairs. Use the same key paths as in `config.toml` (e.g. `server.listen`, `swarm.listen`, `bootstrap.nodes`). In zsh, quote the argument so `[` and `]` are not globbed.
 
 ```bash
-# Configure server host and port
-merod --node node1 config \
-  --server-host 0.0.0.0 \
-  --server-port 3000
+# Configure server listen addresses (quote in zsh)
+merod --node node1 config "server.listen=['/ip4/0.0.0.0/tcp/3000']"
 
-# Configure swarm settings
-merod --node node1 config \
-  --swarm-host 0.0.0.0 \
-  --swarm-port 2428
+# Configure swarm listen addresses
+merod --node node1 config "swarm.listen=['/ip4/0.0.0.0/tcp/2528']"
 
 # Configure bootstrap nodes
-merod --node node1 config \
-  --swarm-addrs /ip4/127.0.0.1/tcp/2528
+merod --node node1 config "bootstrap.nodes=['/ip4/127.0.0.1/tcp/2528/p2p/PEER_ID']"
 
-# Configure protocol and relayer
-merod --node node1 config \
-  --protocol near \
-  --relayer-url https://relayer.near.org
-
-# Configure multiple settings
-merod --node node1 config \
-  --server-host 192.168.1.100 \
-  --server-port 8080 \
-  --swarm-port 9090
+# Multiple key=value pairs
+merod --node node1 config "server.listen=['/ip4/192.168.1.100/tcp/8080']" "swarm.listen=['/ip4/0.0.0.0/tcp/9090']"
 ```
+
+Run `merod --help` for more examples.
 
 ### Run Node (`run`)
 
@@ -171,12 +160,12 @@ merod --node node1 run
 
 # Terminal 2: Second node (peer)
 merod --node node2 init --server-port 2429 --swarm-port 2529
-merod --node node2 config --swarm-addrs /ip4/127.0.0.1/tcp/2528
+merod --node node2 config "bootstrap.nodes=['/ip4/127.0.0.1/tcp/2528/p2p/NODE1_PEER_ID']"
 merod --node node2 run
 
 # Terminal 3: Third node (peer)
 merod --node node3 init --server-port 2430 --swarm-port 2530
-merod --node node3 config --swarm-addrs /ip4/127.0.0.1/tcp/2528
+merod --node node3 config "bootstrap.nodes=['/ip4/127.0.0.1/tcp/2528/p2p/NODE1_PEER_ID']"
 merod --node node3 run
 ```
 
