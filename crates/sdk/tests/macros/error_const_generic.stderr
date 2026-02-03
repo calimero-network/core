@@ -1,0 +1,5 @@
+error: (calimero)> generic types are not supported
+  --> tests/macros/error_const_generic.rs:10:19
+   |
+10 |     pub fn method<const N: usize>(&self, arr: [u8; N]) -> usize {
+   |                   ^^^^^^^^^^^^^^

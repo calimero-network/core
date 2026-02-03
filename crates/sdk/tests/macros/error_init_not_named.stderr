@@ -1,0 +1,5 @@
+error: (calimero)> method annotated with `#[app::init]` must be named `init`
+  --> tests/macros/error_init_not_named.rs:11:12
+   |
+11 |     pub fn initialize() -> Self {
+   |            ^^^^^^^^^^

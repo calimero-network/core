@@ -1,0 +1,7 @@
+error: (calimero)> trait impls are not supported
+  --> tests/macros/error_trait_impl.rs:13:1
+   |
+13 | / impl MyTrait for MyState {
+14 | |     fn do_something(&self) {}
+15 | | }
+   | |_^

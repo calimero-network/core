@@ -1,0 +1,5 @@
+error: (calimero)> generic types are not supported
+ --> tests/macros/invalid_nested_generics.rs:9:6
+  |
+9 | impl<T> MyState<T> {
+  |      ^

@@ -1,0 +1,5 @@
+error: (calimero)> method named `init` must be annotated with `#[app::init]`
+  --> tests/macros/error_init_without_attr.rs:10:12
+   |
+10 |     pub fn init() -> Self {
+   |            ^^^^

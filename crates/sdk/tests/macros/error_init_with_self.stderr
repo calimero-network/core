@@ -1,0 +1,5 @@
+error: (calimero)> an initializer, by definition, has no `self` to reference
+  --> tests/macros/error_init_with_self.rs:11:17
+   |
+11 |     pub fn init(&self) -> Self {
+   |                 ^^^^^

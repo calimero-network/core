@@ -1,0 +1,5 @@
+error: (calimero)> explicit ABIs are not supported
+  --> tests/macros/error_explicit_abi.rs:10:9
+   |
+10 |     pub extern "C" fn method(&self) {}
+   |         ^^^^^^^^^^

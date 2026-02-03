@@ -1,0 +1,5 @@
+error: (calimero)> generic types are not supported
+  --> tests/macros/error_impl_trait_arg.rs:11:33
+   |
+11 |     pub fn method(&self, value: impl Display) {
+   |                                 ^^^^^^^^^^^^
