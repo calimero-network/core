@@ -12,6 +12,7 @@ publish = true
 curve25519-dalek.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 ring.workspace = true
+thiserror.workspace = true
 
 calimero-primitives = { workspace = true, features = ["rand"] }
 
