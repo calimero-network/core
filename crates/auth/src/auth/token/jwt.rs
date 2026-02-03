@@ -181,6 +181,31 @@ impl TokenManager {
         .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
     }
 
+    /// Generate a pair of JWT tokens without key validation.
+    async fn generate_raw_token_pair(
+        &self,
+        key_id: String,
+        permissions: Vec<String>,
+        node_url: Option<String>,
+        access_expiry: Duration,
+        refresh_expiry: Duration,
+    ) -> Result<(String, String), AuthError> {
+        let access_token = self
+            .generate_token(
+                key_id.clone(),
+                permissions.clone(),
+                access_expiry,
+                node_url.clone(),
+            )
+            .await?;
+
+        let refresh_token = self
+            .generate_token(key_id, permissions, refresh_expiry, node_url)
+            .await?;
+
+        Ok((access_token, refresh_token))
+    }
+
     /// Generate mock tokens without requiring key storage (for CI/testing only)
     ///
     /// This method bypasses all key storage and validation for mock token generation.
@@ -196,20 +221,14 @@ impl TokenManager {
             Duration::seconds(custom_expiry.unwrap_or(self.config.access_token_expiry) as i64);
         let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
 
-        let access_token = self
-            .generate_token(
-                key_id.clone(),
-                permissions.clone(),
-                access_expiry,
-                node_url.clone(),
-            )
-            .await?;
-
-        let refresh_token = self
-            .generate_token(key_id, permissions, refresh_expiry, node_url)
-            .await?;
-
-        Ok((access_token, refresh_token))
+        self.generate_raw_token_pair(
+            key_id,
+            permissions,
+            node_url,
+            access_expiry,
+            refresh_expiry,
+        )
+        .await
     }
 
     /// Generate a pair of access and refresh tokens
@@ -241,50 +260,31 @@ impl TokenManager {
             return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
         }
 
+        let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
+        let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
+
         match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
             KeyType::Root => {
-                let access_token = self
-                    .generate_token(
-                        key_id.clone(),
-                        permissions.clone(),
-                        Duration::seconds(self.config.access_token_expiry as i64),
-                        node_url.clone(),
-                    )
-                    .await?;
-
-                let refresh_token = self
-                    .generate_token(
-                        key_id,
-                        permissions,
-                        Duration::seconds(self.config.refresh_token_expiry as i64),
-                        node_url,
-                    )
-                    .await?;
-
-                Ok((access_token, refresh_token))
+                self.generate_raw_token_pair(
+                    key_id,
+                    permissions,
+                    node_url,
+                    access_expiry,
+                    refresh_expiry,
+                )
+                .await
             }
             // For client tokens, use the same key ID - no rotation during initial generation
             KeyType::Client => {
-                let access_token = self
-                    .generate_token(
-                        key_id.clone(),
-                        permissions.clone(),
-                        Duration::seconds(self.config.access_token_expiry as i64),
-                        node_url.clone(),
-                    )
-                    .await?;
-
-                let refresh_token = self
-                    .generate_token(
-                        key_id,
-                        permissions,
-                        Duration::seconds(self.config.refresh_token_expiry as i64),
-                        node_url,
-                    )
-                    .await?;
-
-                Ok((access_token, refresh_token))
+                self.generate_raw_token_pair(
+                    key_id,
+                    permissions,
+                    node_url,
+                    access_expiry,
+                    refresh_expiry,
+                )
+                .await
             }
         }
     }
@@ -463,21 +463,16 @@ impl TokenManager {
                 // Generate tokens FIRST, before any key mutations.
                 // This ensures that if token generation fails, we haven't modified any keys
                 // and the user's original key remains valid (no lockout scenario).
-                let access_token = self
-                    .generate_token(
-                        new_client_id.clone(),
-                        key.permissions.clone(),
-                        Duration::seconds(self.config.access_token_expiry as i64),
-                        claims.node_url.clone(),
-                    )
-                    .await?;
+                let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
+                let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
 
-                let refresh_token = self
-                    .generate_token(
+                let (access_token, refresh_token) = self
+                    .generate_raw_token_pair(
                         new_client_id.clone(),
                         key.permissions.clone(),
-                        Duration::seconds(self.config.refresh_token_expiry as i64),
                         claims.node_url.clone(),
+                        access_expiry,
+                        refresh_expiry,
                     )
                     .await?;
 
