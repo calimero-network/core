@@ -229,6 +229,14 @@ impl VMHostFunctions<'_> {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
         }
 
+        // Validate guest memory bounds BEFORE removing the handle to avoid
+        // orphaning the handle if the bounds check fails.
+        // We need to drop the reference before calling with_logic_mut.
+        {
+            let _bounds_check = self.read_guest_memory_slice_mut(&guest_blob_id_ptr)?;
+            // Reference is dropped at end of this block
+        }
+
         let handle = self.with_logic_mut(|logic| {
             logic
                 .blob_handles
@@ -236,10 +244,8 @@ impl VMHostFunctions<'_> {
                 .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))
         })?;
 
-        let guest_blob_id_out_buf: &mut [u8] =
-            self.read_guest_memory_slice_mut(&guest_blob_id_ptr)?;
-
-        match handle {
+        // Process the handle to get the final blob_id
+        let final_blob_id: [u8; DIGEST_SIZE] = match handle {
             BlobHandle::Write(write_handle) => {
                 let _ignored = write_handle.sender;
 
@@ -248,14 +254,15 @@ impl VMHostFunctions<'_> {
                     .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
                     .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
-                // Record the Blob ID into the guest memory buffer
-                guest_blob_id_out_buf.copy_from_slice(blob_id_.as_ref());
+                *blob_id_.as_ref()
             }
-            // Record the Blob ID into the guest memory buffer
-            BlobHandle::Read(read_handle) => {
-                guest_blob_id_out_buf.copy_from_slice(read_handle.blob_id.as_ref());
-            }
-        }
+            BlobHandle::Read(read_handle) => *read_handle.blob_id.as_ref(),
+        };
+
+        // Now get the slice again and write the blob_id to it
+        let guest_blob_id_out_buf: &mut [u8] =
+            self.read_guest_memory_slice_mut(&guest_blob_id_ptr)?;
+        guest_blob_id_out_buf.copy_from_slice(&final_blob_id);
 
         Ok(1)
     }
@@ -432,6 +439,8 @@ impl VMHostFunctions<'_> {
         // Local output buffer.
         let mut output_buffer = Vec::with_capacity(data_len);
 
+        // Read data into output_buffer WITHOUT updating position yet.
+        // Position will only be updated after successfully writing to guest memory.
         let bytes_read = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
             let handle = logic
                 .blob_handles
@@ -461,11 +470,7 @@ impl VMHostFunctions<'_> {
 
                         // If we satisfied the request entirely from cursor, we're done
                         if output_buffer.len() >= data_len {
-                            read_handle.position = read_handle
-                                .position
-                                .checked_add(output_buffer.len() as u64)
-                                .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
-
+                            // Don't update position here - will be done after memory write
                             return Ok(output_buffer.len() as u64);
                         }
                     }
@@ -489,11 +494,7 @@ impl VMHostFunctions<'_> {
                     });
                     read_handle.stream = Some(Box::new(mapped_stream));
                 } else {
-                    read_handle.position = read_handle
-                        .position
-                        .checked_add(output_buffer.len() as u64)
-                        .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
-
+                    // Don't update position here - will be done after memory write
                     return Ok(output_buffer.len() as u64);
                 }
             }
@@ -533,18 +534,41 @@ impl VMHostFunctions<'_> {
                 })?;
             }
 
-            read_handle.position = read_handle
-                .position
-                .checked_add(output_buffer.len() as u64)
-                .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
+            // Don't update position here - will be done after memory write
             Ok(output_buffer.len() as u64)
         })?;
 
         if bytes_read > 0 {
             // Copy data from the local output buffer to destination buffer located in guest
-            // memory.
+            // memory. This can fail with InvalidMemoryAccess if bounds check fails.
             self.read_guest_memory_slice_mut(&dest_data)?
                 .copy_from_slice(&output_buffer);
+        }
+
+        // Only update position AFTER successfully writing to guest memory.
+        // This ensures that if the memory write fails, the position is not advanced
+        // and the guest can retry reading the same data.
+        if bytes_read > 0 {
+            self.with_logic_mut(|logic| -> VMLogicResult<()> {
+                let handle = logic
+                    .blob_handles
+                    .get_mut(&fd)
+                    .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
+
+                let read_handle = match handle {
+                    BlobHandle::Read(r) => r,
+                    BlobHandle::Write(_) => {
+                        return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                    }
+                };
+
+                read_handle.position = read_handle
+                    .position
+                    .checked_add(bytes_read)
+                    .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
+
+                Ok(())
+            })?;
         }
 
         Ok(bytes_read)
