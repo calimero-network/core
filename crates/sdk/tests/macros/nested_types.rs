@@ -33,6 +33,9 @@ impl StateWithNestedOptions {
 }
 
 // Test nested struct types
+// Note: In production use, these nested types would need to implement
+// serialization traits (e.g., BorshSerialize, BorshDeserialize) for
+// actual runtime persistence. This test focuses on macro expansion.
 struct InnerData {
     value: String,
     count: u64,

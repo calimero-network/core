@@ -98,9 +98,10 @@ impl ReprCState {
 }
 
 // Test cfg attributes work with state (basic)
+// Using #[cfg(test)] which is always true during test compilation
 #[app::state]
 struct ConditionalState {
-    #[cfg(feature = "test_feature")]
+    #[cfg(test)]
     conditional_field: String,
     always_present: u64,
 }
@@ -109,6 +110,11 @@ struct ConditionalState {
 impl ConditionalState {
     pub fn get_always_present(&self) -> u64 {
         self.always_present
+    }
+
+    #[cfg(test)]
+    pub fn get_conditional(&self) -> &str {
+        &self.conditional_field
     }
 }
 
