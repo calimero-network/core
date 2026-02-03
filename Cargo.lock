@@ -2123,6 +2123,7 @@ dependencies = [
  "eyre",
  "rand 0.8.5",
  "ring",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -6703,6 +6704,7 @@ dependencies = [
  "semver 1.0.27",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
