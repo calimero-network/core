@@ -107,6 +107,8 @@ const DEFAULT_MAX_STORAGE_VALUE_SIZE_MIB: u64 = 10;
 const DEFAULT_MAX_BLOB_HANDLES: u64 = 100;
 /// Default maximum blob chunk size in MiB (10 MiB).
 const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
+/// Default maximum method name length in bytes.
+const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
 
 /// Defines the resource limits for a VM instance.
 ///
@@ -150,6 +152,8 @@ pub struct VMLimits {
     pub max_blob_handles: u64,
     /// The maximum size of a single chunk when writing to or reading from a blob.
     pub max_blob_chunk_size: u64,
+    /// The maximum length of a method name in bytes.
+    pub max_method_name_length: u64,
 }
 
 impl Default for VMLimits {
@@ -183,6 +187,7 @@ impl Default for VMLimits {
             ),
             max_blob_handles: DEFAULT_MAX_BLOB_HANDLES,
             max_blob_chunk_size: DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB * u64::from(ONE_MIB),
+            max_method_name_length: DEFAULT_MAX_METHOD_NAME_LENGTH,
         }
     }
 }
@@ -730,6 +735,7 @@ mod tests {
         assert_eq!(limits.max_storage_value_size.get(), 10 << 20); // 10 MiB
         assert_eq!(limits.max_blob_handles, 100);
         assert_eq!(limits.max_blob_chunk_size, 10 << 20); // 10 MiB
+        assert_eq!(limits.max_method_name_length, 256);
     }
 
     /// A smoke test for the successful path of the `finish` method.

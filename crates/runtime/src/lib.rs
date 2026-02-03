@@ -26,6 +26,59 @@ use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
+/// Validates a method name for WASM execution.
+///
+/// Valid method names must:
+/// - Not be empty
+/// - Not exceed the maximum length limit
+/// - Contain only valid characters (ASCII alphanumeric, underscore, dollar sign)
+///
+/// # Arguments
+///
+/// * `method` - The method name to validate
+/// * `max_length` - The maximum allowed length for the method name
+///
+/// # Returns
+///
+/// * `Ok(())` if the method name is valid
+/// * `Err(FunctionCallError)` if the method name is invalid
+fn validate_method_name(method: &str, max_length: u64) -> Result<(), FunctionCallError> {
+    // Check for empty method name
+    if method.is_empty() {
+        return Err(FunctionCallError::MethodResolutionError(
+            errors::MethodResolutionError::EmptyMethodName,
+        ));
+    }
+
+    // Check length limit
+    let method_len = method.len();
+    if method_len as u64 > max_length {
+        return Err(FunctionCallError::MethodResolutionError(
+            errors::MethodResolutionError::MethodNameTooLong {
+                name: method.to_owned(),
+                length: method_len,
+                max: max_length,
+            },
+        ));
+    }
+
+    // Validate characters: only allow ASCII alphanumeric, underscore, and dollar sign
+    // This covers typical WASM export names and Rust/JS function naming conventions
+    for (position, character) in method.chars().enumerate() {
+        if !character.is_ascii_alphanumeric() && character != '_' && character != '$' {
+            return Err(FunctionCallError::MethodResolutionError(
+                errors::MethodResolutionError::InvalidMethodNameCharacter {
+                    name: method.to_owned(),
+                    character,
+                    position,
+                },
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct Engine {
     limits: VMLimits,
@@ -176,6 +229,7 @@ impl Module {
                 &mut logic,
                 method,
                 &context_id,
+                self.limits.max_method_name_length,
             )
         }));
 
@@ -230,7 +284,13 @@ impl Module {
         logic: &mut VMLogic<'_>,
         method: &str,
         context_id: &ContextId,
+        max_method_name_length: u64,
     ) -> RuntimeResult<Option<FunctionCallError>> {
+        // Validate method name before attempting to look it up
+        if let Err(err) = validate_method_name(method, max_method_name_length) {
+            error!(%context_id, method, error=?err, "Invalid method name");
+            return Ok(Some(err));
+        }
         let instance = match Instance::new(store, module, imports) {
             Ok(instance) => instance,
             Err(err) => {
@@ -419,6 +479,245 @@ mod wasm_panic_integration_tests {
             }
             other => panic!("Expected MethodNotFound error, got: {other:?}"),
         }
+    }
+
+    /// Test that empty method name returns EmptyMethodName error
+    #[test]
+    fn test_wasm_empty_method_name() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        match &outcome.returns {
+            Err(FunctionCallError::MethodResolutionError(
+                errors::MethodResolutionError::EmptyMethodName,
+            )) => {
+                // Expected - empty method name was rejected
+            }
+            other => panic!("Expected EmptyMethodName error, got: {other:?}"),
+        }
+    }
+
+    /// Test that method name exceeding max length returns MethodNameTooLong error
+    #[test]
+    fn test_wasm_method_name_too_long() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        // Create a method name that exceeds the default max length (256 bytes)
+        let long_method_name = "a".repeat(300);
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                &long_method_name,
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        match &outcome.returns {
+            Err(FunctionCallError::MethodResolutionError(
+                errors::MethodResolutionError::MethodNameTooLong { length, max, .. },
+            )) => {
+                assert_eq!(*length, 300);
+                assert_eq!(*max, 256);
+            }
+            other => panic!("Expected MethodNameTooLong error, got: {other:?}"),
+        }
+    }
+
+    /// Test that method name with invalid characters returns InvalidMethodNameCharacter error
+    #[test]
+    fn test_wasm_method_name_invalid_characters() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        // Test various invalid characters
+        let invalid_names = [
+            ("test func", ' ', 4),   // space
+            ("test\nfunc", '\n', 4), // newline
+            ("test-func", '-', 4),   // hyphen
+            ("test.func", '.', 4),   // dot
+            ("test/func", '/', 4),   // slash
+        ];
+
+        for (method_name, expected_char, expected_pos) in invalid_names {
+            let mut storage = InMemoryStorage::default();
+            let outcome = module
+                .run(
+                    [0; 32].into(),
+                    [0; 32].into(),
+                    method_name,
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("Failed to run module");
+
+            match &outcome.returns {
+                Err(FunctionCallError::MethodResolutionError(
+                    errors::MethodResolutionError::InvalidMethodNameCharacter {
+                        character,
+                        position,
+                        ..
+                    },
+                )) => {
+                    assert_eq!(
+                        *character, expected_char,
+                        "Wrong invalid character for method name: {method_name}"
+                    );
+                    assert_eq!(
+                        *position, expected_pos,
+                        "Wrong position for method name: {method_name}"
+                    );
+                }
+                other => panic!(
+                    "Expected InvalidMethodNameCharacter error for '{method_name}', got: {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// Test that valid method names with various allowed characters work
+    #[test]
+    fn test_wasm_method_name_valid_characters() {
+        // Note: This test verifies that validation passes for valid names.
+        // The actual method lookup may fail with MethodNotFound since these
+        // methods don't exist in the module, but the validation should pass.
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        // Test valid method names (these should pass validation but may not exist in module)
+        let valid_names = [
+            "simple",
+            "with_underscore",
+            "__double_underscore",
+            "_leading_underscore",
+            "trailing_underscore_",
+            "CamelCase",
+            "mixedCase123",
+            "numbers123",
+            "$dollar_start",
+            "contains$dollar",
+            "ALLCAPS",
+            "a", // single character
+        ];
+
+        for method_name in valid_names {
+            let mut storage = InMemoryStorage::default();
+            let outcome = module
+                .run(
+                    [0; 32].into(),
+                    [0; 32].into(),
+                    method_name,
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("Failed to run module");
+
+            // Should get MethodNotFound (not a validation error) since the method doesn't exist
+            match &outcome.returns {
+                Err(FunctionCallError::MethodResolutionError(
+                    errors::MethodResolutionError::MethodNotFound { name },
+                )) => {
+                    assert_eq!(
+                        name, method_name,
+                        "Method name should pass validation: {method_name}"
+                    );
+                }
+                // test_func should succeed since it exists
+                Ok(_) if method_name == "test_func" => {}
+                other => panic!(
+                    "Expected MethodNotFound error for valid name '{method_name}', got: {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// Test that test_func (valid name) still works correctly
+    #[test]
+    fn test_wasm_valid_method_name_execution() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "valid_method_name"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "valid_method_name",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        assert!(
+            outcome.returns.is_ok(),
+            "Expected successful execution with valid method name, got: {:?}",
+            outcome.returns
+        );
     }
 
     /// Test that unreachable instruction causes a WasmTrap error (not a crash)
