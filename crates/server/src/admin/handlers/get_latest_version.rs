@@ -23,10 +23,7 @@ pub async fn handler(
         Ok(Some((version, application_id))) => {
             info!(package=%package, %version, application_id=%application_id, "Latest version retrieved successfully");
             ApiResponse {
-                payload: GetLatestVersionResponse::new(
-                    Some(application_id),
-                    Some(version),
-                ),
+                payload: GetLatestVersionResponse::new(Some(application_id), Some(version)),
             }
             .into_response()
         }
