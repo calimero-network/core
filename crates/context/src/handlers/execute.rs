@@ -579,7 +579,11 @@ impl ContextManager {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 
-                let module = calimero_runtime::Engine::default().compile(&bytecode)?;
+                // Compile WASM in a blocking task to avoid blocking the async executor
+                let module = global_runtime()
+                    .spawn_blocking(move || calimero_runtime::Engine::default().compile(&bytecode))
+                    .await
+                    .wrap_err("failed to spawn blocking task for WASM compilation")??;
 
                 let compiled = Cursor::new(module.to_bytes()?);
 
