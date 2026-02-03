@@ -90,6 +90,7 @@ members = [
 
     "./tools/calimero-abi",
     "./tools/merodb",
+    "./tools/mero-sign",
 ]
 
 [workspace.dependencies]

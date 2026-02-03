@@ -6679,6 +6679,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mero-sign"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bs58 0.5.1",
+ "clap",
+ "ed25519-dalek",
+ "eyre",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "meroctl"
 version = "0.0.0"
 dependencies = [

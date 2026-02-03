@@ -30,6 +30,7 @@ cat > res/bundle-temp/manifest.json <<EOF
   "version": "1.0",
   "package": "com.calimero.access-control",
   "appVersion": "1.0.0",
+  "minRuntimeVersion": "1.0.0",
   "wasm": {
     "path": "app.wasm",
     "size": ${WASM_SIZE},
@@ -44,6 +45,10 @@ cat > res/bundle-temp/manifest.json <<EOF
 }
 EOF
 
+# Sign the manifest
+cargo run -p mero-sign --quiet -- sign res/bundle-temp/manifest.json \
+    --key ../../scripts/test-signing-key/test-key.json
+
 # Create .mpk bundle (tar.gz archive)
 cd res/bundle-temp
 tar -czf ../access-control-1.0.0.mpk manifest.json app.wasm abi.json 2>/dev/null || \
@@ -54,4 +59,3 @@ cd ..
 rm -rf bundle-temp
 
 echo "Bundle created: res/access-control-1.0.0.mpk"
-
