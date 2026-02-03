@@ -26,19 +26,16 @@ fn checked_add(a: usize, b: usize) -> Result<usize, StoreError> {
     })
 }
 
-/// Validates that an index is within safe bounds for iteration.
+/// Validates that an index is safe for iterator arithmetic.
 ///
 /// This function ensures that the index won't cause issues when used with
-/// iterator methods that may perform internal arithmetic.
+/// iterator methods that may perform internal arithmetic. Out-of-bounds
+/// indices are handled by iterator methods returning `None`.
 #[inline]
-fn validate_index_bounds(index: usize, len: usize) -> Result<(), StoreError> {
+fn validate_index_bounds(index: usize) -> Result<(), StoreError> {
     // First check for potential overflow: index + 1 must not overflow
     // This is checked regardless of bounds since it's a safety invariant
     let _ = checked_add(index, 1)?;
-
-    // Index is out of bounds is handled gracefully by returning None from nth()
-    // No additional validation needed here
-    let _ = len; // silence unused warning if any
     Ok(())
 }
 
@@ -117,8 +114,7 @@ where
     /// returned. Returns an error if the index would cause arithmetic overflow.
     ///
     pub fn get(&self, index: usize) -> Result<Option<V>, StoreError> {
-        let len = self.inner.len()?;
-        validate_index_bounds(index, len)?;
+        validate_index_bounds(index)?;
         self.inner.entries()?.nth(index).transpose()
     }
 
@@ -131,8 +127,7 @@ where
     /// returned. Returns an error if the index would cause arithmetic overflow.
     ///
     pub fn update(&mut self, index: usize, value: V) -> Result<Option<V>, StoreError> {
-        let len = self.inner.len()?;
-        validate_index_bounds(index, len)?;
+        validate_index_bounds(index)?;
 
         let Some(id) = self.inner.nth(index)? else {
             return Ok(None);
@@ -598,7 +593,7 @@ mod tests {
     #[test]
     fn test_validate_index_bounds() {
         // Test that validate_index_bounds catches usize::MAX (overflow case)
-        let result = super::validate_index_bounds(usize::MAX, 10);
+        let result = super::validate_index_bounds(usize::MAX);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -606,20 +601,16 @@ mod tests {
             "Error message should contain 'overflow'"
         );
 
-        // Test that validate_index_bounds catches usize::MAX even with empty vec
-        let result = super::validate_index_bounds(usize::MAX, 0);
-        assert!(result.is_err());
-
         // Test normal index validation passes
-        let result = super::validate_index_bounds(5, 10);
+        let result = super::validate_index_bounds(5);
         assert!(result.is_ok());
 
         // Test out-of-bounds index (should pass validation, handled by returning None)
-        let result = super::validate_index_bounds(15, 10);
+        let result = super::validate_index_bounds(15);
         assert!(result.is_ok());
 
         // Test large but safe index
-        let result = super::validate_index_bounds(usize::MAX - 1, 10);
+        let result = super::validate_index_bounds(usize::MAX - 1);
         assert!(result.is_ok());
     }
 }
