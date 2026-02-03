@@ -212,6 +212,12 @@ impl Element {
     /// Creates a new element (marked dirty, empty hash until saved).
     #[must_use]
     pub fn new(id: Option<Id>) -> Self {
+        Self::new_with_field_name(id, None)
+    }
+
+    /// Creates a new element with optional field name for schema inference.
+    #[must_use]
+    pub fn new_with_field_name(id: Option<Id>, field_name: Option<String>) -> Self {
         let timestamp = time_now();
         let element_id = id.unwrap_or_else(Id::random);
         Self {
@@ -222,12 +228,14 @@ impl Element {
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
                 crdt_type: Some(CrdtType::LwwRegister),
+                field_name,
             },
             merkle_hash: [0; 32],
         }
     }
 
     /// Creates the root element.
+    /// Root elements don't have a field name (they are the root of the state tree).
     #[must_use]
     pub fn root() -> Self {
         let timestamp = time_now();
@@ -239,6 +247,7 @@ impl Element {
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
                 crdt_type: Some(CrdtType::Record),
+                field_name: None,
             },
             merkle_hash: [0; 32],
         }
@@ -386,6 +395,14 @@ pub struct Metadata {
     ///
     /// See `CrdtType`.
     pub crdt_type: Option<CrdtType>,
+
+    /// Field name for schema inference and migrations.
+    ///
+    /// - Stored when entity is created via `new_with_field_name()`
+    /// - Enables schema inference from database without external schema file
+    /// - Critical for migrations: identifies which field an entity belongs to
+    /// - None for legacy data or entities created without field name
+    pub field_name: Option<String>,
 }
 
 impl Metadata {
@@ -398,6 +415,7 @@ impl Metadata {
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
             crdt_type: Some(CrdtType::LwwRegister),
+            field_name: None,
         }
     }
 
@@ -409,6 +427,7 @@ impl Metadata {
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
             crdt_type: Some(crdt_type),
+            field_name: None,
         }
     }
 
@@ -451,7 +470,6 @@ impl Metadata {
 // Old Metadata didn't have crdt_type field, so we handle missing field gracefully
 impl borsh::BorshDeserialize for Metadata {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> Result<Self, std::io::Error> {
-        use borsh::BorshDeserialize as _;
         use tracing::debug;
 
         let created_at = u64::deserialize_reader(reader)?;
@@ -506,11 +524,47 @@ impl borsh::BorshDeserialize for Metadata {
             }
         };
 
+        // Try to deserialize field_name as Option<String>
+        // If we run out of bytes (old format), default to None
+        let field_name = match <Option<String>>::deserialize_reader(reader) {
+            Ok(fn_val) => {
+                debug!(
+                    target: "storage::entities",
+                    "Metadata deserialized with field_name: {:?}",
+                    fn_val
+                );
+                fn_val
+            }
+            Err(e) => {
+                use std::io::ErrorKind;
+                let is_eof = matches!(e.kind(), ErrorKind::UnexpectedEof);
+                let err_str = e.to_string();
+                let is_borsh_eof = err_str.contains("UnexpectedEof")
+                    || err_str.contains("Not all bytes read")
+                    || err_str.contains("Unexpected length")
+                    || err_str.contains("Unexpected end of input");
+
+                if is_eof || is_borsh_eof {
+                    // Old format without field_name - default to None
+                    None
+                } else {
+                    // Some other error - propagate it
+                    debug!(
+                        target: "storage::entities",
+                        "Metadata deserialization: field_name error (non-EOF): {}",
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        };
+
         Ok(Metadata {
             created_at,
             updated_at,
             storage_type,
             crdt_type,
+            field_name,
         })
     }
 }

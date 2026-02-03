@@ -37,6 +37,18 @@ where
             storage: Element::new(None),
         }
     }
+
+    /// Create a new UserStorage with field name for schema inference.
+    ///
+    /// This enables merodb and other tools to infer the schema from the database
+    /// without requiring an external schema file. The field name is used to
+    /// generate deterministic collection IDs.
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self {
+            inner: UnorderedMap::new_with_field_name(field_name),
+            storage: Element::new_with_field_name(None, Some(field_name.to_string())),
+        }
+    }
 }
 
 impl<T> Default for UserStorage<T, MainStorage>

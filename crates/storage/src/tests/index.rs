@@ -21,6 +21,7 @@ mod index__public_methods {
                 updated_at: 1.into(),
                 storage_type: StorageType::Public,
                 crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -35,6 +36,7 @@ mod index__public_methods {
                     updated_at: 22.into(),
                     storage_type: StorageType::Public,
                     crdt_type: None,
+                    field_name: None,
                 },
             )],
             metadata: Metadata {
@@ -42,6 +44,7 @@ mod index__public_methods {
                 updated_at: 1.into(),
                 storage_type: StorageType::Public,
                 crdt_type: None,
+                field_name: None,
             },
         };
 

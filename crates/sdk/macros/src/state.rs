@@ -1,5 +1,5 @@
 use proc_macro2::{Span, TokenStream};
-use quote::{quote, ToTokens};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::{
     parse2, BoundLifetimes, Error as SynError, GenericParam, Generics, Ident, Lifetime,
@@ -47,6 +47,9 @@ impl ToTokens for StateImpl<'_> {
         // Generate Mergeable implementation
         let merge_impl = generate_mergeable_impl(ident, generics, orig);
 
+        // Generate Default implementation with field names
+        let default_impl = generate_default_impl(ident, generics, orig);
+
         // Generate registration hook
         let registration_hook = generate_registration_hook(ident, &ty_generics);
 
@@ -65,6 +68,9 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated CRDT merge support
             #merge_impl
+
+            // Auto-generated Default implementation with field names
+            #default_impl
 
             // Auto-generated registration hook
             #registration_hook
@@ -407,6 +413,102 @@ fn generate_mergeable_impl(
             {
                 #(#merge_calls)*
                 ::core::result::Result::Ok(())
+            }
+        }
+    }
+}
+
+/// Generate Default trait implementation for the state struct
+///
+/// This automatically uses field names for CRDT collections, enabling:
+/// - Deterministic collection IDs across nodes
+/// - Schema inference in merodb and other tools
+/// - Better debugging and introspection
+fn generate_default_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    // Extract fields from the struct
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => {
+            // Enums don't have Default - user must implement manually
+            return quote! {
+                // No Default impl for enums - implement manually if needed
+            };
+        }
+    };
+
+    // Generate field initializations
+    let field_inits: Vec<_> = fields
+        .iter()
+        .filter_map(|field| {
+            let field_name = field.ident.as_ref()?;
+            let field_type = &field.ty;
+
+            // Check if this is a known CRDT collection type
+            let type_str = quote! { #field_type }.to_string();
+            let field_name_str = field_name.to_string();
+
+            // Check for collection types that support new_with_field_name
+            let is_collection = type_str.contains("UnorderedMap")
+                || type_str.contains("Vector")
+                || type_str.contains("UnorderedSet")
+                || type_str.contains("Counter")
+                || type_str.contains("ReplicatedGrowableArray")
+                || type_str.contains("UserStorage")
+                || type_str.contains("FrozenStorage");
+
+            if is_collection {
+                // Use new_with_field_name() with the field name
+                // Create a string literal token stream
+                let field_name_lit: proc_macro2::TokenStream =
+                    format!("\"{}\"", field_name_str).parse().unwrap();
+                let field_span = field_name.span();
+                Some(quote_spanned! {field_span=>
+                    #field_name: <#field_type>::new_with_field_name(#field_name_lit),
+                })
+            } else if type_str.contains("LwwRegister") {
+                // LwwRegister needs a value, use Default for the inner type
+                // Extract inner type from LwwRegister<T>
+                let field_span = field_name.span();
+                Some(quote_spanned! {field_span=>
+                    #field_name: <#field_type>::new(::core::default::Default::default()),
+                })
+            } else {
+                // For other types (String, u64, etc.), use Default
+                Some(quote! {
+                    #field_name: ::core::default::Default::default(),
+                })
+            }
+        })
+        .collect();
+
+    quote! {
+        // ============================================================================
+        // AUTO-GENERATED Default implementation by #[app::state] macro
+        // ============================================================================
+        //
+        // This Default implementation automatically uses field names for CRDT collections,
+        // enabling deterministic IDs and schema inference.
+        //
+        // For CRDT collections (UnorderedMap, Vector, Counter, etc.):
+        //   - Uses new_with_field_name(field_name) to generate deterministic IDs
+        //   - Enables merodb and other tools to infer schema from database
+        //
+        // For other types:
+        //   - Uses Default::default() or appropriate constructor
+        //
+        // Advanced users can override by manually implementing Default.
+        //
+        impl #impl_generics ::core::default::Default for #ident #ty_generics #where_clause {
+            fn default() -> Self {
+                Self {
+                    #(#field_inits)*
+                }
             }
         }
     }

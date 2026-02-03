@@ -146,6 +146,18 @@ impl ReplicatedGrowableArray<MainStorage> {
     pub fn new() -> Self {
         Self::new_internal()
     }
+
+    /// Create a new RGA with field name for schema inference.
+    ///
+    /// This enables merodb and other tools to infer the schema from the database
+    /// without requiring an external schema file. The field name is used to
+    /// generate deterministic collection IDs.
+    #[must_use]
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self {
+            chars: UnorderedMap::new_with_field_name(field_name),
+        }
+    }
 }
 
 impl Default for ReplicatedGrowableArray<MainStorage> {

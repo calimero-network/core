@@ -157,7 +157,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
         let mut this = Self {
             children_ids: RefCell::new(None),
-            storage: Element::new(Some(id)),
+            storage: Element::new_with_field_name(Some(id), Some(field_name.to_string())),
             _priv: PhantomData,
         };
 

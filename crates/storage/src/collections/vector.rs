@@ -46,6 +46,17 @@ where
     pub fn new() -> Self {
         Self::new_internal()
     }
+
+    /// Create a new vector collection with field name for schema inference.
+    ///
+    /// This enables merodb and other tools to infer the schema from the database
+    /// without requiring an external schema file. The field name is used to
+    /// generate deterministic collection IDs.
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self {
+            inner: Collection::new_with_field_name(None, field_name),
+        }
+    }
 }
 
 impl<V, S> Vector<V, S>

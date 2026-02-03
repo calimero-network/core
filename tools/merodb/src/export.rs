@@ -88,6 +88,47 @@ struct MapField {
     value_type: TypeRef,
 }
 
+/// Try to decode entry data with a specific field definition
+fn try_decode_with_field(
+    entry_bytes: &[u8],
+    field: &Field,
+    index: &EntityIndex,
+    manifest: &Manifest,
+) -> Option<Value> {
+    match &field.type_ {
+        TypeRef::Collection {
+            collection: CollectionType::Map { key, value },
+            ..
+        } => {
+            let map_field = MapField {
+                name: field.name.clone(),
+                key_type: (**key).clone(),
+                value_type: (**value).clone(),
+            };
+            decode_map_entry(entry_bytes, &map_field, manifest)
+                .ok()
+                .map(|decoded| add_index_metadata(decoded, index))
+                .flatten()
+        }
+        TypeRef::Collection {
+            collection: CollectionType::List { items },
+            ..
+        } => decode_list_entry(entry_bytes, field, items, manifest)
+            .ok()
+            .map(|decoded| add_index_metadata(decoded, index))
+            .flatten(),
+        TypeRef::Collection {
+            collection: CollectionType::Record { .. },
+            crdt_type,
+            inner_type,
+        } => decode_record_entry(entry_bytes, field, crdt_type, inner_type, manifest)
+            .ok()
+            .map(|decoded| add_index_metadata(decoded, index))
+            .flatten(),
+        _ => None,
+    }
+}
+
 /// Try to decode a collection entry by looking up the actual entry data from an EntityIndex
 /// Supports Map entries (Entry<(K, V)>) and List entries (Entry<T>)
 fn try_decode_collection_entry_from_index(
@@ -169,6 +210,27 @@ fn try_decode_collection_entry_from_index(
         "[try_decode_collection_entry_from_index] Found {} fields in state root",
         record_fields.len()
     );
+
+    // First, try to match by field_name if available (most direct and efficient)
+    if let Some(ref field_name) = index.metadata.field_name {
+        eprintln!(
+            "[try_decode_collection_entry_from_index] Using field_name from metadata: {}",
+            field_name
+        );
+        if let Some(field) = record_fields.iter().find(|f| f.name == *field_name) {
+            eprintln!(
+                "[try_decode_collection_entry_from_index] Found matching field by name: {}",
+                field_name
+            );
+            // Try to decode with this specific field
+            return try_decode_with_field(&entry_bytes, field, index, manifest);
+        } else {
+            eprintln!(
+                "[try_decode_collection_entry_from_index] Field name '{}' not found in schema, falling back to all fields",
+                field_name
+            );
+        }
+    }
 
     // If we have a parent_id, try to find the collection field that matches it
     // Otherwise, try all collection fields
@@ -627,6 +689,7 @@ fn decode_state_entry(
             "own_hash": hex::encode(index.own_hash),
             "created_at": index.metadata.created_at,
             "updated_at": *index.metadata.updated_at,
+            "field_name": index.metadata.field_name,
             "deleted_at": index.deleted_at
         }));
     } else {
@@ -935,23 +998,23 @@ fn decode_scalar_entry(bytes: &[u8], field: &Field, manifest: &Manifest) -> Resu
 
 // EntityIndex structure for decoding
 #[derive(borsh::BorshDeserialize)]
-struct EntityIndex {
-    id: Id,
-    parent_id: Option<Id>,
-    children: Option<Vec<ChildInfo>>,
-    full_hash: [u8; 32],
-    own_hash: [u8; 32],
-    metadata: Metadata,
-    deleted_at: Option<u64>,
+pub(crate) struct EntityIndex {
+    pub(crate) id: Id,
+    pub(crate) parent_id: Option<Id>,
+    pub(crate) children: Option<Vec<ChildInfo>>,
+    pub(crate) full_hash: [u8; 32],
+    pub(crate) own_hash: [u8; 32],
+    pub(crate) metadata: Metadata,
+    pub(crate) deleted_at: Option<u64>,
 }
 
 #[derive(borsh::BorshDeserialize)]
-struct Id {
+pub(crate) struct Id {
     bytes: [u8; 32],
 }
 
 impl Id {
-    const fn as_bytes(&self) -> &[u8; 32] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
 }
@@ -1335,6 +1398,7 @@ fn try_manual_entity_index_decode(
                         updated_at: UpdatedAt(updated_at_val),
                         storage_type,
                         crdt_type: None,
+                        field_name: None,
                     };
 
                     let child_info = ChildInfo {
@@ -1410,6 +1474,7 @@ fn try_manual_entity_index_decode(
             updated_at: UpdatedAt(0),
             storage_type: StorageType::Public,
             crdt_type: None,
+            field_name: None,
         },
         deleted_at: None,
     })
@@ -1426,23 +1491,64 @@ struct ChildInfo {
     metadata: Metadata,
 }
 
-#[derive(borsh::BorshDeserialize)]
 #[expect(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
 )]
-struct Metadata {
-    created_at: u64,
-    updated_at: UpdatedAt,
-    storage_type: StorageType,
-    crdt_type: Option<CrdtType>,
+pub(crate) struct Metadata {
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: UpdatedAt,
+    pub(crate) storage_type: StorageType,
+    pub(crate) crdt_type: Option<CrdtType>,
+    pub(crate) field_name: Option<String>,
+}
+
+// Custom BorshDeserialize for backward compatibility with old Metadata that doesn't have field_name
+impl borsh::BorshDeserialize for Metadata {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let created_at = u64::deserialize_reader(reader)?;
+        let updated_at = UpdatedAt::deserialize_reader(reader)?;
+        let storage_type = StorageType::deserialize_reader(reader)?;
+
+        // Try to deserialize crdt_type (may not exist in old format)
+        let crdt_type = match <Option<CrdtType>>::deserialize_reader(reader) {
+            Ok(ct) => ct,
+            Err(e) => {
+                if matches!(e.kind(), std::io::ErrorKind::UnexpectedEof) {
+                    None
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        // Try to deserialize field_name (may not exist in old format)
+        let field_name = match <Option<String>>::deserialize_reader(reader) {
+            Ok(fn_val) => fn_val,
+            Err(e) => {
+                if matches!(e.kind(), std::io::ErrorKind::UnexpectedEof) {
+                    None
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        Ok(Metadata {
+            created_at,
+            updated_at,
+            storage_type,
+            crdt_type,
+            field_name,
+        })
+    }
 }
 
 /// CRDT type identifier for entity metadata.
 /// Must match the definition in calimero-storage.
 #[derive(borsh::BorshDeserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum CrdtType {
+pub(crate) enum CrdtType {
     LwwRegister,
     Counter,
     Rga,
