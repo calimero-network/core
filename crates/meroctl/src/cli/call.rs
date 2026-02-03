@@ -13,8 +13,17 @@ use crate::cli::validation::non_empty_string;
 use crate::cli::Environment;
 
 pub const EXAMPLES: &str = r"
-  # Execute a RPC method call
-  $ meroctl --node node1 call <CONTEXT> <METHOD>
+  # Call a mutation (e.g. add_item, set) on a context
+  $ meroctl --node <NODE_ID> call <METHOD_NAME> \
+    --context <CONTEXT_ID> \
+    --args '<ARGS_JSON>' \
+    --as <IDENTITY_PUBLIC_KEY>
+
+  # Call a view (e.g. get_item, get) on a context
+  $ meroctl --node <NODE_ID> call <METHOD_NAME> \
+    --context <CONTEXT_ID> \
+    --args '<ARGS_JSON>' \
+    --as <IDENTITY_PUBLIC_KEY>
 ";
 
 #[derive(Debug, Parser)]

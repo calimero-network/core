@@ -20,16 +20,16 @@ use crate::output::{ErrorLine, InfoLine, Report};
 
 pub const EXAMPLES: &str = r#"
   # Watch events from default context
-  $ meroctl context watch
+  $ meroctl --node node1 context watch
 
   # Watch events and show notification
-  $ meroctl context watch -x notify-send "New event"
+  $ meroctl --node node1 context watch -x notify-send "New event"
 
   # Watch events and log to file (first 10 events)
-  $ meroctl context watch -x sh -c "echo 'Event received' >> events.log" -n 10
+  $ meroctl --node node1 context watch -x sh -c "echo 'Event received' >> events.log" -n 10
 
   # Watch events and run custom script with arguments
-  $ meroctl context watch -x ./my-script.sh --arg1 value1
+  $ meroctl --node node1 context watch -x ./my-script.sh --arg1 value1
 "#;
 
 #[derive(Debug, Parser)]

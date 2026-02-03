@@ -286,6 +286,8 @@ impl NodeClient {
         &self,
         path: Utf8PathBuf,
         metadata: Vec<u8>,
+        package: Option<String>,
+        version: Option<String>,
     ) -> eyre::Result<ApplicationId> {
         let metadata_len = metadata.len();
         debug!(
@@ -308,9 +310,9 @@ impl NodeClient {
             return self.install_bundle_from_path(path, metadata).await;
         }
 
-        // For non-bundle installations, use defaults (package/version are not part of ApplicationId)
-        let package = "unknown";
-        let version = "0.0.0";
+        // For non-bundle installations, use provided package/version or defaults
+        let package = package.as_deref().unwrap_or("unknown");
+        let version = version.as_deref().unwrap_or("0.0.0");
 
         // Existing single WASM installation path
         let file = match File::open(&path).await {
@@ -1497,8 +1499,11 @@ impl NodeClient {
         Ok(versions)
     }
 
-    /// Get the latest version of a package
-    pub fn get_latest_version(&self, package: &str) -> eyre::Result<Option<ApplicationId>> {
+    /// Get the latest version of a package (version string and application id)
+    pub fn get_latest_version(
+        &self,
+        package: &str,
+    ) -> eyre::Result<Option<(String, ApplicationId)>> {
         let handle = self.datastore.handle();
         let mut iter = handle.iter::<key::ApplicationMeta>()?;
         let mut latest_version: Option<(String, ApplicationId)> = None;
@@ -1541,7 +1546,7 @@ impl NodeClient {
             }
         }
 
-        Ok(latest_version.map(|(_, id)| id))
+        Ok(latest_version)
     }
 
     /// Install application by package and version
