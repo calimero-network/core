@@ -447,12 +447,13 @@ impl VMLogic<'_> {
         // This prevents resource leaks when guest code fails to close handles.
         if !self.blob_handles.is_empty() {
             let handle_count = self.blob_handles.len();
+            let blob_handles = std::mem::take(&mut self.blob_handles);
+            drop(blob_handles);
             trace!(
                 target: "runtime::logic",
                 handle_count,
                 "VMLogic::finish: cleaned up remaining blob handles"
             );
-            // blob_handles is dropped when self is consumed
         }
 
         Outcome {
