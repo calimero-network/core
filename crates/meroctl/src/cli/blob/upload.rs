@@ -5,6 +5,7 @@ use calimero_primitives::context::ContextId;
 use clap::Parser;
 use eyre::{eyre, Result};
 
+use crate::cli::validation::existing_file_path;
 use crate::cli::Environment;
 use crate::output::BlobUploadResponse;
 
@@ -15,7 +16,8 @@ pub struct UploadCommand {
         short = 'f',
         long = "file",
         value_name = "FILE",
-        help = "Path to the file to upload"
+        help = "Path to the file to upload",
+        value_parser = existing_file_path
     )]
     pub file_path: PathBuf,
 

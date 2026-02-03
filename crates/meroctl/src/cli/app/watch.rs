@@ -10,18 +10,19 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
+use crate::cli::validation::validate_file_exists;
 use crate::cli::Environment;
 use crate::output::{ErrorLine, InfoLine};
 
 pub const EXAMPLES: &str = r#"
   # Watch WASM file and update all contexts using this application
-  $ meroctl app watch --path ./my-app.wasm
+  $ meroctl --node node1 app watch --path ./my-app.wasm
 
   # Watch with custom metadata
-  $ meroctl app watch --path ./my-app.wasm --metadata '{"version": "1.0.0"}'
+  $ meroctl --node node1 app watch --path ./my-app.wasm --metadata '{"version": "1.0.0"}'
 
-  # Watch and update contexts based on current application blob  
-  $ meroctl app watch --path ./my-app.wasm --current-app-id <app_id>
+  # Watch and update contexts based on current application blob
+  $ meroctl --node node1 app watch --path ./my-app.wasm --current-app-id <app_id>
 "#;
 
 #[derive(Debug, Parser)]
@@ -58,6 +59,9 @@ pub struct WatchCommand {
 
 impl WatchCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        // Validate file exists before watching
+        validate_file_exists(self.path.as_std_path())?;
+
         let client = environment.client()?;
 
         // First, install the initial application to get the baseline

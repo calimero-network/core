@@ -25,7 +25,12 @@ pub async fn handler(
 
     match state
         .node_client
-        .install_application_from_path(req.path.clone(), req.metadata)
+        .install_application_from_path(
+            req.path.clone(),
+            req.metadata,
+            req.package.clone(),
+            req.version.clone(),
+        )
         .await
     {
         Ok(application_id) => {

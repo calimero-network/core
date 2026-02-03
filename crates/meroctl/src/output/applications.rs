@@ -142,14 +142,23 @@ impl Report for GetLatestVersionResponse {
         let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
         let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
-        let _ = table.set_header(vec![Cell::new("Application ID").fg(Color::Blue)]);
+        let _ = table.set_header(vec![
+            Cell::new("Version").fg(Color::Blue),
+            Cell::new("Application ID").fg(Color::Blue),
+        ]);
 
-        match &self.application_id {
-            Some(id) => {
-                let _ = table.add_row(vec![id.to_string()]);
+        match (&self.version, &self.application_id) {
+            (Some(version), Some(id)) => {
+                let _ = table.add_row(vec![version.clone(), id.to_string()]);
             }
-            None => {
-                let _ = table.add_row(vec!["No latest version found".to_owned()]);
+            (Some(version), None) => {
+                let _ = table.add_row(vec![version.clone(), "—".to_owned()]);
+            }
+            (None, Some(id)) => {
+                let _ = table.add_row(vec!["—".to_owned(), id.to_string()]);
+            }
+            (None, None) => {
+                let _ = table.add_row(vec!["No latest version found".to_owned(), "—".to_owned()]);
             }
         }
 

@@ -25,16 +25,16 @@ pub const EXAMPLES: &str = r"
   $ meroctl --node node1 context ls
 
   # Create a new context
-  $ meroctl --node node1 context create --application-id <app_id>
+  $ meroctl --node node1 context create --protocol <protocol_id> --application-id <app_id>
 
   # Create a new context in dev mode
-  $ meroctl --node node1 context create --watch <path> -c <context_id>
+  $ meroctl --node node1 context create --protocol <protocol_id> --watch <path> 
 
   # Grant permission to manage applications
-  $ meroctl context identity grant bob ManageApplication --as alice
+  $ meroctl --node node1 context identity grant bob ManageApplication --context <context_id> --as alice
 
   # Revoke permission to manage members
-  $ meroctl context identity revoke bob ManageMembers --as alice
+  $ meroctl --node node1 context identity revoke bob ManageMembers --context <context_id> --as alice
 ";
 
 #[derive(Debug, Parser)]
