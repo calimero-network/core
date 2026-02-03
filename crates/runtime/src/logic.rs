@@ -109,6 +109,8 @@ const DEFAULT_MAX_BLOB_HANDLES: u64 = 100;
 const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
 /// Default maximum method name length in bytes.
 const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
+/// Default maximum WASM module size in MiB (10 MiB).
+const DEFAULT_MAX_MODULE_SIZE_MIB: usize = 10;
 
 /// Defines the resource limits for a VM instance.
 ///
@@ -116,6 +118,9 @@ const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
 /// excessive resource consumption.
 #[derive(Debug, Clone, Copy)]
 pub struct VMLimits {
+    /// The maximum size of a WASM module in bytes before compilation.
+    /// This limit prevents memory exhaustion attacks from large malicious modules.
+    pub max_module_size: usize,
     /// The maximum number of memory pages allowed.
     pub max_memory_pages: u32,
     /// The maximum stack size in bytes.
@@ -164,6 +169,7 @@ impl Default for VMLimits {
         }
 
         Self {
+            max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB * ONE_MIB as usize,
             max_memory_pages: ONE_KIB,
             max_stack_size: DEFAULT_MAX_STACK_SIZE_KIB * ONE_KIB as usize,
             max_registers: DEFAULT_MAX_REGISTERS,
@@ -778,6 +784,7 @@ mod tests {
     #[test]
     fn test_default_limits() {
         let limits = VMLimits::default();
+        assert_eq!(limits.max_module_size, 10 << 20); // 10 MiB
         assert_eq!(limits.max_memory_pages, 1 << 10);
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);

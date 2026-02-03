@@ -4,7 +4,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{CompileError, DeserializeError, Instance, SerializeError, Store};
+use wasmer::{DeserializeError, Instance, SerializeError, Store};
 
 // Profiling feature: Only compile these imports when profiling feature is enabled
 #[cfg(feature = "profiling")]
@@ -151,7 +151,15 @@ impl Engine {
         Self::new(engine, limits)
     }
 
-    pub fn compile(&self, bytes: &[u8]) -> Result<Module, CompileError> {
+    pub fn compile(&self, bytes: &[u8]) -> Result<Module, FunctionCallError> {
+        // Check module size before compilation to prevent memory exhaustion attacks
+        if bytes.len() > self.limits.max_module_size {
+            return Err(FunctionCallError::ModuleSizeLimitExceeded {
+                size: bytes.len(),
+                max: self.limits.max_module_size,
+            });
+        }
+
         // todo! apply a prepare step
         // todo! - parse the wasm blob, validate and apply transformations
         // todo!   - validations:
@@ -915,5 +923,76 @@ mod wasm_panic_integration_tests {
             }
             other => panic!("Expected WasmTrap::StackOverflow error, got: {other:?}"),
         }
+    }
+
+    /// Test that module size limit is enforced during compilation
+    #[test]
+    fn test_wasm_module_size_limit() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with a very small module size limit (smaller than our module)
+        let mut limits = VMLimits::default();
+        limits.max_module_size = 10; // 10 bytes - way too small for any valid module
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Attempt to compile should fail due to size limit
+        let result = engine.compile(&wasm);
+
+        match result {
+            Err(FunctionCallError::ModuleSizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 10);
+                assert!(size > 10, "Module size should be greater than the limit");
+            }
+            Ok(_) => panic!("Expected ModuleSizeLimitExceeded error, but compilation succeeded"),
+            Err(other) => panic!("Expected ModuleSizeLimitExceeded error, got: {other:?}"),
+        }
+    }
+
+    /// Test that modules within size limit compile successfully
+    #[test]
+    fn test_wasm_module_within_size_limit() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with a large enough module size limit
+        let mut limits = VMLimits::default();
+        limits.max_module_size = 1024 * 1024; // 1 MiB - plenty of room
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Compilation should succeed
+        let result = engine.compile(&wasm);
+        assert!(
+            result.is_ok(),
+            "Expected successful compilation, got: {result:?}"
+        );
+    }
+
+    /// Test that the default engine has a reasonable module size limit
+    #[test]
+    fn test_default_engine_module_size_limit() {
+        use crate::logic::VMLimits;
+
+        let limits = VMLimits::default();
+        // Default should be 10 MiB
+        assert_eq!(limits.max_module_size, 10 * 1024 * 1024);
     }
 }
