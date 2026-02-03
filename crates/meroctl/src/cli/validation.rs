@@ -8,21 +8,6 @@ use std::path::Path;
 use eyre::bail;
 use eyre::Result;
 
-/// Validates that a string is non-empty.
-///
-/// # Arguments
-/// * `value` - The string to validate
-/// * `field_name` - Name of the field for error messages
-///
-/// # Errors
-/// Returns an error if the string is empty or contains only whitespace.
-pub fn validate_non_empty(value: &str, field_name: &str) -> Result<()> {
-    if value.trim().is_empty() {
-        bail!("{} cannot be empty", field_name);
-    }
-    Ok(())
-}
-
 /// Validates that a file exists and is readable.
 ///
 /// # Arguments
@@ -36,24 +21,6 @@ pub fn validate_file_exists(path: &Path) -> Result<()> {
     }
     if !path.is_file() {
         bail!("Path is not a file: '{}'", path.display());
-    }
-    Ok(())
-}
-
-/// Validates that a directory exists.
-///
-/// # Arguments
-/// * `path` - The directory path to validate
-///
-/// # Errors
-/// Returns an error if the directory doesn't exist or is not a directory.
-#[allow(dead_code)]
-pub fn validate_directory_exists(path: &Path) -> Result<()> {
-    if !path.exists() {
-        bail!("Directory not found: '{}'", path.display());
-    }
-    if !path.is_dir() {
-        bail!("Path is not a directory: '{}'", path.display());
     }
     Ok(())
 }
@@ -80,51 +47,6 @@ pub fn validate_parent_directory_exists(path: &Path) -> Result<()> {
 
     if !parent.is_dir() {
         bail!("Parent path is not a directory: '{}'", parent.display());
-    }
-
-    Ok(())
-}
-
-/// Validates that a URL string is well-formed.
-///
-/// # Arguments
-/// * `url_str` - The URL string to validate
-///
-/// # Errors
-/// Returns an error if the URL is malformed.
-#[allow(dead_code)]
-pub fn validate_url(url_str: &str) -> Result<url::Url> {
-    url::Url::parse(url_str).map_err(|e| {
-        eyre::eyre!(
-            "Invalid URL '{}': {}. Expected format: http(s)://hostname[:port][/path]",
-            url_str,
-            e
-        )
-    })
-}
-
-/// Validates a node name.
-///
-/// Node names must be non-empty and contain only alphanumeric characters,
-/// hyphens, and underscores.
-///
-/// # Arguments
-/// * `name` - The node name to validate
-///
-/// # Errors
-/// Returns an error if the node name is invalid.
-#[allow(dead_code)]
-pub fn validate_node_name(name: &str) -> Result<()> {
-    validate_non_empty(name, "Node name")?;
-
-    if !name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        bail!(
-            "Node name '{}' contains invalid characters. Only alphanumeric characters, hyphens (-), and underscores (_) are allowed",
-            name
-        );
     }
 
     Ok(())
@@ -194,19 +116,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_non_empty_valid() {
-        assert!(validate_non_empty("test", "field").is_ok());
-        assert!(validate_non_empty("  test  ", "field").is_ok());
-    }
-
-    #[test]
-    fn test_validate_non_empty_invalid() {
-        assert!(validate_non_empty("", "field").is_err());
-        assert!(validate_non_empty("   ", "field").is_err());
-        assert!(validate_non_empty("\t\n", "field").is_err());
-    }
-
-    #[test]
     fn test_validate_file_exists_valid() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "test content").unwrap();
@@ -219,34 +128,6 @@ mod tests {
         let result = validate_file_exists(path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("File not found"));
-    }
-
-    #[test]
-    fn test_validate_directory_exists_valid() {
-        let temp_dir = tempdir().unwrap();
-        assert!(validate_directory_exists(temp_dir.path()).is_ok());
-    }
-
-    #[test]
-    fn test_validate_directory_exists_not_found() {
-        let path = Path::new("/nonexistent/directory/path");
-        let result = validate_directory_exists(path);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Directory not found"));
-    }
-
-    #[test]
-    fn test_validate_directory_exists_not_directory() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let result = validate_directory_exists(temp_file.path());
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Path is not a directory"));
     }
 
     #[test]
@@ -278,47 +159,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Parent path is not a directory"));
-    }
-
-    #[test]
-    fn test_validate_url_valid() {
-        assert!(validate_url("http://localhost:8080").is_ok());
-        assert!(validate_url("https://example.com/path").is_ok());
-        assert!(validate_url("http://127.0.0.1:2528").is_ok());
-    }
-
-    #[test]
-    fn test_validate_url_invalid() {
-        let result = validate_url("not-a-url");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid URL"));
-    }
-
-    #[test]
-    fn test_validate_node_name_valid() {
-        assert!(validate_node_name("node1").is_ok());
-        assert!(validate_node_name("my-node").is_ok());
-        assert!(validate_node_name("my_node_123").is_ok());
-        assert!(validate_node_name("Node-1").is_ok());
-    }
-
-    #[test]
-    fn test_validate_node_name_empty() {
-        assert!(validate_node_name("").is_err());
-        assert!(validate_node_name("   ").is_err());
-    }
-
-    #[test]
-    fn test_validate_node_name_invalid_chars() {
-        let result = validate_node_name("node@1");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid characters"));
-
-        assert!(validate_node_name("node.name").is_err());
-        assert!(validate_node_name("node name").is_err());
     }
 
     #[test]
