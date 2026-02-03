@@ -107,6 +107,11 @@ impl Engine {
 
     /// Create an engine with custom VMLimits.
     /// This is the preferred way to create an Engine when you need custom limits.
+    ///
+    /// **Note:** The operation limit is embedded at compile time via metering middleware.
+    /// Modules compiled with this engine will use the specified `max_operations` limit.
+    /// To use different limits for the same WASM code, create a new Engine with the
+    /// desired limits and recompile the module.
     #[must_use]
     pub fn with_limits(limits: VMLimits) -> Self {
         let engine = Self::create_engine_with_metering(&limits);
@@ -145,15 +150,31 @@ impl Engine {
 
     /// Create a headless engine for running precompiled modules.
     ///
-    /// **Note:** Headless engines cannot enforce operation limits because the metering
+    /// # Security Warning
+    ///
+    /// **Headless engines cannot enforce operation limits** because the metering
     /// middleware must be applied at compile time. Modules loaded with a headless engine
     /// will run without operation limits regardless of `VMLimits.max_operations`.
-    /// For operation limit enforcement, use a full engine to compile modules.
+    ///
+    /// This means:
+    /// - Infinite loops or long-running computations will **not** be terminated
+    /// - Only use headless engines for trusted, pre-validated WASM modules
+    /// - For untrusted code, use a full engine with [`Engine::with_limits`] to compile modules
+    ///
+    /// If a module was compiled with metering enabled (max_operations > 0) and then loaded
+    /// via a headless engine, the metering will still be enforced by the embedded middleware.
+    /// However, errors from metering exhaustion will be reported as `ExecutionTimeout`.
     #[must_use]
     pub fn headless() -> Self {
         let mut limits = VMLimits::default();
         // Disable operation limit for headless engines since metering requires compilation
         limits.max_operations = 0;
+
+        // Log security warning when using headless engines
+        tracing::warn!(
+            "Creating headless engine without operation limit enforcement. \
+             Only use for trusted, pre-validated WASM modules."
+        );
 
         // Headless engines lack a compiler, so Wasmer skips perf.map generation.
         // For profiling, use a full engine to enable WASM symbol resolution.
@@ -467,10 +488,17 @@ impl Module {
                 "WASM method execution failed"
             );
 
-            // Check if execution exceeded operation limit
+            // Check if execution exceeded operation limit (only when metering was enabled)
             if max_ops > 0 {
                 if let MeteringPoints::Exhausted = metering::get_remaining_points(store, &instance)
                 {
+                    // Log the original error for debugging before returning timeout
+                    debug!(
+                        %context_id,
+                        method,
+                        original_error = ?err,
+                        "Metering exhausted, returning ExecutionTimeout (original error logged)"
+                    );
                     error!(%context_id, method, "WASM execution exceeded operation limit");
                     return Ok(Some(FunctionCallError::WasmTrap(
                         errors::WasmTrap::ExecutionTimeout,
@@ -484,7 +512,7 @@ impl Module {
             };
         }
 
-        // Log execution stats if metering is enabled
+        // Log execution stats if metering was enabled for this engine
         if max_ops > 0 {
             if let MeteringPoints::Remaining(remaining) =
                 metering::get_remaining_points(store, &instance)
