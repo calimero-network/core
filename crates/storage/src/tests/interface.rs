@@ -696,127 +696,11 @@ mod snapshot_and_resync {
 /// These tests verify signature verification, replay protection, and owner checks.
 #[cfg(test)]
 mod user_storage_signature_verification {
-    use calimero_primitives::identity::PublicKey;
-    use ed25519_dalek::{Signer, SigningKey};
-
     use super::*;
-    use crate::address::Id;
     use crate::env;
-
-    /// Helper to create a test keypair and public key
-    fn create_test_keypair() -> (SigningKey, PublicKey) {
-        let mut seed = [0u8; 32];
-        env::random_bytes(&mut seed);
-        let signing_key = SigningKey::from_bytes(&seed);
-        let verifying_key = signing_key.verifying_key();
-        let public_key = PublicKey::from(*verifying_key.as_bytes());
-        (signing_key, public_key)
-    }
-
-    /// Helper to sign an action with the given signing key
-    fn sign_action(action: &Action, signing_key: &SigningKey) -> [u8; 64] {
-        let payload = action.payload_for_signing();
-        let signature = signing_key.sign(&payload);
-        signature.to_bytes()
-    }
-
-    /// Helper to create a User storage action (Add) with proper signature
-    fn create_signed_user_add_action(
-        signing_key: &SigningKey,
-        owner: PublicKey,
-        id: Id,
-        data: Vec<u8>,
-        nonce: u64,
-    ) -> Action {
-        let timestamp = env::time_now();
-
-        // Create metadata with placeholder signature
-        let metadata = Metadata {
-            created_at: timestamp,
-            updated_at: timestamp.into(),
-            storage_type: StorageType::User {
-                owner,
-                signature_data: Some(SignatureData {
-                    signature: [0; 64], // Placeholder
-                    nonce,
-                }),
-            },
-        };
-
-        // Create action for signing
-        let mut action = Action::Add {
-            id,
-            data: data.clone(),
-            ancestors: vec![],
-            metadata: metadata.clone(),
-        };
-
-        // Sign and update action
-        let signature = sign_action(&action, signing_key);
-
-        if let Action::Add {
-            ref mut metadata, ..
-        } = action
-        {
-            if let StorageType::User {
-                ref mut signature_data,
-                ..
-            } = metadata.storage_type
-            {
-                *signature_data = Some(SignatureData { signature, nonce });
-            }
-        }
-
-        action
-    }
-
-    /// Helper to create a User storage Update action with proper signature
-    fn create_signed_user_update_action(
-        signing_key: &SigningKey,
-        owner: PublicKey,
-        id: Id,
-        data: Vec<u8>,
-        nonce: u64,
-        created_at: u64,
-    ) -> Action {
-        let timestamp = env::time_now();
-
-        let metadata = Metadata {
-            created_at,
-            updated_at: timestamp.into(),
-            storage_type: StorageType::User {
-                owner,
-                signature_data: Some(SignatureData {
-                    signature: [0; 64],
-                    nonce,
-                }),
-            },
-        };
-
-        let mut action = Action::Update {
-            id,
-            data: data.clone(),
-            ancestors: vec![],
-            metadata: metadata.clone(),
-        };
-
-        let signature = sign_action(&action, signing_key);
-
-        if let Action::Update {
-            ref mut metadata, ..
-        } = action
-        {
-            if let StorageType::User {
-                ref mut signature_data,
-                ..
-            } = metadata.storage_type
-            {
-                *signature_data = Some(SignatureData { signature, nonce });
-            }
-        }
-
-        action
-    }
+    use crate::tests::common::{
+        create_signed_user_add_action, create_signed_user_update_action, create_test_keypair,
+    };
 
     #[test]
     fn user_action_with_valid_signature_succeeds() {
@@ -1004,120 +888,11 @@ mod user_storage_signature_verification {
 /// preventing replay attacks where an attacker resends old signed messages.
 #[cfg(test)]
 mod user_storage_replay_protection {
-    use calimero_primitives::identity::PublicKey;
-    use ed25519_dalek::{Signer, SigningKey};
-
     use super::*;
-    use crate::address::Id;
     use crate::env;
-
-    fn create_test_keypair() -> (SigningKey, PublicKey) {
-        let mut seed = [0u8; 32];
-        env::random_bytes(&mut seed);
-        let signing_key = SigningKey::from_bytes(&seed);
-        let verifying_key = signing_key.verifying_key();
-        let public_key = PublicKey::from(*verifying_key.as_bytes());
-        (signing_key, public_key)
-    }
-
-    fn sign_action(action: &Action, signing_key: &SigningKey) -> [u8; 64] {
-        let payload = action.payload_for_signing();
-        let signature = signing_key.sign(&payload);
-        signature.to_bytes()
-    }
-
-    fn create_signed_user_add_action(
-        signing_key: &SigningKey,
-        owner: PublicKey,
-        id: Id,
-        data: Vec<u8>,
-        nonce: u64,
-    ) -> Action {
-        let timestamp = env::time_now();
-
-        let metadata = Metadata {
-            created_at: timestamp,
-            updated_at: timestamp.into(),
-            storage_type: StorageType::User {
-                owner,
-                signature_data: Some(SignatureData {
-                    signature: [0; 64],
-                    nonce,
-                }),
-            },
-        };
-
-        let mut action = Action::Add {
-            id,
-            data,
-            ancestors: vec![],
-            metadata,
-        };
-
-        let signature = sign_action(&action, signing_key);
-
-        if let Action::Add {
-            ref mut metadata, ..
-        } = action
-        {
-            if let StorageType::User {
-                ref mut signature_data,
-                ..
-            } = metadata.storage_type
-            {
-                *signature_data = Some(SignatureData { signature, nonce });
-            }
-        }
-
-        action
-    }
-
-    fn create_signed_user_update_action(
-        signing_key: &SigningKey,
-        owner: PublicKey,
-        id: Id,
-        data: Vec<u8>,
-        nonce: u64,
-        created_at: u64,
-    ) -> Action {
-        let timestamp = env::time_now();
-
-        let metadata = Metadata {
-            created_at,
-            updated_at: timestamp.into(),
-            storage_type: StorageType::User {
-                owner,
-                signature_data: Some(SignatureData {
-                    signature: [0; 64],
-                    nonce,
-                }),
-            },
-        };
-
-        let mut action = Action::Update {
-            id,
-            data,
-            ancestors: vec![],
-            metadata,
-        };
-
-        let signature = sign_action(&action, signing_key);
-
-        if let Action::Update {
-            ref mut metadata, ..
-        } = action
-        {
-            if let StorageType::User {
-                ref mut signature_data,
-                ..
-            } = metadata.storage_type
-            {
-                *signature_data = Some(SignatureData { signature, nonce });
-            }
-        }
-
-        action
-    }
+    use crate::tests::common::{
+        create_signed_user_add_action, create_signed_user_update_action, create_test_keypair,
+    };
 
     #[test]
     fn replay_with_same_nonce_fails() {
@@ -1687,119 +1462,15 @@ mod timestamp_drift_protection {
 #[cfg(test)]
 mod storage_type_edge_cases {
     use calimero_primitives::identity::PublicKey;
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::SigningKey;
 
     use super::*;
     use crate::address::Id;
     use crate::env;
-
-    fn create_test_keypair() -> (SigningKey, PublicKey) {
-        let mut seed = [0u8; 32];
-        env::random_bytes(&mut seed);
-        let signing_key = SigningKey::from_bytes(&seed);
-        let verifying_key = signing_key.verifying_key();
-        let public_key = PublicKey::from(*verifying_key.as_bytes());
-        (signing_key, public_key)
-    }
-
-    fn sign_action(action: &Action, signing_key: &SigningKey) -> [u8; 64] {
-        let payload = action.payload_for_signing();
-        let signature = signing_key.sign(&payload);
-        signature.to_bytes()
-    }
-
-    fn create_signed_user_add_action(
-        signing_key: &SigningKey,
-        owner: PublicKey,
-        id: Id,
-        data: Vec<u8>,
-        nonce: u64,
-    ) -> Action {
-        let timestamp = env::time_now();
-
-        let metadata = Metadata {
-            created_at: timestamp,
-            updated_at: timestamp.into(),
-            storage_type: StorageType::User {
-                owner,
-                signature_data: Some(SignatureData {
-                    signature: [0; 64],
-                    nonce,
-                }),
-            },
-        };
-
-        let mut action = Action::Add {
-            id,
-            data,
-            ancestors: vec![],
-            metadata,
-        };
-
-        let signature = sign_action(&action, signing_key);
-
-        if let Action::Add {
-            ref mut metadata, ..
-        } = action
-        {
-            if let StorageType::User {
-                ref mut signature_data,
-                ..
-            } = metadata.storage_type
-            {
-                *signature_data = Some(SignatureData { signature, nonce });
-            }
-        }
-
-        action
-    }
-
-    fn create_signed_user_update_action(
-        signing_key: &SigningKey,
-        owner: PublicKey,
-        id: Id,
-        data: Vec<u8>,
-        nonce: u64,
-        created_at: u64,
-    ) -> Action {
-        let timestamp = env::time_now();
-
-        let metadata = Metadata {
-            created_at,
-            updated_at: timestamp.into(),
-            storage_type: StorageType::User {
-                owner,
-                signature_data: Some(SignatureData {
-                    signature: [0; 64],
-                    nonce,
-                }),
-            },
-        };
-
-        let mut action = Action::Update {
-            id,
-            data,
-            ancestors: vec![],
-            metadata,
-        };
-
-        let signature = sign_action(&action, signing_key);
-
-        if let Action::Update {
-            ref mut metadata, ..
-        } = action
-        {
-            if let StorageType::User {
-                ref mut signature_data,
-                ..
-            } = metadata.storage_type
-            {
-                *signature_data = Some(SignatureData { signature, nonce });
-            }
-        }
-
-        action
-    }
+    use crate::tests::common::{
+        create_signed_user_add_action, create_signed_user_update_action, create_test_keypair,
+        sign_action,
+    };
 
     fn create_signed_delete_action(
         signing_key: &SigningKey,
