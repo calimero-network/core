@@ -896,13 +896,29 @@ export class StateTreeVisualizer {
             // Check if item is deleted
             const isDeleted = data.deleted_at !== null && data.deleted_at !== undefined;
             
+            // Determine fill color based on type
+            let textFill = isDeleted ? '#888' : '#d4d4d4';
+            if (!isDeleted && d._typeClass) {
+                // Use CSS class color for typed fields
+                const typeColorMap = {
+                    'field-type-unordered_map': '#61afef',
+                    'field-type-unordered_set': '#c678dd',
+                    'field-type-vector': '#e5c07b',
+                    'field-type-counter': '#98c379',
+                    'field-type-rga': '#d19a66',
+                    'field-type-lww_register': '#56b6c2'
+                };
+                textFill = typeColorMap[d._typeClass] || textFill;
+            }
+            
             // Create text element that can wrap
             const text = g.append('text')
                 .attr('x', (!d.children && !d._children) ? 8 : 0) // Offset for leaf nodes with circles
                 .attr('y', nodeHeight / 2)
                 .attr('dy', '0.35em')
-                .attr('font-size', '11px')
-                .attr('fill', isDeleted ? '#888' : '#d4d4d4') // Grayed out for deleted
+                .attr('font-size', '12px')
+                .attr('font-weight', data.type === 'Field' ? '500' : '400')
+                .attr('fill', textFill)
                 .attr('opacity', isDeleted ? 0.6 : 1.0); // Reduced opacity for deleted
             
             let labelText = '';
@@ -932,6 +948,22 @@ export class StateTreeVisualizer {
                     }
                 }
                 
+                // Icon mapping for field types
+                const typeIcons = {
+                    'UnorderedMap': '🗺️',
+                    'UnorderedSet': '📦',
+                    'Vector': '📋',
+                    'LwwRegister': '📝',
+                    'Counter': '🔢',
+                    'Rga': '📜',
+                    'unordered_map': '🗺️',
+                    'unordered_set': '📦',
+                    'vector': '📋',
+                    'lww_register': '📝',
+                    'counter': '🔢',
+                    'rga': '📜'
+                };
+                
                 // Format type info nicely
                 if (typeInfo) {
                     // Convert common type names to readable format
@@ -944,16 +976,25 @@ export class StateTreeVisualizer {
                         'Rga': 'rga'
                     };
                     const readableType = typeMap[typeInfo] || typeInfo.toLowerCase();
+                    const icon = typeIcons[typeInfo] || typeIcons[readableType] || '📁';
+                    
+                    // Add child count for collections
+                    const childCount = d._children ? d._children.length : (d.children ? d.children.length : 0);
+                    const countStr = childCount > 0 ? ` [${childCount}]` : '';
+                    
                     if (counterValue !== null) {
-                        labelText = `${fieldName} (${readableType}) = ${counterValue}`;
+                        labelText = `${icon} ${fieldName}: ${readableType}${countStr} = ${counterValue}`;
                     } else {
-                        labelText = `${fieldName} (${readableType})`;
+                        labelText = `${icon} ${fieldName}: ${readableType}${countStr}`;
                     }
+                    
+                    // Store type info for styling
+                    d._typeClass = `field-type-${readableType}`;
                 } else {
                     if (counterValue !== null) {
-                        labelText = `${fieldName} = ${counterValue}`;
+                        labelText = `📁 ${fieldName} = ${counterValue}`;
                     } else {
-                        labelText = fieldName;
+                        labelText = `📁 ${fieldName}`;
                     }
                 }
             }
@@ -966,21 +1007,41 @@ export class StateTreeVisualizer {
                     
                     // Get key
                     if (stateData.key && stateData.key.parsed !== undefined) {
-                        keyStr = JSON.stringify(stateData.key.parsed, null, 0);
+                        const key = stateData.key.parsed;
+                        // Handle different key types
+                        if (typeof key === 'string') {
+                            keyStr = `"${key}"`;
+                        } else {
+                            keyStr = JSON.stringify(key, null, 0);
+                        }
                     } else if (stateData.key) {
                         keyStr = String(stateData.key);
                     }
                     
                     // Get value
                     if (stateData.value && stateData.value.parsed !== undefined) {
-                        valueStr = JSON.stringify(stateData.value.parsed, null, 0);
+                        const val = stateData.value.parsed;
+                        // Handle LwwRegister values (show inner value)
+                        if (val && typeof val === 'object' && val.value !== undefined && val.clock !== undefined) {
+                            valueStr = typeof val.value === 'string' ? `"${val.value}"` : JSON.stringify(val.value, null, 0);
+                        } else if (typeof val === 'string') {
+                            valueStr = `"${val}"`;
+                        } else {
+                            valueStr = JSON.stringify(val, null, 0);
+                        }
                     } else if (stateData.value) {
                         valueStr = String(stateData.value);
                     }
                     
-                    // Format as "key: value"
+                    // Truncate long values
+                    const maxLen = 50;
+                    if (valueStr.length > maxLen) {
+                        valueStr = valueStr.substring(0, maxLen) + '...';
+                    }
+                    
+                    // Format as "key → value" with arrow for better readability
                     if (keyStr && valueStr) {
-                        labelText = `${keyStr}: ${valueStr}`;
+                        labelText = `${keyStr} → ${valueStr}`;
                     } else if (keyStr) {
                         labelText = `Key: ${keyStr}`;
                     } else if (valueStr) {
