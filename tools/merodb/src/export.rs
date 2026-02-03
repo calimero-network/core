@@ -997,7 +997,7 @@ fn decode_scalar_entry(bytes: &[u8], field: &Field, manifest: &Manifest) -> Resu
 }
 
 // EntityIndex structure for decoding
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 pub(crate) struct EntityIndex {
     pub(crate) id: Id,
     pub(crate) parent_id: Option<Id>,
@@ -1008,7 +1008,7 @@ pub(crate) struct EntityIndex {
     pub(crate) deleted_at: Option<u64>,
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 pub(crate) struct Id {
     bytes: [u8; 32],
 }
@@ -1480,7 +1480,7 @@ fn try_manual_entity_index_decode(
     })
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 #[expect(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
@@ -1491,6 +1491,7 @@ struct ChildInfo {
     metadata: Metadata,
 }
 
+#[derive(Clone)]
 #[expect(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
@@ -1561,7 +1562,7 @@ pub(crate) enum CrdtType {
     Custom,
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 #[expect(
     dead_code,
     reason = "Variants required for Borsh deserialization structure"
@@ -1575,7 +1576,7 @@ enum StorageType {
     Frozen,
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 #[expect(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
@@ -1585,7 +1586,7 @@ struct SignatureData {
     nonce: u64,
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 struct UpdatedAt(u64);
 
 impl Deref for UpdatedAt {
@@ -2185,8 +2186,44 @@ fn decode_state_root_bfs(
         fields.len()
     );
 
+    // PRE-FILTER: Build a mapping from field_name to (state_key, EntityIndex) for children that have field_name
+    // This allows direct field matching instead of sequential iteration
+    let mut field_name_to_child: std::collections::HashMap<String, (String, EntityIndex)> =
+        std::collections::HashMap::new();
+    for child_info in &root_children {
+        let child_element_id = hex::encode(child_info.id.as_bytes());
+        if let Some(state_key) = element_to_state.get(&child_element_id) {
+            let child_key_bytes = match hex::decode(state_key) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let mut child_key = Vec::with_capacity(64);
+            child_key.extend_from_slice(context_id);
+            child_key.extend_from_slice(&child_key_bytes);
+
+            if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&child_value) {
+                    if let Some(ref field_name) = child_index.metadata.field_name {
+                        eprintln!(
+                            "[decode_state_root_bfs] Found collection root with field_name='{}': id={}, {} children",
+                            field_name,
+                            child_element_id,
+                            child_index.children.as_ref().map(|c| c.len()).unwrap_or(0)
+                        );
+                        field_name_to_child
+                            .insert(field_name.clone(), (state_key.clone(), child_index));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "[decode_state_root_bfs] Pre-filtered {} collection roots with field_name",
+        field_name_to_child.len()
+    );
+
     // For each field in the state root schema, find and decode its children using BFS
-    // Match children to fields by iterating through root's children
+    // Match children to fields by field_name first, then fall back to sequential matching
     let mut used_children = std::collections::HashSet::new();
     for field in fields {
         eprintln!("[decode_state_root_bfs] Decoding field: {}", field.name);
@@ -2205,52 +2242,93 @@ fn decode_state_root_bfs(
         };
 
         let field_value = if field_value {
-            // Find an unused child that is a collection root
+            // FIRST: Try to find by field_name (direct match)
             let mut matched_child = None;
-            for child_info in &root_children {
-                let child_element_id = hex::encode(child_info.id.as_bytes());
-                if used_children.contains(&child_element_id) {
-                    continue;
-                }
-
-                // Check if this child is a collection root by loading its EntityIndex
-                if let Some(state_key) = element_to_state.get(&child_element_id) {
-                    let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
-                        format!("Failed to decode child_state_key: {}", state_key)
-                    })?;
-                    let mut child_key = Vec::with_capacity(64);
-                    child_key.extend_from_slice(context_id);
-                    child_key.extend_from_slice(&child_key_bytes);
-
-                    if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
-                        // Try standard Borsh deserialization first
-                        let child_index = match borsh::from_slice::<EntityIndex>(&child_value) {
-                            Ok(index) => {
-                                eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex for field {}: {} children", field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0));
-                                index
-                            }
-                            Err(e) => {
-                                // Try manual deserialization as fallback
-                                eprintln!("[decode_state_root_bfs] Failed to decode collection root EntityIndex for field {} using Borsh: {}. Attempting manual decode...", field.name, e);
-                                match try_manual_entity_index_decode(&child_value, context_id) {
-                                    Ok(index) => {
-                                        eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex manually for field {}: {} children", field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0));
-                                        index
-                                    }
-                                    Err(manual_err) => {
-                                        eprintln!("[decode_state_root_bfs] Manual decode also failed for collection root: {}", manual_err);
-                                        continue; // Skip this child
-                                    }
-                                }
-                            }
-                        };
-                        // This is a collection root - it matches this collection field
-                        matched_child = Some((state_key.clone(), child_index));
-                        used_children.insert(child_element_id);
-                        break;
-                    }
+            if let Some((state_key, child_index)) = field_name_to_child.get(&field.name) {
+                let child_element_id = hex::encode(child_index.id.as_bytes());
+                if !used_children.contains(&child_element_id) {
+                    eprintln!(
+                        "[decode_state_root_bfs] Direct field_name match for '{}': {} children",
+                        field.name,
+                        child_index.children.as_ref().map(|c| c.len()).unwrap_or(0)
+                    );
+                    matched_child = Some((state_key.clone(), child_index.clone()));
+                    used_children.insert(child_element_id);
                 }
             }
+
+            // FALLBACK: If no direct match, try sequential matching (for legacy data)
+            if matched_child.is_none() {
+                eprintln!(
+                    "[decode_state_root_bfs] No direct field_name match for '{}', trying sequential",
+                    field.name
+                );
+                for child_info in &root_children {
+                    let child_element_id = hex::encode(child_info.id.as_bytes());
+                    if used_children.contains(&child_element_id) {
+                        continue;
+                    }
+
+                    // Check if this child is a collection root by loading its EntityIndex
+                    if let Some(state_key) = element_to_state.get(&child_element_id) {
+                        let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
+                            format!("Failed to decode child_state_key: {}", state_key)
+                        })?;
+                        let mut child_key = Vec::with_capacity(64);
+                        child_key.extend_from_slice(context_id);
+                        child_key.extend_from_slice(&child_key_bytes);
+
+                        if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                            // Try standard Borsh deserialization first
+                            let child_index = match borsh::from_slice::<EntityIndex>(&child_value) {
+                                Ok(index) => {
+                                    eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex for field {}: {} children, field_name={:?}", 
+                                    field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0), index.metadata.field_name);
+                                    index
+                                }
+                                Err(e) => {
+                                    // Try manual deserialization as fallback
+                                    eprintln!("[decode_state_root_bfs] Failed to decode collection root EntityIndex for field {} using Borsh: {}. Attempting manual decode...", field.name, e);
+                                    match try_manual_entity_index_decode(&child_value, context_id) {
+                                        Ok(index) => {
+                                            eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex manually for field {}: {} children, field_name={:?}", 
+                                            field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0), index.metadata.field_name);
+                                            index
+                                        }
+                                        Err(manual_err) => {
+                                            eprintln!("[decode_state_root_bfs] Manual decode also failed for collection root: {}", manual_err);
+                                            continue; // Skip this child
+                                        }
+                                    }
+                                }
+                            };
+
+                            // Match by field_name if available, otherwise fall back to sequential matching
+                            let field_name_matches = child_index
+                                .metadata
+                                .field_name
+                                .as_ref()
+                                .map(|fn_| fn_ == &field.name)
+                                .unwrap_or(false);
+
+                            if field_name_matches {
+                                // This child's field_name matches the schema field
+                                eprintln!("[decode_state_root_bfs] Found matching child for field {} by field_name", field.name);
+                                matched_child = Some((state_key.clone(), child_index.clone()));
+                                used_children.insert(child_element_id);
+                                break;
+                            } else if child_index.metadata.field_name.is_none() {
+                                // Legacy data without field_name - use sequential matching as fallback
+                                eprintln!("[decode_state_root_bfs] Child has no field_name, using sequential match for field {}", field.name);
+                                matched_child = Some((state_key.clone(), child_index.clone()));
+                                used_children.insert(child_element_id);
+                                break;
+                            }
+                            // If field_name exists but doesn't match, continue to next child
+                        }
+                    }
+                }
+            } // end fallback
 
             if let Some((collection_root_key, collection_root_index)) = matched_child {
                 // Decode this collection field using the found collection root
@@ -2278,7 +2356,7 @@ fn decode_state_root_bfs(
             }
         } else {
             // Non-collection field - could be a Record (Counter, etc.) or scalar
-            // Try to find a child that matches this field
+            // Try to find a child that matches this field by field_name
             // For Record types like Counter, they're stored as children of the root
             let mut matched_child = None;
             for child_info in &root_children {
@@ -2287,7 +2365,7 @@ fn decode_state_root_bfs(
                     continue;
                 }
 
-                // Check if this child matches the field by trying to decode it
+                // Check if this child matches the field by field_name first
                 if let Some(state_key) = element_to_state.get(&child_element_id) {
                     let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
                         format!("Failed to decode child_state_key: {}", state_key)
@@ -2297,6 +2375,21 @@ fn decode_state_root_bfs(
                     child_key.extend_from_slice(&child_key_bytes);
 
                     if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                        // First try to decode as EntityIndex to check field_name
+                        if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&child_value) {
+                            // Check if field_name matches
+                            if let Some(ref child_field_name) = child_index.metadata.field_name {
+                                if child_field_name != &field.name {
+                                    // This child's field_name doesn't match - skip to next child
+                                    eprintln!("[decode_state_root_bfs] Skipping child {} for field {} - field_name is '{}'", 
+                                        child_element_id, field.name, child_field_name);
+                                    continue;
+                                }
+                                eprintln!("[decode_state_root_bfs] Found matching child {} for field {} by field_name", 
+                                    child_element_id, field.name);
+                            }
+                        }
+
                         eprintln!("[decode_state_root_bfs] Attempting to decode child {} for field {} (value length: {})", child_element_id, field.name, child_value.len());
                         // First, try to decode directly as the field's type (for Counter, etc.)
                         // This handles cases where the value is stored as Entry<T> where T is the field type
