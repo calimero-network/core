@@ -985,5 +985,4 @@ mod wasm_panic_integration_tests {
             "Expected successful compilation, got: {result:?}"
         );
     }
-
 }
