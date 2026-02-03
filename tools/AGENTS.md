@@ -95,16 +95,16 @@ merodb/
     └── ...
 ```
 
-## calimero-abi - ABI Tool
+## mero-abi - ABI Tool
 
 ### Commands
 
 ```bash
 # Build
-cargo build -p calimero-abi
+cargo build -p mero-abi
 
 # Run
-cargo run -p calimero-abi -- [command]
+cargo run -p mero-abi -- [command]
 ```
 
 ### Features
@@ -118,10 +118,10 @@ cargo run -p calimero-abi -- [command]
 
 ```bash
 # Extract ABI
-cargo run -p calimero-abi -- extract ./my_app.wasm
+cargo run -p mero-abi -- extract ./my_app.wasm
 
 # Inspect state schema
-cargo run -p calimero-abi -- state ./my_app.wasm
+cargo run -p mero-abi -- state ./my_app.wasm
 ```
 
 ### File Organization
@@ -165,7 +165,7 @@ cargo run -p merodb -- --db-path ~/.calimero/test-node/data --export --all
 
 ```bash
 # Check if ABI is correctly generated
-cargo run -p calimero-abi -- extract ./target/wasm32-unknown-unknown/release/kv_store.wasm
+cargo run -p mero-abi -- extract ./target/wasm32-unknown-unknown/release/kv_store.wasm
 ```
 
 ### Visualize DAG

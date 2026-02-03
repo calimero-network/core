@@ -29,16 +29,18 @@ src/
 ├── lib.rs                    # Public API, Calimero struct
 ├── store.rs                  # WASM module store
 ├── constraint.rs             # Execution constraints
+├── constants.rs              # Runtime constants
+├── memory.rs                 # Memory management
 ├── errors.rs                 # Error types
 ├── panic_payload.rs          # Panic handling
+├── logic.rs                  # Logic module parent
 ├── logic/
-│   ├── mod.rs                # Logic module
 │   ├── imports.rs            # WASM imports
 │   ├── registers.rs          # Register management
 │   ├── traits.rs             # Runtime traits
 │   ├── errors.rs             # Logic errors
+│   ├── host_functions.rs     # Host functions parent
 │   └── host_functions/
-│       ├── mod.rs            # Host functions index
 │       ├── storage.rs        # Storage host functions
 │       ├── context.rs        # Context host functions
 │       ├── blobs.rs          # Blob host functions
@@ -47,7 +49,7 @@ src/
 │       ├── governance.rs     # Governance functions
 │       └── js_collections.rs # JS collections support
 └── tests/
-    └── ...
+    └── errors.rs             # Error tests
 examples/
 ├── demo.rs                   # Basic demo
 ├── fetch.rs                  # Fetch example

@@ -23,25 +23,29 @@ cargo test -p calimero-network
 ```
 src/
 ├── lib.rs                    # Public exports, NetworkConfig
+├── behaviour.rs              # Network behaviour definition
+├── discovery.rs              # Discovery module parent
 ├── discovery/
-│   ├── mod.rs                # Discovery module
-│   ├── mdns.rs               # mDNS discovery
 │   └── state.rs              # Discovery state
+├── handlers.rs               # Handlers module parent
 ├── handlers/
-│   ├── mod.rs                # Handler module
-│   ├── gossipsub.rs          # Gossipsub message handling
-│   ├── stream.rs             # Stream handling
-│   └── swarm.rs              # Swarm events
-├── stream/
-│   ├── mod.rs                # Stream module
-│   └── codec.rs              # Stream codec
-├── config.rs                 # Network configuration
-├── types.rs                  # Network types
-└── events.rs                 # Network events
+│   ├── commands.rs           # Command handlers parent
+│   ├── commands/
+│   │   ├── subscribe.rs      # Topic subscription
+│   │   ├── publish.rs        # Message publishing
+│   │   ├── open_stream.rs    # Stream opening
+│   │   └── ...               # Other commands
+│   ├── stream.rs             # Stream handlers parent
+│   └── stream/
+│       ├── swarm.rs          # Swarm event handlers parent
+│       └── swarm/
+│           ├── gossipsub.rs  # Gossipsub message handling
+│           ├── mdns.rs       # mDNS discovery
+│           ├── kad.rs        # Kademlia DHT
+│           └── ...           # Other protocols
 primitives/                   # calimero-network-primitives
-├── src/
-│   ├── lib.rs                # Shared types
-│   └── ...
+└── src/
+    └── lib.rs                # Shared types (PeerId, etc.)
 ```
 
 ## Key Concepts
@@ -72,10 +76,10 @@ Point-to-point connections for:
 
 ### Network Event Handling
 
-- ✅ DO: Follow pattern in `src/handlers/gossipsub.rs`
+- ✅ DO: Follow pattern in `src/handlers/stream/swarm/gossipsub.rs`
 
 ```rust
-// src/handlers/gossipsub.rs
+// src/handlers/stream/swarm/gossipsub.rs
 pub fn handle_gossipsub_event(
     event: GossipsubEvent,
     state: &mut NetworkState,
@@ -110,14 +114,15 @@ network.publish(context_id, delta).await?;
 
 ## Key Files
 
-| File                        | Purpose                    |
-| --------------------------- | -------------------------- |
-| `src/lib.rs`                | Network initialization     |
-| `src/handlers/gossipsub.rs` | Gossip message handling    |
-| `src/handlers/stream.rs`    | Stream event handling      |
-| `src/discovery/mdns.rs`     | Local peer discovery       |
-| `src/stream/codec.rs`       | Message encoding           |
-| `primitives/src/lib.rs`     | PeerId, NetworkEvent types |
+| File                                     | Purpose                 |
+| ---------------------------------------- | ----------------------- |
+| `src/lib.rs`                             | Network initialization  |
+| `src/behaviour.rs`                       | Network behaviour       |
+| `src/handlers/stream/swarm/gossipsub.rs` | Gossip message handling |
+| `src/handlers/stream/swarm/mdns.rs`      | Local peer discovery    |
+| `src/handlers/commands/subscribe.rs`     | Topic subscription      |
+| `src/handlers/commands/publish.rs`       | Message publishing      |
+| `primitives/src/lib.rs`                  | Shared types            |
 
 ## JIT Index
 
@@ -138,7 +143,7 @@ rg -n "discover" src/discovery/
 ## Configuration
 
 ```rust
-// NetworkConfig in src/config.rs
+// NetworkConfig in src/lib.rs
 pub struct NetworkConfig {
     pub swarm_port: u16,          // libp2p swarm port
     pub bootstrap_nodes: Vec<Multiaddr>,

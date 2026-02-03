@@ -19,26 +19,24 @@ When the user asks for a branch name and PR description for core:
 
 ## PR description format
 
-Use this structure exactly. Fill each section from the inferred change; keep placeholders only where the user must fill in (e.g. issue number, links).
+Use this structure exactly (matches `.github/pull_request_template.md`). Fill each section from the inferred change; keep placeholders only where the user must fill in (e.g. issue number, links).
 
 ```markdown
-# title
+# [product] short description
 
-Short imperative title for the PR (e.g. "Add install flow to meroctl" or "Fix WASM import resolution in runtime").
+Replace `[product]` with the crate or area (e.g. `[meroctl]`, `[runtime]`, `[sdk]`). Use imperative mood for the description (e.g. "Add install flow" or "Fix WASM import resolution").
 
 ## Description
 
-Brief description of the change and which issue is fixed (if any). Include context and any dependency or prerequisite changes.
-
-**Motivation**: Why this change is needed.
+Brief description of the change and which issue is fixed (if any). Include relevant motivation and context. List any dependencies that are required for this change.
 
 ## Test plan
 
-What was run to verify (e.g. `cargo test -p crate-name`, manual steps). Whether e2e or new tests were added. For UI changes, mention screenshots or videos if applicable.
+What was run to verify (e.g. `cargo test -p crate-name`, manual steps). Is it possible to add a test case to the e2e tests? For UI changes, mention screenshots or videos if applicable.
 
 ## Documentation update
 
-Which public or internal docs (if any) need updates. If none, state "None" or "N/A". Note: documentation must be updated no later than one day after merge.
+Which public or internal docs (if any) need updates. If none, state "None" or "N/A". Note: documentation **has to be updated** no later than **one day** after merge.
 ```
 
 ## Output

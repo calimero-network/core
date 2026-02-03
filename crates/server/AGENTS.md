@@ -23,32 +23,40 @@ cargo test -p calimero-server
 ```
 src/
 ├── lib.rs                    # Server initialization
+├── config.rs                 # Server configuration
 ├── admin.rs                  # Admin API module parent
 ├── admin/
-│   ├── handlers/             # Admin handlers
-│   │   ├── application.rs    # App management
-│   │   ├── context.rs        # Context management
-│   │   ├── identity.rs       # Identity operations
+│   ├── handlers.rs           # Handlers module parent
+│   ├── handlers/
+│   │   ├── applications.rs   # Applications handlers parent
+│   │   ├── applications/     # App management (get, install, list, uninstall)
+│   │   ├── context.rs        # Context handlers parent
+│   │   ├── context/          # Context management (create, get, invite, join, etc.)
+│   │   ├── identity.rs       # Identity handlers parent
+│   │   ├── identity/         # Identity operations
 │   │   └── ...
 │   ├── service.rs            # Admin service setup
-│   └── ...
-├── jsonrpc.rs                # JSON-RPC module
+│   └── storage.rs            # Admin storage
+├── jsonrpc.rs                # JSON-RPC module parent
 ├── jsonrpc/
-│   └── request.rs            # JSON-RPC request handling
-├── ws.rs                     # WebSocket module
+│   └── execute.rs            # JSON-RPC execution
+├── ws.rs                     # WebSocket module parent
 ├── ws/
 │   ├── subscribe.rs          # WS subscription
 │   └── unsubscribe.rs        # WS unsubscription
+├── sse.rs                    # SSE module parent
 ├── sse/
-│   ├── mod.rs                # SSE module
+│   ├── config.rs             # SSE config
+│   ├── events.rs             # SSE events
+│   ├── handlers.rs           # SSE handlers
 │   └── ...
 ├── auth.rs                   # Authentication middleware
 └── metrics.rs                # Prometheus metrics
 primitives/                   # calimero-server-primitives
-├── src/
-│   ├── lib.rs                # Shared types
-│   ├── jsonrpc.rs            # JSON-RPC types
-│   └── admin.rs              # Admin API types
+└── src/
+    ├── lib.rs                # Shared types
+    ├── jsonrpc.rs            # JSON-RPC types
+    └── admin.rs              # Admin API types
 ```
 
 ## API Endpoints
@@ -129,15 +137,17 @@ pub fn admin_router() -> Router<AppState> {
 
 ## Key Files
 
-| File                                | Purpose            |
-| ----------------------------------- | ------------------ |
-| `src/lib.rs`                        | Server setup       |
-| `src/admin/service.rs`              | Admin router setup |
-| `src/admin/handlers/context.rs`     | Context handlers   |
-| `src/admin/handlers/application.rs` | App handlers       |
-| `src/jsonrpc/request.rs`            | JSON-RPC handling  |
-| `src/ws/subscribe.rs`               | WS subscriptions   |
-| `primitives/src/jsonrpc.rs`         | JSON-RPC types     |
+| File                                                     | Purpose                 |
+| -------------------------------------------------------- | ----------------------- |
+| `src/lib.rs`                                             | Server setup            |
+| `src/admin/service.rs`                                   | Admin router setup      |
+| `src/admin/handlers/context.rs`                          | Context handlers parent |
+| `src/admin/handlers/context/create_context.rs`           | Context creation        |
+| `src/admin/handlers/applications.rs`                     | App handlers parent     |
+| `src/admin/handlers/applications/install_application.rs` | App install             |
+| `src/jsonrpc/execute.rs`                                 | JSON-RPC execution      |
+| `src/ws/subscribe.rs`                                    | WS subscriptions        |
+| `primitives/src/jsonrpc.rs`                              | JSON-RPC types          |
 
 ## JIT Index
 
