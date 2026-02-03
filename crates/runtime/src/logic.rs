@@ -394,7 +394,7 @@ impl VMLogic<'_> {
     /// * `err` - An optional `FunctionCallError` that occurred during execution (e.g., a trap).
     ///           If `None`, the outcome is determined by the `returns` field.
     #[must_use]
-    pub fn finish(self, err: Option<FunctionCallError>) -> Outcome {
+    pub fn finish(mut self, err: Option<FunctionCallError>) -> Outcome {
         let log_count = self.logs.len();
         let event_count = self.events.len();
         let xcall_count = self.xcalls.len();
