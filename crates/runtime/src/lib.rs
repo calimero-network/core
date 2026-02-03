@@ -239,14 +239,20 @@ impl Module {
             }
         };
 
-        let _ = match instance.exports.get_memory("memory") {
-            Ok(memory) => logic.with_memory(memory.clone()),
+        // Get memory from the WASM instance and attach it to VMLogic.
+        // Note: memory.clone() is cheap - it just increments an Arc reference count,
+        // not copying actual memory contents. VMLogic::finish() handles cleanup.
+        let memory = match instance.exports.get_memory("memory") {
+            Ok(memory) => memory.clone(),
             // todo! test memory returns MethodNotFound
             Err(err) => {
                 error!(%context_id, method, error=?err, "Failed to get WASM memory");
                 return Ok(Some(err.into()));
             }
         };
+
+        // Attach memory to VMLogic, which will clean it up in finish()
+        let _ = logic.with_memory(memory);
 
         // Call the auto-generated registration hook if it exists.
         // This enables automatic CRDT merge during sync.
