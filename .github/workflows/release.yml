@@ -41,7 +41,7 @@ env:
 jobs:
   prepare:
     name: Prepare
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     outputs:
       version: ${{ steps.version_info.outputs.version }}
       binary_release: ${{ steps.version_info.outputs.binary_release }}
@@ -96,7 +96,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-24.04-8cpu
+          - os: big-machine
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
@@ -186,7 +186,7 @@ jobs:
   release-binaries:
     name: Release Binaries
     if: needs.prepare.outputs.binary_release == 'true'
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     needs: [prepare, build-binaries]
     concurrency:
       group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-${{ needs.prepare.outputs.version }}
@@ -270,7 +270,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -299,7 +299,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -328,7 +328,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -357,7 +357,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -386,7 +386,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -409,7 +409,7 @@ jobs:
   brew-update:
     name: Update Homebrew Tap
     if: needs.prepare.outputs.binary_release == 'true'
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     needs: [prepare, release-binaries]
     permissions:
       id-token: write
