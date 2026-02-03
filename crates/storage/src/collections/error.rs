@@ -16,6 +16,9 @@ pub enum StoreError {
     /// Error while interacting with a path.
     #[error(transparent)]
     PathError(#[from] PathError),
+    /// Arithmetic overflow occurred during size calculation.
+    #[error("arithmetic overflow: {0}")]
+    ArithmeticOverflow(String),
 }
 
 impl Serialize for StoreError {
