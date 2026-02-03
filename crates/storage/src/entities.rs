@@ -16,7 +16,6 @@ mod tests;
 use calimero_primitives::identity::PublicKey;
 use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::BTreeMap;
-use std::io::{ErrorKind, Read};
 use std::ops::{Deref, DerefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -43,6 +42,12 @@ pub enum CrdtType {
     UnorderedSet,
     /// Vector (ordered list with operational transformation)
     Vector,
+    /// UserStorage - user-owned storage wrapper
+    UserStorage,
+    /// FrozenStorage - content-addressable immutable storage
+    FrozenStorage,
+    /// Record - struct/record type that merges field-by-field using children's merge functions
+    Record,
     /// Custom user-defined CRDT (requires WASM callback for merge)
     Custom {
         /// Type name identifier for the custom CRDT
@@ -216,6 +221,7 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: Some(CrdtType::LwwRegister),
             },
             merkle_hash: [0; 32],
         }
@@ -232,6 +238,7 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: Some(CrdtType::Record),
             },
             merkle_hash: [0; 32],
         }
@@ -370,16 +377,38 @@ pub struct Metadata {
     /// different characteristics of handling in the node.
     /// See `StorageType`.
     pub storage_type: StorageType,
+
+    /// CRDT type for merge dispatch during state synchronization.
+    ///
+    /// - Built-in types (Counter, Map, etc.) merge in storage layer
+    /// - Custom types dispatch to WASM for app-defined merge
+    /// - None indicates legacy data (falls back to LWW)
+    ///
+    /// See `CrdtType`.
+    pub crdt_type: Option<CrdtType>,
 }
 
 impl Metadata {
     /// Creates new metadata with the provided timestamps.
+    /// Defaults to LwwRegister CRDT type.
     #[must_use]
     pub fn new(created_at: u64, updated_at: u64) -> Self {
         Self {
             created_at,
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
+            crdt_type: Some(CrdtType::LwwRegister),
+        }
+    }
+
+    /// Creates new metadata with the provided timestamps and CRDT type.
+    #[must_use]
+    pub fn with_crdt_type(created_at: u64, updated_at: u64, crdt_type: CrdtType) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            crdt_type: Some(crdt_type),
         }
     }
 
@@ -398,6 +427,91 @@ impl Metadata {
     #[must_use]
     pub fn updated_at(&self) -> u64 {
         *self.updated_at
+    }
+
+    /// Checks if the CRDT type is a built-in type (not Custom).
+    #[must_use]
+    pub fn is_builtin_crdt(&self) -> bool {
+        matches!(
+            self.crdt_type,
+            Some(CrdtType::LwwRegister)
+                | Some(CrdtType::Counter)
+                | Some(CrdtType::Rga)
+                | Some(CrdtType::UnorderedMap)
+                | Some(CrdtType::UnorderedSet)
+                | Some(CrdtType::Vector)
+                | Some(CrdtType::UserStorage)
+                | Some(CrdtType::FrozenStorage)
+                | Some(CrdtType::Record)
+        )
+    }
+}
+
+// Custom BorshDeserialize implementation for backward compatibility
+// Old Metadata didn't have crdt_type field, so we handle missing field gracefully
+impl borsh::BorshDeserialize for Metadata {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        use borsh::BorshDeserialize as _;
+        use tracing::debug;
+
+        let created_at = u64::deserialize_reader(reader)?;
+        let updated_at = UpdatedAt::deserialize_reader(reader)?;
+        let storage_type = StorageType::deserialize_reader(reader)?;
+
+        // Try to deserialize crdt_type as Option<CrdtType>
+        // If we run out of bytes (old format), default to None
+        // This handles backward compatibility with old Metadata that didn't have crdt_type
+        let crdt_type = match <Option<CrdtType>>::deserialize_reader(reader) {
+            Ok(ct) => {
+                debug!(
+                    target: "storage::entities",
+                    "Metadata deserialized with crdt_type: {:?}",
+                    ct
+                );
+                ct
+            }
+            Err(e) => {
+                // Check error kind first (most reliable)
+                use std::io::ErrorKind;
+                let is_eof = matches!(e.kind(), ErrorKind::UnexpectedEof);
+
+                // Also check error message for Borsh-specific errors
+                let err_str = e.to_string();
+                let is_borsh_eof = err_str.contains("UnexpectedEof")
+                    || err_str.contains("Not all bytes read")
+                    || err_str.contains("Unexpected length")
+                    || err_str.contains("Unexpected end of input");
+
+                debug!(
+                    target: "storage::entities",
+                    "Metadata deserialization: crdt_type field missing (old format), error_kind={:?}, error_msg={}, is_eof={}, is_borsh_eof={}",
+                    e.kind(),
+                    err_str,
+                    is_eof,
+                    is_borsh_eof
+                );
+
+                if is_eof || is_borsh_eof {
+                    // Old format without crdt_type - default to None
+                    None
+                } else {
+                    // Some other error - propagate it
+                    debug!(
+                        target: "storage::entities",
+                        "Metadata deserialization: propagating non-EOF error: {}",
+                        err_str
+                    );
+                    return Err(e);
+                }
+            }
+        };
+
+        Ok(Metadata {
+            created_at,
+            updated_at,
+            storage_type,
+            crdt_type,
+        })
     }
 }
 

@@ -92,6 +92,8 @@ pub use interface::Interface;
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
+    /// Collection serialization/deserialization tests.
+    pub mod collection_serialization;
     /// CRDT collections (UnorderedMap, Vector, Counter) tests.
     pub mod collections;
     /// Common test utilities and data structures.

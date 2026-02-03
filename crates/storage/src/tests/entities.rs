@@ -284,7 +284,8 @@ mod metadata__constructor {
         let metadata = Metadata::new(1000, 2000);
         assert_eq!(metadata.created_at, 1000);
         assert_eq!(*metadata.updated_at, 2000);
-        assert_eq!(metadata.crdt_type, None);
+        // Metadata::new() now defaults to LwwRegister CRDT type
+        assert_eq!(metadata.crdt_type, Some(CrdtType::LwwRegister));
     }
 
     #[test]
@@ -350,7 +351,8 @@ mod metadata__crdt_type {
 
     #[test]
     fn is_builtin_crdt__none() {
-        let metadata = Metadata::new(1000, 2000);
+        let mut metadata = Metadata::new(1000, 2000);
+        metadata.crdt_type = None; // Explicitly set to None for this test
         assert!(!metadata.is_builtin_crdt());
     }
 }
@@ -373,7 +375,8 @@ mod metadata__serialization {
 
     #[test]
     fn serialize_deserialize__without_crdt_type() {
-        let metadata = Metadata::new(1000, 2000);
+        let mut metadata = Metadata::new(1000, 2000);
+        metadata.crdt_type = None; // Explicitly set to None for this test
         let serialized = borsh::to_vec(&metadata).unwrap();
         let deserialized: Metadata = BorshDeserialize::try_from_slice(&serialized).unwrap();
         assert_eq!(metadata.created_at, deserialized.created_at);

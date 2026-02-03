@@ -2853,6 +2853,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "comprehensive-crdt-test"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "hex",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"

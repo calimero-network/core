@@ -85,19 +85,39 @@ impl Mergeable for NestedUserData {
 
 #[app::event]
 pub enum Event<'a> {
-    CounterIncremented { value: u64 },
-    MapEntrySet { key: &'a str, value: &'a str },
-    VectorPushed { value: u64 },
-    SetItemAdded { item: &'a str },
-    RgaTextInserted { position: usize, text: &'a str },
-    RegisterSet { value: &'a str },
-    UserSimpleSet { executor_id: PublicKey, value: &'a str },
+    CounterIncremented {
+        value: u64,
+    },
+    MapEntrySet {
+        key: &'a str,
+        value: &'a str,
+    },
+    VectorPushed {
+        value: u64,
+    },
+    SetItemAdded {
+        item: &'a str,
+    },
+    RgaTextInserted {
+        position: usize,
+        text: &'a str,
+    },
+    RegisterSet {
+        value: &'a str,
+    },
+    UserSimpleSet {
+        executor_id: PublicKey,
+        value: &'a str,
+    },
     UserNestedSet {
         executor_id: PublicKey,
         key: &'a str,
         value: &'a str,
     },
-    FrozenAdded { hash: [u8; 32], value: &'a str },
+    FrozenAdded {
+        hash: [u8; 32],
+        value: &'a str,
+    },
 }
 
 #[derive(Debug, Error, Serialize)]

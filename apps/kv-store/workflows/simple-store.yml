@@ -1,12 +1,12 @@
 description: Simple Store Application Workflow (Rust)
 name: Simple Store App Test
 
-force_pull_image: true
+force_pull_image: false
 
 nodes:
   chain_id: testnet-1
   count: 2
-  image: ghcr.io/calimero-network/merod:edge
+  image: merod:local
   prefix: simple-store-node
 
 steps:
