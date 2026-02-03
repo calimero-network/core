@@ -38,6 +38,7 @@ use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error, info, warn};
 
+use crate::error::ContextError;
 use crate::handlers::utils::{process_context_mutations, StoreContextHost};
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -177,7 +178,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let context_task = guard_task.map(move |guard, act, _ctx| {
             let Some(context) = act.get_or_fetch_context(&context_id)? else {
-                bail!("context '{context_id}' deleted before we could execute");
+                bail!(ContextError::ContextDeleted { context_id });
             };
 
             Ok((guard, context.meta.clone()))
@@ -680,7 +681,7 @@ async fn internal_execute(
                 break 'fine;
             }
 
-            eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+            bail!(ContextError::StateInconsistency);
         }
     }
 

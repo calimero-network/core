@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use crate::metrics::Metrics;
 
 pub mod config;
+pub mod error;
 pub mod handlers;
 mod metrics;
 
