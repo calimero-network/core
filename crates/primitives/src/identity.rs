@@ -6,16 +6,13 @@ use core::str::FromStr;
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
 use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey};
 
-#[expect(
-    missing_copy_implementations,
-    reason = "PrivateKey must not be copied, cloned, viewed or serialized"
-)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
@@ -25,6 +22,20 @@ pub struct PrivateKey(Hash);
 impl fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad("PrivateKey")
+    }
+}
+
+impl Drop for PrivateKey {
+    fn drop(&mut self) {
+        // Zeroize the key material to prevent it from remaining in memory.
+        // SAFETY: PrivateKey owns the inner Hash, and we need mutable access
+        // to zeroize its contents. Hash doesn't expose DerefMut, so we use
+        // pointer casting to get a mutable byte slice over the entire structure.
+        unsafe {
+            let hash_ptr = &mut self.0 as *mut Hash as *mut u8;
+            let hash_size = core::mem::size_of::<Hash>();
+            core::slice::from_raw_parts_mut(hash_ptr, hash_size).zeroize();
+        }
     }
 }
 
@@ -276,4 +287,67 @@ pub enum NearNetworkId {
     Testnet,
     #[serde(untagged)]
     Custom(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::ManuallyDrop;
+
+    use super::*;
+
+    #[test]
+    fn test_private_key_zeroize_on_drop() {
+        // Create a non-zero key wrapped in ManuallyDrop to control when drop occurs
+        let secret_bytes: [u8; 32] = [0x42; 32];
+        let mut key = ManuallyDrop::new(PrivateKey::from(secret_bytes));
+
+        // Verify the key contains the expected bytes before drop
+        assert_eq!(key.as_ref(), &secret_bytes);
+
+        // Get a raw pointer to the key's memory location before dropping
+        let key_ptr = &*key as *const PrivateKey as *const u8;
+        let hash_size = core::mem::size_of::<Hash>();
+
+        // Manually drop the key, which will call our Drop implementation
+        // SAFETY: The key was created with ManuallyDrop::new, so we need to
+        // manually drop it. After this, the ManuallyDrop wrapper prevents
+        // double-drop.
+        unsafe {
+            ManuallyDrop::drop(&mut key);
+        }
+
+        // After drop, the memory should be zeroed. We can safely read it because
+        // ManuallyDrop keeps the memory allocated (it's still on the stack).
+        // SAFETY: The memory is still valid because ManuallyDrop doesn't deallocate,
+        // it just prevents the automatic drop. We're reading the same stack memory.
+        let zeroed = unsafe { core::slice::from_raw_parts(key_ptr, hash_size) };
+
+        // Check that the key bytes (first 32 bytes of Hash) are zeroed
+        assert!(
+            zeroed[..32].iter().all(|&b| b == 0),
+            "Key material was not properly zeroized on drop"
+        );
+    }
+
+    #[test]
+    fn test_private_key_can_sign_before_drop() {
+        // Ensure PrivateKey still works correctly with the Drop implementation
+        let secret_bytes: [u8; 32] = [0x42; 32];
+        let key = PrivateKey::from(secret_bytes);
+
+        // Key should be usable for signing
+        let message = b"test message";
+        let signature = key.sign(message);
+        assert!(signature.is_ok());
+
+        // Key should be usable for deriving public key
+        let public_key = key.public_key();
+        assert!(!AsRef::<[u8; 32]>::as_ref(&public_key)
+            .iter()
+            .all(|&b| b == 0));
+
+        // Signature should verify with the public key
+        let sig = signature.unwrap();
+        assert!(public_key.verify(message, &sig).is_ok());
+    }
 }
