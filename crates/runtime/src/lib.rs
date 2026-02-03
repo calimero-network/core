@@ -31,7 +31,7 @@ pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 /// Valid method names must:
 /// - Not be empty
 /// - Not exceed the maximum length limit
-/// - Contain only valid characters (ASCII alphanumeric, underscore, dollar sign)
+/// - Contain only valid characters (ASCII alphanumeric, underscore)
 ///
 /// # Arguments
 ///
