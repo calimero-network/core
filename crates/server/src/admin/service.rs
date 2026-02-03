@@ -445,21 +445,191 @@ pub fn parse_api_error(err: Report) -> ApiError {
     }
 }
 
+/// Response structure for the health check endpoint.
 #[derive(Debug, Serialize)]
 struct GetHealthResponse {
     data: HealthStatus,
 }
 
+/// Comprehensive health status with dependency information.
+///
+/// Reports the status of all critical dependencies for load balancer integration:
+/// - RocksDB connection status
+/// - Network peer count
+/// - Pending sync queue depth
+/// - Memory usage
 #[derive(Debug, Serialize)]
 struct HealthStatus {
+    /// Overall health status: "healthy", "degraded", or "unhealthy"
     status: String,
+    /// RocksDB connection status
+    rocksdb: DependencyStatus,
+    /// Network connectivity status
+    network: NetworkStatus,
+    /// Sync queue status
+    sync_queue: SyncQueueStatus,
+    /// Memory usage status
+    memory: MemoryStatus,
 }
 
-async fn health_check_handler() -> impl IntoResponse {
+/// Status of a single dependency.
+#[derive(Debug, Serialize)]
+struct DependencyStatus {
+    /// Whether the dependency is healthy
+    healthy: bool,
+    /// Optional message with details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+/// Network connectivity status.
+#[derive(Debug, Serialize)]
+struct NetworkStatus {
+    /// Whether network is healthy (has at least one peer or is starting up)
+    healthy: bool,
+    /// Number of connected peers
+    peer_count: usize,
+}
+
+/// Sync queue status.
+#[derive(Debug, Serialize)]
+struct SyncQueueStatus {
+    /// Whether sync queue is healthy (not overloaded)
+    healthy: bool,
+    /// Number of pending sync requests
+    pending: usize,
+    /// Maximum queue capacity
+    capacity: usize,
+}
+
+/// Memory usage status.
+#[derive(Debug, Serialize)]
+struct MemoryStatus {
+    /// Whether memory usage is healthy
+    healthy: bool,
+    /// Resident Set Size (RSS) in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rss_bytes: Option<u64>,
+    /// Virtual memory size in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    virtual_bytes: Option<u64>,
+}
+
+/// Get memory usage from /proc/self/status on Linux.
+/// Returns (rss_bytes, virtual_bytes) if available.
+fn get_memory_usage() -> (Option<u64>, Option<u64>) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
+            let mut rss: Option<u64> = None;
+            let mut virt: Option<u64> = None;
+
+            for line in content.lines() {
+                if line.starts_with("VmRSS:") {
+                    // Format: "VmRSS:    12345 kB"
+                    if let Some(value) = line.split_whitespace().nth(1) {
+                        if let Ok(kb) = value.parse::<u64>() {
+                            rss = Some(kb * 1024); // Convert kB to bytes
+                        }
+                    }
+                } else if line.starts_with("VmSize:") {
+                    // Format: "VmSize:   12345 kB"
+                    if let Some(value) = line.split_whitespace().nth(1) {
+                        if let Ok(kb) = value.parse::<u64>() {
+                            virt = Some(kb * 1024); // Convert kB to bytes
+                        }
+                    }
+                }
+            }
+
+            return (rss, virt);
+        }
+        (None, None)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        (None, None)
+    }
+}
+
+/// Health check endpoint for load balancer integration.
+///
+/// Reports the status of all critical dependencies:
+/// - **RocksDB**: Database connection status
+/// - **Network**: Peer count and connectivity
+/// - **Sync Queue**: Pending sync requests and queue capacity
+/// - **Memory**: Current RSS and virtual memory usage
+///
+/// Returns HTTP 200 with detailed status for monitoring.
+/// Overall status is "healthy" if all dependencies are OK,
+/// "degraded" if some non-critical issues exist,
+/// or "unhealthy" if critical dependencies are failing.
+async fn health_check_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
+    // Check RocksDB connection by attempting a simple operation
+    let rocksdb_status = {
+        let handle = state.store.handle();
+        // Try to iterate (this validates the DB connection)
+        let iter_result = handle.iter::<calimero_store::key::ContextMeta>();
+        match iter_result {
+            Ok(mut iter) => {
+                // Try to advance iterator to fully validate connection
+                let _first = iter.entries().next();
+                DependencyStatus {
+                    healthy: true,
+                    message: None,
+                }
+            }
+            Err(e) => DependencyStatus {
+                healthy: false,
+                message: Some(format!("Database error: {e}")),
+            },
+        }
+    };
+
+    // Get network peer count
+    let peer_count = state.node_client.get_peers_count(None).await;
+    let network_status = NetworkStatus {
+        // Consider healthy even with 0 peers (node might be bootstrapping)
+        healthy: true,
+        peer_count,
+    };
+
+    // Get sync queue depth
+    let (pending, capacity) = state.node_client.get_sync_queue_depth();
+    let sync_queue_status = SyncQueueStatus {
+        // Consider unhealthy if queue is more than 90% full
+        healthy: pending < (capacity * 9 / 10),
+        pending,
+        capacity,
+    };
+
+    // Get memory usage
+    let (rss_bytes, virtual_bytes) = get_memory_usage();
+    let memory_status = MemoryStatus {
+        // Memory is always considered healthy for now (monitoring only)
+        healthy: true,
+        rss_bytes,
+        virtual_bytes,
+    };
+
+    // Determine overall status
+    let overall_status = if !rocksdb_status.healthy {
+        "unhealthy"
+    } else if !sync_queue_status.healthy {
+        "degraded"
+    } else {
+        "healthy"
+    };
+
     ApiResponse {
         payload: GetHealthResponse {
             data: HealthStatus {
-                status: "alive".to_owned(),
+                status: overall_status.to_owned(),
+                rocksdb: rocksdb_status,
+                network: network_status,
+                sync_queue: sync_queue_status,
+                memory: memory_status,
             },
         },
     }

@@ -275,4 +275,23 @@ impl NodeClient {
 
         Ok(())
     }
+
+    /// Get the current sync queue depth (number of pending sync requests).
+    ///
+    /// Returns (current_pending, max_capacity) where:
+    /// - `current_pending`: Number of sync requests waiting in the queue
+    /// - `max_capacity`: Maximum queue capacity
+    #[must_use]
+    pub fn get_sync_queue_depth(&self) -> (usize, usize) {
+        let max_capacity = self.ctx_sync_tx.max_capacity();
+        let current_capacity = self.ctx_sync_tx.capacity();
+        let pending = max_capacity.saturating_sub(current_capacity);
+        (pending, max_capacity)
+    }
+
+    /// Get a reference to the datastore for health checks.
+    #[must_use]
+    pub fn datastore(&self) -> &Store {
+        &self.datastore
+    }
 }
