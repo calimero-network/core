@@ -1,44 +1,25 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
 use calimero_tee_attestation::{build_report_data, generate_attestation, AttestationError};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<TeeAttestRequest>,
+    ValidatedJson(req): ValidatedJson<TeeAttestRequest>,
 ) -> impl IntoResponse {
     info!(nonce=%req.nonce, application_id=?req.application_id, "Generating TEE attestation");
 
-    // 1. Validate nonce
-    let nonce = match hex::decode(&req.nonce) {
-        Ok(n) => n,
-        Err(_) => {
-            error!("Invalid nonce format");
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid nonce format (must be 64 hex characters)".to_owned(),
-            }
-            .into_response();
-        }
-    };
-
-    if nonce.len() != 32 {
-        error!(nonce_len=%nonce.len(), "Invalid nonce length");
-        return ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: "Nonce must be exactly 32 bytes (64 hex characters)".to_owned(),
-        }
-        .into_response();
-    }
-
-    let nonce_array: [u8; 32] = nonce.try_into().expect("checked length above");
+    // Nonce format is pre-validated by ValidatedJson, so we can decode safely
+    let nonce = hex::decode(&req.nonce).expect("pre-validated hex string");
+    let nonce_array: [u8; 32] = nonce.try_into().expect("pre-validated length");
 
     // 2. Get application bytecode hash (if requested)
     let app_hash = if let Some(application_id) = req.application_id {
