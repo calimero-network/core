@@ -76,8 +76,8 @@ impl VMHostFunctions<'_> {
         let url = self.read_guest_memory_str(&url)?;
         let method = self.read_guest_memory_str(&method)?;
 
-        let headers = self.read_guest_memory_slice(&headers);
-        let body = self.read_guest_memory_slice(&body);
+        let headers = self.read_guest_memory_slice(&headers)?;
+        let body = self.read_guest_memory_slice(&body)?;
 
         // TODO: clarify why the `fetch` function cannot be directly called by applications.
         // Note: The `fetch` function cannot be directly called by applications.
@@ -125,7 +125,7 @@ impl VMHostFunctions<'_> {
     pub fn random_bytes(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
         let dest_buf = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
-        rand::thread_rng().fill_bytes(self.read_guest_memory_slice_mut(&dest_buf));
+        rand::thread_rng().fill_bytes(self.read_guest_memory_slice_mut(&dest_buf)?);
 
         Ok(())
     }
@@ -170,7 +170,7 @@ impl VMHostFunctions<'_> {
             .as_nanos() as u64;
 
         // Record the time into the guest memory buffer
-        let guest_time_out_buf: &mut [u8] = self.read_guest_memory_slice_mut(&guest_time_ptr);
+        let guest_time_out_buf: &mut [u8] = self.read_guest_memory_slice_mut(&guest_time_ptr)?;
         guest_time_out_buf.copy_from_slice(&now.to_le_bytes());
 
         Ok(())
@@ -213,7 +213,7 @@ impl VMHostFunctions<'_> {
         let signature_bytes = self.read_guest_memory_sized::<SIGNATURE_LENGTH>(&signature_buf)?;
         let public_key_bytes =
             self.read_guest_memory_sized::<PUBLIC_KEY_LENGTH>(&public_key_buf)?;
-        let message_bytes = self.read_guest_memory_slice(&message_buf);
+        let message_bytes = self.read_guest_memory_slice(&message_buf)?;
 
         // Parse signature
         let signature = Signature::from_bytes(signature_bytes);

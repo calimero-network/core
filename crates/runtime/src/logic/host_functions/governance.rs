@@ -36,10 +36,10 @@ impl VMHostFunctions<'_> {
         rand::thread_rng().fill_bytes(&mut proposal_id);
 
         // Record newly created ID to guest memory
-        let dest_id: &mut [u8] = self.read_guest_memory_slice_mut(&dest_id);
+        let dest_id: &mut [u8] = self.read_guest_memory_slice_mut(&dest_id)?;
         dest_id.copy_from_slice(&proposal_id);
 
-        let actions = self.read_guest_memory_slice(&actions).to_vec();
+        let actions = self.read_guest_memory_slice(&actions)?.to_vec();
 
         let _ignored = self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions));
         Ok(())

@@ -161,7 +161,7 @@ impl VMHostFunctions<'_> {
             }));
         }
 
-        let data = self.read_guest_memory_slice(&data).to_vec();
+        let data = self.read_guest_memory_slice(&data)?.to_vec();
 
         self.with_logic_mut(|logic| {
             let handle = logic
@@ -236,7 +236,8 @@ impl VMHostFunctions<'_> {
                 .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))
         })?;
 
-        let guest_blob_id_out_buf: &mut [u8] = self.read_guest_memory_slice_mut(&guest_blob_id_ptr);
+        let guest_blob_id_out_buf: &mut [u8] =
+            self.read_guest_memory_slice_mut(&guest_blob_id_ptr)?;
 
         match handle {
             BlobHandle::Write(write_handle) => {
@@ -542,7 +543,7 @@ impl VMHostFunctions<'_> {
         if bytes_read > 0 {
             // Copy data from the local output buffer to destination buffer located in guest
             // memory.
-            self.read_guest_memory_slice_mut(&dest_data)
+            self.read_guest_memory_slice_mut(&dest_data)?
                 .copy_from_slice(&output_buffer);
         }
 
