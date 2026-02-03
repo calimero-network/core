@@ -81,7 +81,7 @@ impl SyncManager {
             .and_then(|i| i.private_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let shared_key = SharedKey::new(&private_key, &their_identity)?;
 
         let (tx, mut rx) = mpsc::channel(1);
 
@@ -172,7 +172,7 @@ impl SyncManager {
             .and_then(|i| i.private_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let shared_key = SharedKey::new(&private_key, &their_identity)?;
         let mut our_nonce = thread_rng().gen::<Nonce>();
 
         self.send(

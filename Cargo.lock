@@ -2051,6 +2051,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -2123,6 +2124,7 @@ dependencies = [
  "eyre",
  "rand 0.8.5",
  "ring",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2329,6 +2331,7 @@ dependencies = [
  "wasmer",
  "wasmer-compiler-cranelift",
  "wasmer-types",
+ "wat",
 ]
 
 [[package]]
@@ -2539,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.37"
+version = "0.10.0-rc.39"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
@@ -6702,6 +6705,7 @@ dependencies = [
  "semver 1.0.27",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",

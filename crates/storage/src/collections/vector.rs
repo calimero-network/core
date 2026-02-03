@@ -12,6 +12,24 @@ use super::Collection;
 use crate::collections::error::StoreError;
 use crate::store::{MainStorage, StorageAdaptor};
 
+/// Validates that an index is safe for iterator arithmetic.
+///
+/// This function ensures that the index won't cause issues when used with
+/// iterator methods that may perform internal arithmetic. Out-of-bounds
+/// indices are handled by iterator methods returning `None`.
+#[inline]
+fn validate_index_bounds(index: usize) -> Result<(), StoreError> {
+    // First check for potential overflow: index + 1 must not overflow
+    // This is checked regardless of bounds since it's a safety invariant
+    let _ = index.checked_add(1).ok_or_else(|| {
+        StoreError::ArithmeticOverflow(format!(
+            "addition overflow: {} + {} exceeds usize::MAX",
+            index, 1
+        ))
+    })?;
+    Ok(())
+}
+
 /// A vector collection that stores key-value pairs.
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct Vector<V, S: StorageAdaptor = MainStorage> {
@@ -84,9 +102,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, or a child
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
+    /// returned. Returns an error if the index would cause arithmetic overflow.
     ///
     pub fn get(&self, index: usize) -> Result<Option<V>, StoreError> {
+        validate_index_bounds(index)?;
         self.inner.entries()?.nth(index).transpose()
     }
 
@@ -96,9 +115,11 @@ where
     ///
     /// If an error occurs when interacting with the storage system, or a child
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
+    /// returned. Returns an error if the index would cause arithmetic overflow.
     ///
     pub fn update(&mut self, index: usize, value: V) -> Result<Option<V>, StoreError> {
+        validate_index_bounds(index)?;
+
         let Some(id) = self.inner.nth(index)? else {
             return Ok(None);
         };
@@ -513,5 +534,57 @@ mod tests {
         let result: Vec<u32> = vector.filter(|&n| n % 2 == 0).unwrap().collect();
         assert_eq!(result.len(), 2);
         assert_eq!(result, vec![10, 20]);
+    }
+
+    #[test]
+    fn test_vector_get_with_max_index() {
+        let vector = Root::new(|| Vector::<String>::new());
+
+        // Accessing with usize::MAX should return error due to overflow protection
+        let result = vector.get(usize::MAX);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("overflow"),
+            "Error message should contain 'overflow'"
+        );
+    }
+
+    #[test]
+    fn test_vector_update_with_max_index() {
+        let mut vector = Root::new(|| Vector::<String>::new());
+
+        // Updating with usize::MAX should return error due to overflow protection
+        let result = vector.update(usize::MAX, "test".to_owned());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("overflow"),
+            "Error message should contain 'overflow'"
+        );
+    }
+
+    #[test]
+    fn test_validate_index_bounds() {
+        // Test that validate_index_bounds catches usize::MAX (overflow case)
+        let result = super::validate_index_bounds(usize::MAX);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("overflow"),
+            "Error message should contain 'overflow'"
+        );
+
+        // Test normal index validation passes
+        let result = super::validate_index_bounds(5);
+        assert!(result.is_ok());
+
+        // Test out-of-bounds index (should pass validation, handled by returning None)
+        let result = super::validate_index_bounds(15);
+        assert!(result.is_ok());
+
+        // Test large but safe index
+        let result = super::validate_index_bounds(usize::MAX - 1);
+        assert!(result.is_ok());
     }
 }

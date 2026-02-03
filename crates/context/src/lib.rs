@@ -46,6 +46,7 @@ impl CachedContextConfig {
 }
 
 pub mod config;
+pub mod error;
 pub mod handlers;
 mod metrics;
 

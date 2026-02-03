@@ -15,28 +15,31 @@ pub mod watch;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl --node node1 application ls
+  $ meroctl --node node1 app ls
 
   # Get details of an application
-  $ meroctl --node node1 application get <app_id>
+  $ meroctl --node node1 app get <app_id>
 
   # Install an application with package/version
-  $ meroctl --node node1 application install --package com.example.myapp --version 1.0.0 --path ./my-app.wasm
+  $ meroctl --node node1 app install --package com.example.myapp --version 1.0.0 --path ./my-app.wasm
 
   # List all packages
-  $ meroctl --node node1 application list-packages
+  $ meroctl --node node1 app list-packages
 
   # List versions of a package
-  $ meroctl --node node1 application list-versions com.example.myapp
+  $ meroctl --node node1 app list-versions com.example.myapp
 
   # Get latest version of a package
-  $ meroctl --node node1 application get-latest-version com.example.myapp
+  $ meroctl --node node1 app get-latest-version com.example.myapp
 
   # Watch WASM file and update all contexts with the application
-  $ meroctl --node node1 application watch <app_id> --path ./my-app.wasm
+  $ meroctl --node node1 app watch --path ./my-app.wasm
+
+  # Watch and update only contexts using a specific app (by app id)
+  $ meroctl --node node1 app watch --path ./my-app.wasm --current-app-id <app_id>
 
   # Uninstall an application
-  $ meroctl --node node1 application uninstall <app_id>
+  $ meroctl --node node1 app uninstall <app_id>
 ";
 
 #[derive(Debug, Parser)]

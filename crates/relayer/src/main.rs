@@ -414,7 +414,7 @@ type HandlerSender = oneshot::Sender<Result<EyreResult<Vec<u8>>, ServerError>>;
 /// Health check endpoint
 async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({
-        "status": "healthy",
+        "status": "alive",
         "service": "calimero-relayer",
         "timestamp": chrono::Utc::now().to_rfc3339()
     }))

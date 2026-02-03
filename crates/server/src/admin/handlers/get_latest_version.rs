@@ -20,17 +20,17 @@ pub async fn handler(
         .get_latest_version(&package)
         .map_err(|err| parse_api_error(err).into_response());
     match latest_version {
-        Ok(Some(application_id)) => {
-            info!(package=%package, application_id=%application_id, "Latest version retrieved successfully");
+        Ok(Some((version, application_id))) => {
+            info!(package=%package, %version, application_id=%application_id, "Latest version retrieved successfully");
             ApiResponse {
-                payload: GetLatestVersionResponse::new(Some(application_id)),
+                payload: GetLatestVersionResponse::new(Some(application_id), Some(version)),
             }
             .into_response()
         }
         Ok(None) => {
             info!(package=%package, "No versions found for package");
             ApiResponse {
-                payload: GetLatestVersionResponse::new(None),
+                payload: GetLatestVersionResponse::new(None, None),
             }
             .into_response()
         }

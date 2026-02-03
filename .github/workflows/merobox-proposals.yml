@@ -58,7 +58,7 @@ jobs:
 
   download-contracts:
     name: Download Contracts
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -77,7 +77,7 @@ jobs:
   near:
     name: Test NEAR Proposals
     needs: [determine-image-tag, download-contracts]
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -163,7 +163,7 @@ jobs:
   icp:
     name: Test ICP Proposals
     needs: [determine-image-tag, download-contracts]
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -256,7 +256,7 @@ jobs:
   ethereum:
     name: Test Ethereum Proposals
     needs: [determine-image-tag, download-contracts]
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

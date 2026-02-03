@@ -157,15 +157,20 @@ impl ListVersionsResponse {
     }
 }
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetLatestVersionResponse {
     pub application_id: Option<ApplicationId>,
+    /// Version string of the latest release (e.g. "1.0.0")
+    pub version: Option<String>,
 }
 
 impl GetLatestVersionResponse {
-    pub const fn new(application_id: Option<ApplicationId>) -> Self {
-        Self { application_id }
+    pub const fn new(application_id: Option<ApplicationId>, version: Option<String>) -> Self {
+        Self {
+            application_id,
+            version,
+        }
     }
 }
 
