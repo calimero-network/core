@@ -6,6 +6,7 @@ use const_format::concatcp;
 use eyre::{bail, Result};
 use url::Url;
 
+use crate::cli::validation::valid_node_name;
 use crate::cli::{check_authentication, Environment};
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::{Config, NodeConnection};
@@ -14,6 +15,7 @@ use crate::output::Output;
 #[derive(Debug, Parser)]
 pub struct AddNodeCommand {
     /// Name of the node
+    #[arg(value_parser = valid_node_name)]
     pub name: String,
 
     /// URL of remote node or path to local node directory
@@ -31,12 +33,14 @@ pub struct AddNodeCommand {
 #[derive(Debug, Parser)]
 pub struct RemoveNodeCommand {
     /// Name of the node to remove
+    #[arg(value_parser = valid_node_name)]
     pub name: String,
 }
 
 #[derive(Debug, Parser)]
 pub struct UseNodeCommand {
     /// Name of the node to set as active
+    #[arg(value_parser = valid_node_name)]
     pub name: String,
 }
 

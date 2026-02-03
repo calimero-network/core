@@ -19,6 +19,7 @@ use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_w
 use tracing::{debug, error, trace};
 
 pub mod config;
+mod utils;
 
 use config::BlobStoreConfig;
 
@@ -430,6 +431,9 @@ impl FileSystem {
 
     /// Get the path for a blob stored in a package/version directory
     pub fn application_blob_path(&self, package: &str, version: &str, id: BlobId) -> Utf8PathBuf {
+        utils::validate_path_component(package, Some("package"));
+        utils::validate_path_component(version, Some("version"));
+
         self.root
             .join("applications")
             .join(package)
@@ -440,11 +444,15 @@ impl FileSystem {
 
     /// Get the package directory path
     pub fn package_path(&self, package: &str) -> Utf8PathBuf {
+        utils::validate_path_component(package, Some("package"));
+
         self.root.join("applications").join(package)
     }
 
     /// Get the version directory path
     pub fn version_path(&self, package: &str, version: &str) -> Utf8PathBuf {
+        utils::validate_path_component(version, Some("version"));
+
         self.package_path(package).join(version)
     }
 
