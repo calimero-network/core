@@ -26,36 +26,6 @@ fn checked_add(a: usize, b: usize) -> Result<usize, StoreError> {
     })
 }
 
-/// Performs checked subtraction, returning an error on underflow.
-///
-/// This function provides explicit underflow protection for size calculations,
-/// ensuring safety in release builds where overflow checks may be disabled.
-#[inline]
-#[allow(dead_code)]
-fn checked_sub(a: usize, b: usize) -> Result<usize, StoreError> {
-    a.checked_sub(b).ok_or_else(|| {
-        StoreError::ArithmeticOverflow(format!(
-            "subtraction underflow: {} - {} would be negative",
-            a, b
-        ))
-    })
-}
-
-/// Performs checked multiplication, returning an error on overflow.
-///
-/// This function provides explicit overflow protection for size calculations,
-/// ensuring safety in release builds where overflow checks may be disabled.
-#[inline]
-#[allow(dead_code)]
-fn checked_mul(a: usize, b: usize) -> Result<usize, StoreError> {
-    a.checked_mul(b).ok_or_else(|| {
-        StoreError::ArithmeticOverflow(format!(
-            "multiplication overflow: {} * {} exceeds usize::MAX",
-            a, b
-        ))
-    })
-}
-
 /// Validates that an index is within safe bounds for iteration.
 ///
 /// This function ensures that the index won't cause issues when used with
@@ -595,40 +565,6 @@ mod tests {
         let result = super::checked_add(10, 20);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 30);
-    }
-
-    #[test]
-    fn test_checked_sub_underflow() {
-        // Test that checked_sub returns error on underflow
-        let result = super::checked_sub(0, 1);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("underflow"),
-            "Error message should contain 'underflow'"
-        );
-
-        // Test that checked_sub works for normal values
-        let result = super::checked_sub(20, 10);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 10);
-    }
-
-    #[test]
-    fn test_checked_mul_overflow() {
-        // Test that checked_mul returns error on overflow
-        let result = super::checked_mul(usize::MAX, 2);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("overflow"),
-            "Error message should contain 'overflow'"
-        );
-
-        // Test that checked_mul works for normal values
-        let result = super::checked_mul(10, 20);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 200);
     }
 
     #[test]
