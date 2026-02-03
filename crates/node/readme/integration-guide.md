@@ -198,7 +198,7 @@ use actix_web::{web, App, HttpServer};
 
 async fn health() -> Result<String> {
     let stats = node.get_stats().await?;
-    Ok(format!("Healthy: {} contexts", stats.context_count))
+    Ok(format!("Alive: {} contexts", stats.context_count))
 }
 
 #[actix_web::main]
