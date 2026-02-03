@@ -372,17 +372,39 @@ export class StateTreeVisualizer {
                     return '';
                 });
 
-            // Add node ID labels
+            // Add node labels - show field name for Field nodes, truncated ID otherwise
             nodeEnter.append('text')
                 .attr('dy', '0.31em')
                 .attr('x', d => (d.children || d._children) ? -10 : 10)
                 .attr('text-anchor', d => (d.children || d._children) ? 'end' : 'start')
                 .text(d => {
+                    // For Field nodes, show the field name
+                    if (d.data.type === 'Field' && d.data.field) {
+                        return d.data.field;
+                    }
+                    // For StateRoot, show "Root"
+                    if (d.data.type === 'StateRoot') {
+                        return 'Root';
+                    }
+                    // For Entry nodes, show key if available
+                    if (d.data.type === 'Entry' && d.data.data && d.data.data.key) {
+                        const key = d.data.data.key.parsed || d.data.data.key;
+                        const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                        return keyStr.length > 20 ? keyStr.substring(0, 17) + '...' : keyStr;
+                    }
+                    // Fallback to truncated ID
                     const id = d.data.id || 'N/A';
                     return id !== 'N/A' ? `${id.substring(0, 8)}...` : 'N/A';
                 })
-                .style('font-size', '10px')
-                .style('fill', '#bbb')
+                .style('font-size', '11px')
+                .style('fill', d => {
+                    // Color code by type
+                    if (d.data.type === 'StateRoot') return '#ffa500'; // Orange for root
+                    if (d.data.type === 'Field') return '#61afef'; // Blue for fields
+                    if (d.data.type === 'Entry') return '#98c379'; // Green for entries
+                    return '#bbb';
+                })
+                .style('font-weight', d => d.data.type === 'Field' ? 'bold' : 'normal')
                 .style('pointer-events', 'none');
 
             // Transition nodes to their new position
