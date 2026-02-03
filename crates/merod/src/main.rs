@@ -104,6 +104,7 @@ fn setup_panic_hook() {
 #[cfg(test)]
 mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use tracing_subscriber::layer::SubscriberExt;
@@ -147,63 +148,125 @@ mod tests {
         }
     }
 
+    /// Helper to run a test with panic hook isolation.
+    /// Saves and restores the original panic hook to prevent test pollution.
+    /// Note: This test manipulates global state. If running tests in parallel,
+    /// use `cargo test -- --test-threads=1` for this module.
+    fn with_isolated_panic_hook<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let original_hook = take_hook();
+        let result = f();
+        set_hook(original_hook);
+        result
+    }
+
     #[test]
     fn test_panic_hook_logs_structured_info() {
-        // Save the current panic hook to restore later (prevents test pollution)
-        let original_hook = take_hook();
-        // Restore the default hook first so setup_panic_hook chains correctly
-        set_hook(original_hook);
-        let original_hook = take_hook();
+        with_isolated_panic_hook(|| {
+            let logs = Arc::new(Mutex::new(Vec::new()));
+            let capture_layer = CaptureLayer { logs: logs.clone() };
+            let subscriber = tracing_subscriber::registry().with(capture_layer);
 
-        let logs = Arc::new(Mutex::new(Vec::new()));
-        let capture_layer = CaptureLayer { logs: logs.clone() };
+            tracing::subscriber::with_default(subscriber, || {
+                setup_panic_hook();
 
-        let subscriber = tracing_subscriber::registry().with(capture_layer);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    panic!("test panic message");
+                }));
 
-        tracing::subscriber::with_default(subscriber, || {
-            // Install our panic hook
-            setup_panic_hook();
+                assert!(result.is_err());
+            });
 
-            // Trigger a panic and catch it using AssertUnwindSafe
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                panic!("test panic message");
+            let captured = logs.lock().unwrap();
+            assert!(!captured.is_empty(), "Expected panic to be logged");
+
+            let log_output = &captured[0];
+            assert!(
+                log_output.contains("panic.message"),
+                "Log should contain panic.message field"
+            );
+            assert!(
+                log_output.contains("test panic message"),
+                "Log should contain the panic message"
+            );
+            assert!(
+                log_output.contains("panic.thread"),
+                "Log should contain panic.thread field"
+            );
+            assert!(
+                log_output.contains("panic.file"),
+                "Log should contain panic.file field"
+            );
+            assert!(
+                log_output.contains("panic.line"),
+                "Log should contain panic.line field"
+            );
+            assert!(
+                log_output.contains("panic.backtrace"),
+                "Log should contain panic.backtrace field"
+            );
+        });
+    }
+
+    #[test]
+    fn test_panic_hook_handles_string_payload() {
+        with_isolated_panic_hook(|| {
+            let logs = Arc::new(Mutex::new(Vec::new()));
+            let capture_layer = CaptureLayer { logs: logs.clone() };
+            let subscriber = tracing_subscriber::registry().with(capture_layer);
+
+            tracing::subscriber::with_default(subscriber, || {
+                setup_panic_hook();
+
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    std::panic::panic_any(String::from("string payload panic"));
+                }));
+
+                assert!(result.is_err());
+            });
+
+            let captured = logs.lock().unwrap();
+            assert!(!captured.is_empty(), "Expected panic to be logged");
+            assert!(
+                captured[0].contains("string payload panic"),
+                "Log should contain the String panic message"
+            );
+        });
+    }
+
+    #[test]
+    fn test_panic_hook_chains_to_previous_handler() {
+        with_isolated_panic_hook(|| {
+            let prev_hook_called = Arc::new(AtomicBool::new(false));
+            let prev_hook_called_clone = prev_hook_called.clone();
+
+            // Install a custom "previous" hook that sets a flag when called
+            set_hook(Box::new(move |_| {
+                prev_hook_called_clone.store(true, Ordering::SeqCst);
             }));
 
-            // Verify the panic was caught
-            assert!(result.is_err());
+            // Now install our panic hook which should chain to the above
+            setup_panic_hook();
+
+            let logs = Arc::new(Mutex::new(Vec::new()));
+            let capture_layer = CaptureLayer { logs: logs.clone() };
+            let subscriber = tracing_subscriber::registry().with(capture_layer);
+
+            tracing::subscriber::with_default(subscriber, || {
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    panic!("chaining test");
+                }));
+            });
+
+            // Verify our hook logged AND the previous hook was called
+            let captured = logs.lock().unwrap();
+            assert!(!captured.is_empty(), "Our hook should have logged");
+            assert!(
+                prev_hook_called.load(Ordering::SeqCst),
+                "Previous panic hook should have been called (hook chaining)"
+            );
         });
-
-        // Restore the original panic hook to prevent test pollution
-        set_hook(original_hook);
-
-        // Check that our panic hook logged the expected fields
-        let captured = logs.lock().unwrap();
-        assert!(!captured.is_empty(), "Expected panic to be logged");
-
-        let log_output = &captured[0];
-        assert!(
-            log_output.contains("panic.message"),
-            "Log should contain panic.message field"
-        );
-        assert!(
-            log_output.contains("test panic message"),
-            "Log should contain the panic message"
-        );
-        assert!(
-            log_output.contains("panic.thread"),
-            "Log should contain panic.thread field"
-        );
-        assert!(
-            log_output.contains("panic.file"),
-            "Log should contain panic.file field"
-        );
-        assert!(
-            log_output.contains("panic.line"),
-            "Log should contain panic.line field"
-        );
-        assert!(
-            log_output.contains("panic.backtrace"),
-            "Log should contain panic.backtrace field"
-        );
     }
 }
