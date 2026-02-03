@@ -8,21 +8,6 @@ use std::path::Path;
 use eyre::bail;
 use eyre::Result;
 
-/// Validates that a string is non-empty.
-///
-/// # Arguments
-/// * `value` - The string to validate
-/// * `field_name` - Name of the field for error messages
-///
-/// # Errors
-/// Returns an error if the string is empty or contains only whitespace.
-pub fn validate_non_empty(value: &str, field_name: &str) -> Result<()> {
-    if value.trim().is_empty() {
-        bail!("{} cannot be empty", field_name);
-    }
-    Ok(())
-}
-
 /// Validates that a file exists and is readable.
 ///
 /// # Arguments
@@ -129,19 +114,6 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
-
-    #[test]
-    fn test_validate_non_empty_valid() {
-        assert!(validate_non_empty("test", "field").is_ok());
-        assert!(validate_non_empty("  test  ", "field").is_ok());
-    }
-
-    #[test]
-    fn test_validate_non_empty_invalid() {
-        assert!(validate_non_empty("", "field").is_err());
-        assert!(validate_non_empty("   ", "field").is_err());
-        assert!(validate_non_empty("\t\n", "field").is_err());
-    }
 
     #[test]
     fn test_validate_file_exists_valid() {
