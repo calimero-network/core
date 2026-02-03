@@ -72,6 +72,7 @@ crates/meroctl/src/cli/app/install.rs
 - Remove commented-out code blocks before submitting
 - If code is for future use, don't include it yet - add it when needed
 - Use `#[allow(dead_code)]` only with a comment explaining why (e.g., FFI, test fixtures)
+- For detecting and removing dead code: use the **dead-code-cleanup** skill (`.cursor/skills/dead-code-cleanup/SKILL.md`) – it verifies no references before removal and produces a structured report
 
 ### Commit Format
 
@@ -138,6 +139,7 @@ Before creating a PR:
 2. `cargo clippy -- -A warnings` passes
 3. `cargo test` passes
 4. `cargo deny check licenses sources` passes (if modifying dependencies)
+5. **Update relevant documentation** at the end of changes – README, AGENTS.md, crate docs, or API docs as needed; docs must be updated no later than one day after merge
 
 ## Data Flow Overview
 
