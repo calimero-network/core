@@ -25,7 +25,8 @@ const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
 const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
 const CALIMERO_WEBUI_VERSION: &str = "latest";
 const CALIMERO_WEBUI_DEFAULT_ASSET: &str = "admin-dashboard-build.zip";
-const CALIMERO_WEBUI_RELEASE_API_URL: &str = "https://api.github.com/repos/{repo}/releases/{version}";
+const CALIMERO_WEBUI_RELEASE_API_URL: &str =
+    "https://api.github.com/repos/{repo}/releases/{version}";
 const CALIMERO_WEBUI_RELEASE_DOWNLOAD_LATEST_URL: &str =
     "https://github.com/{repo}/releases/latest/download/{asset}";
 const CALIMERO_WEBUI_RELEASE_DOWNLOAD_TAG_URL: &str =
