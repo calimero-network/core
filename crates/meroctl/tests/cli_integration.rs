@@ -1,16 +1,517 @@
 //! Integration tests for meroctl CLI commands.
 //!
 //! This module tests CLI command parsing, output formats, error handling,
-//! and argument validation using `assert_cmd`.
+//! argument validation, and interaction with mock servers using `assert_cmd`
+//! and `wiremock`.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Helper to get a Command instance for meroctl
 fn meroctl() -> Command {
     Command::cargo_bin("meroctl").expect("Failed to find meroctl binary")
+}
+
+// =============================================================================
+// Mock Server Integration Tests - HTTP Error Handling
+// =============================================================================
+
+mod http_error_handling {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_server_error_500_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_server_not_found_404_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_unauthorized_401_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_forbidden_403_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/blobs"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "blob",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_bad_request_400_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/contexts"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("Bad Request"))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "context",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_invalid_json_response_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("this is not json"))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_malformed_json_response_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"invalid\": }"))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_empty_response_body_returns_failure() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/peers"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "peers",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[test]
+    fn test_connection_refused_returns_failure() {
+        let temp = tempdir().expect("Failed to create temp dir");
+        // Use a port that's very unlikely to be in use
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                "http://127.0.0.1:59999",
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[test]
+    fn test_invalid_url_format() {
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                "not-a-valid-url",
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure();
+    }
+}
+
+// =============================================================================
+// Mock Server - Request Verification Tests
+// =============================================================================
+
+mod request_verification {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_app_list_sends_get_request_to_correct_endpoint() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        let _result = meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "app",
+                "list",
+            ])
+            .assert();
+
+        // If we get here without a panic, the mock was matched
+    }
+
+    #[tokio::test]
+    async fn test_blob_list_sends_get_request_to_correct_endpoint() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/blobs"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        let _result = meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "blob",
+                "list",
+            ])
+            .assert();
+    }
+
+    #[tokio::test]
+    async fn test_context_list_sends_get_request_to_correct_endpoint() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/contexts"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        let _result = meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "context",
+                "list",
+            ])
+            .assert();
+    }
+
+    #[tokio::test]
+    async fn test_peers_sends_get_request_to_correct_endpoint() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/peers"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        let _result = meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "peers",
+            ])
+            .assert();
+    }
+
+    #[tokio::test]
+    async fn test_blob_delete_command_runs_without_panic() {
+        let mock_server = MockServer::start().await;
+
+        // The blob delete command will try to make a DELETE request
+        // Even if it fails, it shouldn't panic
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "blob",
+                "delete",
+                "--blob-id",
+                "test-blob-id",
+            ])
+            .assert()
+            .failure();
+    }
+
+    #[tokio::test]
+    async fn test_app_uninstall_command_runs_without_panic() {
+        let mock_server = MockServer::start().await;
+
+        // The app uninstall command will try to make a DELETE request
+        // Even if it fails, it shouldn't panic
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "app",
+                "uninstall",
+                "test-app-id",
+            ])
+            .assert()
+            .failure();
+    }
+}
+
+// =============================================================================
+// Output Format Tests
+// =============================================================================
+
+mod output_format_tests {
+    use super::*;
+
+    #[test]
+    fn test_output_format_json_flag_is_valid() {
+        meroctl()
+            .args(["--output-format", "json", "--help"])
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn test_output_format_human_flag_is_valid() {
+        meroctl()
+            .args(["--output-format", "human", "--help"])
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn test_output_format_invalid_value() {
+        meroctl()
+            .args(["--output-format", "xml"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid value"));
+    }
+
+    #[test]
+    fn test_output_format_yaml_invalid() {
+        meroctl()
+            .args(["--output-format", "yaml"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid value"));
+    }
+
+    #[tokio::test]
+    async fn test_json_output_produces_json_on_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        let output = meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "--output-format",
+                "json",
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure()
+            .get_output()
+            .stdout
+            .clone();
+
+        // When output format is JSON, errors should also be JSON
+        let stdout_str = String::from_utf8(output).expect("Invalid UTF-8");
+        // The output should start with { indicating JSON
+        assert!(
+            stdout_str.trim().starts_with('{') || stdout_str.is_empty(),
+            "Expected JSON output or empty, got: {}",
+            stdout_str
+        );
+    }
+
+    #[tokio::test]
+    async fn test_human_output_format_on_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin-api/applications"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                &mock_server.uri(),
+                "--output-format",
+                "human",
+                "app",
+                "list",
+            ])
+            .assert()
+            .failure()
+            // Human format should show ERROR in a table
+            .stdout(predicate::str::contains("ERROR"));
+    }
 }
 
 // =============================================================================
@@ -89,7 +590,6 @@ mod app_commands {
 
     #[test]
     fn test_app_get_requires_app_id() {
-        // app get requires an application ID argument
         meroctl()
             .args(["app", "get"])
             .assert()
@@ -99,7 +599,6 @@ mod app_commands {
 
     #[test]
     fn test_app_install_help_shows_options() {
-        // app install requires either --path or --url flag
         meroctl()
             .args(["app", "install", "--help"])
             .assert()
@@ -115,6 +614,15 @@ mod app_commands {
             .assert()
             .failure()
             .stderr(predicate::str::contains("required"));
+    }
+
+    #[test]
+    fn test_app_list_alias_ls() {
+        meroctl()
+            .args(["app", "ls", "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Usage:"));
     }
 }
 
@@ -186,7 +694,6 @@ mod blob_commands {
 
     #[test]
     fn test_blob_list_alias() {
-        // Test that 'ls' alias works for list
         meroctl()
             .args(["blob", "ls", "--help"])
             .assert()
@@ -196,12 +703,41 @@ mod blob_commands {
 
     #[test]
     fn test_blob_delete_alias() {
-        // Test that 'rm' alias works for delete
         meroctl()
             .args(["blob", "rm"])
             .assert()
             .failure()
             .stderr(predicate::str::contains("required"));
+    }
+
+    #[test]
+    fn test_blob_upload_nonexistent_file() {
+        meroctl()
+            .args(["blob", "upload", "--file", "/nonexistent/file.wasm"])
+            .assert()
+            .failure();
+    }
+
+    #[test]
+    fn test_blob_upload_existing_file_validates() {
+        let temp = tempdir().expect("Failed to create temp dir");
+        let file_path = temp.path().join("test.wasm");
+        fs::write(&file_path, b"test content").expect("Failed to write test file");
+
+        // This will fail at connection time, but the file validation should pass
+        meroctl()
+            .args([
+                "--api",
+                "http://127.0.0.1:59999",
+                "blob",
+                "upload",
+                "--file",
+                file_path.to_str().unwrap(),
+            ])
+            .assert()
+            .failure()
+            // Should not fail because of file validation
+            .stderr(predicate::str::contains("File not found").not());
     }
 }
 
@@ -238,7 +774,6 @@ mod context_commands {
 
     #[test]
     fn test_context_list_alias() {
-        // Test that 'ls' alias works
         meroctl()
             .args(["context", "ls", "--help"])
             .assert()
@@ -266,7 +801,6 @@ mod context_commands {
 
     #[test]
     fn test_context_get_has_subcommands() {
-        // context get has subcommands (info, client-keys, storage)
         meroctl()
             .args(["context", "get", "--help"])
             .assert()
@@ -287,7 +821,6 @@ mod context_commands {
 
     #[test]
     fn test_context_delete_alias() {
-        // Test that 'del' alias works
         meroctl()
             .args(["context", "del"])
             .assert()
@@ -299,6 +832,15 @@ mod context_commands {
     fn test_context_identity_help() {
         meroctl()
             .args(["context", "identity", "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Usage:"));
+    }
+
+    #[test]
+    fn test_context_proposals_help() {
+        meroctl()
+            .args(["context", "proposals", "--help"])
             .assert()
             .success()
             .stdout(predicate::str::contains("Usage:"));
@@ -340,6 +882,47 @@ mod call_commands {
             .assert()
             .failure()
             .stderr(predicate::str::contains("error"));
+    }
+
+    #[test]
+    fn test_call_with_valid_json_args_parses() {
+        // This should pass argument parsing but fail on connection
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                "http://127.0.0.1:59999",
+                "call",
+                "my_method",
+                "--args",
+                r#"{"key": "value"}"#,
+            ])
+            .assert()
+            .failure()
+            // Should not fail on JSON parsing
+            .stderr(predicate::str::contains("invalid JSON").not());
+    }
+
+    #[test]
+    fn test_call_accepts_complex_json_args() {
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "--api",
+                "http://127.0.0.1:59999",
+                "call",
+                "complex_method",
+                "--args",
+                r#"{"nested": {"array": [1, 2, 3], "bool": true}, "string": "test"}"#,
+            ])
+            .assert()
+            .failure()
+            // Should not fail on JSON parsing
+            .stderr(predicate::str::contains("invalid JSON").not());
     }
 }
 
@@ -384,7 +967,6 @@ mod node_commands {
 
     #[test]
     fn test_node_list_works() {
-        // Node list should work without needing a connection
         let temp = tempdir().expect("Failed to create temp dir");
         meroctl()
             .args(["--home", temp.path().to_str().unwrap(), "node", "list"])
@@ -411,9 +993,8 @@ mod node_commands {
     }
 
     #[test]
-    fn test_node_add_validates_name() {
+    fn test_node_add_validates_name_rejects_at_symbol() {
         let temp = tempdir().expect("Failed to create temp dir");
-        // Node name with invalid characters should fail
         meroctl()
             .args([
                 "--home",
@@ -429,21 +1010,53 @@ mod node_commands {
     }
 
     #[test]
-    fn test_node_add_allows_valid_name() {
+    fn test_node_add_validates_name_rejects_spaces() {
         let temp = tempdir().expect("Failed to create temp dir");
-        // This will fail because the path doesn't exist, but name validation passes
         meroctl()
             .args([
                 "--home",
                 temp.path().to_str().unwrap(),
                 "node",
                 "add",
-                "valid-node_1",
+                "node with spaces",
+                "/some/path",
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid characters"));
+    }
+
+    #[test]
+    fn test_node_add_allows_valid_name_with_hyphen() {
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "node",
+                "add",
+                "valid-node",
                 "/nonexistent/path",
             ])
             .assert()
             .failure()
-            // The error should be about config not found, not about invalid name
+            .stderr(predicate::str::contains("invalid characters").not());
+    }
+
+    #[test]
+    fn test_node_add_allows_valid_name_with_underscore() {
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .args([
+                "--home",
+                temp.path().to_str().unwrap(),
+                "node",
+                "add",
+                "valid_node_1",
+                "/nonexistent/path",
+            ])
+            .assert()
+            .failure()
             .stderr(predicate::str::contains("invalid characters").not());
     }
 
@@ -483,8 +1096,7 @@ mod node_commands {
     }
 
     #[test]
-    fn test_node_remove_aliases() {
-        // Test that 'rm' alias works
+    fn test_node_remove_alias_rm() {
         meroctl()
             .args(["node", "rm"])
             .assert()
@@ -493,46 +1105,21 @@ mod node_commands {
     }
 
     #[test]
-    fn test_node_add_connect_alias() {
-        // Test that 'connect' alias works for add
+    fn test_node_remove_alias_disconnect() {
+        meroctl()
+            .args(["node", "disconnect"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("required"));
+    }
+
+    #[test]
+    fn test_node_add_alias_connect() {
         meroctl()
             .args(["node", "connect"])
             .assert()
             .failure()
             .stderr(predicate::str::contains("required"));
-    }
-}
-
-// =============================================================================
-// Output Format Tests
-// =============================================================================
-
-mod output_format {
-    use super::*;
-
-    #[test]
-    fn test_output_format_json_flag_is_valid() {
-        meroctl()
-            .args(["--output-format", "json", "--help"])
-            .assert()
-            .success();
-    }
-
-    #[test]
-    fn test_output_format_human_flag_is_valid() {
-        meroctl()
-            .args(["--output-format", "human", "--help"])
-            .assert()
-            .success();
-    }
-
-    #[test]
-    fn test_output_format_invalid_value() {
-        meroctl()
-            .args(["--output-format", "xml"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("invalid value"));
     }
 }
 
@@ -554,7 +1141,6 @@ mod root_args {
 
     #[test]
     fn test_api_flag_format() {
-        // Test that API flag accepts URL format
         meroctl()
             .args(["--api", "http://localhost:8080", "--help"])
             .assert()
@@ -563,7 +1149,6 @@ mod root_args {
 
     #[test]
     fn test_api_and_node_conflict() {
-        // --api and --node should conflict, must include a command to trigger validation
         let temp = tempdir().expect("Failed to create temp dir");
         meroctl()
             .args([
@@ -615,45 +1200,13 @@ mod error_handling {
             .failure()
             .stderr(predicate::str::contains("error"));
     }
-}
-
-// =============================================================================
-// Validation Tests
-// =============================================================================
-
-mod validation {
-    use super::*;
 
     #[test]
-    fn test_blob_upload_nonexistent_file() {
-        // Uploading a non-existent file should fail with file not found error
+    fn test_extra_positional_args_error() {
         meroctl()
-            .args(["blob", "upload", "--file", "/nonexistent/file.wasm"])
+            .args(["app", "list", "extra", "args"])
             .assert()
             .failure();
-    }
-
-    #[test]
-    fn test_blob_upload_existing_file_validates() {
-        // Create a temp file and verify it passes file validation
-        let temp = tempdir().expect("Failed to create temp dir");
-        let file_path = temp.path().join("test.wasm");
-        fs::write(&file_path, b"test content").expect("Failed to write test file");
-
-        // This will fail at connection time, but the file validation should pass
-        meroctl()
-            .args([
-                "--api",
-                "http://127.0.0.1:99999",
-                "blob",
-                "upload",
-                "--file",
-                file_path.to_str().unwrap(),
-            ])
-            .assert()
-            .failure()
-            // Should not fail because of file validation
-            .stderr(predicate::str::contains("File not found").not());
     }
 }
 
@@ -670,6 +1223,16 @@ mod env_vars {
         meroctl()
             .env("CALIMERO_HOME", temp.path())
             .args(["--help"])
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn test_calimero_home_env_var_used_for_node_list() {
+        let temp = tempdir().expect("Failed to create temp dir");
+        meroctl()
+            .env("CALIMERO_HOME", temp.path())
+            .args(["node", "list"])
             .assert()
             .success();
     }

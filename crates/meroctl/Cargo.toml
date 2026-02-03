@@ -45,7 +45,10 @@ async-trait.workspace = true
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+serde_json.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6"
 
 [package.metadata.workspaces]
 independent = true
