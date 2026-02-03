@@ -262,7 +262,7 @@ pub mod helpers {
         }
     }
 
-    /// Validate method name format (alphanumeric, underscore, dollar sign only)
+    /// Validate method name format (alphanumeric and underscore only)
     pub fn validate_method_name(value: &str, field: &'static str) -> Option<ValidationError> {
         if value.is_empty() {
             return Some(ValidationError::EmptyField { field });
@@ -276,13 +276,13 @@ pub mod helpers {
             });
         }
 
-        // Method names should only contain alphanumeric characters, underscores, and dollar signs
+        // Method names should only contain alphanumeric characters and underscores
         for c in value.chars() {
-            if !c.is_ascii_alphanumeric() && c != '_' && c != '$' {
+            if !c.is_ascii_alphanumeric() && c != '_' {
                 return Some(ValidationError::InvalidFormat {
                     field,
                     reason: format!(
-                        "contains invalid character '{}' (only ASCII alphanumeric, '_', and '$' are allowed)",
+                        "contains invalid character '{}' (only ASCII alphanumeric and '_' are allowed)",
                         c.escape_default()
                     ),
                 });
