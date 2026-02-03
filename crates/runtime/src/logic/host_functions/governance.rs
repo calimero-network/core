@@ -32,14 +32,20 @@ impl VMHostFunctions<'_> {
         let actions = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_actions_ptr)? };
         let dest_id = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_id_ptr)? };
 
+        // Validate both buffers BEFORE generating the proposal_id to ensure
+        // we don't write an orphaned ID to guest memory if validation fails.
         let actions = self.read_guest_memory_slice(&actions)?.to_vec();
+        // Validate dest_id bounds before generating proposal_id
+        {
+            let _bounds_check = self.read_guest_memory_slice_mut(&dest_id)?;
+        }
 
         let mut proposal_id = [0_u8; DIGEST_SIZE];
         rand::thread_rng().fill_bytes(&mut proposal_id);
 
         // Record newly created ID to guest memory
-        let dest_id: &mut [u8] = self.read_guest_memory_slice_mut(&dest_id)?;
-        dest_id.copy_from_slice(&proposal_id);
+        let dest_id_buf: &mut [u8] = self.read_guest_memory_slice_mut(&dest_id)?;
+        dest_id_buf.copy_from_slice(&proposal_id);
 
         let _ignored = self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions));
         Ok(())
