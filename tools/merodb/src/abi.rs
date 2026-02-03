@@ -81,7 +81,9 @@ pub fn infer_schema_from_database(
     db: &rocksdb::DBWithThreadMode<rocksdb::SingleThreaded>,
     context_id: Option<&[u8]>,
 ) -> Result<Manifest> {
-    use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, Field, TypeDef, TypeRef};
+    use calimero_wasm_abi::schema::{
+        CollectionType, CrdtCollectionType, Field, ScalarType, TypeDef, TypeRef,
+    };
     use std::collections::BTreeMap;
 
     let state_cf = db
@@ -168,7 +170,11 @@ pub fn infer_schema_from_database(
                                     inner_type: None,
                                 },
                                 crate::export::CrdtType::Counter => TypeRef::Collection {
-                                    collection: CollectionType::Record { fields: Vec::new() },
+                                    // Counter is stored as Map<String, u64> internally
+                                    collection: CollectionType::Map {
+                                        key: Box::new(TypeRef::string()),
+                                        value: Box::new(TypeRef::Scalar(ScalarType::U64)),
+                                    },
                                     crdt_type: Some(CrdtCollectionType::Counter),
                                     inner_type: None,
                                 },
