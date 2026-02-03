@@ -52,11 +52,20 @@ pub fn validate_config(config: &ConfigFile, node_path: &Utf8Path) -> EyreResult<
     Ok(())
 }
 
-/// Extracts TCP/UDP ports from a multiaddr.
-fn extract_ports_from_multiaddr(addr: &Multiaddr) -> Vec<u16> {
+/// Represents a protocol type for port conflict detection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum TransportProtocol {
+    Tcp,
+    Udp,
+}
+
+/// Extracts (protocol, port) pairs from a multiaddr.
+/// TCP and UDP on the same port are valid (different protocols).
+fn extract_protocol_ports_from_multiaddr(addr: &Multiaddr) -> Vec<(TransportProtocol, u16)> {
     addr.iter()
         .filter_map(|protocol| match protocol {
-            Protocol::Tcp(port) | Protocol::Udp(port) => Some(port),
+            Protocol::Tcp(port) => Some((TransportProtocol::Tcp, port)),
+            Protocol::Udp(port) => Some((TransportProtocol::Udp, port)),
             _ => None,
         })
         .collect()
@@ -68,58 +77,73 @@ fn extract_ports_from_multiaddr(addr: &Multiaddr) -> Vec<u16> {
 /// - Swarm listening addresses
 /// - Server listening addresses
 /// - Embedded auth listening address (if configured)
+///
+/// Note: TCP and UDP on the same port is valid (different protocols).
+/// IPv4 and IPv6 on the same port is also valid (different address families).
 fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
-    let mut used_ports: HashSet<(String, u16)> = HashSet::new();
+    // Key: (protocol, host, port) - this allows TCP and UDP on same port
+    let mut used_ports: HashSet<(TransportProtocol, String, u16)> = HashSet::new();
     let mut conflicts: Vec<String> = Vec::new();
 
     // Collect swarm ports
     for addr in &config.network.swarm.listen {
         let host = extract_host_from_multiaddr(addr);
-        for port in extract_ports_from_multiaddr(addr) {
-            let key = (host.clone(), port);
-            if !used_ports.insert(key.clone()) {
-                conflicts.push(format!("Swarm address {}:{}", host, port));
-            }
-        }
-    }
-
-    // Collect server ports
-    for addr in &config.network.server.listen {
-        let host = extract_host_from_multiaddr(addr);
-        for port in extract_ports_from_multiaddr(addr) {
-            let key = (host.clone(), port);
-            if !used_ports.insert(key.clone()) {
+        for (proto, port) in extract_protocol_ports_from_multiaddr(addr) {
+            let key = (proto.clone(), host.clone(), port);
+            if !used_ports.insert(key) {
+                let proto_str = match proto {
+                    TransportProtocol::Tcp => "TCP",
+                    TransportProtocol::Udp => "UDP",
+                };
                 conflicts.push(format!(
-                    "Server port {} conflicts with another service on {}",
-                    port, host
+                    "Duplicate swarm address: {} {}:{}",
+                    proto_str, host, port
                 ));
             }
         }
     }
 
-    // Check embedded auth port if configured
+    // Collect server ports - server uses TCP only
+    for addr in &config.network.server.listen {
+        let host = extract_host_from_multiaddr(addr);
+        for (proto, port) in extract_protocol_ports_from_multiaddr(addr) {
+            let key = (proto.clone(), host.clone(), port);
+            if !used_ports.insert(key) {
+                let proto_str = match proto {
+                    TransportProtocol::Tcp => "TCP",
+                    TransportProtocol::Udp => "UDP",
+                };
+                conflicts.push(format!(
+                    "Server port {} {} conflicts with swarm on {}",
+                    proto_str, port, host
+                ));
+            }
+        }
+    }
+
+    // Check embedded auth port if configured (uses TCP)
     if let Some(ref auth_config) = config.network.server.embedded_auth {
         let auth_addr = auth_config.listen_addr;
         let host = auth_addr.ip().to_string();
         let port = auth_addr.port();
 
-        // Check against wildcard addresses (0.0.0.0 and ::) and specific IPs
-        let should_check = |existing_host: &str| -> bool {
-            existing_host == "0.0.0.0"
-                || existing_host == "::"
-                || existing_host == host
-                || host == "0.0.0.0"
-                || host == "::"
-        };
+        // Check if this TCP port conflicts with existing TCP ports
+        // Consider wildcard addresses (0.0.0.0 binds all IPv4, :: binds all IPv6)
+        let has_conflict = used_ports
+            .iter()
+            .any(|(proto, existing_host, existing_port)| {
+                if *proto != TransportProtocol::Tcp || *existing_port != port {
+                    return false;
+                }
+                // Check if hosts overlap (considering wildcards)
+                hosts_overlap(&host, existing_host)
+            });
 
-        for (existing_host, existing_port) in &used_ports {
-            if *existing_port == port && should_check(existing_host) {
-                conflicts.push(format!(
-                    "Embedded auth port {} conflicts with another service",
-                    port
-                ));
-                break;
-            }
+        if has_conflict {
+            conflicts.push(format!(
+                "Embedded auth TCP port {} conflicts with another service",
+                port
+            ));
         }
     }
 
@@ -135,6 +159,37 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
     }
 
     Ok(())
+}
+
+/// Checks if two hosts overlap (considering wildcard addresses).
+/// 0.0.0.0 overlaps with any IPv4 address.
+/// :: overlaps with any IPv6 address.
+fn hosts_overlap(host1: &str, host2: &str) -> bool {
+    if host1 == host2 {
+        return true;
+    }
+
+    // Check IPv4 wildcard
+    if (host1 == "0.0.0.0" && is_ipv4(host2)) || (host2 == "0.0.0.0" && is_ipv4(host1)) {
+        return true;
+    }
+
+    // Check IPv6 wildcard
+    if (host1 == "::" && is_ipv6(host2)) || (host2 == "::" && is_ipv6(host1)) {
+        return true;
+    }
+
+    false
+}
+
+/// Checks if a host string represents an IPv4 address.
+fn is_ipv4(host: &str) -> bool {
+    host.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+/// Checks if a host string represents an IPv6 address.
+fn is_ipv6(host: &str) -> bool {
+    host.parse::<std::net::Ipv6Addr>().is_ok()
 }
 
 /// Extracts the host/IP from a multiaddr, defaulting to "0.0.0.0" if not found.
@@ -416,14 +471,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_ports_from_multiaddr() {
+    fn test_extract_protocol_ports_from_multiaddr() {
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/8080".parse().unwrap();
-        let ports = extract_ports_from_multiaddr(&addr);
-        assert_eq!(ports, vec![8080]);
+        let ports = extract_protocol_ports_from_multiaddr(&addr);
+        assert_eq!(ports, vec![(TransportProtocol::Tcp, 8080)]);
 
         let addr: Multiaddr = "/ip4/127.0.0.1/udp/8080/quic-v1".parse().unwrap();
-        let ports = extract_ports_from_multiaddr(&addr);
-        assert_eq!(ports, vec![8080]);
+        let ports = extract_protocol_ports_from_multiaddr(&addr);
+        assert_eq!(ports, vec![(TransportProtocol::Udp, 8080)]);
     }
 
     #[test]
@@ -435,6 +490,30 @@ mod tests {
         let addr: Multiaddr = "/ip6/::1/tcp/8080".parse().unwrap();
         let host = extract_host_from_multiaddr(&addr);
         assert_eq!(host, "::1");
+    }
+
+    #[test]
+    fn test_hosts_overlap() {
+        // Same host
+        assert!(hosts_overlap("127.0.0.1", "127.0.0.1"));
+        assert!(hosts_overlap("::1", "::1"));
+
+        // IPv4 wildcard
+        assert!(hosts_overlap("0.0.0.0", "127.0.0.1"));
+        assert!(hosts_overlap("192.168.1.1", "0.0.0.0"));
+
+        // IPv6 wildcard
+        assert!(hosts_overlap("::", "::1"));
+        assert!(hosts_overlap("fe80::1", "::"));
+
+        // Different address families don't overlap
+        assert!(!hosts_overlap("127.0.0.1", "::1"));
+        assert!(!hosts_overlap("0.0.0.0", "::1")); // IPv4 wildcard doesn't match IPv6
+        assert!(!hosts_overlap("::", "127.0.0.1")); // IPv6 wildcard doesn't match IPv4
+
+        // Different specific addresses
+        assert!(!hosts_overlap("127.0.0.1", "192.168.1.1"));
+        assert!(!hosts_overlap("::1", "fe80::1"));
     }
 
     #[test]
