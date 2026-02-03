@@ -192,13 +192,10 @@ fn release_download_url(repo: &str, version: &str, asset: &str) -> String {
         CALIMERO_WEBUI_RELEASE_DOWNLOAD_TAG_URL
     };
 
-    replace(template.into(), |var| match var {
-        "repo" => Some(repo),
-        "version" => Some(version),
-        "asset" => Some(asset),
-        _ => None,
-    })
-    .into_owned()
+    template
+        .replace("{repo}", repo)
+        .replace("{version}", version)
+        .replace("{asset}", asset)
 }
 
 #[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
