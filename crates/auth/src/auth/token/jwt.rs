@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::http::HeaderMap;
 use base64::Engine;
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -221,14 +221,8 @@ impl TokenManager {
             Duration::seconds(custom_expiry.unwrap_or(self.config.access_token_expiry) as i64);
         let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
 
-        self.generate_raw_token_pair(
-            key_id,
-            permissions,
-            node_url,
-            access_expiry,
-            refresh_expiry,
-        )
-        .await
+        self.generate_raw_token_pair(key_id, permissions, node_url, access_expiry, refresh_expiry)
+            .await
     }
 
     /// Generate a pair of access and refresh tokens
