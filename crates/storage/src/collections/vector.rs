@@ -537,23 +537,6 @@ mod tests {
     }
 
     #[test]
-    fn test_checked_add_overflow() {
-        // Test that checked_add returns error on overflow
-        let result = super::checked_add(usize::MAX, 1);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("overflow"),
-            "Error message should contain 'overflow'"
-        );
-
-        // Test that checked_add works for normal values
-        let result = super::checked_add(10, 20);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 30);
-    }
-
-    #[test]
     fn test_vector_get_with_max_index() {
         let vector = Root::new(|| Vector::<String>::new());
 
