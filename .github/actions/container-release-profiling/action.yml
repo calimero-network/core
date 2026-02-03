@@ -23,6 +23,14 @@ inputs:
   container_name:
     description: "Name of the container to build and push"
     required: true
+  platforms:
+    description: "Docker platforms to build"
+    required: false
+    default: "linux/amd64,linux/arm64"
+  include_aarch64:
+    description: "Whether to include aarch64 binaries"
+    required: false
+    default: "true"
   github-token:
     description: "GitHub token"
     required: true
@@ -39,8 +47,13 @@ runs:
 
     - name: Extract Linux profiling binaries
       shell: bash
+      env:
+        INCLUDE_AARCH64: ${{ inputs.include_aarch64 }}
       run: |
-        mkdir -p ./bin-profiling/amd64 ./bin-profiling/arm64
+        mkdir -p ./bin-profiling/amd64
+        if [ "$INCLUDE_AARCH64" = "true" ]; then
+          mkdir -p ./bin-profiling/arm64
+        fi
 
         readarray -t binaries <<< "${{ inputs.binaries }}"
 
@@ -48,7 +61,9 @@ runs:
           echo "Extracting ${binary} profiling binaries"
 
           tar -xzf binaries-profiling/${binary}_x86_64-unknown-linux-gnu.tar.gz -C ./bin-profiling/amd64 --no-same-owner
-          tar -xzf binaries-profiling/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin-profiling/arm64 --no-same-owner
+          if [ "$INCLUDE_AARCH64" = "true" ]; then
+            tar -xzf binaries-profiling/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin-profiling/arm64 --no-same-owner
+          fi
         done
 
     - name: Set up QEMU
@@ -114,7 +129,7 @@ runs:
         context: .
         file: ${{ inputs.dockerfile }}
         push: ${{ inputs.push == 'true' }}
-        platforms: linux/amd64,linux/arm64
+        platforms: ${{ inputs.platforms }}
         tags: ${{ steps.metadata.outputs.tags }}
         labels: ${{ steps.metadata.outputs.labels }}
         annotations: ${{ steps.metadata.outputs.annotations }}

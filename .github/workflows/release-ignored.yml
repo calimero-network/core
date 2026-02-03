@@ -18,12 +18,6 @@ jobs:
           # Keep legacy check names for required status checks.
           - name: ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu
             target: x86_64-unknown-linux-gnu
-          - name: ubuntu-24.04-arm, aarch64-unknown-linux-gnu
-            target: aarch64-unknown-linux-gnu
-          - name: macos-13, x86_64-apple-darwin
-            target: x86_64-apple-darwin
-          - name: macos-latest, aarch64-apple-darwin
-            target: aarch64-apple-darwin
     runs-on: ubuntu-latest
 
     steps:

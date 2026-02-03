@@ -38,6 +38,8 @@ env:
     meroctl
     mero-relayer
     mero-abi
+  DOCKER_PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+  INCLUDE_AARCH64: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
 jobs:
   prepare:
@@ -96,17 +98,8 @@ jobs:
     needs: prepare
     strategy:
       matrix:
-        include:
-          # Keep legacy check names for required status checks.
-          - name: ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu
-            runner: big-machine
-            target: x86_64-unknown-linux-gnu
-          - name: ubuntu-24.04-arm, aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - name: macos-latest, aarch64-apple-darwin
-            runner: macos-latest
-            target: aarch64-apple-darwin
+        # Keep legacy check names for required status checks.
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}]') }}
       fail-fast: false
     runs-on: ${{ matrix.runner }}
 
@@ -293,6 +286,8 @@ jobs:
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
+          platforms: ${{ env.DOCKER_PLATFORMS }}
+          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-mero-auth-container:
@@ -322,6 +317,8 @@ jobs:
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
+          platforms: ${{ env.DOCKER_PLATFORMS }}
+          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-mero-kms-phala-container:
@@ -351,6 +348,8 @@ jobs:
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.mero-kms-phala.Dockerfile
           container_name: mero-kms-phala
+          platforms: ${{ env.DOCKER_PLATFORMS }}
+          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-mero-relayer-container:
@@ -380,6 +379,8 @@ jobs:
           binaries: mero-relayer
           dockerfile: .github/workflows/deps/prebuilt.relayer.Dockerfile
           container_name: mero-relayer
+          platforms: ${{ env.DOCKER_PLATFORMS }}
+          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-merod-profiling-container:
@@ -409,6 +410,8 @@ jobs:
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.profiling.Dockerfile
           container_name: merod
+          platforms: ${{ env.DOCKER_PLATFORMS }}
+          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   brew-update:
