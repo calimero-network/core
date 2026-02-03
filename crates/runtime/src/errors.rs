@@ -45,6 +45,8 @@ pub enum FunctionCallError {
     WasmTrap(WasmTrap),
     #[error(transparent)]
     HostError(HostError),
+    #[error(transparent)]
+    InstantiationFailure(InstantiationFailure),
     #[error("the method call returned an error: {0:?}")]
     ExecutionError(Vec<u8>),
 }
@@ -175,6 +177,18 @@ pub enum WasmTrap {
     Indeterminate,
 }
 
+#[derive(Debug, Serialize, ThisError)]
+#[serde(tag = "type", content = "data")]
+#[non_exhaustive]
+pub enum InstantiationFailure {
+    #[error("host CPU does not support a required feature: {feature}")]
+    CpuFeature { feature: String },
+    #[error("one of the imports is incompatible with this execution instance")]
+    DifferentStores,
+    #[error("the module was compiled for a different architecture or operating system")]
+    DifferentArchOS,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
@@ -214,24 +228,21 @@ impl From<ExportError> for FunctionCallError {
     }
 }
 
-// TODO: We should change this to use TryFrom instead of panicking in a From.
-#[expect(
-    clippy::fallible_impl_from,
-    reason = "TODO: This needs to be refactored"
-)]
 impl From<InstantiationError> for FunctionCallError {
     fn from(err: InstantiationError) -> Self {
         match err {
             InstantiationError::Link(err) => err.into(),
             InstantiationError::Start(err) => err.into(),
             InstantiationError::CpuFeature(err) => {
-                panic!("host CPU does not support a required feature: {err}")
+                Self::InstantiationFailure(InstantiationFailure::CpuFeature {
+                    feature: err.to_string(),
+                })
             }
             InstantiationError::DifferentStores => {
-                panic!("one of the imports is incompatible with this execution instance")
+                Self::InstantiationFailure(InstantiationFailure::DifferentStores)
             }
             InstantiationError::DifferentArchOS => {
-                panic!("the module was compiled for a different architecture or operating system")
+                Self::InstantiationFailure(InstantiationFailure::DifferentArchOS)
             }
         }
     }

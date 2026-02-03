@@ -167,3 +167,62 @@ fn panic_guest() {
     assert_eq!(error.to_string(), "guest panicked: explicit panic");
     assert_json_eq!(json!(error), expected);
 }
+
+#[test]
+fn instantiation_failure_cpu_feature() {
+    let error = FunctionCallError::InstantiationFailure(InstantiationFailure::CpuFeature {
+        feature: "sse4.2".to_owned(),
+    });
+
+    let expected = json!({
+        "type": "InstantiationFailure",
+        "data": {
+            "type": "CpuFeature",
+            "data": {
+                "feature": "sse4.2"
+            }
+        }
+    });
+
+    assert_eq!(
+        error.to_string(),
+        "host CPU does not support a required feature: sse4.2"
+    );
+    assert_json_eq!(json!(error), expected);
+}
+
+#[test]
+fn instantiation_failure_different_stores() {
+    let error = FunctionCallError::InstantiationFailure(InstantiationFailure::DifferentStores);
+
+    let expected = json!({
+        "type": "InstantiationFailure",
+        "data": {
+            "type": "DifferentStores"
+        }
+    });
+
+    assert_eq!(
+        error.to_string(),
+        "one of the imports is incompatible with this execution instance"
+    );
+    assert_json_eq!(json!(error), expected);
+}
+
+#[test]
+fn instantiation_failure_different_arch_os() {
+    let error = FunctionCallError::InstantiationFailure(InstantiationFailure::DifferentArchOS);
+
+    let expected = json!({
+        "type": "InstantiationFailure",
+        "data": {
+            "type": "DifferentArchOS"
+        }
+    });
+
+    assert_eq!(
+        error.to_string(),
+        "the module was compiled for a different architecture or operating system"
+    );
+    assert_json_eq!(json!(error), expected);
+}
