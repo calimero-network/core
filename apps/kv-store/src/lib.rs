@@ -269,4 +269,88 @@ impl KvStore {
         }
         Ok(history)
     }
+
+    /// Populate the store with sample data for testing visualization
+    /// Creates multiple entries in each collection type
+    pub fn populate_sample_data(&mut self) -> app::Result<()> {
+        app::log!("Populating sample data for visualization testing");
+
+        // Set store metadata
+        self.metadata
+            .set("Sample KV Store - populated for visualization testing".to_string());
+
+        // Add multiple items to the UnorderedMap
+        let sample_items = [
+            ("user:alice", "Alice Johnson"),
+            ("user:bob", "Bob Smith"),
+            ("user:charlie", "Charlie Brown"),
+            ("config:theme", "dark"),
+            ("config:language", "en-US"),
+            ("config:timezone", "UTC"),
+            ("product:1001", "Laptop Pro"),
+            ("product:1002", "Wireless Mouse"),
+            ("product:1003", "Mechanical Keyboard"),
+            ("product:1004", "4K Monitor"),
+            ("session:abc123", "active"),
+            ("session:def456", "active"),
+            ("cache:homepage", "cached_content_here"),
+            ("cache:dashboard", "dashboard_content"),
+            ("cache:settings", "settings_content"),
+        ];
+
+        for (key, value) in sample_items {
+            self.items
+                .insert(key.to_string(), LwwRegister::new(value.to_string()))?;
+            self.operation_count.increment()?;
+            self.operation_history
+                .push(LwwRegister::new(format!("Inserted: {} = {}", key, value)))?;
+        }
+
+        // Add multiple tags to the UnorderedSet
+        let sample_tags = [
+            "important",
+            "todo",
+            "archived",
+            "featured",
+            "pinned",
+            "read",
+            "unread",
+            "starred",
+            "draft",
+            "published",
+        ];
+
+        for tag in sample_tags {
+            self.tags.insert(tag.to_string())?;
+        }
+
+        // Add more history entries
+        let additional_history = [
+            "System initialized",
+            "Connected to network",
+            "Loaded configuration",
+            "User session started",
+            "Cache warmed up",
+        ];
+
+        for entry in additional_history {
+            self.operation_history
+                .push(LwwRegister::new(entry.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Get statistics about the store
+    pub fn get_stats(&self) -> app::Result<BTreeMap<String, u64>> {
+        let mut stats = BTreeMap::new();
+        stats.insert("items_count".to_string(), self.items.len()? as u64);
+        stats.insert("tags_count".to_string(), self.tags.len()? as u64);
+        stats.insert(
+            "history_count".to_string(),
+            self.operation_history.len()? as u64,
+        );
+        stats.insert("operation_count".to_string(), self.operation_count.value()?);
+        Ok(stats)
+    }
 }
