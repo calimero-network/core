@@ -119,7 +119,7 @@ pub fn create_router(config: Config) -> Router {
 /// Health check endpoint.
 async fn health_handler() -> impl IntoResponse {
     Json(serde_json::json!({
-        "status": "healthy",
+        "status": "alive",
         "service": "mero-kms-phala"
     }))
 }

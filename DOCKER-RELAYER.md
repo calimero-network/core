@@ -144,7 +144,7 @@ curl http://localhost:63529/health
 
 # Expected response:
 {
-  "status": "healthy",
+  "status": "alive",
   "service": "calimero-relayer", 
   "timestamp": "2025-09-15T11:26:22.601119003+00:00"
 }
