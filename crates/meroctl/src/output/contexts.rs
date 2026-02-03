@@ -20,7 +20,10 @@ impl Report for CreateContextResponse {
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Context ID", &self.data.context_id.to_string()]);
-        let _ = table.add_row(vec!["Member Public Key", &self.data.member_public_key.to_string()]);
+        let _ = table.add_row(vec![
+            "Member Public Key",
+            &self.data.member_public_key.to_string(),
+        ]);
         println!("{table}");
     }
 }
@@ -192,17 +195,20 @@ impl Report for InviteToContextOpenInvitationResponse {
             println!("{}", "Open Invitation Created Successfully".green());
             println!();
             println!("Open Invitation Payload:");
-            match serde_json::to_string(signed_invitation) {
-                Ok(json_payload) => {
-                    println!("{}", json_payload);
-                    println!();
-                    println!("To join, run from another node:");
-                    println!("  meroctl --node <NODE_ID> context --as <INVITEE_PUBLIC_KEY> join-by-open-invitation '{}'", json_payload);
+            let payload = match serde_json::to_string(signed_invitation) {
+                Ok(json_payload) => json_payload,
+                Err(e) => {
+                    eprintln!("Warning: could not serialize invitation as JSON ({e}), showing debug format");
+                    format!("{:?}", signed_invitation)
                 }
-                Err(_) => {
-                    println!("{:?}", signed_invitation);
-                }
-            }
+            };
+            println!("{}", payload);
+            println!();
+            println!("To join, run from another node:");
+            println!(
+                "  meroctl --node <NODE_ID> context join-by-open-invitation '{}' --as <INVITEE_PUBLIC_KEY>",
+                payload
+            );
         } else {
             println!("Failed to create an open invitation");
         }
