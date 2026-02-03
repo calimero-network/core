@@ -6703,6 +6703,7 @@ dependencies = [
  "semver 1.0.27",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
