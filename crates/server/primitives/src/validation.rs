@@ -50,6 +50,15 @@ pub const MAX_CONTEXT_KEY_LENGTH: usize = 1024;
 /// Maximum valid_for_blocks value (roughly 1 year at 1 block/second)
 pub const MAX_VALID_FOR_BLOCKS: u64 = 31_536_000;
 
+/// Maximum length for method names in execution requests
+pub const MAX_METHOD_NAME_LENGTH: usize = 256;
+
+/// Maximum size for JSON arguments in execution requests (10 MB)
+pub const MAX_ARGS_JSON_SIZE: usize = 10 * 1024 * 1024;
+
+/// Maximum number of substitute aliases in execution requests
+pub const MAX_SUBSTITUTE_ALIASES: usize = 100;
+
 /// Validation error types
 #[derive(Clone, Debug, ThisError)]
 pub enum ValidationError {
@@ -247,6 +256,55 @@ pub mod helpers {
                 field,
                 max: MAX_URL_LENGTH,
                 actual: url_str.len(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Validate method name format (alphanumeric, underscore, dollar sign only)
+    pub fn validate_method_name(value: &str, field: &'static str) -> Option<ValidationError> {
+        if value.is_empty() {
+            return Some(ValidationError::EmptyField { field });
+        }
+
+        if value.len() > MAX_METHOD_NAME_LENGTH {
+            return Some(ValidationError::StringTooLong {
+                field,
+                max: MAX_METHOD_NAME_LENGTH,
+                actual: value.len(),
+            });
+        }
+
+        // Method names should only contain alphanumeric characters, underscores, and dollar signs
+        for c in value.chars() {
+            if !c.is_ascii_alphanumeric() && c != '_' && c != '$' {
+                return Some(ValidationError::InvalidFormat {
+                    field,
+                    reason: format!(
+                        "contains invalid character '{}' (only ASCII alphanumeric, '_', and '$' are allowed)",
+                        c.escape_default()
+                    ),
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Validate JSON value size (serialized)
+    pub fn validate_json_size(
+        value: &serde_json::Value,
+        field: &'static str,
+        max: usize,
+    ) -> Option<ValidationError> {
+        // Estimate size by serializing to string
+        let size = value.to_string().len();
+        if size > max {
+            Some(ValidationError::PayloadTooLarge {
+                field,
+                max,
+                actual: size,
             })
         } else {
             None
