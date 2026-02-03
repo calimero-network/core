@@ -92,22 +92,22 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // Ensure deterministic root hash across all nodes.
-        // WASM execution may produce different hashes due to non-deterministic factors;
-        // use the delta author's expected_root_hash to maintain DAG consistency.
+        // Root hash mismatch indicates concurrent root modifications.
+        // With mergeable deltas, the merge logic in storage layer handles this correctly.
+        // The computed hash after merge may differ from expected hash if concurrent modifications occurred.
+        // This is expected behavior - the merge produces the correct merged state.
         let computed_hash = outcome.root_hash;
         if *computed_hash != delta.expected_root_hash {
-            warn!(
+            debug!(
                 context_id = %self.context_id,
                 delta_id = ?delta.id,
                 computed_hash = ?computed_hash,
                 expected_hash = ?Hash::from(delta.expected_root_hash),
-                "Root hash mismatch - using expected hash for consistency"
+                "Root hash mismatch after merge - this is expected for concurrent root modifications"
             );
-
-            self.context_client
-                .force_root_hash(&self.context_id, delta.expected_root_hash.into())
-                .map_err(|e| ApplyError::Application(format!("Failed to set root hash: {}", e)))?;
+            // Note: With mergeable deltas, we don't force the hash.
+            // The merge logic produces the correct merged state, which may have a different hash
+            // than the expected hash from the original delta (which was computed before merge).
         }
 
         debug!(
@@ -545,29 +545,18 @@ impl DeltaStore {
             .update_dag_heads(&self.applier.context_id, heads.clone())
             .map_err(|e| eyre::eyre!("Failed to update dag_heads: {}", e))?;
 
-        // Deterministic root hash selection for concurrent branches.
-        // When multiple DAG heads exist, use the lexicographically smallest head's root_hash
-        // to ensure all nodes converge to the same root regardless of delta arrival order.
+        // With mergeable deltas, multiple DAG heads indicate concurrent branches.
+        // These will be resolved by merge deltas created during application commits.
+        // The merge logic in storage layer handles root state merging correctly.
         if heads.len() > 1 {
-            let head_hashes = self.head_root_hashes.read().await;
-            let mut sorted_heads = heads.clone();
-            sorted_heads.sort();
-            let canonical_head = sorted_heads[0];
-
-            if let Some(&canonical_root_hash) = head_hashes.get(&canonical_head) {
-                debug!(
-                    context_id = %self.applier.context_id,
-                    heads_count = heads.len(),
-                    canonical_head = ?canonical_head,
-                    canonical_root = ?canonical_root_hash,
-                    "Multiple DAG heads - using deterministic root hash selection"
-                );
-
-                self.applier
-                    .context_client
-                    .force_root_hash(&self.applier.context_id, canonical_root_hash.into())
-                    .map_err(|e| eyre::eyre!("Failed to set canonical root hash: {}", e))?;
-            }
+            debug!(
+                context_id = %self.applier.context_id,
+                heads_count = heads.len(),
+                "Multiple DAG heads detected - merge deltas will resolve forks during commit"
+            );
+            // Note: With mergeable deltas, we don't force a canonical root hash.
+            // Merge deltas created during commit will merge all head states using
+            // the registered merge function, producing the correct merged root state.
         }
 
         // Cleanup old head hashes that are no longer active

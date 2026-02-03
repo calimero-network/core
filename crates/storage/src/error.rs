@@ -59,6 +59,10 @@ pub enum StorageError {
     #[error("Serialization error: {0}")]
     SerializationError(IoError),
 
+    /// An error occurred during CRDT merge.
+    #[error("Merge error: {0}")]
+    MergeError(String),
+
     /// An error from the Store.
     #[error("Store error: {0}")]
     StoreError(#[from] Report),
@@ -85,6 +89,7 @@ impl Serialize for StorageError {
             )),
             Self::InvalidData(ref msg) => serializer.serialize_str(msg),
             Self::InvalidSignature => serializer.serialize_str("Invalid signature"),
+            Self::MergeError(ref msg) => serializer.serialize_str(msg),
             Self::NonceReplay(ref data) => {
                 let (pk, nonce) = &**data;
                 serializer.serialize_str(&format!("Nonce replay for {}: {}", pk, nonce))

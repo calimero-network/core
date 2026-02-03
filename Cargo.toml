@@ -84,6 +84,7 @@ members = [
     "./apps/private_data",
     "./apps/blobs",
     "./apps/collaborative-editor",
+    "./apps/comprehensive-crdt-test",
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",

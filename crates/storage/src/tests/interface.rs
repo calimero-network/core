@@ -88,16 +88,27 @@ mod interface__public_methods {
 
     #[test]
     fn save__too_old() {
-        let element1 = Element::root();
+        // Use a non-root element because root entities always merge (CRDT behavior)
+        // Non-root entities use LWW: older timestamps are rejected
+        let element1 = Element::new(None);
         let mut page1 = Page::new_from_element("Node", element1);
         let mut page2 = page1.clone();
 
-        assert!(MainInterface::save(&mut page1).unwrap());
+        // First, create a parent so the non-root entity can be saved
+        let root_element = Element::root();
+        let mut root_page = Page::new_from_element("Root", root_element);
+        assert!(MainInterface::save(&mut root_page).unwrap());
+
+        // Add page1 as child of root
+        assert!(MainInterface::add_child_to(root_page.id(), &mut page1).unwrap());
+
+        // Now test too_old behavior for non-root entity
         page2.element_mut().update();
         sleep(Duration::from_millis(2));
         page1.element_mut().update();
-        assert!(MainInterface::save(&mut page1).unwrap());
-        assert!(!MainInterface::save(&mut page2).unwrap());
+        assert!(MainInterface::add_child_to(root_page.id(), &mut page1).unwrap());
+        // page2 has older timestamp, should be rejected (LWW)
+        assert!(!MainInterface::add_child_to(root_page.id(), &mut page2).unwrap());
     }
 
     #[test]

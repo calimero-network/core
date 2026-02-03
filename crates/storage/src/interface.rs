@@ -46,10 +46,12 @@ use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::address::Id;
+use crate::collections::crdt_meta::CrdtType;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
+use crate::merge::{try_merge_by_type_name, try_merge_registered, WasmMergeCallback};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -705,6 +707,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        use tracing::debug;
+
         // Check if entity is deleted (tombstone)
         if <Index<S>>::is_deleted(id)? {
             return Ok(None); // Entity is deleted
@@ -716,7 +720,27 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(None);
         };
 
-        let mut item = from_slice::<D>(&slice).map_err(StorageError::DeserializationError)?;
+        debug!(
+            target: "storage::interface",
+            "find_by_id: deserializing entity, id={}, data_len={}",
+            id,
+            slice.len()
+        );
+
+        let mut item = match from_slice::<D>(&slice) {
+            Ok(item) => item,
+            Err(e) => {
+                debug!(
+                    target: "storage::interface",
+                    "find_by_id: deserialization failed, id={}, error={}, data_len={}, data_preview={:?}",
+                    id,
+                    e,
+                    slice.len(),
+                    if slice.len() > 100 { &slice[..100] } else { &slice }
+                );
+                return Err(StorageError::DeserializationError(e));
+            }
+        };
 
         let (full_hash, _) =
             <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
@@ -725,6 +749,13 @@ impl<S: StorageAdaptor> Interface<S> {
 
         item.element_mut().metadata =
             <Index<S>>::get_metadata(id)?.ok_or(StorageError::IndexNotFound(id))?;
+
+        debug!(
+            target: "storage::interface",
+            "find_by_id: successfully deserialized entity, id={}, metadata_crdt_type={:?}",
+            id,
+            item.element().metadata.crdt_type
+        );
 
         Ok(Some(item))
     }
@@ -948,27 +979,53 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: Metadata,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
-        let incoming_created_at = metadata.created_at;
-        let incoming_updated_at = metadata.updated_at();
+        let _incoming_created_at = metadata.created_at;
+        let _incoming_updated_at = metadata.updated_at();
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
-            if last_metadata.updated_at > metadata.updated_at {
-                return Ok(None);
-            } else if id.is_root() {
-                // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
-                // Even if incoming is newer, we merge to avoid losing concurrent updates
+            // CRITICAL: Root entities with crdt_type ALWAYS merge, regardless of timestamps!
+            // CRDT merge is idempotent and based on data, not timestamps.
+            // For backward compatibility, root entities WITHOUT crdt_type use LWW.
+            let has_crdt_type = metadata.crdt_type.is_some() || last_metadata.crdt_type.is_some();
+            if id.is_root() && has_crdt_type {
+                // Root entity (app state) with CRDT type - ALWAYS merge to preserve CRDTs
+                // Even if incoming is older, we merge to avoid losing concurrent updates
+                // EXCEPT during initialization where merge fails - allow overwriting incompatible state
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
-                    Self::try_merge_data(
+                    // Check if this appears to be initialization (created_at == updated_at or very close)
+                    let is_init = metadata.created_at == metadata.updated_at()
+                        || metadata.updated_at().saturating_sub(metadata.created_at)
+                            < 1_000_000_000; // Within 1 second
+                    match Self::try_merge_data(
                         id,
                         &existing_data,
                         data,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
-                    )?
+                    ) {
+                        Ok(merged) => merged,
+                        Err(e) if is_init => {
+                            // During initialization, if merge fails (e.g., incompatible state from previous run),
+                            // allow overwriting existing state instead of failing
+                            // This handles cases where leftover state exists but can't be deserialized/merged
+                            debug!(
+                                %id,
+                                error = %e,
+                                created_at = metadata.created_at,
+                                updated_at = %metadata.updated_at(),
+                                "Merge failed during initialization, overwriting existing state"
+                            );
+                            data.to_vec()
+                        }
+                        Err(e) => return Err(e),
+                    }
                 } else {
                     data.to_vec()
                 }
+            } else if last_metadata.updated_at > metadata.updated_at {
+                // Non-root or root without crdt_type: skip if existing is newer (LWW)
+                return Ok(None);
             } else if last_metadata.updated_at == metadata.updated_at {
                 // Concurrent update (same timestamp) - try to merge
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
@@ -1006,9 +1063,10 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Attempt to merge two versions of data using CRDT semantics.
     ///
-    /// Returns the merged data, falling back to LWW (newer data) on failure.
+    /// For root entities: MUST use registered merge function - never falls back to LWW.
+    /// For non-root entities: Falls back to LWW if merge fails.
     fn try_merge_data(
-        _id: Id,
+        id: Id,
         existing: &[u8],
         incoming: &[u8],
         existing_timestamp: u64,
@@ -1016,11 +1074,49 @@ impl<S: StorageAdaptor> Interface<S> {
     ) -> Result<Vec<u8>, StorageError> {
         use crate::merge::merge_root_state;
 
+        // For root entities, handle legacy Collection<T> format (32 bytes = just Id)
+        // If existing state is Collection<T> format, it means we're migrating from old format
+        // In this case, the incoming state (T format) should be used directly
+        // This is safe because:
+        // 1. The incoming state is the new format (T)
+        // 2. The existing state is the old format (Collection<T>)
+        // 3. We can't merge them without knowing T at compile time
+        // 4. The incoming state is being saved now, so it's the current state
+        if id.is_root() {
+            // Try to deserialize as T first - if it fails with "Unexpected length" and existing is 32 bytes,
+            // it's likely Collection<T> format
+            if existing.len() == 32 {
+                // Legacy Collection<T> format - use incoming state as migration
+                debug!(
+                    %id,
+                    existing_len = existing.len(),
+                    incoming_len = incoming.len(),
+                    "Existing state is Collection<T> format (legacy, 32 bytes), using incoming state as migration"
+                );
+                return Ok(incoming.to_vec());
+            }
+            // If existing is not 32 bytes but deserialization fails, log for debugging
+            debug!(
+                %id,
+                existing_len = existing.len(),
+                incoming_len = incoming.len(),
+                "Attempting to merge root state"
+            );
+        }
+
         // Attempt CRDT merge
         match merge_root_state(existing, incoming, existing_timestamp, incoming_timestamp) {
             Ok(merged) => Ok(merged),
-            Err(_) => {
-                // Merge failed - fall back to LWW
+            Err(e) => {
+                if id.is_root() {
+                    // Root MUST use registered merge - never fall back to LWW
+                    // This ensures UserStorage, FrozenStorage, and other CRDTs merge correctly
+                    return Err(StorageError::MergeError(format!(
+                        "Root state merge failed: {}. Root state requires registered merge function via register_crdt_merge().",
+                        e
+                    )));
+                }
+                // For non-root entities, fall back to LWW if merge fails
                 if incoming_timestamp >= existing_timestamp {
                     Ok(incoming.to_vec())
                 } else {
@@ -1028,6 +1124,251 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
         }
+    }
+
+    /// Merge entities with optional WASM callback for custom types.
+    ///
+    /// This is the main entry point for CRDT merge during state synchronization.
+    /// Dispatches based on `local_metadata.crdt_type`:
+    /// - Built-in CRDTs (Counter, Map, etc.) → merge directly in storage layer
+    /// - Custom types → dispatch to WASM callback
+    /// - None/unknown → fallback to LWW
+    ///
+    /// # Arguments
+    /// * `local_data` - Local entity data (bytes)
+    /// * `remote_data` - Remote entity data (bytes)
+    /// * `local_metadata` - Local entity metadata (includes crdt_type)
+    /// * `remote_metadata` - Remote entity metadata
+    /// * `callback` - Optional WASM callback for custom types
+    ///
+    /// # Returns
+    /// * `Ok(Some(merged))` - Merged data
+    /// * `Ok(None)` - Merge not applicable
+    /// * `Err(...)` - Merge failed
+    ///
+    /// # Errors
+    /// Returns `StorageError` if:
+    /// - Deserialization of local or remote data fails
+    /// - The CRDT merge operation fails
+    /// - Custom WASM callback fails for custom types
+    pub fn merge_by_crdt_type_with_callback(
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_metadata: &Metadata,
+        remote_metadata: &Metadata,
+        callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        #[allow(unused_imports)]
+        use crate::collections::{LwwRegister, Mergeable};
+
+        let crdt_type = local_metadata.crdt_type.as_ref();
+
+        match crdt_type {
+            // ════════════════════════════════════════════════════════
+            // BUILT-IN CRDTs: Merge in storage layer (fast, no WASM)
+            // Includes: LwwRegister, Counter, UnorderedMap, UnorderedSet,
+            // Vector, RGA, UserStorage, FrozenStorage, Record
+            // ════════════════════════════════════════════════════════
+            Some(CrdtType::LwwRegister) => {
+                // LWW uses timestamps for deterministic resolution
+                // Note: For typed LwwRegister<T>, the merge just compares timestamps
+                // Here we're working with raw bytes, so compare metadata timestamps
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
+            }
+
+            Some(CrdtType::Counter) => {
+                // Counter merges by summing per-node counts
+                // Requires deserializing the Counter struct
+                // For now, fallback to registry or LWW since Counter has complex internal structure
+                Self::try_merge_via_registry_or_lww(
+                    local_data,
+                    remote_data,
+                    local_metadata,
+                    remote_metadata,
+                )
+            }
+
+            Some(CrdtType::UnorderedMap)
+            | Some(CrdtType::UnorderedSet)
+            | Some(CrdtType::Vector) => {
+                // Collections are merged at the entry level via their child IDs
+                // The collection container itself uses LWW for its metadata
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
+            }
+
+            Some(CrdtType::Rga) => {
+                // RGA is built on UnorderedMap, merge happens at character level
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
+            }
+
+            Some(CrdtType::UserStorage) | Some(CrdtType::FrozenStorage) => {
+                // UserStorage and FrozenStorage are wrappers around UnorderedMap
+                // They implement Mergeable and merge at the entry level via their child IDs
+                // Use registry merge to properly merge the underlying UnorderedMap
+                Self::try_merge_via_registry_or_lww(
+                    local_data,
+                    remote_data,
+                    local_metadata,
+                    remote_metadata,
+                )
+            }
+
+            Some(CrdtType::Record) => {
+                // Record types merge field-by-field using registered merge functions
+                Self::try_merge_via_registry_or_lww(
+                    local_data,
+                    remote_data,
+                    local_metadata,
+                    remote_metadata,
+                )
+            }
+
+            // ════════════════════════════════════════════════════════
+            // CUSTOM TYPES: Use WASM callback, registry, or LWW fallback
+            // ════════════════════════════════════════════════════════
+            Some(CrdtType::Custom { type_name }) => {
+                // Custom types need WASM callback for proper merge
+                Self::try_merge_custom_with_registry(
+                    type_name.as_str(),
+                    local_data,
+                    remote_data,
+                    local_metadata,
+                    remote_metadata,
+                    callback,
+                )
+            }
+
+            // ════════════════════════════════════════════════════════
+            // LEGACY: No type info, use LWW
+            // ════════════════════════════════════════════════════════
+            None => {
+                // Legacy data - fallback to LWW
+                let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+                    remote_data
+                } else {
+                    local_data
+                };
+                Ok(Some(winner.to_vec()))
+            }
+        }
+    }
+
+    /// Try merge via registry, fallback to LWW if not registered.
+    fn try_merge_via_registry_or_lww(
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_metadata: &Metadata,
+        remote_metadata: &Metadata,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        // Try registered merge functions
+        if let Some(result) = try_merge_registered(
+            local_data,
+            remote_data,
+            local_metadata.updated_at(),
+            remote_metadata.updated_at(),
+        ) {
+            match result {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(_) => {} // Fall through to LWW
+            }
+        }
+
+        // Fallback to LWW
+        let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+            remote_data
+        } else {
+            local_data
+        };
+        Ok(Some(winner.to_vec()))
+    }
+
+    /// Merge custom type using WASM callback, registry, or LWW fallback.
+    ///
+    /// Priority:
+    /// 1. WASM callback (if provided) - for runtime-managed WASM merge
+    /// 2. Type-name registry - for types registered via `register_crdt_merge`
+    /// 3. Brute-force registry - legacy fallback
+    /// 4. LWW fallback
+    fn try_merge_custom_with_registry(
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_metadata: &Metadata,
+        remote_metadata: &Metadata,
+        callback: Option<&dyn WasmMergeCallback>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        // 1. Try WASM callback first (production path)
+        if let Some(cb) = callback {
+            match cb.merge_custom(
+                type_name,
+                local_data,
+                remote_data,
+                local_metadata.updated_at(),
+                remote_metadata.updated_at(),
+            ) {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(e) => {
+                    debug!("WASM merge failed for {}: {}, falling back", type_name, e);
+                    // Fall through to registry/LWW
+                }
+            }
+        }
+
+        // 2. Try type-name registry (efficient lookup)
+        if let Some(result) = try_merge_by_type_name(
+            type_name,
+            local_data,
+            remote_data,
+            local_metadata.updated_at(),
+            remote_metadata.updated_at(),
+        ) {
+            match result {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(e) => {
+                    debug!(
+                        "Type-name merge failed for {}: {}, falling back",
+                        type_name, e
+                    );
+                    // Fall through to brute-force/LWW
+                }
+            }
+        }
+
+        // 3. Try brute-force registry (legacy fallback)
+        if let Some(result) = try_merge_registered(
+            local_data,
+            remote_data,
+            local_metadata.updated_at(),
+            remote_metadata.updated_at(),
+        ) {
+            match result {
+                Ok(merged) => return Ok(Some(merged)),
+                Err(_) => {} // Fall through to LWW
+            }
+        }
+
+        // 4. Fallback to LWW
+        let winner = if remote_metadata.updated_at() >= local_metadata.updated_at() {
+            remote_data
+        } else {
+            local_data
+        };
+        Ok(Some(winner.to_vec()))
     }
 
     /// Saves raw serialized data with orphan checking.

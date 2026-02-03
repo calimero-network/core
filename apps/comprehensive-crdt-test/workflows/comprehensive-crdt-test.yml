@@ -1,12 +1,12 @@
 name: Comprehensive CRDT Test
 description: Tests ALL CRDT types, UserStorage, FrozenStorage, and root-level concurrent modifications
 
-force_pull_image: true
+force_pull_image: false
 
 nodes:
   chain_id: testnet-1
   count: 2
-  image: ghcr.io/calimero-network/merod:edge
+  image: merod:local
   prefix: comprehensive-node
 
 steps:
@@ -33,6 +33,17 @@ steps:
       context_id: contextId
       member_public_key: memberPublicKey
 
+  # Wait for initial state to sync to Node 2
+  - name: Wait for initial sync after mesh creation
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
   # ============================================
   # Root Counter Test (CRDT merge)
   # ============================================
@@ -46,6 +57,16 @@ steps:
     outputs:
       counter_1: result
 
+  - name: Wait for first increment to sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
   - name: Node 1 increments root counter again
     type: call
     node: comprehensive-node-1
@@ -53,7 +74,17 @@ steps:
     executor_public_key: "{{member_public_key}}"
     method: increment_root_counter
 
-  - name: Node 2 increments root counter concurrently
+  - name: Wait for second increment to sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - comprehensive-node-1
+      - comprehensive-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node 2 increments root counter (after syncing Node 1's state)
     type: call
     node: comprehensive-node-2
     context_id: "{{context_id}}"

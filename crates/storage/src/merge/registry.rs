@@ -108,13 +108,46 @@ pub fn try_merge_registered(
     // Try each registered merge function (brute force for Phase 2)
     let registry = MERGE_REGISTRY.read().ok()?;
 
+    if registry.is_empty() {
+        return None;
+    }
+
+    let mut last_error: Option<Box<dyn std::error::Error>> = None;
     for (_type_id, merge_fn) in registry.iter() {
-        if let Ok(merged) = merge_fn(existing, incoming, existing_ts, incoming_ts) {
-            return Some(Ok(merged));
+        match merge_fn(existing, incoming, existing_ts, incoming_ts) {
+            Ok(merged) => return Some(Ok(merged)),
+            Err(e) => {
+                // Store the last error to provide better diagnostics
+                last_error = Some(e);
+            }
         }
     }
 
-    None
+    // All registered merge functions failed - return the last error for better diagnostics
+    if let Some(err) = last_error {
+        Some(Err(err))
+    } else {
+        None
+    }
+}
+
+/// Try to merge using type name (for CrdtType::Custom dispatch).
+///
+/// This function attempts to match the type name against registered types.
+/// Since we don't have a type-name registry yet, this falls back to
+/// trying all registered merge functions (same as `try_merge_registered`).
+///
+/// In the future, this can be optimized with a type-name-to-TypeId mapping.
+pub fn try_merge_by_type_name(
+    _type_name: &str,
+    existing: &[u8],
+    incoming: &[u8],
+    existing_ts: u64,
+    incoming_ts: u64,
+) -> Option<Result<Vec<u8>, Box<dyn std::error::Error>>> {
+    // For now, fall back to brute-force registry lookup
+    // TODO: Add type-name-to-TypeId mapping for efficient lookup
+    try_merge_registered(existing, incoming, existing_ts, incoming_ts)
 }
 
 #[cfg(test)]
