@@ -24,7 +24,12 @@ const USER_AGENT: &str = "calimero-server-build";
 const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
 const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
 const CALIMERO_WEBUI_VERSION: &str = "latest";
-const CALIMERO_WEBUI_SRC_URL: &str = "https://api.github.com/repos/{repo}/releases/{version}";
+const CALIMERO_WEBUI_DEFAULT_ASSET: &str = "admin-dashboard-build.zip";
+const CALIMERO_WEBUI_RELEASE_API_URL: &str = "https://api.github.com/repos/{repo}/releases/{version}";
+const CALIMERO_WEBUI_RELEASE_DOWNLOAD_LATEST_URL: &str =
+    "https://github.com/{repo}/releases/latest/download/{asset}";
+const CALIMERO_WEBUI_RELEASE_DOWNLOAD_TAG_URL: &str =
+    "https://github.com/{repo}/releases/download/{version}/{asset}";
 
 fn main() {
     if let Err(e) = try_main() {
@@ -59,52 +64,59 @@ fn try_main() -> eyre::Result<()> {
     } else {
         let repo = option_env!("CALIMERO_WEBUI_REPO").unwrap_or(CALIMERO_WEBUI_REPO);
         let version = option_env!("CALIMERO_WEBUI_VERSION").unwrap_or(CALIMERO_WEBUI_VERSION);
+        let asset = option_env!("CALIMERO_WEBUI_ASSET");
 
-        let release_url = replace(CALIMERO_WEBUI_SRC_URL.into(), |var| match var {
-            "repo" => Some(repo),
-            "version" => Some(version),
-            _ => None,
-        });
+        if let Some(asset) = asset {
+            release_download_url(repo, version, asset).into()
+        } else if repo == CALIMERO_WEBUI_REPO {
+            release_download_url(repo, version, CALIMERO_WEBUI_DEFAULT_ASSET).into()
+        } else {
+            let release_url = replace(CALIMERO_WEBUI_RELEASE_API_URL.into(), |var| match var {
+                "repo" => Some(repo),
+                "version" => Some(version),
+                _ => None,
+            });
 
-        let builder = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
-            .build()?;
+            let builder = reqwest::blocking::Client::builder()
+                .user_agent(USER_AGENT)
+                .build()?;
 
-        let mut req = builder.get(&*release_url);
+            let mut req = builder.get(&*release_url);
 
-        if let Some(token) = token {
-            req = req.bearer_auth(token);
-        }
-
-        let res = req.send()?;
-
-        let Release { mut assets } = match Response::try_from(res)? {
-            Response::Json(value) => serde_json::from_value(value)?,
-            other => bail!("expected json response, got: {:?}", other),
-        };
-
-        let asset = match assets.pop() {
-            None => bail!("no assets found in release"),
-            Some(asset) if assets.is_empty() => asset,
-            Some(asset) => {
-                let file = option_env!("CALIMERO_WEBUI_ASSET");
-                let file = file.ok_or_eyre(
-                    "multiple assets found, but no `CALIMERO_WEBUI_ASSET` environment variable set",
-                )?;
-
-                let found = [asset]
-                    .into_iter()
-                    .chain(assets)
-                    .find(|asset| asset.name == file);
-
-                found.ok_or_eyre(format!(
-                    "no asset found with name `{file}` in release (env: CALIMERO_WEBUI_ASSET)"
-                ))?
+            if let Some(token) = token {
+                req = req.bearer_auth(token);
             }
-        };
 
-        // Prefer browser download URLs to avoid the asset API endpoint.
-        asset.browser_download_url.into()
+            let res = req.send()?;
+
+            let Release { mut assets } = match Response::try_from(res)? {
+                Response::Json(value) => serde_json::from_value(value)?,
+                other => bail!("expected json response, got: {:?}", other),
+            };
+
+            let asset = match assets.pop() {
+                None => bail!("no assets found in release"),
+                Some(asset) if assets.is_empty() => asset,
+                Some(asset) => {
+                    let file = option_env!("CALIMERO_WEBUI_ASSET");
+                    let file = file.ok_or_eyre(
+                        "multiple assets found, but no `CALIMERO_WEBUI_ASSET` environment variable set",
+                    )?;
+
+                    let found = [asset]
+                        .into_iter()
+                        .chain(assets)
+                        .find(|asset| asset.name == file);
+
+                    found.ok_or_eyre(format!(
+                        "no asset found with name `{file}` in release (env: CALIMERO_WEBUI_ASSET)"
+                    ))?
+                }
+            };
+
+            // Prefer browser download URLs to avoid the asset API endpoint.
+            asset.browser_download_url.into()
+        }
     };
 
     let webui_dir = if is_local_dir {
@@ -171,6 +183,22 @@ fn target_dir() -> eyre::Result<PathBuf> {
     }
 
     eyre::bail!("failed to resolve target dir");
+}
+
+fn release_download_url(repo: &str, version: &str, asset: &str) -> String {
+    let template = if version == "latest" {
+        CALIMERO_WEBUI_RELEASE_DOWNLOAD_LATEST_URL
+    } else {
+        CALIMERO_WEBUI_RELEASE_DOWNLOAD_TAG_URL
+    };
+
+    replace(template.into(), |var| match var {
+        "repo" => Some(repo),
+        "version" => Some(version),
+        "asset" => Some(asset),
+        _ => None,
+    })
+    .into_owned()
 }
 
 #[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
