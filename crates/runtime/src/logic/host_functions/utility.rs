@@ -6,7 +6,7 @@ use crate::{
     errors::HostError,
     logic::{sys, VMHostFunctions, VMLogicResult},
 };
-use tracing::{debug, trace};
+use tracing::debug;
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 
