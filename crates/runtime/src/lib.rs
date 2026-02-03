@@ -62,10 +62,10 @@ fn validate_method_name(method: &str, max_length: u64) -> Result<(), FunctionCal
         ));
     }
 
-    // Validate characters: only allow ASCII alphanumeric, underscore, and dollar sign
+    // Validate characters: only allow ASCII alphanumeric and underscore
     // This covers typical WASM export names and Rust/JS function naming conventions
     for (position, character) in method.chars().enumerate() {
-        if !character.is_ascii_alphanumeric() && character != '_' && character != '$' {
+        if !character.is_ascii_alphanumeric() && character != '_' {
             return Err(FunctionCallError::MethodResolutionError(
                 errors::MethodResolutionError::InvalidMethodNameCharacter {
                     name: method.to_owned(),
@@ -647,8 +647,6 @@ mod wasm_panic_integration_tests {
             "CamelCase",
             "mixedCase123",
             "numbers123",
-            "$dollar_start",
-            "contains$dollar",
             "ALLCAPS",
             "a", // single character
         ];
