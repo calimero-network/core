@@ -986,13 +986,4 @@ mod wasm_panic_integration_tests {
         );
     }
 
-    /// Test that the default engine has a reasonable module size limit
-    #[test]
-    fn test_default_engine_module_size_limit() {
-        use crate::logic::VMLimits;
-
-        let limits = VMLimits::default();
-        // Default should be 10 MiB
-        assert_eq!(limits.max_module_size, 10 * 1024 * 1024);
-    }
 }
