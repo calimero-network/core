@@ -91,19 +91,23 @@ jobs:
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
 
   build-binaries:
-    name: Build Binaries
+    name: Build Binaries (${{ matrix.name }})
     needs: prepare
     strategy:
       matrix:
         include:
-          - os: big-machine
+          # Keep legacy check names for required status checks.
+          - name: ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu
+            runner: big-machine
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
+          - name: ubuntu-24.04-arm, aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-latest
+          - name: macos-latest, aarch64-apple-darwin
+            runner: macos-latest
             target: aarch64-apple-darwin
       fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
 
     env:
       CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
