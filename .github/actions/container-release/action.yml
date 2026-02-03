@@ -23,6 +23,14 @@ inputs:
   container_name:
     description: "Name of the container to build and push"
     required: true
+  platforms:
+    description: "Docker platforms to build"
+    required: false
+    default: "linux/amd64,linux/arm64"
+  include_aarch64:
+    description: "Whether to include aarch64 binaries"
+    required: false
+    default: "true"
   github-token:
     description: "GitHub token"
     required: true
@@ -39,6 +47,7 @@ runs:
 
     - name: Download aarch64 binaries
       uses: actions/download-artifact@v4
+      if: ${{ inputs.include_aarch64 == 'true' }}
       with:
         pattern: artifacts-aarch64-unknown-linux-gnu
         path: binaries/
@@ -46,9 +55,13 @@ runs:
 
     - name: Extract Linux binaries
       shell: bash
+      env:
+        INCLUDE_AARCH64: ${{ inputs.include_aarch64 }}
       run: |
         mkdir -p ./bin/amd64
-        mkdir -p ./bin/arm64
+        if [ "$INCLUDE_AARCH64" = "true" ]; then
+          mkdir -p ./bin/arm64
+        fi
 
         readarray -t binaries <<< "${{ inputs.binaries }}"
 
@@ -56,7 +69,9 @@ runs:
           echo "Extracting ${binary} binaries"
 
           tar -xzf binaries/${binary}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
-          tar -xzf binaries/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
+          if [ "$INCLUDE_AARCH64" = "true" ]; then
+            tar -xzf binaries/${binary}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
+          fi
         done
 
     - name: Set up QEMU
@@ -116,16 +131,33 @@ runs:
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 
+    - name: Resolve buildx annotations
+      id: resolve-annotations
+      shell: bash
+      env:
+        PLATFORMS: ${{ inputs.platforms }}
+        METADATA_ANNOTATIONS: ${{ steps.metadata.outputs.annotations }}
+      run: |
+        if [[ "$PLATFORMS" == *","* ]]; then
+          {
+            echo "annotations<<EOF"
+            echo "$METADATA_ANNOTATIONS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        else
+          echo "annotations=" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Build and push image
       uses: docker/build-push-action@v5
       with:
         context: .
         file: ${{ inputs.dockerfile }}
         push: ${{ inputs.push == 'true' }}
-        platforms: linux/amd64,linux/arm64
+        platforms: ${{ inputs.platforms }}
         tags: ${{ steps.metadata.outputs.tags }}
         labels: ${{ steps.metadata.outputs.labels }}
-        annotations: ${{ steps.metadata.outputs.annotations }}
+        annotations: ${{ steps.resolve-annotations.outputs.annotations }}
         cache-from: ${{ steps.prepare.outputs.cache_from }}
         cache-to: ${{ steps.prepare.outputs.cache_to }}
         provenance: false
