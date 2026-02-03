@@ -1,3 +1,4 @@
+use crate::panic_payload::panic_payload_to_string;
 use crate::{
     errors::HostError,
     logic::{sys, VMHostFunctions, VMLogicResult},
@@ -360,9 +361,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -548,9 +550,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -677,9 +680,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -860,9 +864,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -965,9 +970,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -1069,9 +1075,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -1266,9 +1273,10 @@ impl VMHostFunctions<'_> {
                 Ok(0)
             }
             Ok(Err(err)) => self.write_error_message(dest_register_id, err),
-            Err(payload) => {
-                self.write_error_message(dest_register_id, panic_payload_to_string(payload))
-            }
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
         }
     }
 
@@ -1791,15 +1799,5 @@ fn save_js_frozen_storage_instance(storage: &mut JsFrozenStorage) -> Result<(), 
             }
         }
         Err(err) => Err(err.to_string()),
-    }
-}
-
-fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        (*message).to_owned()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "unknown panic".to_owned()
     }
 }
