@@ -17,10 +17,10 @@ cargo build --release
 
 ```bash
 # Initialize a node with default settings
-merod --node-name node1 init
+merod --node node1 init
 
 # Run the node
-merod --node-name node1 run
+merod --node node1 run
 ```
 
 ## Commands
@@ -31,33 +31,33 @@ Initialize a new node configuration:
 
 ```bash
 # Basic initialization
-merod --node-name node1 init
+merod --node node1 init
 
 # Custom ports
-merod --node-name node1 init \
+merod --node node1 init \
   --server-port 2428 \
   --swarm-port 2528
 
 # Custom home directory
 mkdir data
-merod --home data/ --node-name node1 init
+merod --home data/ --node node1 init
 
 # With bootstrap nodes
-merod --node-name node1 init \
+merod --node node1 init \
   --boot-nodes /ip4/127.0.0.1/tcp/2528
 
 # With protocol configuration (NEAR, Ethereum, ICP, Starknet)
-merod --node-name node1 init \
+merod --node node1 init \
   --protocol near \
   --relayer-url https://relayer.near.org
 
 # Authentication mode
-merod --node-name node1 init \
+merod --node node1 init \
   --auth-mode embedded \
   --auth-storage persistent
 
 # Force re-initialization
-merod --node-name node1 init --force
+merod --node node1 init --force
 ```
 
 **Init Options:**
@@ -80,34 +80,23 @@ merod --node-name node1 init --force
 
 ### Configure Node (`config`)
 
-Update configuration of an existing node:
+Update configuration of an existing node using TOML key=value pairs. Use the same key paths as in `config.toml` (e.g. `server.listen`, `swarm.listen`, `bootstrap.nodes`). In zsh, quote the argument so `[` and `]` are not globbed.
 
 ```bash
-# Configure server host and port
-merod --node-name node1 config \
-  --server-host 0.0.0.0 \
-  --server-port 3000
+# Configure server listen addresses (quote in zsh)
+merod --node node1 config "server.listen=['/ip4/0.0.0.0/tcp/3000']"
 
-# Configure swarm settings
-merod --node-name node1 config \
-  --swarm-host 0.0.0.0 \
-  --swarm-port 2428
+# Configure swarm listen addresses
+merod --node node1 config "swarm.listen=['/ip4/0.0.0.0/tcp/2528']"
 
 # Configure bootstrap nodes
-merod --node-name node1 config \
-  --swarm-addrs /ip4/127.0.0.1/tcp/2528
+merod --node node1 config "bootstrap.nodes=['/ip4/127.0.0.1/tcp/2528/p2p/PEER_ID']"
 
-# Configure protocol and relayer
-merod --node-name node1 config \
-  --protocol near \
-  --relayer-url https://relayer.near.org
-
-# Configure multiple settings
-merod --node-name node1 config \
-  --server-host 192.168.1.100 \
-  --server-port 8080 \
-  --swarm-port 9090
+# Multiple key=value pairs
+merod --node node1 config "server.listen=['/ip4/192.168.1.100/tcp/8080']" "swarm.listen=['/ip4/0.0.0.0/tcp/9090']"
 ```
+
+Run `merod --help` for more examples.
 
 ### Run Node (`run`)
 
@@ -115,13 +104,13 @@ Start and run the configured node:
 
 ```bash
 # Run with default configuration
-merod --node-name node1 run
+merod --node node1 run
 
 # Run with custom home directory
-merod --home ~/.calimero-custom --node-name node1 run
+merod --home ~/.calimero-custom --node node1 run
 
 # Override auth mode at runtime
-merod --node-name node1 run --auth-mode embedded
+merod --node node1 run --auth-mode embedded
 ```
 
 ## Environment Variables
@@ -166,18 +155,18 @@ To run a local multi-node network:
 
 ```bash
 # Terminal 1: First node (coordinator)
-merod --node-name node1 init --server-port 2428 --swarm-port 2528
-merod --node-name node1 run
+merod --node node1 init --server-port 2428 --swarm-port 2528
+merod --node node1 run
 
 # Terminal 2: Second node (peer)
-merod --node-name node2 init --server-port 2429 --swarm-port 2529
-merod --node-name node2 config --swarm-addrs /ip4/127.0.0.1/tcp/2528
-merod --node-name node2 run
+merod --node node2 init --server-port 2429 --swarm-port 2529
+merod --node node2 config "bootstrap.nodes=['/ip4/127.0.0.1/tcp/2528/p2p/NODE1_PEER_ID']"
+merod --node node2 run
 
 # Terminal 3: Third node (peer)
-merod --node-name node3 init --server-port 2430 --swarm-port 2530
-merod --node-name node3 config --swarm-addrs /ip4/127.0.0.1/tcp/2528
-merod --node-name node3 run
+merod --node node3 init --server-port 2430 --swarm-port 2530
+merod --node node3 config "bootstrap.nodes=['/ip4/127.0.0.1/tcp/2528/p2p/NODE1_PEER_ID']"
+merod --node node3 run
 ```
 
 For easier multi-node setup, use [Merobox](../merobox) which automates Docker-based node orchestration.
@@ -207,7 +196,7 @@ Each protocol requires appropriate relayer configuration for on-chain operations
 
 ```bash
 # Check node logs
-RUST_LOG=debug merod --node-name node1 run
+RUST_LOG=debug merod --node node1 run
 
 # Verify configuration
 cat ~/.calimero/node1/config.toml

@@ -20,7 +20,7 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -16,20 +16,27 @@ pub use init::ConfigProtocol;
 use init::InitCommand;
 use run::RunCommand;
 
-pub const EXAMPLES: &str = r"
+pub const EXAMPLES: &str = concat!(
+    r"
   # Initialize node
-  $ merod --node-name node1 init --server-port 2428 --swarm-port 2528
+  $ merod --node node1 init --server-port 2428 --swarm-port 2528
 
   # Initialize node with a custom home directory data
   $ mkdir data
-  $ merod --home data/ --node-name node1 init
+  $ merod --home data/ --node node1 init
 
-  # Configure an existing node
-  $ merod --node-name node1 config --server-host 143.34.182.202 --server-port 3000
+  # Configure an existing node (key=value; use TOML paths).
+  # Quote the argument in zsh so [ ] are not globbed:
+  $ merod --node node1 config ",
+    "\"",
+    r"server.listen=['/ip4/127.0.0.2/tcp/3000', '/ip6/::1/tcp/3000']",
+    "\"",
+    r"
 
   # Run a node
-  $ merod --node-name node1 run
-";
+  $ merod --node node1 run
+",
+);
 
 #[derive(Debug, Parser)]
 #[command(author, version = CalimeroVersion::current_str(), about, long_about = None)]
@@ -64,7 +71,7 @@ pub struct RootArgs {
     pub home: Utf8PathBuf,
 
     /// Name of node
-    #[arg(short, long, value_name = "NAME")]
+    #[arg(short = 'n', long = "node", value_name = "NAME")]
     pub node_name: Utf8PathBuf,
 }
 
