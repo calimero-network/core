@@ -37,3 +37,37 @@ placing a malicious destination behind a legitimate tracking domain.
   becomes active again.
 - Treat the campaign as suspicious and monitor for similar tracking domains in
   mail filters and user reports.
+
+## HTML payload analysis (provided snippet)
+The supplied HTML appears to be a full Gmail web app shell for a Google
+Workspace tenant ("Calimero Network Mail"). It is the standard Gmail loading
+page and error/offline templates, not a credential-harvesting form.
+
+Key indicators:
+- Title and app name: "Calimero Network Mail".
+- Canonical and app URLs point to https://mail.google.com/mail/.
+- Large Gmail bootstrap config (GM_BOOTSTRAP_DATA, GM_JS_URLS) and scripts
+  loaded from mail.google.com and gstatic.com.
+- Embedded data iframe pointing at:
+  https://mail.google.com/mail/u/1/data?...
+- Error and offline HTML templates embedded in JS (GM_writeErrorPage).
+- No form posts to non-Google domains and no obvious credential capture fields.
+
+What it actually does:
+- Loads Gmail's JS bundles and CSS from Google-controlled domains.
+- Sets/reads cookies for Gmail session and feature gating.
+- Creates an iframe to load Gmail data endpoints.
+- Includes Google telemetry/error reporting and CSP/prototype tamper checks.
+
+Implications:
+- On its own, this HTML does not exfiltrate credentials or redirect to a
+  third-party host. It is consistent with a legitimate Gmail web app shell.
+- If this HTML was delivered from a non-Google domain, it would still try to
+  pull assets from mail.google.com and likely fail or show error pages unless
+  the user is already authenticated to Google in that browser.
+
+If this appeared in a phishing email:
+- The phishing risk would be in the delivery context (a deceptive link or
+  attachment), not in the HTML itself.
+- Ask for the full email headers and the exact URL hosting the HTML to confirm
+  the origin.
