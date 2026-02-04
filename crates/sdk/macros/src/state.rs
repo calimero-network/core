@@ -424,6 +424,9 @@ fn generate_mergeable_impl(
 /// - Deterministic collection IDs across nodes
 /// - Schema inference in merodb and other tools
 /// - Better debugging and introspection
+///
+/// NOTE: Only generates Default impl if the struct has CRDT collection fields.
+/// For structs without collections, users should #[derive(Default)] themselves.
 fn generate_default_impl(
     ident: &Ident,
     generics: &Generics,
@@ -442,6 +445,31 @@ fn generate_default_impl(
         }
     };
 
+    // Helper to check if a type is a CRDT collection
+    let is_collection_type = |type_str: &str| {
+        type_str.contains("UnorderedMap")
+            || type_str.contains("Vector")
+            || type_str.contains("UnorderedSet")
+            || type_str.contains("Counter")
+            || type_str.contains("ReplicatedGrowableArray")
+            || type_str.contains("UserStorage")
+            || type_str.contains("FrozenStorage")
+    };
+
+    // Count collection fields - only generate Default if there are collections
+    let has_collections = fields.iter().any(|field| {
+        let type_str = quote! { #field.ty }.to_string();
+        is_collection_type(&type_str)
+    });
+
+    // If no collection fields, don't generate Default - let user derive/impl it
+    if !has_collections {
+        return quote! {
+            // No auto-generated Default - struct has no CRDT collection fields
+            // Use #[derive(Default)] or implement Default manually
+        };
+    }
+
     // Generate field initializations
     let field_inits: Vec<_> = fields
         .iter()
@@ -453,16 +481,7 @@ fn generate_default_impl(
             let type_str = quote! { #field_type }.to_string();
             let field_name_str = field_name.to_string();
 
-            // Check for collection types that support new_with_field_name
-            let is_collection = type_str.contains("UnorderedMap")
-                || type_str.contains("Vector")
-                || type_str.contains("UnorderedSet")
-                || type_str.contains("Counter")
-                || type_str.contains("ReplicatedGrowableArray")
-                || type_str.contains("UserStorage")
-                || type_str.contains("FrozenStorage");
-
-            if is_collection {
+            if is_collection_type(&type_str) {
                 // Use new_with_field_name() with the field name
                 // Create a string literal token stream
                 let field_name_lit: proc_macro2::TokenStream =
