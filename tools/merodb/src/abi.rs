@@ -96,13 +96,18 @@ pub fn infer_schema_from_database(
     // Root ID depends on context:
     // - If context_id is provided, root ID is that context_id (Id::root() returns context_id())
     // - If no context_id, we can't determine root fields reliably, so use all zeros as fallback
-    let root_id_bytes: [u8; 32] = context_id
-        .map(|ctx_id| {
-            let mut bytes = [0u8; 32];
-            bytes.copy_from_slice(ctx_id);
+    let root_id_bytes: [u8; 32] = match context_id {
+        Some(ctx_id) => {
+            let bytes: [u8; 32] = ctx_id.try_into().map_err(|_| {
+                eyre::eyre!(
+                    "context_id must be exactly 32 bytes, got {} bytes",
+                    ctx_id.len()
+                )
+            })?;
             bytes
-        })
-        .unwrap_or([0u8; 32]);
+        }
+        None => [0u8; 32],
+    };
 
     // Scan State column for EntityIndex entries
     let iter = db.iterator_cf(&state_cf, rocksdb::IteratorMode::Start);
@@ -131,7 +136,10 @@ pub fn infer_schema_from_database(
                 eprintln!(
                     "[infer_schema] Found root-level entity: id={}, parent_id={:?}, field_name={:?}, crdt_type={:?}",
                     hex::encode(index.id.as_bytes()),
-                    index.parent_id.as_ref().map(|id| hex::encode(id.as_bytes())),
+                    index
+                        .parent_id
+                        .as_ref()
+                        .map(|id| hex::encode(id.as_bytes())),
                     index.metadata.field_name,
                     index.metadata.crdt_type
                 );
