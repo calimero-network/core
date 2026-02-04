@@ -30,7 +30,7 @@ cat > res/bundle-temp/manifest.json <<EOF
   "version": "1.0",
   "package": "com.calimero.access-control",
   "appVersion": "1.0.0",
-  "minRuntimeVersion": "1.0.0",
+  "minRuntimeVersion": "0.0.0",
   "wasm": {
     "path": "app.wasm",
     "size": ${WASM_SIZE},

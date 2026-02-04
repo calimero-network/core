@@ -167,7 +167,7 @@ fn sign_manifest(manifest_path: &PathBuf, key_path: &PathBuf) -> Result<()> {
         if !obj.contains_key("minRuntimeVersion") {
             obj.insert(
                 "minRuntimeVersion".to_string(),
-                serde_json::Value::String("1.0.0".to_string()),
+                serde_json::Value::String("0.1.0".to_string()),
             );
         }
     }
