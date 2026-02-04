@@ -2255,6 +2255,7 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
+ "calimero-version",
  "camino",
  "clap",
  "dashmap 6.1.0",

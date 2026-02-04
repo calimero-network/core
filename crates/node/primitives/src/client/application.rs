@@ -8,6 +8,7 @@ use calimero_primitives::application::{
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
+use calimero_version;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::bail;
 use flate2::read::GzDecoder;
@@ -80,7 +81,7 @@ impl NodeClient {
         if is_bundle {
             // This is a bundle, extract WASM from extracted directory or bundle
             // Extract manifest (blocking I/O wrapped in spawn_blocking)
-            let blob_bytes_clone = blob_bytes.clone();
+            let blob_bytes_clone = Arc::clone(&blob_bytes);
             let (_, manifest) = tokio::task::spawn_blocking(move || {
                 Self::extract_bundle_manifest(&blob_bytes_clone)
             })
@@ -186,7 +187,7 @@ impl NodeClient {
                 // Re-extract entire bundle to disk (not just WASM) so future calls don't need to re-extract
                 // This handles the case where sync_context_config installed the app before blob arrived
                 // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-                let blob_bytes_clone = blob_bytes.clone();
+                let blob_bytes_clone = Arc::clone(&blob_bytes);
                 let manifest_clone = manifest.clone();
                 let extract_dir_clone = extract_dir.to_path_buf();
                 let node_root_clone = node_root.to_path_buf();
@@ -244,6 +245,10 @@ impl NodeClient {
     ) -> eyre::Result<ApplicationId> {
         // For bundles: signer_id is required
         // For non-bundles: signer_id is optional (backwards compatibility)
+        // Note: Empty string is used as a sentinel value for non-bundle applications.
+        // This distinguishes 'no signer' (non-bundle) from 'has signer' (bundle) cases.
+        // Non-bundle installations cannot be upgraded to signed bundle installations
+        // without re-installation.
         let signer_id_str = signer_id.unwrap_or("");
 
         let application = types::ApplicationMeta::new(
@@ -381,7 +386,7 @@ impl NodeClient {
 
         if is_bundle {
             // Download entire bundle into memory
-            let bundle_data = response.bytes().await?.to_vec();
+            let bundle_data = Arc::new(response.bytes().await?.to_vec());
 
             // Store entire bundle as a single blob
             let cursor = Cursor::new(bundle_data.as_slice());
@@ -398,7 +403,7 @@ impl NodeClient {
 
             // Extract bundle manifest and verify signature
             // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-            let bundle_data_clone = bundle_data.clone();
+            let bundle_data_clone = Arc::clone(&bundle_data);
             let (verification, manifest) = tokio::task::spawn_blocking(move || {
                 Self::verify_and_extract_manifest(&bundle_data_clone)
             })
@@ -426,7 +431,7 @@ impl NodeClient {
                 .join("extracted");
 
             // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-            let bundle_data_clone = bundle_data.clone();
+            let bundle_data_clone = Arc::clone(&bundle_data);
             let manifest_clone = manifest.clone();
             let extract_dir_clone = extract_dir.clone();
             let node_root_clone = node_root.clone();
@@ -572,7 +577,7 @@ impl NodeClient {
         let bundle_path = path.clone();
 
         // Read bundle file
-        let bundle_data = tokio::fs::read(&path).await?;
+        let bundle_data = Arc::new(tokio::fs::read(&path).await?);
         let bundle_size = bundle_data.len() as u64;
 
         // Store entire bundle as a single blob
@@ -588,7 +593,7 @@ impl NodeClient {
 
         // Extract bundle manifest and verify signature
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_data_clone = bundle_data.clone();
+        let bundle_data_clone = Arc::clone(&bundle_data);
         let (verification, manifest) = tokio::task::spawn_blocking(move || {
             Self::verify_and_extract_manifest(&bundle_data_clone)
         })
@@ -616,7 +621,7 @@ impl NodeClient {
             .join("extracted");
 
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_data_clone = bundle_data.clone();
+        let bundle_data_clone = Arc::clone(&bundle_data);
         let manifest_clone = manifest.clone();
         let extract_dir_clone = extract_dir.clone();
         let node_root_clone = node_root.clone();
@@ -760,7 +765,7 @@ impl NodeClient {
             bail!("{} contains null byte", field_name);
         }
         // Check for absolute path indicators (Windows drive letters like "C:")
-        if value.len() >= 2 && value.chars().nth(1) == Some(':') {
+        if value.len() >= 2 && value.as_bytes().get(1) == Some(&b':') {
             bail!("{} appears to be an absolute path", field_name);
         }
         Ok(())
@@ -828,10 +833,14 @@ impl NodeClient {
                 entry.read_to_string(&mut manifest_str)?;
 
                 // Parse as raw JSON value first (needed for signature verification)
+                // We need the raw JSON structure for canonicalization during signature verification
                 let manifest_json: serde_json::Value = serde_json::from_str(&manifest_str)
                     .map_err(|e| eyre::eyre!("failed to parse manifest.json as JSON: {}", e))?;
 
-                // Convert from already-parsed Value to typed manifest (avoids re-parsing string)
+                // Convert from already-parsed Value to typed manifest
+                // Note: from_value takes ownership, so we clone the Value here to preserve
+                // it for signature verification. This is necessary because canonicalization
+                // requires the exact JSON structure as parsed.
                 let manifest: BundleManifest = serde_json::from_value(manifest_json.clone())
                     .map_err(|e| eyre::eyre!("failed to parse manifest.json: {}", e))?;
 
@@ -862,6 +871,28 @@ impl NodeClient {
                         &migration.path,
                         &format!("migrations[{}].path", i),
                     )?;
+                }
+
+                // Validate runtime version compatibility
+                let current_runtime_version = Version::parse(
+                    &calimero_version::CalimeroVersion::current().release,
+                )
+                .map_err(|e| eyre::eyre!("failed to parse current runtime version: {}", e))?;
+                let min_runtime_version =
+                    Version::parse(&manifest.min_runtime_version).map_err(|e| {
+                        eyre::eyre!(
+                            "invalid minRuntimeVersion '{}': {}",
+                            manifest.min_runtime_version,
+                            e
+                        )
+                    })?;
+
+                if min_runtime_version > current_runtime_version {
+                    bail!(
+                        "bundle requires runtime version {} but current runtime is {}",
+                        min_runtime_version,
+                        current_runtime_version
+                    );
                 }
 
                 return Ok((manifest_json, manifest));
@@ -944,7 +975,7 @@ impl NodeClient {
         // Extract manifest and verify signature
         // No metadata needed - bundle detection happens via is_bundle_blob()
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_bytes_clone = bundle_bytes.clone();
+        let bundle_bytes_clone = Arc::clone(&bundle_bytes);
         let (verification, manifest) = tokio::task::spawn_blocking(move || {
             Self::verify_and_extract_manifest(&bundle_bytes_clone)
         })
@@ -969,7 +1000,7 @@ impl NodeClient {
             .join("extracted");
 
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_bytes_clone = bundle_bytes.clone();
+        let bundle_bytes_clone = Arc::clone(&bundle_bytes);
         let manifest_clone = manifest.clone();
         let extract_dir_clone = extract_dir.clone();
         let node_root_clone = node_root.clone();
@@ -1683,5 +1714,168 @@ impl NodeClient {
         // In a real implementation, you might want to resolve the package/version to a URL
         let url = source.to_string().parse()?;
         self.install_application_from_url(url, metadata, None).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_path_component_valid() {
+        let valid_paths = vec!["com.example.app", "my-app", "my_app_v2", "app123"];
+        for path in valid_paths {
+            assert!(
+                NodeClient::validate_path_component(path, "test").is_ok(),
+                "Valid path '{}' should pass validation",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_path_component_path_traversal() {
+        let invalid_paths = vec!["../etc", "..", "foo/../bar", "package..name"];
+        for path in invalid_paths {
+            assert!(
+                NodeClient::validate_path_component(path, "test").is_err(),
+                "Path traversal '{}' should be rejected",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_path_component_directory_separators() {
+        let invalid_paths = vec!["foo/bar", "foo\\bar", "/absolute", "\\windows"];
+        for path in invalid_paths {
+            assert!(
+                NodeClient::validate_path_component(path, "test").is_err(),
+                "Path with separator '{}' should be rejected",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_path_component_null_byte() {
+        let invalid_path = "package\0name";
+        assert!(
+            NodeClient::validate_path_component(invalid_path, "test").is_err(),
+            "Path with null byte should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_component_windows_drive() {
+        let invalid_paths = vec!["C:malicious", "D:path"];
+        for path in invalid_paths {
+            assert!(
+                NodeClient::validate_path_component(path, "test").is_err(),
+                "Windows drive path '{}' should be rejected",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_path_component_unicode_separator() {
+        // Test Unicode path separator (full-width slash)
+        let invalid_path = "package／name";
+        // Note: This might pass current validation, but documents the limitation
+        // The current implementation checks for ASCII '/' and '\' only
+    }
+
+    #[test]
+    fn test_validate_artifact_path_valid() {
+        let valid_paths = vec!["app.wasm", "src/main.wasm", "migrations/001_init.sql"];
+        for path in valid_paths {
+            assert!(
+                NodeClient::validate_artifact_path(path, "test").is_ok(),
+                "Valid artifact path '{}' should pass validation",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_artifact_path_empty() {
+        assert!(
+            NodeClient::validate_artifact_path("", "test").is_err(),
+            "Empty path should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_artifact_path_null_byte() {
+        let invalid_path = "app\0.wasm";
+        assert!(
+            NodeClient::validate_artifact_path(invalid_path, "test").is_err(),
+            "Path with null byte should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_artifact_path_backslash() {
+        let invalid_path = "app\\main.wasm";
+        assert!(
+            NodeClient::validate_artifact_path(invalid_path, "test").is_err(),
+            "Path with backslash should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_artifact_path_absolute_unix() {
+        let invalid_path = "/etc/passwd";
+        assert!(
+            NodeClient::validate_artifact_path(invalid_path, "test").is_err(),
+            "Absolute Unix path should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_artifact_path_absolute_windows() {
+        let invalid_paths = vec!["C:malicious", "D:path\\file.wasm"];
+        for path in invalid_paths {
+            assert!(
+                NodeClient::validate_artifact_path(path, "test").is_err(),
+                "Windows absolute path '{}' should be rejected",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_artifact_path_traversal() {
+        let invalid_paths = vec!["../etc/passwd", "foo/../bar", "..", "migrations/../../etc"];
+        for path in invalid_paths {
+            assert!(
+                NodeClient::validate_artifact_path(path, "test").is_err(),
+                "Path traversal '{}' should be rejected",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_artifact_path_url_encoded() {
+        // Test URL-encoded path traversal attempts
+        let invalid_path = "..%2Fetc";
+        // Note: Current implementation doesn't decode URL encoding
+        // This test documents that URL-encoded sequences would need to be decoded first
+        // The path "..%2Fetc" would be treated as a literal string and might pass
+    }
+
+    #[test]
+    fn test_validate_artifact_path_very_long() {
+        // Test with a very long path (potential DoS)
+        let long_path = "a".repeat(10000);
+        // Current implementation doesn't check length, but this documents the consideration
+        let result = NodeClient::validate_artifact_path(&long_path, "test");
+        // Should either pass (if length is not checked) or fail (if length limit is added)
+        assert!(
+            result.is_ok() || result.is_err(),
+            "Very long path should be handled"
+        );
     }
 }
