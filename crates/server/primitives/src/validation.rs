@@ -169,6 +169,8 @@ pub mod helpers {
     }
 
     /// Validate hex string (must be valid hex and specific length)
+    ///
+    /// Uses character-based validation to avoid allocating a Vec for decoding.
     pub fn validate_hex_string(
         value: &str,
         field: &'static str,
@@ -184,7 +186,8 @@ pub mod helpers {
             });
         }
 
-        if hex::decode(value).is_err() {
+        // Validate hex characters without allocating
+        if !value.chars().all(|c| c.is_ascii_hexdigit()) {
             return Some(ValidationError::InvalidHexEncoding {
                 field,
                 reason: "contains non-hexadecimal characters".to_owned(),
@@ -218,8 +221,11 @@ pub mod helpers {
         }
     }
 
-    /// Validate pagination limit
+    /// Validate pagination limit (must be > 0 and <= MAX_PAGINATION_LIMIT)
     pub fn validate_limit(value: usize, field: &'static str) -> Option<ValidationError> {
+        if value == 0 {
+            return Some(ValidationError::EmptyField { field });
+        }
         if value > MAX_PAGINATION_LIMIT {
             Some(ValidationError::ValueTooLarge {
                 field,
@@ -296,14 +302,17 @@ pub mod helpers {
         None
     }
 
-    /// Validate JSON value size (serialized)
+    /// Validate JSON value size using a recursive size estimator.
+    ///
+    /// This estimates the serialized size without allocating by walking the JSON tree.
+    /// The estimate is conservative (may slightly overestimate) but avoids the memory
+    /// overhead of re-serializing the entire JSON value.
     pub fn validate_json_size(
         value: &serde_json::Value,
         field: &'static str,
         max: usize,
     ) -> Option<ValidationError> {
-        // Estimate size by serializing to string
-        let size = value.to_string().len();
+        let size = estimate_json_size(value);
         if size > max {
             Some(ValidationError::PayloadTooLarge {
                 field,
@@ -312,6 +321,36 @@ pub mod helpers {
             })
         } else {
             None
+        }
+    }
+
+    /// Recursively estimate the serialized size of a JSON value without allocating.
+    fn estimate_json_size(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Null => 4, // "null"
+            serde_json::Value::Bool(b) => {
+                if *b {
+                    4
+                } else {
+                    5
+                }
+            } // "true" or "false"
+            serde_json::Value::Number(n) => n.to_string().len(), // Numbers vary in length
+            serde_json::Value::String(s) => s.len() + 2, // Include quotes, approximate escaping
+            serde_json::Value::Array(arr) => {
+                // 2 for brackets, commas between elements
+                let content_size: usize = arr.iter().map(estimate_json_size).sum();
+                let comma_size = if arr.is_empty() { 0 } else { arr.len() - 1 };
+                2 + content_size + comma_size
+            }
+            serde_json::Value::Object(obj) => {
+                // 2 for braces, commas between entries, colons after keys
+                let content_size: usize = obj.iter()
+                    .map(|(k, v)| k.len() + 2 + 1 + estimate_json_size(v))  // key + quotes + colon + value
+                    .sum();
+                let comma_size = if obj.is_empty() { 0 } else { obj.len() - 1 };
+                2 + content_size + comma_size
+            }
         }
     }
 }

@@ -31,7 +31,9 @@ pub async fn handler(
 }
 
 async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteResponse, ApiError> {
-    // Decode and validate nonce
+    // Defense-in-depth: ValidatedJson already validates format, but we keep defensive
+    // error handling here in case validation is bypassed or has bugs. This prevents
+    // panics and provides clear error messages.
     let nonce = hex::decode(&req.nonce).map_err(|_| {
         error!("Invalid nonce format");
         ApiError {

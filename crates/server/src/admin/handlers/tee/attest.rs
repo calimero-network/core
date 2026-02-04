@@ -17,7 +17,9 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(nonce=%req.nonce, application_id=?req.application_id, "Generating TEE attestation");
 
-    // Decode and validate nonce
+    // Defense-in-depth: ValidatedJson already validates format, but we keep defensive
+    // error handling here in case validation is bypassed or has bugs. This prevents
+    // panics and provides clear error messages.
     let nonce = match hex::decode(&req.nonce) {
         Ok(n) => n,
         Err(_) => {

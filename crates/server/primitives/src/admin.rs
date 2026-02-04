@@ -1448,6 +1448,22 @@ impl TeeVerifyQuoteResponse {
 }
 
 // -------------------------------------------- Validation Implementations --------------------------------------------
+//
+// Validation Strategy:
+// ====================
+// These implementations focus on validating user-controlled string fields and size limits.
+//
+// Types like `ContextId`, `PublicKey`, `ApplicationId`, and `ProposalId` are validated during
+// serde deserialization - they implement `FromStr` which performs format validation (e.g.,
+// base58 decoding, length checks). If deserialization succeeds, the type is guaranteed valid.
+//
+// For request types containing only these strongly-typed fields, the `Validate` impl returns
+// an empty Vec since no additional runtime validation is needed beyond what serde already does.
+//
+// This approach provides:
+// 1. Type-safe validation at the deserialization boundary
+// 2. Additional size/format checks for user-provided strings (method names, URLs, etc.)
+// 3. Protection against oversized payloads that could cause resource exhaustion
 
 use crate::validation::{
     helpers::{
@@ -1546,8 +1562,9 @@ impl Validate for CreateContextRequest {
 
 impl Validate for InviteToContextRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (ContextId, PublicKey) which have their own validation
-        // No additional string/size validation needed
+        // Fields: context_id (ContextId), inviter_id (PublicKey), invitee_id (PublicKey)
+        // All fields are validated during serde deserialization via FromStr implementations.
+        // ContextId and PublicKey validate format (base58, length) at parse time.
         Vec::new()
     }
 }
