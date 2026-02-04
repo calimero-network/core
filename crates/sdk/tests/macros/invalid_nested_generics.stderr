@@ -1,0 +1,70 @@
+error: (calimero)> generic types are not supported
+ --> tests/macros/invalid_nested_generics.rs:9:6
+  |
+9 | impl<T> MyState<T> {
+  |      ^
+
+error[E0433]: failed to resolve: could not find `calimero_storage` in the list of imported crates
+ --> tests/macros/invalid_nested_generics.rs:5:1
+  |
+5 | #[app::state]
+  | ^^^^^^^^^^^^^ could not find `calimero_storage` in the list of imported crates
+  |
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: (calimero)> no method named `#[app::init]` found for type `MyState<T>`
+ --> tests/macros/invalid_nested_generics.rs:6:8
+  |
+6 | struct MyState<T>(T);
+  |        ^^^^^^^^^^ add an `#[app::init]` method to this type
+  |
+  = help: the trait `AppStateInit` is not implemented for `MyState<T>`
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`
+
+error[E0277]: the trait bound `MyState<T>: BorshDeserialize` is not satisfied
+ --> tests/macros/invalid_nested_generics.rs:6:8
+  |
+6 | struct MyState<T>(T);
+  |        ^^^^^^^^^^ the trait `BorshDeserialize` is not implemented for `MyState<T>`
+  |
+  = help: the following other types implement trait `BorshDeserialize`:
+            ()
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+            (T0, T1, T2, T3, T4, T5, T6)
+            (T0, T1, T2, T3, T4, T5, T6, T7)
+          and $N others
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                                      ^^^^^^^^^^^^^^^^ required by this bound in `AppState`
+
+error[E0277]: the trait bound `MyState<T>: BorshSerialize` is not satisfied
+ --> tests/macros/invalid_nested_generics.rs:6:8
+  |
+6 | struct MyState<T>(T);
+  |        ^^^^^^^^^^ the trait `BorshSerialize` is not implemented for `MyState<T>`
+  |
+  = help: the following other types implement trait `BorshSerialize`:
+            &T
+            ()
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+            (T0, T1, T2, T3, T4, T5, T6)
+          and $N others
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                     ^^^^^^^^^^^^^^ required by this bound in `AppState`

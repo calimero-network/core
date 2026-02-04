@@ -1,0 +1,70 @@
+error: (calimero)> an initializer, by definition, has no `self` to reference
+  --> tests/macros/error_init_with_self.rs:11:17
+   |
+11 |     pub fn init(&self) -> Self {
+   |                 ^
+
+error[E0433]: failed to resolve: could not find `calimero_storage` in the list of imported crates
+ --> tests/macros/error_init_with_self.rs:5:1
+  |
+5 | #[app::state]
+  | ^^^^^^^^^^^^^ could not find `calimero_storage` in the list of imported crates
+  |
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: (calimero)> no method named `#[app::init]` found for type `MyState`
+ --> tests/macros/error_init_with_self.rs:6:8
+  |
+6 | struct MyState;
+  |        ^^^^^^^ add an `#[app::init]` method to this type
+  |
+  = help: the trait `AppStateInit` is not implemented for `MyState`
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`
+
+error[E0277]: the trait bound `MyState: BorshDeserialize` is not satisfied
+ --> tests/macros/error_init_with_self.rs:6:8
+  |
+6 | struct MyState;
+  |        ^^^^^^^ the trait `BorshDeserialize` is not implemented for `MyState`
+  |
+  = help: the following other types implement trait `BorshDeserialize`:
+            ()
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+            (T0, T1, T2, T3, T4, T5, T6)
+            (T0, T1, T2, T3, T4, T5, T6, T7)
+          and $N others
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                                      ^^^^^^^^^^^^^^^^ required by this bound in `AppState`
+
+error[E0277]: the trait bound `MyState: BorshSerialize` is not satisfied
+ --> tests/macros/error_init_with_self.rs:6:8
+  |
+6 | struct MyState;
+  |        ^^^^^^^ the trait `BorshSerialize` is not implemented for `MyState`
+  |
+  = help: the following other types implement trait `BorshSerialize`:
+            &T
+            ()
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+            (T0, T1, T2, T3, T4, T5, T6)
+          and $N others
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                     ^^^^^^^^^^^^^^ required by this bound in `AppState`

@@ -38,6 +38,7 @@ use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error, info, warn};
 
+use crate::error::ContextError;
 use crate::handlers::utils::{process_context_mutations, StoreContextHost};
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -177,7 +178,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let context_task = guard_task.map(move |guard, act, _ctx| {
             let Some(context) = act.get_or_fetch_context(&context_id)? else {
-                bail!("context '{context_id}' deleted before we could execute");
+                bail!(ContextError::ContextDeleted { context_id });
             };
 
             Ok((guard, context.meta.clone()))
@@ -579,7 +580,13 @@ impl ContextManager {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 
-                let module = calimero_runtime::Engine::default().compile(&bytecode)?;
+                // Compile WASM in a blocking task to avoid blocking the async executor.
+                // Note: panics during compilation will surface as JoinError.
+                let module = global_runtime()
+                    .spawn_blocking(move || calimero_runtime::Engine::default().compile(&bytecode))
+                    .await
+                    .wrap_err("WASM compilation task failed")? // JoinError (task panicked/cancelled)
+                    ?; // Compilation error
 
                 let compiled = Cursor::new(module.to_bytes()?);
 
@@ -680,7 +687,7 @@ async fn internal_execute(
                 break 'fine;
             }
 
-            eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+            bail!(ContextError::StateInconsistency);
         }
     }
 

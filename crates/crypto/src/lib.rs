@@ -1,10 +1,20 @@
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use ed25519_dalek::{SecretKey, SigningKey};
 use ring::aead;
+use thiserror::Error;
 
 pub const NONCE_LEN: usize = 12;
 
 pub type Nonce = [u8; NONCE_LEN];
+
+/// Error type for shared key creation failures.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SharedKeyError {
+    /// The public key bytes do not represent a valid Edwards Y coordinate.
+    #[error("invalid public key: not a valid Edwards Y coordinate")]
+    InvalidPublicKey,
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct SharedKey {
@@ -12,16 +22,22 @@ pub struct SharedKey {
 }
 
 impl SharedKey {
-    #[must_use]
-    pub fn new(sk: &PrivateKey, pk: &PublicKey) -> Self {
-        Self {
-            key: (SigningKey::from_bytes(sk).to_scalar()
-                * curve25519_dalek::edwards::CompressedEdwardsY(**pk)
-                    .decompress()
-                    .expect("pk should be guaranteed to be the y coordinate"))
-            .compress()
-            .to_bytes(),
-        }
+    /// Creates a new shared key from a private key and a public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SharedKeyError::InvalidPublicKey`] if the public key bytes
+    /// do not represent a valid Edwards Y coordinate.
+    pub fn new(sk: &PrivateKey, pk: &PublicKey) -> Result<Self, SharedKeyError> {
+        let decompressed = curve25519_dalek::edwards::CompressedEdwardsY(**pk)
+            .decompress()
+            .ok_or(SharedKeyError::InvalidPublicKey)?;
+
+        Ok(Self {
+            key: (SigningKey::from_bytes(sk).to_scalar() * decompressed)
+                .compress()
+                .to_bytes(),
+        })
     }
 
     #[must_use]
@@ -81,8 +97,8 @@ mod tests {
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
 
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key());
-        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key());
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
 
         let payload = b"privacy is important";
         let nonce = [0u8; NONCE_LEN];
@@ -109,8 +125,8 @@ mod tests {
         let verifier = PrivateKey::random(&mut csprng);
         let invalid = PrivateKey::random(&mut csprng);
 
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key());
-        let invalid_shared_key = SharedKey::new(&invalid, &invalid.public_key());
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let invalid_shared_key = SharedKey::new(&invalid, &invalid.public_key())?;
 
         let token = b"privacy is important";
         let nonce = [0u8; NONCE_LEN];
@@ -124,5 +140,23 @@ mod tests {
         assert!(decrypted_data.is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_new_with_invalid_public_key() {
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+
+        // Create an invalid public key. Not all 32-byte sequences represent valid
+        // Edwards Y coordinates. We need a value where the computed x^2 has no
+        // square root in the field. This specific value (2 followed by zeros)
+        // is known to fail decompression on the Ed25519 curve.
+        let mut invalid_pk_bytes = [0u8; 32];
+        invalid_pk_bytes[0] = 2;
+        let invalid_pk = PublicKey::from(invalid_pk_bytes);
+
+        let result = SharedKey::new(&signer, &invalid_pk);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(SharedKeyError::InvalidPublicKey)));
     }
 }

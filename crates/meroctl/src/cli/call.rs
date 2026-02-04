@@ -9,11 +9,21 @@ use const_format::concatcp;
 use eyre::{OptionExt, Result};
 use serde_json::{json, Value};
 
+use crate::cli::validation::non_empty_string;
 use crate::cli::Environment;
 
 pub const EXAMPLES: &str = r"
-  # Execute a RPC method call
-  $ meroctl --node node1 call <CONTEXT> <METHOD>
+  # Call a mutation (e.g. add_item, set) on a context
+  $ meroctl --node <NODE_ID> call <METHOD_NAME> \
+    --context <CONTEXT_ID> \
+    --args '<ARGS_JSON>' \
+    --as <IDENTITY_PUBLIC_KEY>
+
+  # Call a view (e.g. get_item, get) on a context
+  $ meroctl --node <NODE_ID> call <METHOD_NAME> \
+    --context <CONTEXT_ID> \
+    --args '<ARGS_JSON>' \
+    --as <IDENTITY_PUBLIC_KEY>
 ";
 
 #[derive(Debug, Parser)]
@@ -31,7 +41,7 @@ pub struct CallCommand {
     )]
     pub context: Alias<ContextId>,
 
-    #[arg(value_name = "METHOD", help = "The method to call")]
+    #[arg(value_name = "METHOD", help = "The method to call", value_parser = non_empty_string)]
     pub method: String,
 
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]

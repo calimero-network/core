@@ -243,7 +243,7 @@ pub trait Storage: Send + Sync + 'static {
         let _ = self.delete(health_key).await;
 
         Ok(serde_json::json!({
-            "status": if read_ok { "healthy" } else { "unhealthy" },
+            "status": if read_ok { "alive" } else { "not_alive" },
             "read_write_test": read_ok,
         }))
     }

@@ -121,8 +121,10 @@ impl TokenManager {
             .and_then(|h| h.to_str().ok());
 
         if let Some(request_host) = request_host {
-            // Skip validation if request is coming from internal auth service
-            if request_host.starts_with("auth:") {
+            // Skip validation if request is coming from internal auth service.
+            // Only allow exact "auth" hostname or "auth:" followed by a numeric port.
+            // This prevents bypass attacks using forged headers like "auth:malicious.com".
+            if Self::is_internal_auth_service(request_host) {
                 return Ok(());
             }
 
@@ -142,6 +144,27 @@ impl TokenManager {
         }
 
         Ok(())
+    }
+
+    /// Check if the host represents an internal auth service.
+    ///
+    /// This is a robust check that only matches:
+    /// - Exact "auth" hostname
+    /// - "auth:" followed by a valid numeric port (e.g., "auth:3001")
+    ///
+    /// This prevents bypass attacks where an attacker forges headers like
+    /// "auth:malicious.com" to skip validation.
+    fn is_internal_auth_service(host: &str) -> bool {
+        if host == "auth" {
+            return true;
+        }
+
+        if let Some(port_str) = host.strip_prefix("auth:") {
+            // Port must be non-empty and contain only digits
+            return !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit());
+        }
+
+        false
     }
 
     /// Generate a JWT token
@@ -181,6 +204,31 @@ impl TokenManager {
         .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
     }
 
+    /// Generate a pair of JWT tokens without key validation.
+    async fn generate_raw_token_pair(
+        &self,
+        key_id: String,
+        permissions: Vec<String>,
+        node_url: Option<String>,
+        access_expiry: Duration,
+        refresh_expiry: Duration,
+    ) -> Result<(String, String), AuthError> {
+        let access_token = self
+            .generate_token(
+                key_id.clone(),
+                permissions.clone(),
+                access_expiry,
+                node_url.clone(),
+            )
+            .await?;
+
+        let refresh_token = self
+            .generate_token(key_id, permissions, refresh_expiry, node_url)
+            .await?;
+
+        Ok((access_token, refresh_token))
+    }
+
     /// Generate mock tokens without requiring key storage (for CI/testing only)
     ///
     /// This method bypasses all key storage and validation for mock token generation.
@@ -196,20 +244,8 @@ impl TokenManager {
             Duration::seconds(custom_expiry.unwrap_or(self.config.access_token_expiry) as i64);
         let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
 
-        let access_token = self
-            .generate_token(
-                key_id.clone(),
-                permissions.clone(),
-                access_expiry,
-                node_url.clone(),
-            )
-            .await?;
-
-        let refresh_token = self
-            .generate_token(key_id, permissions, refresh_expiry, node_url)
-            .await?;
-
-        Ok((access_token, refresh_token))
+        self.generate_raw_token_pair(key_id, permissions, node_url, access_expiry, refresh_expiry)
+            .await
     }
 
     /// Generate a pair of access and refresh tokens
@@ -241,50 +277,31 @@ impl TokenManager {
             return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
         }
 
+        let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
+        let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
+
         match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
             KeyType::Root => {
-                let access_token = self
-                    .generate_token(
-                        key_id.clone(),
-                        permissions.clone(),
-                        Duration::seconds(self.config.access_token_expiry as i64),
-                        node_url.clone(),
-                    )
-                    .await?;
-
-                let refresh_token = self
-                    .generate_token(
-                        key_id,
-                        permissions,
-                        Duration::seconds(self.config.refresh_token_expiry as i64),
-                        node_url,
-                    )
-                    .await?;
-
-                Ok((access_token, refresh_token))
+                self.generate_raw_token_pair(
+                    key_id,
+                    permissions,
+                    node_url,
+                    access_expiry,
+                    refresh_expiry,
+                )
+                .await
             }
             // For client tokens, use the same key ID - no rotation during initial generation
             KeyType::Client => {
-                let access_token = self
-                    .generate_token(
-                        key_id.clone(),
-                        permissions.clone(),
-                        Duration::seconds(self.config.access_token_expiry as i64),
-                        node_url.clone(),
-                    )
-                    .await?;
-
-                let refresh_token = self
-                    .generate_token(
-                        key_id,
-                        permissions,
-                        Duration::seconds(self.config.refresh_token_expiry as i64),
-                        node_url,
-                    )
-                    .await?;
-
-                Ok((access_token, refresh_token))
+                self.generate_raw_token_pair(
+                    key_id,
+                    permissions,
+                    node_url,
+                    access_expiry,
+                    refresh_expiry,
+                )
+                .await
             }
         }
     }
@@ -460,13 +477,32 @@ impl TokenManager {
                     new_client_id
                 );
 
-                // First store the key with the new ID to ensure we don't lose it
+                // Generate tokens FIRST, before any key mutations.
+                // This ensures that if token generation fails, we haven't modified any keys
+                // and the user's original key remains valid (no lockout scenario).
+                let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
+                let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
+
+                let (access_token, refresh_token) = self
+                    .generate_raw_token_pair(
+                        new_client_id.clone(),
+                        key.permissions.clone(),
+                        claims.node_url.clone(),
+                        access_expiry,
+                        refresh_expiry,
+                    )
+                    .await?;
+
+                // Tokens generated successfully - now perform key rotation.
+                // Store the new key first to ensure we don't lose access.
                 if let Err(e) = self.key_manager.set_key(&new_client_id, &key).await {
                     tracing::error!(
                         "Failed to store new client key {} during rotation: {}",
                         new_client_id,
                         e
                     );
+                    // Token generation succeeded but key storage failed.
+                    // Return error - user's old key is still valid, so no lockout.
                     return Err(AuthError::StorageError(format!(
                         "Failed to store new client key during rotation: {e}"
                     )));
@@ -474,42 +510,18 @@ impl TokenManager {
 
                 tracing::debug!("Successfully stored new client key: {}", new_client_id);
 
-                // Generate new tokens with the new ID first (before deleting old key)
-                let token_result = self
-                    .generate_token_pair(
-                        new_client_id.clone(),
-                        key.permissions,
-                        claims.node_url.clone(),
-                    )
-                    .await;
-
-                // Only delete the old key if token generation was successful
-                match token_result {
-                    Ok(tokens) => {
-                        // Now safely delete the old key
-                        if let Err(e) = self.key_manager.delete_key(&claims.sub).await {
-                            // Log the error but don't fail the refresh - tokens are already generated
-                            tracing::warn!(
-                                "Failed to delete old client key {} after successful rotation: {}",
-                                claims.sub,
-                                e
-                            );
-                        }
-                        Ok(tokens)
-                    }
-                    Err(e) => {
-                        // Token generation failed, clean up the new key we created
-                        if let Err(cleanup_err) = self.key_manager.delete_key(&new_client_id).await
-                        {
-                            tracing::error!(
-                                "Failed to cleanup new client key {} after token generation failure: {}",
-                                new_client_id,
-                                cleanup_err
-                            );
-                        }
-                        Err(e)
-                    }
+                // Now safely delete the old key
+                if let Err(e) = self.key_manager.delete_key(&claims.sub).await {
+                    // Log the error but don't fail the refresh - tokens are already generated
+                    // and new key is stored. User can use the new tokens.
+                    tracing::warn!(
+                        "Failed to delete old client key {} after successful rotation: {}",
+                        claims.sub,
+                        e
+                    );
                 }
+
+                Ok((access_token, refresh_token))
             }
         }
     }
@@ -589,5 +601,76 @@ impl TokenManager {
     /// Get the key manager
     pub fn get_key_manager(&self) -> &KeyManager {
         &self.key_manager
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_internal_auth_service_valid_cases() {
+        // Exact "auth" hostname should be valid
+        assert!(TokenManager::is_internal_auth_service("auth"));
+
+        // "auth:" followed by numeric port should be valid
+        assert!(TokenManager::is_internal_auth_service("auth:3001"));
+        assert!(TokenManager::is_internal_auth_service("auth:80"));
+        assert!(TokenManager::is_internal_auth_service("auth:443"));
+        assert!(TokenManager::is_internal_auth_service("auth:8080"));
+        assert!(TokenManager::is_internal_auth_service("auth:1"));
+        assert!(TokenManager::is_internal_auth_service("auth:65535"));
+    }
+
+    #[test]
+    fn test_is_internal_auth_service_bypass_attempts() {
+        // These are potential bypass attempts that should be rejected
+
+        // Attacker trying to bypass with malicious domain
+        assert!(!TokenManager::is_internal_auth_service(
+            "auth:malicious.com"
+        ));
+        assert!(!TokenManager::is_internal_auth_service(
+            "auth:evil.example.com"
+        ));
+
+        // Attacker trying to use non-numeric port
+        assert!(!TokenManager::is_internal_auth_service("auth:abc"));
+        assert!(!TokenManager::is_internal_auth_service("auth:80abc"));
+        assert!(!TokenManager::is_internal_auth_service("auth:abc80"));
+        assert!(!TokenManager::is_internal_auth_service("auth:80.0"));
+        assert!(!TokenManager::is_internal_auth_service("auth:80:80"));
+
+        // Empty port should be rejected
+        assert!(!TokenManager::is_internal_auth_service("auth:"));
+
+        // Similar prefixes that should not match
+        assert!(!TokenManager::is_internal_auth_service("authentication"));
+        assert!(!TokenManager::is_internal_auth_service("auth-service"));
+        assert!(!TokenManager::is_internal_auth_service("auth_service"));
+        assert!(!TokenManager::is_internal_auth_service("authservice:3001"));
+
+        // Other hostnames should not match
+        assert!(!TokenManager::is_internal_auth_service("localhost"));
+        assert!(!TokenManager::is_internal_auth_service("localhost:3001"));
+        assert!(!TokenManager::is_internal_auth_service("example.com"));
+    }
+
+    #[test]
+    fn test_is_internal_auth_service_edge_cases() {
+        // Case sensitivity - "auth" should be lowercase only
+        assert!(!TokenManager::is_internal_auth_service("AUTH"));
+        assert!(!TokenManager::is_internal_auth_service("Auth"));
+        assert!(!TokenManager::is_internal_auth_service("AUTH:3001"));
+
+        // Whitespace variations
+        assert!(!TokenManager::is_internal_auth_service(" auth"));
+        assert!(!TokenManager::is_internal_auth_service("auth "));
+        assert!(!TokenManager::is_internal_auth_service(" auth:3001"));
+
+        // Special characters in port
+        assert!(!TokenManager::is_internal_auth_service("auth:-3001"));
+        assert!(!TokenManager::is_internal_auth_service("auth:+3001"));
+        assert!(!TokenManager::is_internal_auth_service("auth: 3001"));
     }
 }

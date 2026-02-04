@@ -13,6 +13,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
+use crate::cli::validation::validate_file_exists;
 use crate::cli::Environment;
 use crate::output::{ErrorLine, InfoLine};
 
@@ -102,6 +103,9 @@ impl UpdateCommand {
                 metadata,
                 ..
             } => {
+                // Validate file exists before processing
+                validate_file_exists(path.as_std_path())?;
+
                 let metadata = metadata.map(String::into_bytes);
 
                 let application_id = client

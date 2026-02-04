@@ -16,6 +16,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
+use crate::cli::validation::{non_empty_string, validate_file_exists};
 use crate::cli::Environment;
 use crate::client::Client;
 use crate::output::{ErrorLine, InfoLine};
@@ -58,7 +59,7 @@ pub struct CreateCommand {
     )]
     pub context_seed: Option<Hash>,
 
-    #[clap(long, value_name = "PROTOCOL")]
+    #[clap(long, value_name = "PROTOCOL", value_parser = non_empty_string)]
     pub protocol: String,
 
     #[clap(long = "as", help = "Create an alias for the context identity")]
@@ -106,6 +107,9 @@ impl CreateCommand {
                 identity,
                 context,
             } => {
+                // Validate file exists before watching
+                validate_file_exists(path.as_std_path())?;
+
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
                 let client = environment.client()?;

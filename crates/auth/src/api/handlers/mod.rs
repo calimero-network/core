@@ -84,7 +84,7 @@ pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoRespons
     let storage_ok = state.0.storage.exists("health-check").await.is_ok();
 
     let response = json!({
-        "status": if storage_ok { "healthy" } else { "unhealthy" },
+        "status": if storage_ok { "alive" } else { "not_alive" },
         "storage": storage_ok,
         "uptime_seconds": state.0.metrics.get_uptime_seconds(),
     });

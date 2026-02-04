@@ -8,6 +8,22 @@ use wasmer_types::{
 
 use crate::logic::VMLimits;
 
+/// Custom tunables for the Wasmer runtime that configure memory and stack limits.
+///
+/// This struct wraps Wasmer's `BaseTunables` to provide custom memory configuration
+/// based on `VMLimits`. While `WasmerTunables` creates memory through the `Tunables`
+/// trait methods, the actual memory ownership is transferred to Wasmer's `Store`.
+///
+/// # Memory Management
+///
+/// Memory allocated through `create_host_memory` and `create_vm_memory` is owned
+/// by the Wasmer `Store` and `Instance`. Cleanup occurs when:
+/// - The `Store` is dropped (cleans up all associated resources)
+/// - Individual `Instance` objects are dropped
+/// - `VMLogic::drop` is called (explicitly releases memory references)
+///
+/// This struct does not perform explicit cleanup. Memory management is handled
+/// by Wasmer's `Store` and the `VMLogic::finish()` implementation.
 pub struct WasmerTunables {
     base: BaseTunables,
     vmconfig: VMConfig,
