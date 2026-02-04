@@ -153,6 +153,7 @@ impl Engine {
 
     pub fn compile(&self, bytes: &[u8]) -> Result<Module, FunctionCallError> {
         // Check module size before compilation to prevent memory exhaustion attacks
+        // Note: `as u64` is safe because usize <= u64 on all supported platforms (32-bit and 64-bit)
         let size = bytes.len() as u64;
         if size > self.limits.max_module_size {
             tracing::warn!(
@@ -196,6 +197,9 @@ impl Engine {
     /// 1. Precompiled modules have already been validated during their original compilation
     /// 2. The serialized format may differ significantly in size from the original WASM binary
     /// 3. The `unsafe` marker already requires callers to ensure the bytes are from a trusted source
+    ///
+    /// **Audit requirement**: All call sites using this method should be reviewed to ensure
+    /// precompiled bytes originate from trusted sources only (e.g., the node's own compilation cache).
     ///
     /// If precompiled bytes could come from an untrusted source, callers should implement
     /// their own size validation before calling this method.
@@ -1055,6 +1059,54 @@ mod wasm_panic_integration_tests {
             }
             Ok(_) => panic!("Expected compilation error for invalid WASM"),
             Err(other) => panic!("Expected CompilationError, got: {other:?}"),
+        }
+    }
+
+    /// Test edge case where max_module_size is set to 0
+    #[test]
+    fn test_wasm_module_size_limit_zero() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module (non-empty)
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with max_module_size = 0
+        let mut limits = VMLimits::default();
+        limits.max_module_size = 0;
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Any non-empty module should be rejected
+        let result = engine.compile(&wasm);
+
+        match result {
+            Err(FunctionCallError::ModuleSizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 0);
+                assert!(size > 0, "Module size should be greater than 0");
+            }
+            Ok(_) => panic!("Expected ModuleSizeLimitExceeded error with max_module_size=0"),
+            Err(other) => panic!("Expected ModuleSizeLimitExceeded error, got: {other:?}"),
+        }
+
+        // Empty byte slice should pass size check (0 > 0 is false) but fail compilation
+        let empty_bytes: &[u8] = &[];
+        let empty_result = engine.compile(empty_bytes);
+
+        match empty_result {
+            Err(FunctionCallError::CompilationError { .. }) => {
+                // Expected - empty bytes pass size check but fail compilation
+            }
+            Err(FunctionCallError::ModuleSizeLimitExceeded { .. }) => {
+                panic!("Empty module should pass size check (0 is not > 0)")
+            }
+            Ok(_) => panic!("Empty bytes should not compile successfully"),
+            Err(other) => panic!("Expected CompilationError for empty bytes, got: {other:?}"),
         }
     }
 }
