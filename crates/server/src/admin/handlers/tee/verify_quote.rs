@@ -31,16 +31,45 @@ pub async fn handler(
 }
 
 async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteResponse, ApiError> {
-    // Nonce format is pre-validated by ValidatedJson
-    let nonce = hex::decode(&req.nonce).expect("pre-validated hex string");
-    let nonce_array: [u8; 32] = nonce.try_into().expect("pre-validated length");
+    // Decode and validate nonce
+    let nonce = hex::decode(&req.nonce).map_err(|_| {
+        error!("Invalid nonce format");
+        ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid nonce format (must be hex string)".to_owned(),
+        }
+    })?;
 
-    // Expected application hash format is pre-validated by ValidatedJson
-    let expected_app_hash = req.expected_application_hash.as_ref().map(|hash_hex| {
-        let h = hex::decode(hash_hex).expect("pre-validated hex string");
-        let hash_array: [u8; 32] = h.try_into().expect("pre-validated length");
-        hash_array
-    });
+    let nonce_array: [u8; 32] = nonce.try_into().map_err(|_| {
+        error!(nonce_len=%req.nonce.len() / 2, "Invalid nonce length");
+        ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Nonce must be exactly 32 bytes (64 hex characters)".to_owned(),
+        }
+    })?;
+
+    // Decode and validate expected application hash if provided
+    let expected_app_hash = if let Some(hash_hex) = &req.expected_application_hash {
+        let h = hex::decode(hash_hex).map_err(|_| {
+            error!("Invalid application hash format");
+            ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid application hash format (must be hex string)".to_owned(),
+            }
+        })?;
+
+        let hash_array: [u8; 32] = h.try_into().map_err(|_| {
+            error!(hash_len=%hash_hex.len() / 2, "Invalid application hash length");
+            ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Application hash must be exactly 32 bytes (64 hex characters)".to_owned(),
+            }
+        })?;
+
+        Some(hash_array)
+    } else {
+        None
+    };
 
     // Decode base64 quote
     let quote_bytes = base64_engine.decode(&req.quote_b64).map_err(|err| {

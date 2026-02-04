@@ -17,9 +17,30 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(nonce=%req.nonce, application_id=?req.application_id, "Generating TEE attestation");
 
-    // Nonce format is pre-validated by ValidatedJson, so we can decode safely
-    let nonce = hex::decode(&req.nonce).expect("pre-validated hex string");
-    let nonce_array: [u8; 32] = nonce.try_into().expect("pre-validated length");
+    // Decode and validate nonce
+    let nonce = match hex::decode(&req.nonce) {
+        Ok(n) => n,
+        Err(_) => {
+            error!("Invalid nonce format");
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid nonce format (must be hex string)".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
+    let nonce_array: [u8; 32] = match nonce.try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            error!(nonce_len=%req.nonce.len() / 2, "Invalid nonce length");
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Nonce must be exactly 32 bytes (64 hex characters)".to_owned(),
+            }
+            .into_response();
+        }
+    };
 
     // 2. Get application bytecode hash (if requested)
     let app_hash = if let Some(application_id) = req.application_id {

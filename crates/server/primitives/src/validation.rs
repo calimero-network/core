@@ -262,7 +262,11 @@ pub mod helpers {
         }
     }
 
-    /// Validate method name format (alphanumeric and underscore only)
+    /// Validate method name (checks for empty and length only)
+    ///
+    /// Note: Character restrictions are intentionally not enforced here as the OpenAPI spec
+    /// does not define specific character constraints for method names. Runtime validation
+    /// is handled separately in the WASM execution layer.
     pub fn validate_method_name(value: &str, field: &'static str) -> Option<ValidationError> {
         if value.is_empty() {
             return Some(ValidationError::EmptyField { field });
@@ -276,13 +280,13 @@ pub mod helpers {
             });
         }
 
-        // Method names should only contain alphanumeric characters and underscores
+        // Check for control characters which are never valid in method names
         for c in value.chars() {
-            if !c.is_ascii_alphanumeric() && c != '_' {
+            if c.is_ascii_control() {
                 return Some(ValidationError::InvalidFormat {
                     field,
                     reason: format!(
-                        "contains invalid character '{}' (only ASCII alphanumeric and '_' are allowed)",
+                        "contains control character '{}' which is not allowed",
                         c.escape_default()
                     ),
                 });
