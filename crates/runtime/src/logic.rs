@@ -112,8 +112,14 @@ const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
 /// Default maximum WASM module size in MiB (10 MiB).
 const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 10;
 /// Default maximum operations for WASM execution (300 million).
+///
 /// This limits how many WASM operations can be executed before termination.
 /// A value of 0 disables the execution limit.
+///
+/// **Practical guidance:** On typical hardware, 300M operations corresponds to
+/// roughly 10-60 seconds of wall-clock time, depending on the operation mix.
+/// Simple arithmetic loops execute faster than memory-intensive operations.
+/// Start with the default and adjust based on your workload's profiling data.
 const DEFAULT_MAX_OPERATIONS: u64 = 300_000_000;
 
 /// Defines the resource limits for a VM instance.
@@ -173,14 +179,23 @@ pub struct VMLimits {
     pub max_module_size: u64,
     /// The maximum number of WASM operations allowed per execution.
     ///
-    /// Each WASM instruction counts as one operation (uniform cost). When the limit is reached,
-    /// execution is terminated with an `ExecutionTimeout` error.
+    /// Each WASM instruction counts as one operation using a **uniform cost function**.
+    /// This means all operations (arithmetic, memory access, calls, branches) have equal
+    /// cost. While this doesn't perfectly model wall-clock time, it provides predictable
+    /// and deterministic execution limits. For production use, consider adding a safety
+    /// margin to account for operation mix variability.
+    ///
+    /// When the limit is reached, execution is terminated with an `ExecutionTimeout` error.
     /// This prevents infinite loops and long-running computations from blocking
     /// the executor indefinitely.
     ///
     /// **Note:** The operation budget is shared between all WASM function calls in a single
     /// execution, including registration hooks like `__calimero_register_merge`. If hooks
     /// consume operations, the remaining budget for the user method is reduced accordingly.
+    ///
+    /// **Practical guidance:** The default of 300M operations typically corresponds to
+    /// 10-60 seconds of execution time depending on workload. Monitor actual execution
+    /// stats (logged at debug level) to tune this value for your specific use case.
     ///
     /// A value of 0 disables the execution limit. Use caution when disabling limits for
     /// untrusted code, as infinite loops will block execution indefinitely.
