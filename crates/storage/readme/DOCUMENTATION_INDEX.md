@@ -38,7 +38,8 @@ Complete guide to Calimero Storage CRDT documentation.
 ### Understanding the System
 1. **[Architecture](architecture.md)** - How it works internally
 2. **[Merging Deep-Dive](merging.md)** - DAG vs explicit merge explained
-3. **[Design Decisions](design-decisions.md)** - Why we built it this way
+3. **[Schema Inference](schema-inference.md)** - How field_name enables schema-free inspection
+4. **[Design Decisions](design-decisions.md)** - Why we built it this way
 
 ### Performance
 - **[Performance Guide](performance.md)** - Benchmarks, optimization tips
@@ -97,6 +98,7 @@ crates/storage/
     ├── nesting.md                # Nesting patterns guide
     ├── architecture.md           # How it works internally
     ├── merging.md                # Conflict resolution explained
+    ├── schema-inference.md       # Field metadata & schema-free inspection
     ├── performance.md            # Optimization guide
     ├── migration.md              # Upgrading guide
     └── design-decisions.md       # Why we built it this way
