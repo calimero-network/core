@@ -136,17 +136,9 @@ pub enum Error<'a> {
 impl ComprehensiveCrdtApp {
     #[app::init]
     pub fn init() -> ComprehensiveCrdtApp {
-        ComprehensiveCrdtApp {
-            root_counter: Counter::new(),
-            root_map: UnorderedMap::new(),
-            root_vector: Vector::new(),
-            root_set: UnorderedSet::new(),
-            root_rga: ReplicatedGrowableArray::new(),
-            root_register: LwwRegister::new(String::new()),
-            user_storage_simple: UserStorage::new(),
-            user_storage_nested: UserStorage::new(),
-            frozen_storage: FrozenStorage::new(),
-        }
+        // Use the auto-generated Default implementation which uses field names
+        // for deterministic collection IDs across nodes
+        ComprehensiveCrdtApp::default()
     }
 
     // ===== Counter Operations =====
