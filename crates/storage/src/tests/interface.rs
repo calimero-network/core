@@ -790,6 +790,8 @@ mod user_storage_signature_verification {
                     owner,
                     signature_data: None, // No signature!
                 },
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1132,6 +1134,8 @@ mod frozen_storage_verification {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Frozen,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1160,6 +1164,8 @@ mod frozen_storage_verification {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Frozen,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1196,6 +1202,8 @@ mod frozen_storage_verification {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Frozen,
+                crdt_type: None,
+                field_name: None,
             },
         };
         assert!(MainInterface::apply_action(add_action).is_ok());
@@ -1215,6 +1223,8 @@ mod frozen_storage_verification {
                 created_at: timestamp,
                 updated_at: new_timestamp.into(),
                 storage_type: StorageType::Frozen,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1251,6 +1261,8 @@ mod frozen_storage_verification {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Frozen,
+                crdt_type: None,
+                field_name: None,
             },
         };
         assert!(MainInterface::apply_action(add_action).is_ok());
@@ -1297,6 +1309,8 @@ mod frozen_storage_verification {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Frozen,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1337,6 +1351,8 @@ mod frozen_storage_verification {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Frozen,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1373,6 +1389,8 @@ mod timestamp_drift_protection {
                 created_at: future_timestamp,
                 updated_at: future_timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1405,6 +1423,8 @@ mod timestamp_drift_protection {
                 created_at: future_timestamp,
                 updated_at: future_timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1431,6 +1451,8 @@ mod timestamp_drift_protection {
                 created_at: past_timestamp,
                 updated_at: past_timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1665,6 +1687,8 @@ mod storage_type_edge_cases {
                     owner,
                     signature_data: None, // No signature!
                 },
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -1753,6 +1777,8 @@ mod storage_type_edge_cases {
                 created_at: page.element().created_at(),
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public, // Changed to Public!
+                crdt_type: None,
+                field_name: None,
             },
         };
 
