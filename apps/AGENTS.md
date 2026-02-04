@@ -62,30 +62,136 @@ app-name/
 
 ```rust
 // apps/kv-store/src/lib.rs
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::app;
-use calimero_storage::collections::UnorderedMap;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::serde::Serialize;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+use thiserror::Error;
 
-#[app::state]
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[app::state(emits = for<'a> Event<'a>)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
-    items: UnorderedMap<String, String>,
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Updated { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+    Cleared,
+}
+
+#[derive(Debug, Error, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[serde(tag = "kind", content = "data")]
+pub enum Error<'a> {
+    #[error("key not found: {0}")]
+    NotFound(&'a str),
 }
 
 #[app::logic]
 impl KvStore {
     #[app::init]
-    pub fn init() -> Self {
-        Self::default()
+    pub fn init() -> KvStore {
+        KvStore {
+            items: UnorderedMap::new(),
+        }
     }
 
-    pub fn set(&mut self, key: String, value: String) {
-        self.items.insert(key, value);
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        app::log!("Setting key: {:?} to value: {:?}", key, value);
+
+        if self.items.contains(&key)? {
+            app::emit!(Event::Updated {
+                key: &key,
+                value: &value,
+            });
+        } else {
+            app::emit!(Event::Inserted {
+                key: &key,
+                value: &value,
+            });
+        }
+
+        self.items.insert(key, value.into())?;
+
+        Ok(())
     }
 
-    pub fn get(&self, key: String) -> Option<String> {
-        self.items.get(&key).cloned()
+    pub fn get(&self, key: &str) -> app::Result<Option<String>> {
+        app::log!("Getting key: {:?}", key);
+
+        Ok(self.items.get(key)?.map(|v| v.get().clone()))
     }
+}
+```
+
+**Key points:**
+
+- Use `#[app::state(emits = for<'a> Event<'a>)]` to declare events
+- Use nested CRDTs: `UnorderedMap<String, LwwRegister<String>>` for last-write-wins semantics
+- Return `app::Result<T>` from methods (not plain `T` or `Option<T>`)
+- Use `app::log!` for logging and `app::emit!` for events
+- Define `Error` enum with `thiserror::Error` and `Serialize` for proper error handling
+- Custom `init()` creates collections explicitly (not `Default`)
+
+### Event Handling Pattern
+
+- ✅ DO: Define events with `#[app::event]` and use `app::emit!` macro
+- ✅ DO: See `kv-store-with-handlers/src/lib.rs` for event handlers
+
+```rust
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Updated { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+}
+
+// Emit events in methods
+pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+    if self.items.contains(&key)? {
+        app::emit!(Event::Updated { key: &key, value: &value });
+    } else {
+        app::emit!(Event::Inserted { key: &key, value: &value });
+    }
+    // ...
+}
+
+// Event handlers (optional, see kv-store-with-handlers)
+pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
+    app::log!("Handler called for insert: {} = {}", key, value);
+    Ok(())
+}
+```
+
+### Error Handling Pattern
+
+- ✅ DO: Use `thiserror::Error` with `Serialize` for app errors
+- ✅ DO: Return `app::Result<T>` and use `app::bail!` for errors
+
+```rust
+use thiserror::Error;
+use calimero_sdk::serde::Serialize;
+
+#[derive(Debug, Error, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[serde(tag = "kind", content = "data")]
+pub enum Error<'a> {
+    #[error("key not found: {0}")]
+    NotFound(&'a str),
+    #[error("invalid value: {0}")]
+    InvalidValue(&'a str),
+}
+
+// Use in methods
+pub fn get_result(&self, key: &str) -> app::Result<String> {
+    let Some(value) = self.get(key)? else {
+        app::bail!(Error::NotFound(key));
+    };
+    Ok(value)
 }
 ```
 
@@ -103,6 +209,11 @@ crate-type = ["cdylib"]
 [dependencies]
 calimero-sdk = { workspace = true }
 calimero-storage = { workspace = true }
+thiserror = { workspace = true }  # For error handling
+
+[build-dependencies]
+calimero-wasm-abi = { workspace = true }  # For ABI generation
+serde_json = { workspace = true }
 
 [profile.release]
 codegen-units = 1
@@ -112,6 +223,8 @@ debug = false
 panic = "abort"
 overflow-checks = true
 ```
+
+**Note:** Workspace dependencies (`workspace = true`) are preferred in monorepo setups.
 
 ### Build Script Pattern
 
@@ -144,8 +257,17 @@ rg -n "pub fn" */src/lib.rs
 # Find CRDT usage
 rg -n "UnorderedMap|Counter|LwwRegister|Vector" */src/
 
-# Find event handlers
-rg -n "#\[app::on_" */src/
+# Find event definitions
+rg -n "#\[app::event\]" */src/
+
+# Find event emissions
+rg -n "app::emit!" */src/
+
+# Find error definitions
+rg -n "#\[derive.*Error" */src/
+
+# Find error handling
+rg -n "app::bail!" */src/
 ```
 
 ## Workflows
@@ -182,6 +304,12 @@ cargo build -p <app-name> \
 
 - Must use `crate-type = ["cdylib"]` in Cargo.toml
 - All state fields must be serializable (borsh)
+- Use `#[borsh(crate = "calimero_sdk::borsh")]` for borsh derives
+- Use `#[serde(crate = "calimero_sdk::serde")]` for serde derives
+- Return `app::Result<T>` from methods, not plain `T` or `Option<T>`
+- Use nested CRDTs (`UnorderedMap<String, LwwRegister<String>>`) for last-write-wins semantics
+- Events must use lifetime parameters: `Event<'a>` with `emits = for<'a> Event<'a>`
+- Errors must implement `Serialize` for proper JSON-RPC error responses
 - Use `--release` or `--profile app-release` for deployment
 - Panic behavior in WASM differs from native
 - Test locally with `meroctl call` before deployment

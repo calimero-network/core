@@ -60,6 +60,8 @@ crates/meroctl/src/cli/app/get.rs
 crates/meroctl/src/cli/app/install.rs
 ```
 
+**Exceptions:** Rare exceptions exist for specific technical reasons (e.g., `crates/node/src/sync/mod.rs` - see [crates/node/AGENTS.md](crates/node/AGENTS.md)). New `mod.rs` files should only be created with explicit justification and documentation of the exception.
+
 ### Error Handling
 
 - Use `eyre` crate: `use eyre::Result as EyreResult;`

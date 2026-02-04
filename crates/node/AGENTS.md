@@ -33,17 +33,26 @@ src/
 │   ├── state_delta.rs        # State delta handler
 │   ├── stream_opened.rs      # Stream opened handler
 │   ├── blob_protocol.rs      # Blob protocol handler
-│   └── get_blob_bytes.rs     # Get blob bytes handler
+│   ├── get_blob_bytes.rs     # Get blob bytes handler
+│   └── specialized_node_invite.rs  # Specialized node invitation handler
 ├── sync/
 │   ├── mod.rs                # Sync module (exception to no mod.rs rule)
 │   ├── manager.rs            # SyncManager
+│   ├── manager/
+│   │   └── application.rs    # Application sync manager
 │   ├── stream.rs             # Sync streams
 │   ├── config.rs             # Sync configuration
-│   └── tracking.rs           # Sync tracking
+│   ├── tracking.rs           # Sync tracking
+│   ├── blobs.rs              # Blob sync
+│   ├── delta_request.rs      # Delta request handling
+│   ├── helpers.rs            # Sync helpers
+│   ├── key.rs                # Sync key utilities
+│   └── snapshot.rs           # Snapshot handling
 ├── delta_store.rs            # Delta storage
 ├── gc.rs                     # Garbage collection
 ├── constants.rs              # Constants
 ├── arbiter_pool.rs           # Actix arbiter pool
+├── specialized_node_invite_state.rs  # Specialized node invite state
 └── utils.rs                  # Utilities
 primitives/                   # calimero-node-primitives
 ├── src/

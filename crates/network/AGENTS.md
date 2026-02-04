@@ -26,23 +26,43 @@ src/
 ├── behaviour.rs              # Network behaviour definition
 ├── discovery.rs              # Discovery module parent
 ├── discovery/
-│   └── state.rs              # Discovery state
+│   ├── state.rs              # Discovery state
+│   └── state_tests.rs        # Discovery state tests
 ├── handlers.rs               # Handlers module parent
 ├── handlers/
 │   ├── commands.rs           # Command handlers parent
 │   ├── commands/
 │   │   ├── subscribe.rs      # Topic subscription
+│   │   ├── unsubscribe.rs    # Topic unsubscription
 │   │   ├── publish.rs        # Message publishing
 │   │   ├── open_stream.rs    # Stream opening
-│   │   └── ...               # Other commands
+│   │   ├── dial.rs           # Dial peer
+│   │   ├── listen.rs         # Listen for connections
+│   │   ├── bootstrap.rs      # Bootstrap network
+│   │   ├── peer_count.rs     # Get peer count
+│   │   ├── mesh_peer_count.rs # Get mesh peer count
+│   │   ├── mesh_peers.rs     # Get mesh peers
+│   │   ├── announce_blob.rs  # Announce blob
+│   │   ├── query_blob.rs     # Query blob
+│   │   ├── request_blob.rs   # Request blob
+│   │   ├── send_specialized_node_invitation_response.rs  # Send invitation response
+│   │   └── send_specialized_node_verification_request.rs # Send verification request
 │   ├── stream.rs             # Stream handlers parent
 │   └── stream/
+│       ├── incoming.rs       # Incoming stream handling
+│       ├── rendezvous.rs     # Rendezvous protocol
 │       ├── swarm.rs          # Swarm event handlers parent
 │       └── swarm/
 │           ├── gossipsub.rs  # Gossipsub message handling
 │           ├── mdns.rs       # mDNS discovery
 │           ├── kad.rs        # Kademlia DHT
-│           └── ...           # Other protocols
+│           ├── ping.rs       # Ping protocol
+│           ├── identify.rs   # Identify protocol
+│           ├── autonat.rs    # AutoNAT protocol
+│           ├── dcutr.rs      # DCUtR protocol
+│           ├── relay.rs      # Relay protocol
+│           ├── rendezvous.rs # Rendezvous protocol
+│           └── specialized_node_invite.rs  # Specialized node invite protocol
 primitives/                   # calimero-network-primitives
 └── src/
     └── lib.rs                # Shared types (PeerId, etc.)

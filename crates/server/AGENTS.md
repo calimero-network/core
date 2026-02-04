@@ -29,14 +29,56 @@ src/
 │   ├── handlers.rs           # Handlers module parent
 │   ├── handlers/
 │   │   ├── applications.rs   # Applications handlers parent
-│   │   ├── applications/     # App management (get, install, list, uninstall)
+│   │   ├── applications/
+│   │   │   ├── get_application.rs
+│   │   │   ├── install_application.rs
+│   │   │   ├── install_dev_application.rs
+│   │   │   ├── list_applications.rs
+│   │   │   └── uninstall_application.rs
 │   │   ├── context.rs        # Context handlers parent
-│   │   ├── context/          # Context management (create, get, invite, join, etc.)
+│   │   ├── context/
+│   │   │   ├── create_context.rs
+│   │   │   ├── delete_context.rs
+│   │   │   ├── get_context.rs
+│   │   │   ├── get_context_ids.rs
+│   │   │   ├── get_context_identities.rs
+│   │   │   ├── get_context_storage.rs
+│   │   │   ├── get_contexts_for_application.rs
+│   │   │   ├── get_contexts_with_executors_for_application.rs
+│   │   │   ├── invite_to_context.rs
+│   │   │   ├── invite_to_context_open_invitation.rs
+│   │   │   ├── invite_specialized_node.rs
+│   │   │   ├── join_context.rs
+│   │   │   ├── join_context_open_invitation.rs
+│   │   │   ├── grant_capabilities.rs
+│   │   │   ├── revoke_capabilities.rs
+│   │   │   ├── sync.rs
+│   │   │   └── update_context_application.rs
 │   │   ├── identity.rs       # Identity handlers parent
-│   │   ├── identity/         # Identity operations
-│   │   └── ...
+│   │   ├── identity/
+│   │   │   └── generate_context_identity.rs
+│   │   ├── alias.rs          # Alias handlers parent
+│   │   ├── alias/
+│   │   │   ├── create_alias.rs
+│   │   │   ├── delete_alias.rs
+│   │   │   ├── list_aliases.rs
+│   │   │   └── lookup_alias.rs
+│   │   ├── blob.rs           # Blob handlers
+│   │   ├── peers.rs           # Peer handlers
+│   │   ├── proposals.rs       # Proposal handlers
+│   │   ├── tee.rs             # TEE handlers parent
+│   │   ├── tee/
+│   │   │   ├── attest.rs
+│   │   │   ├── info.rs
+│   │   │   └── verify_quote.rs
+│   │   ├── packages.rs        # Package handlers
+│   │   ├── list_packages.rs   # List packages
+│   │   ├── list_versions.rs   # List versions
+│   │   └── get_latest_version.rs  # Get latest version
 │   ├── service.rs            # Admin service setup
-│   └── storage.rs            # Admin storage
+│   ├── storage.rs            # Admin storage
+│   └── storage/
+│       └── ssl.rs            # SSL storage
 ├── jsonrpc.rs                # JSON-RPC module parent
 ├── jsonrpc/
 │   └── execute.rs            # JSON-RPC execution
@@ -147,7 +189,9 @@ pub fn admin_router() -> Router<AppState> {
 | `src/admin/handlers/applications/install_application.rs` | App install             |
 | `src/jsonrpc/execute.rs`                                 | JSON-RPC execution      |
 | `src/ws/subscribe.rs`                                    | WS subscriptions        |
+| `src/sse/handlers.rs`                                    | SSE handlers            |
 | `primitives/src/jsonrpc.rs`                              | JSON-RPC types          |
+| `primitives/src/admin.rs`                                | Admin API types         |
 
 ## JIT Index
 

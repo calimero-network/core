@@ -62,21 +62,61 @@ src/
 │   ├── app/
 │   │   ├── install.rs   # Install command
 │   │   ├── list.rs      # List command
-│   │   └── ...
+│   │   ├── get.rs       # Get app command
+│   │   ├── uninstall.rs # Uninstall command
+│   │   ├── get_latest_version.rs  # Get latest version
+│   │   ├── list_packages.rs  # List packages
+│   │   ├── list_versions.rs  # List versions
+│   │   └── watch.rs     # Watch command
 │   ├── context.rs       # Context subcommands parent
 │   ├── context/
 │   │   ├── create.rs    # Create command
+│   │   ├── delete.rs    # Delete command
+│   │   ├── get.rs       # Get command
+│   │   ├── list.rs      # List command
 │   │   ├── invite.rs    # Invite command
-│   │   ├── identity.rs  # Identity subcommands
-│   │   └── ...
+│   │   ├── invite_by_open_invitation.rs  # Invite by open invitation
+│   │   ├── invite_specialized_node.rs  # Invite specialized node
+│   │   ├── join.rs      # Join command
+│   │   ├── join_by_open_invitation.rs  # Join by open invitation
+│   │   ├── update.rs    # Update command
+│   │   ├── sync.rs      # Sync command
+│   │   ├── watch.rs     # Watch command
+│   │   ├── proposals.rs # Proposals command
+│   │   ├── alias.rs     # Alias command
+│   │   ├── identity.rs  # Identity subcommands parent
+│   │   └── identity/
+│   │       ├── generate.rs  # Generate identity
+│   │       ├── grant.rs     # Grant capabilities
+│   │       ├── revoke.rs    # Revoke capabilities
+│   │       └── alias.rs     # Identity alias
 │   ├── blob.rs          # Blob subcommands parent
 │   ├── blob/
-│   │   └── ...
-│   └── call.rs          # Call method command
+│   │   ├── upload.rs    # Upload blob
+│   │   ├── download.rs  # Download blob
+│   │   ├── list.rs      # List blobs
+│   │   ├── delete.rs    # Delete blob
+│   │   └── info.rs      # Blob info
+│   ├── call.rs          # Call method command
+│   ├── node.rs          # Node info command
+│   ├── peers.rs         # Peer management
+│   └── validation.rs    # Validation command
 ├── client.rs            # HTTP client wrapper
 ├── output.rs            # Output formatting (JSON/table)
+├── output/
+│   ├── common.rs        # Common output utilities
+│   ├── applications.rs  # Application output
+│   ├── contexts.rs      # Context output
+│   ├── blobs.rs         # Blob output
+│   ├── aliases.rs       # Alias output
+│   └── proposals.rs     # Proposal output
 ├── common.rs            # Shared utilities
-└── auth.rs              # Authentication handling
+├── config.rs            # Configuration
+├── connection.rs        # Connection handling
+├── defaults.rs          # Default values
+├── storage.rs           # Storage utilities
+├── auth.rs              # Authentication handling
+└── version.rs           # Version checking
 ```
 
 ## Patterns
