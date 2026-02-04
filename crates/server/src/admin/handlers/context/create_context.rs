@@ -1,18 +1,19 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, CreateContextResponseData,
 };
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<CreateContextRequest>,
+    ValidatedJson(req): ValidatedJson<CreateContextRequest>,
 ) -> impl IntoResponse {
     info!(application_id=%req.application_id, "Creating context");
 

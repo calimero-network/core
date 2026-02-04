@@ -7,19 +7,20 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_server_primitives::admin::{
     InviteSpecializedNodeRequest, InviteSpecializedNodeResponse,
 };
 use futures_util::TryStreamExt;
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<InviteSpecializedNodeRequest>,
+    ValidatedJson(req): ValidatedJson<InviteSpecializedNodeRequest>,
 ) -> impl IntoResponse {
     info!(context_id=%req.context_id, "Initiating specialized node invitation");
 

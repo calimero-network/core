@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(JoinContextRequest { invitation_payload }): Json<JoinContextRequest>,
+    ValidatedJson(JoinContextRequest { invitation_payload }): ValidatedJson<JoinContextRequest>,
 ) -> impl IntoResponse {
     info!("Joining context");
 
