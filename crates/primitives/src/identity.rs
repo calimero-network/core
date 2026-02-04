@@ -28,9 +28,14 @@ impl fmt::Debug for PrivateKey {
 impl Drop for PrivateKey {
     fn drop(&mut self) {
         // Zeroize the key material to prevent it from remaining in memory.
-        // SAFETY: PrivateKey owns the inner Hash, and we need mutable access
-        // to zeroize its contents. Hash doesn't expose DerefMut, so we use
-        // pointer casting to get a mutable byte slice over the entire structure.
+        //
+        // SAFETY:
+        // - The pointer is valid and properly aligned because it comes from a valid
+        //   mutable reference (`&mut self.0`).
+        // - The size is correct as we use `size_of::<Hash>()` on the actual type.
+        // - We have exclusive access to this memory via `&mut self`.
+        // - Hash doesn't expose `DerefMut` or implement `Zeroize`, so we use pointer
+        //   casting to get a mutable byte slice over the entire structure.
         unsafe {
             let hash_ptr = &mut self.0 as *mut Hash as *mut u8;
             let hash_size = core::mem::size_of::<Hash>();
@@ -308,7 +313,7 @@ mod tests {
         let key_ptr = &*key as *const PrivateKey as *const u8;
         let hash_size = core::mem::size_of::<Hash>();
 
-        // Manually drop the key, which will call our Drop implementation
+        // Manually drop the key, which will call our Drop implementation.
         // SAFETY: The key was created with ManuallyDrop::new, so we need to
         // manually drop it. After this, the ManuallyDrop wrapper prevents
         // double-drop.
@@ -316,15 +321,20 @@ mod tests {
             ManuallyDrop::drop(&mut key);
         }
 
-        // After drop, the memory should be zeroed. We can safely read it because
-        // ManuallyDrop keeps the memory allocated (it's still on the stack).
-        // SAFETY: The memory is still valid because ManuallyDrop doesn't deallocate,
-        // it just prevents the automatic drop. We're reading the same stack memory.
+        // NOTE: Reading memory after drop is technically undefined behavior in Rust's
+        // memory model, even though the stack memory is still allocated. We accept
+        // this UB in a test-only context to verify the security property that
+        // sensitive key material is zeroized. The ManuallyDrop wrapper ensures
+        // the stack memory hasn't been reused yet.
+        //
+        // SAFETY: We're reading stack memory that was just zeroized. While this is
+        // technically UB (the value has been invalidated by drop), it's acceptable
+        // here for verifying the security-critical zeroization behavior.
         let zeroed = unsafe { core::slice::from_raw_parts(key_ptr, hash_size) };
 
-        // Check that the key bytes (first 32 bytes of Hash) are zeroed
+        // Check that the entire Hash structure is zeroed, not just the key bytes
         assert!(
-            zeroed[..32].iter().all(|&b| b == 0),
+            zeroed.iter().all(|&b| b == 0),
             "Key material was not properly zeroized on drop"
         );
     }
