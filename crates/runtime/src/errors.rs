@@ -47,6 +47,8 @@ pub enum FunctionCallError {
     HostError(HostError),
     #[error("the method call returned an error: {0:?}")]
     ExecutionError(Vec<u8>),
+    #[error("module size limit (max_module_size) exceeded: {size} bytes > {max} bytes limit")]
+    ModuleSizeLimitExceeded { size: u64, max: u64 },
 }
 
 #[derive(Debug, Serialize, ThisError)]
